@@ -4,11 +4,12 @@ use crate::runtime::adapter_protocol::ViewPoint;
 use crate::runtime::graph_runtime::GraphRuntime;
 use crate::runtime::interaction::{
     AlignmentSnapConfig, AlignmentSnapQueryOutcome, CanvasInteractionConfig,
-    CanvasInteractionEffect, CanvasInteractionQuery, CanvasInteractionSession, CanvasPressTarget,
-    InteractionPosition, SelectionMode,
+    CanvasInteractionEffect, CanvasInteractionQuery, CanvasInteractionQueryKind,
+    CanvasInteractionSession, CanvasPressTarget, SelectionMode,
 };
+use crate::runtime::tests::fixtures::node_drag_start_by_id;
 use crate::runtime::view_session::{ViewSession, ViewSessionOptions};
-use crate::runtime::viewport::ViewportTransform;
+use crate::runtime::viewport::{ViewportPointerSample, ViewportTransform};
 
 use super::fixtures::{graph_with_nodes, publish_node_layouts};
 
@@ -121,26 +122,25 @@ fn alignment_budget_exhaustion_is_terminal_for_the_query_and_does_not_scan_unbou
 fn alignment_lock_holds_inside_release_band_after_leaving_acquire_band() {
     let (_runtime, view, ids) = alignment_view(2, 1.0, &[0.0, 205.0]);
     let mut interaction = interaction_session(&view, 64);
-    let start = view
-        .node_drag_start(ids[0], SelectionMode::Replace)
+    let start = node_drag_start_by_id(&view, ids[0], SelectionMode::Replace)
         .unwrap()
         .unwrap();
+    let start_position = canvas_pointer_sample(&view, 0.0, 1.0);
+    let first_position = canvas_pointer_sample(&view, 100.0, 1.0);
+    let outside_position = canvas_pointer_sample(&view, 112.0, 1.0);
     interaction
-        .press(
-            CanvasPressTarget::NodeDrag(start),
-            canvas_position(0.0, 1.0),
-        )
+        .press(CanvasPressTarget::NodeDrag(start), start_position)
         .unwrap();
 
-    let first = interaction.move_to(canvas_position(100.0, 1.0)).unwrap();
-    resolve_update(&view, &mut interaction, first);
+    let first = interaction.move_to(first_position).unwrap();
+    resolve_update(&mut interaction, first);
     assert_eq!(
         interaction.presentation().node_drag().unwrap().delta().x,
         105.0
     );
 
-    let outside_acquire = interaction.move_to(canvas_position(112.0, 1.0)).unwrap();
-    resolve_update(&view, &mut interaction, outside_acquire);
+    let outside_acquire = interaction.move_to(outside_position).unwrap();
+    resolve_update(&mut interaction, outside_acquire);
     assert_eq!(
         interaction.presentation().node_drag().unwrap().delta().x,
         105.0,
@@ -152,23 +152,21 @@ fn alignment_lock_holds_inside_release_band_after_leaving_acquire_band() {
 fn released_node_drag_waits_for_runtime_alignment_before_submitting() {
     let (_runtime, view, ids) = alignment_view(2, 1.0, &[0.0, 206.0]);
     let mut interaction = interaction_session(&view, 64);
-    let start = view
-        .node_drag_start(ids[0], SelectionMode::Replace)
+    let start = node_drag_start_by_id(&view, ids[0], SelectionMode::Replace)
         .unwrap()
         .unwrap();
+    let start_position = canvas_pointer_sample(&view, 0.0, 1.0);
+    let moved_position = canvas_pointer_sample(&view, 80.0, 1.0);
+    let released_position = canvas_pointer_sample(&view, 100.0, 1.0);
     interaction
-        .press(
-            CanvasPressTarget::NodeDrag(start),
-            canvas_position(0.0, 1.0),
-        )
+        .press(CanvasPressTarget::NodeDrag(start), start_position)
         .unwrap();
-    interaction.move_to(canvas_position(80.0, 1.0)).unwrap();
+    interaction.move_to(moved_position).unwrap();
 
-    let released = interaction.release(canvas_position(100.0, 1.0)).unwrap();
+    let released = interaction.release(released_position).unwrap();
     assert!(released.effects().is_empty());
-    let (id, query) = take_alignment_query(released);
-    let outcome = view.alignment_snap(query).unwrap();
-    let committed = interaction.resolve_alignment_snap(id, outcome).unwrap();
+    let query = take_only_query(released);
+    let committed = interaction.resolve_query(query).unwrap();
     assert!(matches!(
         committed.effects(),
         [CanvasInteractionEffect::SubmitGraph { .. }]
@@ -176,6 +174,46 @@ fn released_node_drag_waits_for_runtime_alignment_before_submitting() {
     assert_eq!(
         interaction.presentation().node_drag().unwrap().delta().x,
         106.0
+    );
+}
+
+#[test]
+fn runtime_owned_alignment_query_resolves_against_latest_node_spatial_index() {
+    let (_runtime, view, ids) = alignment_view(2, 1.0, &[0.0, 206.0]);
+    let mut interaction = interaction_session(&view, 64);
+    let start = node_drag_start_by_id(&view, ids[0], SelectionMode::Replace)
+        .unwrap()
+        .unwrap();
+    let start_position = canvas_pointer_sample(&view, 0.0, 1.0);
+    let moved_position = canvas_pointer_sample(&view, 100.0, 1.0);
+    interaction
+        .press(CanvasPressTarget::NodeDrag(start), start_position)
+        .unwrap();
+    let moved = interaction.move_to(moved_position).unwrap();
+    let query = take_only_query(moved);
+    assert!(matches!(
+        query.kind_for_test(),
+        CanvasInteractionQueryKind::AlignmentSnap { .. }
+    ));
+
+    publish_node_layouts(
+        &view,
+        [(
+            ids[1],
+            CanvasRect {
+                origin: CanvasPoint { x: 240.0, y: 0.0 },
+                size: CanvasSize {
+                    width: 100.0,
+                    height: 80.0,
+                },
+            },
+        )],
+    );
+    let resolved = interaction.resolve_query(query).unwrap();
+    assert!(resolved.queries().is_empty());
+    assert_eq!(
+        interaction.presentation().node_drag().unwrap().delta().x,
+        100.0
     );
 }
 
@@ -189,7 +227,8 @@ fn alignment_view(
         .build(graph)
         .unwrap();
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
-    view.set_viewport(CanvasPoint::default(), zoom).unwrap();
+    view.set_viewport(ViewportTransform::new(CanvasPoint::default(), zoom).unwrap())
+        .unwrap();
     publish_node_layouts(
         &view,
         ids.iter()
@@ -213,9 +252,8 @@ fn alignment_view(
 }
 
 fn interaction_session(view: &ViewSession, query_entry_budget: usize) -> CanvasInteractionSession {
-    CanvasInteractionSession::new(
-        view.id(),
-        view.generation().unwrap(),
+    CanvasInteractionSession::attach(
+        view,
         CanvasInteractionConfig {
             alignment_snap: AlignmentSnapConfig::new(6.0, 9.0),
             query_entry_budget,
@@ -232,20 +270,16 @@ fn move_and_resolve(
     delta_in_canvas: f32,
     zoom: f32,
 ) -> AlignmentSnapQueryOutcome {
-    let start = view
-        .node_drag_start(node, SelectionMode::Replace)
+    let start = node_drag_start_by_id(view, node, SelectionMode::Replace)
         .unwrap()
         .unwrap();
+    let start_position = canvas_pointer_sample(view, 0.0, zoom);
+    let moved_position = canvas_pointer_sample(view, delta_in_canvas, zoom);
     interaction
-        .press(
-            CanvasPressTarget::NodeDrag(start),
-            canvas_position(0.0, zoom),
-        )
+        .press(CanvasPressTarget::NodeDrag(start), start_position)
         .unwrap();
-    let update = interaction
-        .move_to(canvas_position(delta_in_canvas, zoom))
-        .unwrap();
-    let (_, query) = take_alignment_query(update);
+    let update = interaction.move_to(moved_position).unwrap();
+    let query = take_alignment_query(update);
     assert_eq!(query.moving_nodes(), &[node]);
     assert_eq!(
         query.delta(),
@@ -264,30 +298,31 @@ fn move_and_resolve(
 }
 
 fn resolve_update(
-    view: &ViewSession,
     interaction: &mut CanvasInteractionSession,
     update: crate::runtime::interaction::CanvasInteractionUpdate,
 ) {
-    let (id, query) = take_alignment_query(update);
-    let outcome = view.alignment_snap(query).unwrap();
-    interaction.resolve_alignment_snap(id, outcome).unwrap();
+    interaction.resolve_query(take_only_query(update)).unwrap();
 }
 
 fn take_alignment_query(
     update: crate::runtime::interaction::CanvasInteractionUpdate,
-) -> (
-    crate::runtime::interaction::InteractionQueryId,
-    crate::runtime::interaction::AlignmentSnapQuery,
-) {
-    let mut queries = update.into_dispatch().queries;
-    let CanvasInteractionQuery::AlignmentSnap { id, query, .. } = queries.remove(0) else {
+) -> crate::runtime::interaction::AlignmentSnapQuery {
+    let query = take_only_query(update);
+    let CanvasInteractionQueryKind::AlignmentSnap { query, .. } = query.into_kind_for_test() else {
         panic!("expected one alignment query");
     };
-    assert!(queries.is_empty());
-    (id, query)
+    query
 }
 
-fn canvas_position(x: f32, zoom: f32) -> InteractionPosition {
-    let transform = ViewportTransform::new(CanvasPoint::default(), zoom).unwrap();
-    InteractionPosition::from_view(ViewPoint::new(x * zoom, 0.0), transform).unwrap()
+fn take_only_query(
+    update: crate::runtime::interaction::CanvasInteractionUpdate,
+) -> CanvasInteractionQuery {
+    let mut queries = update.into_dispatch().queries;
+    assert_eq!(queries.len(), 1, "expected exactly one interaction query");
+    queries.remove(0)
+}
+
+fn canvas_pointer_sample(view: &ViewSession, x: f32, zoom: f32) -> ViewportPointerSample {
+    view.viewport_pointer_sample(ViewPoint::new(x * zoom, 0.0))
+        .unwrap()
 }

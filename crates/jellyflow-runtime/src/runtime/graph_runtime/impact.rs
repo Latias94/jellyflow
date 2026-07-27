@@ -200,12 +200,26 @@ pub(super) struct NodeIdentityImpact {
     pub(super) added: BTreeSet<NodeId>,
 }
 
+#[derive(Debug, Default)]
+pub(super) struct EdgeIdentityImpact {
+    pub(super) retired: BTreeSet<EdgeId>,
+    pub(super) added: BTreeSet<EdgeId>,
+}
+
+#[derive(Debug, Default)]
+pub(super) struct PortIdentityImpact {
+    pub(super) retired: BTreeSet<PortId>,
+    pub(super) added: BTreeSet<PortId>,
+}
+
 #[derive(Debug)]
 pub(super) struct InstalledTransactionImpact {
     pub(super) facts: Vec<RuntimeFactDelta>,
     pub(super) session: SessionImpact,
     pub(super) index: IndexImpact,
     pub(super) identities: NodeIdentityImpact,
+    pub(super) edge_identities: EdgeIdentityImpact,
+    pub(super) port_identities: PortIdentityImpact,
 }
 
 #[derive(Debug, Default)]
@@ -222,6 +236,8 @@ struct ImpactSeed {
     geometry: GeometryImpact,
     index: IndexImpact,
     identities: NodeIdentityImpact,
+    edge_identities: EdgeIdentityImpact,
+    port_identities: PortIdentityImpact,
     session: SessionDirectives,
 }
 
@@ -254,6 +270,12 @@ impl InstalledTransactionImpact {
         seed.identities
             .added
             .retain(|node| traversal.after_node(*node).is_some());
+        seed.port_identities
+            .retired
+            .retain(|port| traversal.before_port(*port).is_some());
+        seed.port_identities
+            .added
+            .retain(|port| traversal.after_port(*port).is_some());
 
         let mut facts = Vec::with_capacity(seed.fact_masks.len());
         for (key, change_mask) in seed.fact_masks {
@@ -279,6 +301,8 @@ impl InstalledTransactionImpact {
                 session,
                 index: seed.index,
                 identities: seed.identities,
+                edge_identities: seed.edge_identities,
+                port_identities: seed.port_identities,
             },
             traversal.finish(),
         )
@@ -325,9 +349,11 @@ fn declare_operation_impact(
             for (id, _) in ports {
                 seed.fact(RuntimeFactKey::Port(*id), FactChangeMask::IDENTITY);
                 seed.index.ports.insert(*id);
+                seed.port_identities.retired.insert(*id);
             }
             for (id, edge) in edges {
                 seed.fact(RuntimeFactKey::Edge(*id), FactChangeMask::IDENTITY);
+                seed.edge_identities.retired.insert(*id);
                 seed.include_edge_endpoints(edge);
                 seed.index.edges.insert(*id);
             }
@@ -394,6 +420,7 @@ fn declare_operation_impact(
         GraphOp::AddPort { id, .. } => {
             seed.fact(RuntimeFactKey::Port(*id), FactChangeMask::IDENTITY);
             seed.index.ports.insert(*id);
+            seed.port_identities.added.insert(*id);
         }
         GraphOp::RemovePort {
             id,
@@ -404,9 +431,11 @@ fn declare_operation_impact(
             traversal.visit_embedded_relationships(edges.len().saturating_add(bindings.len()));
             seed.fact(RuntimeFactKey::Port(*id), FactChangeMask::IDENTITY);
             seed.index.ports.insert(*id);
+            seed.port_identities.retired.insert(*id);
             seed.session.sanitize_view_state = true;
             for (id, edge) in edges {
                 seed.fact(RuntimeFactKey::Edge(*id), FactChangeMask::IDENTITY);
+                seed.edge_identities.retired.insert(*id);
                 seed.include_edge_endpoints(edge);
                 seed.index.edges.insert(*id);
             }
@@ -426,12 +455,14 @@ fn declare_operation_impact(
 
         GraphOp::AddEdge { id, edge } => {
             seed.fact(RuntimeFactKey::Edge(*id), FactChangeMask::IDENTITY);
+            seed.edge_identities.added.insert(*id);
             seed.include_edge_endpoints(edge);
             seed.index.edges.insert(*id);
         }
         GraphOp::RemoveEdge { id, edge, bindings } => {
             traversal.visit_embedded_relationships(bindings.len());
             seed.fact(RuntimeFactKey::Edge(*id), FactChangeMask::IDENTITY);
+            seed.edge_identities.retired.insert(*id);
             seed.include_edge_endpoints(edge);
             seed.index.edges.insert(*id);
             seed.session.sanitize_view_state = true;
@@ -1856,14 +1887,14 @@ mod tests {
             .copied()
             .collect::<BTreeSet<_>>();
         let actual_nodes = patch
-            .node_incarnation_changes()
+            .node_lifetime_changes()
             .map(|(node, _)| node)
             .collect::<BTreeSet<_>>();
         assert_eq!(actual_nodes, expected_nodes, "{context}");
         for node in expected_nodes {
             let change = patch
-                .node_incarnation_change(node)
-                .expect("expected incarnation change");
+                .node_lifetime_change(node)
+                .expect("expected lifetime change");
             if expected.identities.added.contains(&node) {
                 assert!(change.is_some(), "{context}: {node:?} must be reincarnated");
             } else {
@@ -1936,7 +1967,10 @@ mod tests {
             assert_installed_index_matches_graph(&runtime, &format!("{operation_name}: execute"));
 
             let undo_impact = derive_oracle_impact(&after, &before);
-            let undone = execute_applied(&runtime, GraphCommand::undo(applied.to_revision()));
+            let undone = execute_applied(
+                &runtime,
+                GraphCommand::undo(runtime.snapshot().expect("applied snapshot").version()),
+            );
             assert_patch_matches_oracle(&undone, &undo_impact, &format!("{operation_name}: undo"));
             assert_graph_equivalent(
                 runtime.snapshot().expect("undone snapshot").graph(),
@@ -1946,7 +1980,10 @@ mod tests {
             assert_installed_index_matches_graph(&runtime, &format!("{operation_name}: undo"));
 
             let redo_impact = derive_oracle_impact(&before, &after);
-            let redone = execute_applied(&runtime, GraphCommand::redo(undone.to_revision()));
+            let redone = execute_applied(
+                &runtime,
+                GraphCommand::redo(runtime.snapshot().expect("undone snapshot").version()),
+            );
             assert_patch_matches_oracle(&redone, &redo_impact, &format!("{operation_name}: redo"));
             assert_graph_equivalent(
                 runtime.snapshot().expect("redone snapshot").graph(),
@@ -2265,6 +2302,11 @@ mod tests {
             assert_installed_index_matches_snapshot(&runtime);
         let initial_source_incarnation = initial_incarnations[&source];
         let initial_target_incarnation = initial_incarnations[&target];
+        let initial_edge_incarnation = runtime
+            .snapshot()
+            .expect("initial graph snapshot")
+            .edge_incarnation(edge)
+            .expect("initial edge incarnation");
         let expected_keys = [
             RuntimeFactKey::Node(source),
             RuntimeFactKey::Port(source_port),
@@ -2275,7 +2317,10 @@ mod tests {
         let removed = execute_applied(
             &runtime,
             GraphCommand::topology(
-                0,
+                runtime
+                    .snapshot()
+                    .expect("initial graph snapshot")
+                    .version(),
                 TopologyEdit::new().remove_node(source, IncidentEdgePolicy::Cascade),
             ),
         );
@@ -2285,7 +2330,14 @@ mod tests {
         assert!(!removed_incarnations.contains_key(&source));
         assert_eq!(removed_incarnations[&target], initial_target_incarnation);
         assert_eq!(removed_allocator, initial_allocator);
-        assert_eq!(removed.node_incarnation_change(source), Some(None));
+        assert_eq!(
+            runtime
+                .snapshot()
+                .expect("removed graph snapshot")
+                .edge_incarnation(edge),
+            None
+        );
+        assert_eq!(removed.node_lifetime_change(source), Some(None));
         assert_eq!(removed.impact().retired_nodes, vec![source]);
         assert!(removed.impact().layout_dirty_nodes.is_empty());
         assert_eq!(removed.impact().route_edges, vec![edge]);
@@ -2296,17 +2348,38 @@ mod tests {
         assert!(removed.geometry_impact().ports().contains(&target_port));
         assert!(removed.geometry_impact().incident_edges().contains(&edge));
 
-        let restored = execute_applied(&runtime, GraphCommand::undo(removed.to_revision()));
+        let restored = execute_applied(
+            &runtime,
+            GraphCommand::undo(
+                runtime
+                    .snapshot()
+                    .expect("removed graph snapshot")
+                    .version(),
+            ),
+        );
         assert_identity_facts(&restored, FactChange::Added, expected_keys);
         let (_, restored_incarnations, restored_allocator) =
             assert_installed_index_matches_snapshot(&runtime);
         let restored_source_incarnation = restored_incarnations[&source];
         assert!(restored_source_incarnation > initial_source_incarnation);
         assert_eq!(restored_incarnations[&target], initial_target_incarnation);
-        assert_eq!(restored_allocator, initial_allocator + 1);
+        assert_eq!(restored_allocator, initial_allocator + 3);
+        assert!(
+            runtime
+                .snapshot()
+                .expect("restored graph snapshot")
+                .edge_incarnation(edge)
+                .expect("restored edge incarnation")
+                > initial_edge_incarnation
+        );
         assert_eq!(
-            restored.node_incarnation_change(source),
-            Some(Some(restored_source_incarnation))
+            restored.node_lifetime_change(source),
+            Some(Some(
+                restored
+                    .snapshot()
+                    .node_lifetime_key(source)
+                    .expect("restored source lifetime")
+            ))
         );
         assert!(restored.impact().retired_nodes.is_empty());
         assert_eq!(restored.impact().geometry_withdrawals, vec![source]);
@@ -2314,14 +2387,22 @@ mod tests {
         assert_eq!(restored.impact().route_edges, vec![edge]);
         assert!(!restored.impact().sanitize_view_state);
 
-        let removed_again = execute_applied(&runtime, GraphCommand::redo(restored.to_revision()));
+        let removed_again = execute_applied(
+            &runtime,
+            GraphCommand::redo(
+                runtime
+                    .snapshot()
+                    .expect("restored graph snapshot")
+                    .version(),
+            ),
+        );
         assert_identity_facts(&removed_again, FactChange::Removed, expected_keys);
         let (_, redone_incarnations, redone_allocator) =
             assert_installed_index_matches_snapshot(&runtime);
         assert!(!redone_incarnations.contains_key(&source));
         assert_eq!(redone_incarnations[&target], initial_target_incarnation);
         assert_eq!(redone_allocator, restored_allocator);
-        assert_eq!(removed_again.node_incarnation_change(source), Some(None));
+        assert_eq!(removed_again.node_lifetime_change(source), Some(None));
         assert_eq!(removed_again.impact().retired_nodes, vec![source]);
         assert!(removed_again.impact().layout_dirty_nodes.is_empty());
         assert_eq!(removed_again.impact().route_edges, vec![edge]);
@@ -2367,6 +2448,7 @@ mod tests {
 
         assert_eq!(impact.facts.len(), 1);
         assert_eq!(impact.session.affected_nodes, vec![target]);
+        assert!(impact.session.geometry_withdrawals.is_empty());
         assert_eq!(impact.session.layout_dirty_nodes, vec![target]);
         assert!(impact.index.ports.is_empty());
         assert!(impact.index.edges.is_empty());

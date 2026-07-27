@@ -21,11 +21,11 @@ pub(crate) fn shader_demo_graph(catalog: &NodeCatalog) -> Result<Graph, String> 
         (NodeId::from_u128(0x7100), CanvasPoint { x: 40.0, y: 300.0 }),
         (
             NodeId::from_u128(0x7200),
-            CanvasPoint { x: 320.0, y: 120.0 },
+            CanvasPoint { x: 400.0, y: 120.0 },
         ),
         (
             NodeId::from_u128(0x7300),
-            CanvasPoint { x: 600.0, y: 330.0 },
+            CanvasPoint { x: 760.0, y: 330.0 },
         ),
     ];
 
@@ -77,7 +77,7 @@ pub(crate) fn shader_demo_graph(catalog: &NodeCatalog) -> Result<Graph, String> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jellyflow_runtime::GraphRuntime;
+    use jellyflow_runtime::graph::GraphRuntime;
     use open_gpui_canvas_jellyflow::ShaderGraphProfile;
     use open_gpui_canvas_jellyflow::nodes::native_node_catalog;
 
@@ -120,6 +120,24 @@ mod tests {
                 assert_eq!(port.capacity, port_spec.capacity());
                 assert_eq!(port.ty.as_ref(), port_spec.ty());
             }
+        }
+    }
+
+    #[test]
+    fn shader_demo_reserves_readable_wire_gutters_between_nodes() {
+        let catalog = native_node_catalog().expect("native node catalog");
+        let graph = shader_demo_graph(&catalog).expect("valid shader demo graph");
+        let mut nodes = graph.nodes().values().collect::<Vec<_>>();
+        nodes.sort_by(|left, right| left.pos.x.total_cmp(&right.pos.x));
+
+        for pair in nodes.windows(2) {
+            let left = pair[0];
+            let right = pair[1];
+            let left_width = left
+                .size
+                .expect("shader node has an authoritative size")
+                .width;
+            assert!(right.pos.x - left.pos.x - left_width >= 96.0);
         }
     }
 }

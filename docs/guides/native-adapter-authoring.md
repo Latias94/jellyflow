@@ -9,8 +9,10 @@ into the renderer-neutral contracts provided by `jellyflow-runtime`.
 Choose direct dependencies according to the behavior the adapter owns:
 
 - `jellyflow-core` provides graph identities, nodes, ports, edges, and persisted graph facts.
-- `jellyflow-runtime` provides commands, `GraphRuntime`, `ViewSession`, adapter frames, feedback,
-  geometry publication, interaction semantics, and the optional conformance contract.
+- `jellyflow-runtime` provides commands through `commands`, graph authority through `graph`,
+  view-scoped frames and feedback through `view`, geometry and viewport facts through their owning
+  modules, interaction semantics through `interaction`, and the optional `adapter::conformance`
+  contract.
 - `jellyflow-layout` is optional. Depend on it only when the adapter or application runs a layout
   engine.
 - A native UI adapter depends on its own UI framework. Framework types must not enter the core or
@@ -24,7 +26,9 @@ boundary, not base classes for other adapters.
 ## Ownership Map
 
 `GraphRuntime` is the only graph mutation authority. A `ViewSession` owns one view's viewport,
-selection, derived geometry, interaction session, and revisioned adapter protocol. The native
+selection, derived geometry, and revisioned adapter protocol. One or more explicitly attached
+`CanvasInteractionSession` values own independent gesture lifecycles and synchronously commit
+view-local selection and viewport changes through their bound weak view authority. The native
 adapter owns retained or immediate widget state, focus, IME, overlays, pointer capture, theme,
 painting, and conversion from framework events to normalized semantic input.
 
@@ -38,7 +42,7 @@ revision checks.
 For each native frame:
 
 1. Materialize an owned adapter frame from the target `ViewSession`.
-2. Reconcile native node instances against exact node incarnation and renderer identity.
+2. Reconcile native node instances against the exact `NodeLifetimeKey` and renderer identity.
 3. Render or lay out native content without mutating graph or view authority.
 4. Publish complete node and real-port geometry through the frame's feedback collector.
 5. Transfer at most one ordered native command batch into the frame transaction.
@@ -62,7 +66,7 @@ the measurement that produced it.
 A native node may contain any components supported by its UI framework. Jellyflow needs semantic
 participation only at graph boundaries:
 
-- Mount state is scoped to the exact `NodeInstanceKey`, including view, incarnation, and renderer.
+- Mount state is scoped to the exact `NodeInstanceKey`, including view, node lifetime, and renderer.
 - Every connectable endpoint corresponds to a current graph `PortId`.
 - Every visible real port publishes a stable anchor and hit geometry for the same frame revision.
 - Dynamic rows must update node data and real ports through one atomic topology command.
@@ -73,8 +77,9 @@ gutters. The runtime does not infer collision-free native content layout.
 
 ## Commands And Asynchronous Work
 
-Build a `GraphCommand` from one owned, coherent facts view and preserve its expected revision.
-Enqueue it once. Do not rewrite the revision, merge with newer state, or retry automatically.
+Build a `GraphCommand` from one owned, coherent facts view and preserve its opaque expected graph
+version. Enqueue it once. Do not reconstruct that version from a numeric revision, merge with newer
+state, or retry automatically.
 
 When a native interaction emits a graph mutation after earlier native commands, capture an ordered
 command-prefix barrier before releasing its optimistic presentation. Wait only for commands in that

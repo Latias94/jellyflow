@@ -16,7 +16,7 @@ fn batch_geometry_is_one_atomic_history_boundary() {
 
     let outcome = runtime
         .execute(GraphCommand::set_node_geometry(
-            0,
+            runtime.snapshot().unwrap().version(),
             [
                 NodeGeometryEdit::new(nodes[0]).with_position(first_position),
                 NodeGeometryEdit::new(nodes[1])
@@ -69,9 +69,10 @@ fn batch_geometry_conflict_names_every_affected_node_without_mutation() {
     let runtime = GraphRuntime::builder(Default::default())
         .build(graph)
         .unwrap();
+    let stale_version = runtime.snapshot().unwrap().version();
     runtime
         .execute(GraphCommand::set_node_data(
-            0,
+            stale_version,
             nodes[2],
             serde_json::json!({ "winner": true }),
         ))
@@ -83,7 +84,7 @@ fn batch_geometry_conflict_names_every_affected_node_without_mutation() {
 
     let outcome = runtime
         .execute(GraphCommand::set_node_geometry(
-            0,
+            stale_version,
             [
                 NodeGeometryEdit::new(nodes[0]).with_position(CanvasPoint { x: 20.0, y: 30.0 }),
                 NodeGeometryEdit::new(nodes[1]).with_position(CanvasPoint { x: 40.0, y: 50.0 }),
@@ -112,7 +113,7 @@ fn duplicate_batch_geometry_target_is_structurally_rejected() {
     assert_rejected_without_side_effects(
         &runtime,
         GraphCommand::set_node_geometry(
-            0,
+            runtime.snapshot().unwrap().version(),
             [
                 NodeGeometryEdit::new(nodes[0]).with_position(CanvasPoint { x: 10.0, y: 20.0 }),
                 NodeGeometryEdit::new(nodes[0]).with_size(Some(CanvasSize {
@@ -132,11 +133,12 @@ fn empty_or_unchanged_batch_geometry_is_a_zero_side_effect_noop() {
     let runtime = GraphRuntime::builder(Default::default())
         .build(graph)
         .unwrap();
+    let version = runtime.snapshot().unwrap().version();
 
     for command in [
-        GraphCommand::set_node_geometry(0, []),
+        GraphCommand::set_node_geometry(version, []),
         GraphCommand::set_node_geometry(
-            0,
+            version,
             [NodeGeometryEdit::new(nodes[0])
                 .with_position(original.pos)
                 .with_size(original.size)],
@@ -161,7 +163,14 @@ fn derived_geometry_advances_revision_without_polluting_user_history() {
     };
 
     runtime
-        .execute(GraphCommand::set_node_size(0, nodes[0], Some(derived_size)).without_history())
+        .execute(
+            GraphCommand::set_node_size(
+                runtime.snapshot().unwrap().version(),
+                nodes[0],
+                Some(derived_size),
+            )
+            .without_history(),
+        )
         .unwrap()
         .applied()
         .expect("derived geometry applies");
@@ -185,7 +194,7 @@ fn batch_geometry_planning_reads_only_declared_nodes_at_scale() {
 
     runtime
         .execute(GraphCommand::set_node_geometry(
-            0,
+            runtime.snapshot().unwrap().version(),
             [
                 NodeGeometryEdit::new(nodes[0]).with_position(CanvasPoint { x: 1.0, y: 2.0 }),
                 NodeGeometryEdit::new(nodes[5_000]).with_position(CanvasPoint { x: 3.0, y: 4.0 }),

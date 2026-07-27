@@ -1,5 +1,8 @@
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+
 use jellyflow_core::{EdgeId, PortId};
-use jellyflow_runtime::{NodeInstanceKey, ViewId};
+use jellyflow_runtime::{view::NodeInstanceKey, view::ViewId};
 use open_gpui::{
     Div, ElementId, EntityId, Role, SharedString, Stateful, StatefulInteractiveElement,
 };
@@ -57,16 +60,9 @@ fn node_root(host: EntityId, instance: &NodeInstanceKey) -> ElementId {
     let node: ElementId = (view_root(host, instance.view()), "node").into();
     let node: ElementId = (node, instance.node().0.to_string()).into();
     let node: ElementId = (node, format!("renderer-{}", instance.renderer().key())).into();
-    let node: ElementId = (
-        node,
-        format!("renderer-incarnation-{}", instance.renderer().incarnation()),
-    )
-        .into();
-    (
-        node,
-        format!("node-incarnation-{}", instance.incarnation().get()),
-    )
-        .into()
+    let mut identity = DefaultHasher::new();
+    instance.hash(&mut identity);
+    (node, format!("node-instance-{:016x}", identity.finish())).into()
 }
 
 /// Returns the stable accessibility identity for one native graph scene.

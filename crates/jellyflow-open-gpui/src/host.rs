@@ -2,11 +2,13 @@ mod connection;
 mod diagnostics;
 mod edge_actions;
 mod edge_layer;
+mod edge_semantics;
 mod endpoint_resolver;
 mod focus_navigation;
 mod frame_feedback;
 mod interaction_session;
 mod lifecycle;
+mod native_frame_wake;
 mod node_lifecycle;
 mod presentation;
 mod retained_mount_store;
@@ -27,6 +29,7 @@ use self::frame_feedback::{OpenGpuiFrameTransaction, PendingNodeSizeSubmission};
 #[cfg(test)]
 use self::lifecycle::HostLifecycleSignal;
 use self::node_lifecycle::MountedNode;
+use self::presentation::OpenGpuiPresentationPortCache;
 #[cfg(test)]
 use self::scene_render::{
     OPEN_GPUI_SCENE_LAYER_ORDER, OPEN_GPUI_SELECTION_RECTANGLE_SELECTOR,
@@ -39,15 +42,20 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use jellyflow_core::{CanvasPoint, CanvasRect, CanvasSize, NodeGraphConnectionMode, PortId};
-use jellyflow_runtime::runtime::viewport::ViewportTransform;
 use jellyflow_runtime::schema::NodeCatalog;
+use jellyflow_runtime::viewport::ViewportTransform;
 use jellyflow_runtime::{
-    AdapterEnvironment, CanvasInteractionError, CanvasInteractionPhase, CanvasInteractionSession,
-    FrameMaterializationBudget, FrameMaterializationError, FrameMaterializationOverflow,
-    FrameRequest, RendererStamp, ViewCloseReason, ViewPoint, ViewRect, ViewSession,
-    ViewSessionError, ViewSize, WeakViewSession, fit_viewport,
+    geometry::ViewPoint, geometry::ViewRect, geometry::ViewSize,
+    interaction::CanvasInteractionError, interaction::CanvasInteractionPhase,
+    interaction::CanvasInteractionSession, interaction::fit_viewport, view::AdapterEnvironment,
+    view::FrameMaterializationBudget, view::FrameMaterializationError,
+    view::FrameMaterializationOverflow, view::FrameRequest, view::RendererStamp,
+    view::ViewCloseReason, view::ViewSession, view::ViewSessionError,
 };
-use open_gpui::{Context, IntoElement, Pixels, Render, Window};
+use open_gpui::{
+    App, Context, IntoElement, Modifiers, MouseButton, Pixels, Render, Subscription, Window,
+    WindowId,
+};
 
 use self::lifecycle::HostLifecycleBridge;
 use self::retained_mount_store::RetainedMountStore;
@@ -60,9 +68,34 @@ use crate::command_journal::{
 };
 use crate::interaction::OpenGpuiOverlayInteractionBoundary;
 use crate::navigation::OpenGpuiNavigationConfig;
+use crate::panic_sink::OpenGpuiPanicAccumulator;
 use crate::port_handle::OpenGpuiPendingMeasurements;
 use crate::registry::OpenGpuiNodeRegistry;
 use crate::theme::OpenGpuiGraphTheme;
+
+/// Requests one platform-backed frame for an externally driven native frame clock.
+///
+/// Open GPUI's animation-frame request is view-oriented. External frame drivers need a window-level
+/// redraw even when there is no current view, so macOS uses the same delayed AppKit wake as
+/// continuous interaction. The wake only starts a platform frame; callbacks registered through
+/// [`Window::on_next_frame`] remain the sole place where frame-dependent semantics advance.
+pub fn request_native_frame(window: &mut Window) {
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(wake) = native_frame_wake::prepare(window) {
+            wake.request();
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    window.refresh();
+}
+
+/// Compatibility wrapper for existing test-support real-window drivers.
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub fn request_native_test_frame(window: &mut Window) {
+    request_native_frame(window);
+}
 
 #[cfg(test)]
 use crate::binding::OpenGpuiNodeBinding;
@@ -91,6 +124,40 @@ pub struct OpenGpuiConnectionOptions {
     pub allow_create_from_wire: bool,
 }
 
+/// One application-owned context-menu request emitted from verified blank canvas.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OpenGpuiBlankCanvasContextRequest {
+    position: CanvasPoint,
+    button: MouseButton,
+    modifiers: Modifiers,
+}
+
+impl OpenGpuiBlankCanvasContextRequest {
+    #[must_use]
+    pub const fn position(self) -> CanvasPoint {
+        self.position
+    }
+
+    #[must_use]
+    pub const fn button(self) -> MouseButton {
+        self.button
+    }
+
+    #[must_use]
+    pub const fn modifiers(self) -> Modifiers {
+        self.modifiers
+    }
+}
+
+/// Application callback for blank-canvas catalog, quick-add, or context-menu presentation.
+pub type OpenGpuiBlankCanvasContextHandler =
+    Rc<dyn Fn(OpenGpuiBlankCanvasContextRequest, &mut Window, &mut App) + 'static>;
+
+struct PendingBlankCanvasContext {
+    handler: OpenGpuiBlankCanvasContextHandler,
+    request: OpenGpuiBlankCanvasContextRequest,
+}
+
 impl Default for OpenGpuiConnectionOptions {
     fn default() -> Self {
         Self {
@@ -104,6 +171,21 @@ const DIAGNOSTIC_RENDERER_KEY: &str = "jellyflow.open-gpui.diagnostic";
 const RENDERER_INCARNATION: u64 = 1;
 
 /// Retained Open GPUI scene host backed by one headless [`ViewSession`].
+///
+/// The first render permanently binds the entity to that window. Releasing the final entity handle
+/// then closes the view and releases native focus and pointer capture before the host is dropped.
+///
+/// The host deliberately does not expose its underlying view capability. Native node commands
+/// must enter through the mount-scoped authoring API so journal ordering, ticket settlement, and
+/// host invalidation cannot be bypassed.
+///
+/// ```compile_fail
+/// use jellyflow_open_gpui::host::OpenGpuiSceneHost;
+///
+/// fn bypass_host_journal(host: &OpenGpuiSceneHost) {
+///     let _ = host.view_handle();
+/// }
+/// ```
 pub struct OpenGpuiSceneHost {
     view: ViewSession,
     commands: Rc<OpenGpuiCommandJournal>,
@@ -121,21 +203,28 @@ pub struct OpenGpuiSceneHost {
     prepared_edges: OpenGpuiPreparedEdgeCache,
     edge_paths: Rc<RefCell<OpenGpuiEdgePathCache>>,
     connection_options: OpenGpuiConnectionOptions,
+    blank_canvas_context_handler: Option<OpenGpuiBlankCanvasContextHandler>,
+    pending_blank_canvas_context: Option<PendingBlankCanvasContext>,
     navigation: OpenGpuiNavigationConfig,
+    initial_viewport_policy: InitialViewportPolicy,
     graph_theme: OpenGpuiGraphTheme,
     edge_painters: Arc<OpenGpuiEdgePainterRegistry>,
     mounts: RetainedMountStore<MountedNode>,
     activity_coordinator: OpenGpuiActivityCoordinator,
     interaction_owner: interaction_session::OpenGpuiNativeInteractionOwner,
+    presentation_ports: OpenGpuiPresentationPortCache,
     pending_node_size_submission: Option<PendingNodeSizeSubmission>,
     ready_node_size_prefixes: VecDeque<OpenGpuiCommandPrefixBarrierResult>,
     scene_origin: Option<open_gpui::Point<Pixels>>,
     scene_transform: Option<ViewportTransform>,
     hovered_node: Option<jellyflow_core::NodeId>,
     hovered_port: Option<PortId>,
-    document_epoch: Option<jellyflow_runtime::DocumentEpoch>,
+    space_pan_held: bool,
+    document_epoch: Option<jellyflow_runtime::graph::DocumentEpoch>,
     adapter_environment_epoch: u64,
     terminal_reason: Option<ViewCloseReason>,
+    pending_terminal_panics: OpenGpuiPanicAccumulator,
+    window_owner: Option<OpenGpuiSceneHostWindowOwner>,
     lifecycle_bridge: Option<HostLifecycleBridge>,
     #[cfg(test)]
     scene_evidence: Rc<OpenGpuiSceneEvidence>,
@@ -143,10 +232,27 @@ pub struct OpenGpuiSceneHost {
     scene_wires_fault: Option<ViewSessionError>,
     #[cfg(test)]
     frame_submission_fault: bool,
+    #[cfg(test)]
+    prepaint_close_fault: bool,
     stats: OpenGpuiSceneHostStats,
     last_diagnostic: Option<OpenGpuiSceneHostDiagnostic>,
     last_frame_materialization_overflow: FrameMaterializationOverflow,
     last_edge_layer_overflow: OpenGpuiEdgeLayerOverflow,
+}
+
+/// One-shot policy for initializing a measured native surface viewport.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum InitialViewportPolicy {
+    /// Keep the attached view's current viewport exactly as supplied.
+    #[default]
+    Preserve,
+    /// Fit once after the first successful frame publishes fresh measured node geometry.
+    FitOnFirstMeasuredGeometry,
+}
+
+struct OpenGpuiSceneHostWindowOwner {
+    window: WindowId,
+    _release_subscription: Subscription,
 }
 
 fn catalog_frame_request(catalog: &NodeCatalog, viewport: CanvasRect) -> FrameRequest {
@@ -190,13 +296,8 @@ impl OpenGpuiSceneHost {
         let catalog = view.catalog_owned();
         let frame_request_template = catalog_frame_request(&catalog, viewport);
         let navigation = OpenGpuiNavigationConfig::default();
-        let canvas_interaction = CanvasInteractionSession::new(
-            view.id(),
-            view.generation()
-                .expect("a newly constructed native host owns an open view"),
-            navigation.runtime_config(),
-        )
-        .expect("the built-in canvas interaction configuration is valid");
+        let canvas_interaction = CanvasInteractionSession::attach(&view, navigation.runtime_config())
+            .expect("a newly constructed native host owns an open view with valid interaction configuration");
         Self {
             view,
             commands: OpenGpuiCommandJournal::new(),
@@ -214,7 +315,10 @@ impl OpenGpuiSceneHost {
             prepared_edges: OpenGpuiPreparedEdgeCache::default(),
             edge_paths: Rc::new(RefCell::new(OpenGpuiEdgePathCache::default())),
             connection_options: OpenGpuiConnectionOptions::default(),
+            blank_canvas_context_handler: None,
+            pending_blank_canvas_context: None,
             navigation,
+            initial_viewport_policy: InitialViewportPolicy::default(),
             graph_theme: OpenGpuiGraphTheme::default(),
             edge_painters: Arc::new(OpenGpuiEdgePainterRegistry::default()),
             mounts: RetainedMountStore::new(OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY),
@@ -224,15 +328,19 @@ impl OpenGpuiSceneHost {
             interaction_owner: interaction_session::OpenGpuiNativeInteractionOwner::new(
                 canvas_interaction,
             ),
+            presentation_ports: OpenGpuiPresentationPortCache::default(),
             pending_node_size_submission: None,
             ready_node_size_prefixes: VecDeque::new(),
             scene_origin: None,
             scene_transform: None,
             hovered_node: None,
             hovered_port: None,
+            space_pan_held: false,
             document_epoch: None,
             adapter_environment_epoch: 0,
             terminal_reason: None,
+            pending_terminal_panics: OpenGpuiPanicAccumulator::default(),
+            window_owner: None,
             lifecycle_bridge: None,
             #[cfg(test)]
             scene_evidence: Rc::new(OpenGpuiSceneEvidence::new()),
@@ -240,6 +348,8 @@ impl OpenGpuiSceneHost {
             scene_wires_fault: None,
             #[cfg(test)]
             frame_submission_fault: false,
+            #[cfg(test)]
+            prepaint_close_fault: false,
             stats: OpenGpuiSceneHostStats::default(),
             last_diagnostic: None,
             last_frame_materialization_overflow: FrameMaterializationOverflow::default(),
@@ -371,6 +481,27 @@ impl OpenGpuiSceneHost {
         self.connection_options
     }
 
+    /// Installs an application-owned blank-canvas context-menu request handler before mounting.
+    #[must_use]
+    pub fn with_blank_canvas_context_handler(
+        mut self,
+        handler: impl Fn(OpenGpuiBlankCanvasContextRequest, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.blank_canvas_context_handler = Some(Rc::new(handler));
+        self
+    }
+
+    /// Replaces the application-owned blank-canvas context-menu request handler.
+    pub fn set_blank_canvas_context_handler(
+        &mut self,
+        handler: Option<OpenGpuiBlankCanvasContextHandler>,
+        cx: &mut Context<Self>,
+    ) {
+        self.pending_blank_canvas_context = None;
+        self.blank_canvas_context_handler = handler;
+        cx.notify();
+    }
+
     /// Overrides adapter-local navigation before mounting the host.
     #[must_use]
     pub fn with_navigation_config(mut self, config: OpenGpuiNavigationConfig) -> Self {
@@ -403,6 +534,30 @@ impl OpenGpuiSceneHost {
     #[must_use]
     pub const fn navigation_config(&self) -> OpenGpuiNavigationConfig {
         self.navigation
+    }
+
+    /// Selects a one-shot initial viewport policy before the host is mounted.
+    #[must_use]
+    pub fn with_initial_viewport_policy(mut self, policy: InitialViewportPolicy) -> Self {
+        self.initial_viewport_policy = policy;
+        self
+    }
+
+    /// Replaces the pending initial viewport policy.
+    ///
+    /// Runtime ownership is authoritative: enabling fit after a persisted or user viewport write
+    /// cannot restore an already consumed initial claim.
+    pub fn set_initial_viewport_policy(&mut self, policy: InitialViewportPolicy) -> bool {
+        if self.initial_viewport_policy == policy {
+            return false;
+        }
+        self.initial_viewport_policy = policy;
+        true
+    }
+
+    #[must_use]
+    pub const fn initial_viewport_policy(&self) -> InitialViewportPolicy {
+        self.initial_viewport_policy
     }
 
     /// Fits every visible node with canonical size into the measured native surface.
@@ -448,11 +603,74 @@ impl OpenGpuiSceneHost {
         if self.view.viewport_transform()? == transform {
             return Ok(false);
         }
-        self.view.set_viewport(transform.pan, transform.zoom)?;
+        self.view.set_viewport(transform)?;
         self.scene_transform = Some(transform);
         self.update_surface_viewport(surface, transform);
         cx.notify();
         Ok(true)
+    }
+
+    pub(super) fn apply_initial_viewport_policy(&mut self) -> Result<bool, ViewSessionError> {
+        if self.initial_viewport_policy != InitialViewportPolicy::FitOnFirstMeasuredGeometry
+            || self.interaction_owner.presentation().phase() != CanvasInteractionPhase::Idle
+        {
+            return Ok(false);
+        }
+        let Some(surface) = self.surface_size else {
+            return Ok(false);
+        };
+        let expected = self.view.viewport_snapshot()?;
+        let graph = self.view.graph_snapshot()?;
+        let geometry = self.view.geometry_snapshot()?;
+        let mut saw_fresh_measurement = false;
+        let bounds = graph
+            .graph()
+            .nodes()
+            .into_iter()
+            .filter_map(|(node_id, node)| {
+                if node.hidden {
+                    return None;
+                }
+                let measured = geometry.node(*node_id).filter(|published| {
+                    published.is_fresh()
+                        && published.bounds().is_positive_finite()
+                        && graph.node_lifetime_key(*node_id) == Some(published.lifetime())
+                });
+                if let Some(measured) = measured {
+                    saw_fresh_measurement = true;
+                    return Some(measured.bounds());
+                }
+                let size = node.size.or_else(|| {
+                    self.catalog
+                        .get(&node.kind)
+                        .and_then(|spec| spec.default_size())
+                })?;
+                node.bounds_for_size(size)
+            })
+            .reduce(union_canvas_rects);
+        if !saw_fresh_measurement {
+            return Ok(false);
+        }
+        let Some(bounds) = bounds else {
+            return Ok(false);
+        };
+        let Some(transform) = fit_viewport(
+            bounds,
+            surface,
+            self.navigation.fit_view_padding_in_view(),
+            self.navigation.min_zoom(),
+            self.navigation.max_zoom(),
+        ) else {
+            return Ok(false);
+        };
+        let claimed = self.view.claim_initial_viewport(expected, transform)?;
+        self.initial_viewport_policy = InitialViewportPolicy::Preserve;
+        let Some(claimed) = claimed else {
+            return Ok(false);
+        };
+        self.scene_transform = Some(claimed.transform());
+        self.update_surface_viewport(surface, claimed.transform());
+        Ok(claimed.transform() != expected.transform())
     }
 
     /// Overrides adapter-local graph chrome colors and metrics before mounting the host.
@@ -503,12 +721,6 @@ impl OpenGpuiSceneHost {
     #[must_use]
     pub const fn graph_theme(&self) -> OpenGpuiGraphTheme {
         self.graph_theme
-    }
-
-    /// Returns a non-owning capability for controls that operate on this exact view session.
-    #[must_use]
-    pub fn view_handle(&self) -> WeakViewSession {
-        self.view.downgrade()
     }
 
     /// Advances geometry-affecting native environment generations for this view only.
@@ -565,12 +777,18 @@ impl OpenGpuiSceneHost {
         } else {
             self.viewport
         };
-        let protected_required_nodes = self
+        let mut protected_required_nodes = self
             .mounts
             .iter()
             .filter(|(_, mounted)| mounted.activity.protected_count() > 0)
             .map(|(instance, _)| instance.node())
             .collect::<BTreeSet<_>>();
+        if let Ok(snapshot) = self.view.graph_snapshot()
+            && let Ok(node_drag_required) =
+                self.interaction_owner.required_node_drag_nodes(&snapshot)
+        {
+            protected_required_nodes.extend(node_drag_required);
+        }
         let materialization_budget = effective_frame_materialization_budget(
             self.frame_materialization_budget,
             protected_required_nodes.len(),
@@ -624,15 +842,23 @@ fn canvas_viewport_for_surface(
 impl Render for OpenGpuiSceneHost {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let host_id = cx.entity_id();
-        self.ensure_lifecycle_bridge(cx);
+        self.ensure_window_owner(window, cx);
+        self.ensure_lifecycle_bridge(window, cx);
         if let Some(reason) = self.close_reason() {
+            self.space_pan_held = false;
             self.finish_terminal_render_cleanup(reason, window, cx);
             return self.terminal_scene(host_id);
+        }
+        if self.interaction_owner.prepare_animation_frame_request() {
+            window.request_animation_frame();
         }
         let focus_handle = self
             .interaction_owner
             .focus_handle()
             .unwrap_or_else(|| cx.focus_handle().tab_stop(true));
+        if !focus_handle.is_focused(window) {
+            self.space_pan_held = false;
+        }
         self.interaction_owner
             .set_focus_handle(focus_handle.clone());
         self.interaction_owner
@@ -664,6 +890,7 @@ impl Render for OpenGpuiSceneHost {
         ));
         self.reconcile_frame(
             frame.nodes(),
+            frame.graph_revision(),
             frame.document_epoch(),
             frame.transform().zoom,
             &measurements,
@@ -688,7 +915,9 @@ impl Render for OpenGpuiSceneHost {
             command_batch,
         ));
         self.frame_transaction = Some(Rc::clone(&transaction));
-        if let Err(error) = self.sync_binding_presentations(window, cx) {
+        if let Err(error) =
+            self.sync_binding_presentations(measurements.presentation_offsets(), window, cx)
+        {
             self.record_feedback_failure(None, error.to_string());
         }
         self.interaction_owner

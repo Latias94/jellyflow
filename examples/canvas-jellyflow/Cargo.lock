@@ -2507,10 +2507,14 @@ dependencies = [
 name = "jellyflow-open-gpui"
 version = "0.4.0"
 dependencies = [
+ "dispatch2",
+ "futures-util",
  "jellyflow-core",
  "jellyflow-runtime",
  "lyon",
+ "objc",
  "open-gpui",
+ "raw-window-handle",
  "thiserror 2.0.18",
 ]
 
@@ -3532,6 +3536,7 @@ dependencies = [
 name = "open-gpui-canvas-jellyflow"
 version = "0.4.0"
 dependencies = [
+ "futures-util",
  "jellyflow-core",
  "jellyflow-open-gpui",
  "jellyflow-runtime",

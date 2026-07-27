@@ -227,6 +227,15 @@ esac
 
 
 class ReleaseWorkflowTrustTests(unittest.TestCase):
+    def test_ci_uses_a_read_only_token_without_persisted_checkout_credentials(self) -> None:
+        source = workflow_source(CI_WORKFLOW)
+
+        self.assertIn("\npermissions:\n  contents: read\n", source)
+        self.assertEqual(
+            source.count("persist-credentials: false"),
+            source.count("uses: actions/checkout@"),
+        )
+
     def test_external_workflow_actions_use_verified_immutable_revisions(self) -> None:
         references = external_workflow_uses()
         observed_actions = set()
@@ -391,6 +400,38 @@ class ReleaseWorkflowTrustTests(unittest.TestCase):
                 workflow_source(workflow),
             )
 
+        release_index = {crate: index for index, crate in enumerate(crates)}
+        for crate in crates:
+            manifest = tomllib.loads(
+                (ROOT / "crates" / crate / "Cargo.toml").read_text(encoding="utf-8")
+            )
+            dependency_tables = [
+                manifest.get("dependencies", {}),
+                manifest.get("dev-dependencies", {}),
+                manifest.get("build-dependencies", {}),
+            ]
+            for target in manifest.get("target", {}).values():
+                dependency_tables.extend(
+                    [
+                        target.get("dependencies", {}),
+                        target.get("dev-dependencies", {}),
+                        target.get("build-dependencies", {}),
+                    ]
+                )
+            for dependencies in dependency_tables:
+                for alias, dependency in dependencies.items():
+                    package = (
+                        dependency.get("package", alias)
+                        if isinstance(dependency, dict)
+                        else alias
+                    )
+                    if package in release_index and package != crate:
+                        self.assertLess(
+                            release_index[package],
+                            release_index[crate],
+                            f"{crate} must be published after dependency {package}",
+                        )
+
     def test_release_crate_archives_include_canonical_dual_license_texts(self) -> None:
         crates = RELEASE_CRATES.read_text(encoding="utf-8").splitlines()
         canonical_licenses = {
@@ -484,6 +525,18 @@ class ReleaseWorkflowTrustTests(unittest.TestCase):
             github_release.index("\n            missing)"),
             github_release.index('gh release create "$tag"'),
         )
+
+    def test_github_release_requires_exact_non_empty_changelog_notes(self) -> None:
+        release = workflow_source(RELEASE_WORKFLOW)
+        github_release = job_source(release, "github-release")
+
+        self.assertIn(
+            "python3 scripts/release-version.py release-notes", github_release
+        )
+        self.assertIn('--version "$RELEASE_VERSION" > "$notes"', github_release)
+        self.assertIn('test -s "$notes"', github_release)
+        self.assertNotIn("awk -v version", github_release)
+        self.assertNotIn('echo "Jellyflow $version"', github_release)
 
 
 if __name__ == "__main__":

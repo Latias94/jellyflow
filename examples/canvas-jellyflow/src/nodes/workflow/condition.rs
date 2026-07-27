@@ -6,28 +6,25 @@ use jellyflow_core::{
 use jellyflow_open_gpui::authoring::{
     OpenGpuiNodeAuthoring, OpenGpuiNodeBinding, OpenGpuiPortHandle,
 };
-use jellyflow_open_gpui::chrome::OpenGpuiPortMarker;
-use jellyflow_open_gpui::{
-    OpenGpuiCommandTicketResult, OpenGpuiContentHeightPolicy, OpenGpuiNodeRegistrationPolicy,
-    OpenGpuiNodeRegistryBuilder, OpenGpuiNodeSizePolicy,
-};
+use jellyflow_open_gpui::chrome::{OpenGpuiPortMarker, OpenGpuiPortTone};
+use jellyflow_open_gpui::registry::{OpenGpuiNodeRegistrationPolicy, OpenGpuiNodeRegistryBuilder};
+use jellyflow_open_gpui::size_policy::{OpenGpuiContentHeightPolicy, OpenGpuiNodeSizePolicy};
+use jellyflow_runtime::commands::{GraphCommand, IncidentEdgePolicy, TopologyEdit, TopologyPort};
+use jellyflow_runtime::graph::{GraphRevision, GraphSnapshot, GraphVersion};
 use jellyflow_runtime::schema::{NodeKindSpec, NodePortSpec};
-use jellyflow_runtime::{
-    GraphCommand, GraphRevision, GraphSnapshot, IncidentEdgePolicy, NodeInstanceKey, TopologyEdit,
-    TopologyPort,
-};
+use jellyflow_runtime::view::NodeInstanceKey;
 use open_gpui::{
     AppContext, Context, Entity, InteractiveElement, ParentElement, Render,
-    StatefulInteractiveElement, Styled, Window, div, px, rgb,
+    StatefulInteractiveElement, Styled, Window, div, px,
 };
 use open_gpui_ui_components::{Button, ButtonVariant};
 
 use super::WORKFLOW_PORT_DIAMETER;
 use super::{WorkflowNodeError, WorkflowNodeStatus, WorkflowPort, workflow_alert, workflow_header};
-use crate::nodes::native_graph_theme;
 use crate::nodes::topology_attempt::{
-    TopologyAttempt, TopologyAttemptPhase, TopologyDispatchRequest,
+    TopologyAttempt, TopologyAttemptPhase, TopologyDispatchRequest, TopologyTransitionEffect,
 };
+use crate::product_theme::NativeProductTheme;
 
 pub const WORKFLOW_CONDITION_KIND: &str = "workflow.condition";
 pub const WORKFLOW_CONDITION_RENDERER: &str = "jellyflow.open-gpui.workflow.condition";
@@ -44,6 +41,7 @@ const CONDITION_CASE_LIST_MAX_HEIGHT: f32 = 148.0;
 const CONDITION_MIN_HEIGHT: f32 = 180.0;
 const CONDITION_MAX_HEIGHT: f32 = 360.0;
 
+const CONDITION_INPUT_PORT_KEY: &str = "input";
 const CONDITION_ELSE_PORT_KEY: &str = "else";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -129,12 +127,15 @@ pub struct WorkflowConditionNode {
     binding: Entity<OpenGpuiNodeBinding>,
     node_id: NodeId,
     topology: TopologyAttempt<ConditionCaseIntent>,
+    product_theme: NativeProductTheme,
     diagnostic: Option<String>,
 }
 
 struct ConditionRenderData {
     instance: NodeInstanceKey,
     revision: GraphRevision,
+    node: Node,
+    ports: BTreeMap<PortId, Port>,
     title: String,
     cases: Vec<(WorkflowCase, OpenGpuiPortHandle)>,
     else_branch: Option<(WorkflowElseBranch, OpenGpuiPortHandle)>,
@@ -148,11 +149,16 @@ struct ConditionCaseIntent {
 }
 
 impl WorkflowConditionNode {
-    fn new(binding: Entity<OpenGpuiNodeBinding>, instance: NodeInstanceKey) -> Self {
+    fn new(
+        binding: Entity<OpenGpuiNodeBinding>,
+        instance: NodeInstanceKey,
+        product_theme: NativeProductTheme,
+    ) -> Self {
         Self {
             binding,
             node_id: instance.node(),
             topology: TopologyAttempt::new(instance),
+            product_theme,
             diagnostic: None,
         }
     }
@@ -226,27 +232,33 @@ impl WorkflowConditionNode {
                 return;
             }
         };
-        let cases = match parse_condition_cases(self.node_id, &authoring.node().data) {
-            Ok(cases) => cases,
-            Err(error) => {
-                self.diagnostic = Some(error.to_string());
-                return;
-            }
-        };
-        if condition_action_satisfied(&cases, &request.intent().action) {
-            self.topology
-                .observe(authoring.instance(), authoring.revision(), |intent| {
-                    condition_action_satisfied(&cases, &intent.action)
-                });
-            self.diagnostic = None;
-            return;
-        }
         let ports = authoring
             .ports()
             .map(|port| (port.id(), port.facts().clone()))
             .collect();
+        if condition_action_satisfied(
+            self.node_id,
+            authoring.node(),
+            &ports,
+            &request.intent().action,
+        ) {
+            let effect = self.topology.observe(
+                authoring.instance(),
+                authoring.version().revision(),
+                |intent| {
+                    condition_action_satisfied(
+                        self.node_id,
+                        authoring.node(),
+                        &ports,
+                        &intent.action,
+                    )
+                },
+            );
+            self.apply_topology_effect(effect, cx);
+            return;
+        }
         let command = build_condition_case_command(
-            authoring.revision(),
+            authoring.version(),
             self.node_id,
             authoring.node(),
             &ports,
@@ -264,52 +276,36 @@ impl WorkflowConditionNode {
         let dispatch = self
             .topology
             .dispatch(authoring, command, request, &activity, cx);
-        let dispatch = match dispatch {
-            Ok(dispatch) => dispatch,
+        match dispatch {
+            Ok(()) => {}
             Err(error) => {
                 self.diagnostic = Some(error.to_string());
                 return;
             }
-        };
-        let attempt = dispatch.attempt();
-        let ticket = dispatch.into_ticket();
-        let task = cx.spawn(async move |node, cx| {
-            let result = ticket.await;
-            let _ = node.update(cx, |node, cx| node.finish_command(attempt, result, cx));
-        });
-        self.topology.own_task(attempt, task);
+        }
         self.diagnostic = None;
     }
 
-    fn finish_command(
-        &mut self,
-        attempt: u64,
-        result: OpenGpuiCommandTicketResult,
-        cx: &mut Context<Self>,
-    ) {
-        if self.topology.finish(attempt, result)
+    fn reconcile_command(&mut self, data: &ConditionRenderData, cx: &mut Context<Self>) {
+        let effect = self
+            .topology
+            .observe(&data.instance, data.revision, |intent| {
+                condition_action_satisfied(self.node_id, &data.node, &data.ports, &intent.action)
+            });
+        self.apply_topology_effect(effect, cx);
+    }
+
+    fn apply_topology_effect(&mut self, effect: TopologyTransitionEffect, cx: &mut Context<Self>) {
+        if effect.topology_became_visible()
             && let Err(error) = self
                 .binding
                 .update(cx, |binding, cx| binding.invalidate_layout(cx))
         {
             self.diagnostic = Some(format!(
-                "condition content changed but native layout invalidation failed: {error}"
+                "condition topology became visible but native layout invalidation failed: {error}"
             ));
-        } else {
-            self.diagnostic = self.topology.diagnostic().map(str::to_owned);
+            return;
         }
-        cx.notify();
-    }
-
-    fn reconcile_command(
-        &mut self,
-        instance: &NodeInstanceKey,
-        revision: GraphRevision,
-        cases: &[WorkflowCase],
-    ) {
-        self.topology.observe(instance, revision, |intent| {
-            condition_action_satisfied(cases, &intent.action)
-        });
         self.diagnostic = self.topology.diagnostic().map(str::to_owned);
     }
 
@@ -334,6 +330,7 @@ impl Render for WorkflowConditionNode {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl open_gpui::IntoElement {
+        let theme = self.product_theme;
         let node_id = self.node_id;
         let drag_handle = self.binding.read(cx).drag_handle();
         let authoring = self.binding.read(cx).authoring();
@@ -347,24 +344,12 @@ impl Render for WorkflowConditionNode {
         let binding_valid = data.is_ok();
         let data = match data {
             Ok(value) => {
-                let cases = value
-                    .cases
-                    .iter()
-                    .map(|(case, _)| case.clone())
-                    .collect::<Vec<_>>();
-                self.reconcile_command(&value.instance, value.revision, &cases);
+                self.reconcile_command(&value, cx);
                 value
             }
             Err(error) => {
                 self.diagnostic = Some(error.to_string());
-                ConditionRenderData {
-                    instance: self.binding.read(cx).drag_handle().instance().clone(),
-                    revision: 0,
-                    title: "Retired condition".to_owned(),
-                    cases: Vec::new(),
-                    else_branch: None,
-                    inputs: Vec::new(),
-                }
+                retired_render_data(self.binding.read(cx).drag_handle().instance().clone())
             }
         };
         let phase = self.topology.phase();
@@ -379,7 +364,7 @@ impl Render for WorkflowConditionNode {
             TopologyAttemptPhase::Pending | TopologyAttemptPhase::AwaitingSnapshot
         ) {
             self.topology.active_intent().cloned().and_then(|intent| {
-                if condition_action_satisfied(&authoritative_cases, &intent.action) {
+                if condition_action_satisfied_from_cases(&authoritative_cases, &intent.action) {
                     return None;
                 }
                 Some(match intent.action {
@@ -410,11 +395,15 @@ impl Render for WorkflowConditionNode {
             .px(px(CONDITION_BODY_HORIZONTAL_PADDING))
             .flex()
             .flex_col()
-            .gap(px(7.0));
+            .gap(px(theme.spacing.sm));
         for (index, (case, handle)) in data.cases.into_iter().enumerate() {
             let port_id = case.port_id();
             let row_selector = workflow_condition_case_selector(node_id, port_id);
-            let chrome = OpenGpuiPortMarker::new(handle.presentation(), native_graph_theme());
+            let chrome = OpenGpuiPortMarker::new(
+                handle.presentation(),
+                OpenGpuiPortTone::Control,
+                theme.graph_theme(),
+            );
             let minimum_hit_diameter = chrome.minimum_hit_diameter();
             let marker = handle
                 .with_minimum_hit_diameter(minimum_hit_diameter)
@@ -433,11 +422,16 @@ impl Render for WorkflowConditionNode {
                 .top(px(
                     (CONDITION_CASE_ROW_HEIGHT - WORKFLOW_PORT_DIAMETER) / 2.0
                 ))
-                .right(px(
-                    -(CONDITION_BODY_HORIZONTAL_PADDING + CONDITION_CASE_HORIZONTAL_PADDING)
-                ))
+                .right(px(-(CONDITION_BODY_HORIZONTAL_PADDING
+                    + CONDITION_CASE_HORIZONTAL_PADDING
+                    + WORKFLOW_PORT_DIAMETER / 2.0)))
                 .child(marker);
-            let mut actions = div().flex().gap(px(4.0));
+            let actions_selector = workflow_condition_case_actions_selector(node_id, port_id);
+            let mut actions = div()
+                .debug_selector(move || actions_selector.clone())
+                .flex_none()
+                .flex()
+                .gap(px(4.0));
             if index > 0 {
                 let move_node = cx.weak_entity();
                 let case_id = case.id().to_owned();
@@ -485,6 +479,7 @@ impl Render for WorkflowConditionNode {
                     }),
                 ),
             );
+            let label_selector = workflow_condition_case_label_selector(node_id, port_id);
             rows = rows.child(
                 div()
                     .relative()
@@ -493,9 +488,18 @@ impl Render for WorkflowConditionNode {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .rounded(px(4.0))
-                    .bg(rgb(0x292d35))
-                    .child(div().text_sm().child(case.label().to_owned()))
+                    .gap(px(theme.spacing.md))
+                    .rounded(px(theme.radius.control))
+                    .bg(theme.control.surface)
+                    .child(
+                        div()
+                            .debug_selector(move || label_selector.clone())
+                            .min_w(px(0.0))
+                            .flex_1()
+                            .truncate()
+                            .text_sm()
+                            .child(case.label().to_owned()),
+                    )
                     .child(actions)
                     .child(marker),
             );
@@ -510,18 +514,31 @@ impl Render for WorkflowConditionNode {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .rounded(px(4.0))
+                    .gap(px(theme.spacing.md))
+                    .rounded(px(theme.radius.control))
                     .border_1()
-                    .border_color(rgb(0x59616c))
-                    .text_color(rgb(0xaab6c6))
-                    .child(div().text_sm().child(label))
-                    .child(div().text_xs().child("Pending")),
+                    .border_color(theme.status.info.border)
+                    .text_color(theme.status.info.text)
+                    .child(
+                        div()
+                            .min_w(px(0.0))
+                            .flex_1()
+                            .truncate()
+                            .text_sm()
+                            .child(label),
+                    )
+                    .child(div().flex_none().text_xs().child("Pending")),
             );
         }
         if let Some((else_branch, handle)) = data.else_branch {
             let port_id = else_branch.port_id();
             let row_selector = workflow_condition_else_selector(node_id, port_id);
-            let chrome = OpenGpuiPortMarker::new(handle.presentation(), native_graph_theme());
+            let label_selector = workflow_condition_else_label_selector(node_id, port_id);
+            let chrome = OpenGpuiPortMarker::new(
+                handle.presentation(),
+                OpenGpuiPortTone::Control,
+                theme.graph_theme(),
+            );
             let minimum_hit_diameter = chrome.minimum_hit_diameter();
             let marker = handle
                 .with_minimum_hit_diameter(minimum_hit_diameter)
@@ -543,10 +560,25 @@ impl Render for WorkflowConditionNode {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .rounded(px(4.0))
-                    .bg(rgb(0x23272e))
-                    .child(div().text_sm().child(else_branch.label().to_owned()))
-                    .child(div().text_xs().text_color(rgb(0x93a0b1)).child("Fallback"))
+                    .gap(px(theme.spacing.md))
+                    .rounded(px(theme.radius.control))
+                    .bg(theme.surface.inset)
+                    .child(
+                        div()
+                            .debug_selector(move || label_selector.clone())
+                            .min_w(px(0.0))
+                            .flex_1()
+                            .truncate()
+                            .text_sm()
+                            .child(else_branch.label().to_owned()),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_xs()
+                            .text_color(theme.text.muted)
+                            .child("Fallback"),
+                    )
                     .child(
                         div()
                             .absolute()
@@ -554,7 +586,8 @@ impl Render for WorkflowConditionNode {
                                 (CONDITION_CASE_ROW_HEIGHT - WORKFLOW_PORT_DIAMETER) / 2.0
                             ))
                             .right(px(-(CONDITION_BODY_HORIZONTAL_PADDING
-                                + CONDITION_CASE_HORIZONTAL_PADDING)))
+                                + CONDITION_CASE_HORIZONTAL_PADDING
+                                + WORKFLOW_PORT_DIAMETER / 2.0)))
                             .child(marker),
                     ),
             );
@@ -592,7 +625,9 @@ impl Render for WorkflowConditionNode {
                 ),
             )
         });
+        let body_selector = workflow_condition_body_selector(node_id);
         let controls = div()
+            .debug_selector(move || body_selector.clone())
             .py(px(12.0))
             .flex()
             .flex_col()
@@ -608,24 +643,27 @@ impl Render for WorkflowConditionNode {
             )
             .px(px(14.0))
             .text_xs()
-            .text_color(rgb(0xe58b7b))
+            .text_color(theme.status.danger.text)
             .child(message)
         });
 
+        let node_selector = workflow_condition_node_selector(node_id);
         let content = div()
+            .debug_selector(move || node_selector.clone())
             .relative()
             .w_full()
-            .rounded(px(6.0))
+            .rounded(px(theme.radius.node))
             .border_1()
-            .border_color(rgb(0x66583c))
-            .bg(rgb(0x24262c))
-            .text_color(rgb(0xf0ece4))
+            .border_color(theme.node.alternate_border)
+            .bg(theme.node.alternate_surface)
+            .text_color(theme.text.primary)
             .child(drag_handle.wrap(workflow_header(
                 node_id,
                 data.title,
                 "CONDITION",
                 status,
                 data.inputs,
+                theme,
             )))
             .child(controls)
             .children(diagnostic);
@@ -668,7 +706,10 @@ pub(super) fn catalog_spec() -> NodeKindSpec {
     .build()
 }
 
-pub(super) fn register(registry: &mut OpenGpuiNodeRegistryBuilder) {
+pub(super) fn register(
+    registry: &mut OpenGpuiNodeRegistryBuilder,
+    product_theme: NativeProductTheme,
+) {
     let policy = OpenGpuiNodeRegistrationPolicy::default().with_size_policy(
         OpenGpuiNodeSizePolicy::ContentHeight(
             OpenGpuiContentHeightPolicy::new(CONDITION_MIN_HEIGHT, CONDITION_MAX_HEIGHT)
@@ -678,14 +719,14 @@ pub(super) fn register(registry: &mut OpenGpuiNodeRegistryBuilder) {
     registry.register_with_policy(
         WORKFLOW_CONDITION_RENDERER,
         policy,
-        |binding, _window, cx| {
+        move |binding, _window, cx| {
             let instance = binding
                 .read(cx)
                 .authoring()
                 .expect("a condition node factory must receive a live authoring binding")
                 .instance()
                 .clone();
-            cx.new(|_| WorkflowConditionNode::new(binding, instance))
+            cx.new(|_| WorkflowConditionNode::new(binding, instance, product_theme))
         },
     );
 }
@@ -750,7 +791,7 @@ pub fn plan_condition_case_action(
         })
         .collect();
     build_condition_case_command(
-        snapshot.revision(),
+        snapshot.version(),
         node_id,
         node,
         &ports,
@@ -762,6 +803,40 @@ pub fn plan_condition_case_action(
 #[must_use]
 pub fn workflow_condition_add_selector(node: NodeId) -> String {
     format!("jellyflow-workflow-condition-add-{}", node.0)
+}
+
+#[must_use]
+pub fn workflow_condition_body_selector(node: NodeId) -> String {
+    format!("jellyflow-workflow-condition-body-{}", node.0)
+}
+
+#[must_use]
+pub fn workflow_condition_node_selector(node: NodeId) -> String {
+    format!("jellyflow-workflow-condition-node-{}", node.0)
+}
+
+#[must_use]
+pub fn workflow_condition_case_label_selector(node: NodeId, port: PortId) -> String {
+    format!(
+        "jellyflow-workflow-condition-case-label-{}-{}",
+        node.0, port.0
+    )
+}
+
+#[must_use]
+pub fn workflow_condition_case_actions_selector(node: NodeId, port: PortId) -> String {
+    format!(
+        "jellyflow-workflow-condition-case-actions-{}-{}",
+        node.0, port.0
+    )
+}
+
+#[must_use]
+pub fn workflow_condition_else_label_selector(node: NodeId, port: PortId) -> String {
+    format!(
+        "jellyflow-workflow-condition-else-label-{}-{}",
+        node.0, port.0
+    )
 }
 
 #[must_use]
@@ -803,7 +878,7 @@ fn workflow_condition_add_id(node: NodeId) -> String {
 }
 
 fn build_condition_case_command(
-    revision: GraphRevision,
+    version: GraphVersion,
     node_id: NodeId,
     node: &Node,
     ports: &BTreeMap<PortId, Port>,
@@ -889,7 +964,7 @@ fn build_condition_case_command(
     topology_ports.push(TopologyPort::new(else_branch.port_id, else_port));
     let next_data = replace_condition_cases(node_id, &node.data, &cases)?;
     Ok(GraphCommand::topology(
-        revision,
+        version,
         TopologyEdit::new()
             .set_node_data(node_id, next_data)
             .replace_node_ports(node_id, topology_ports, incident_edges),
@@ -935,6 +1010,7 @@ fn read_condition_authoring(
             handles.remove(&port.id()).map(|handle| WorkflowPort {
                 id: port.id(),
                 direction: port.facts().dir,
+                kind: port.facts().kind,
                 handle,
             })
         })
@@ -948,7 +1024,9 @@ fn read_condition_authoring(
         .to_owned();
     Ok(ConditionRenderData {
         instance: authoring.instance().clone(),
-        revision: authoring.revision(),
+        revision: authoring.version().revision(),
+        node: authoring.node().clone(),
+        ports,
         title,
         cases: case_rows,
         else_branch: Some((else_branch, else_handle)),
@@ -956,7 +1034,57 @@ fn read_condition_authoring(
     })
 }
 
-fn condition_action_satisfied(cases: &[WorkflowCase], action: &ConditionCaseAction) -> bool {
+fn retired_render_data(instance: NodeInstanceKey) -> ConditionRenderData {
+    ConditionRenderData {
+        instance,
+        revision: 0,
+        node: Node {
+            kind: jellyflow_core::NodeKindKey::new(WORKFLOW_CONDITION_KIND),
+            kind_version: 1,
+            pos: jellyflow_core::CanvasPoint { x: 0.0, y: 0.0 },
+            origin: None,
+            selectable: None,
+            draggable: None,
+            connectable: None,
+            deletable: None,
+            parent: None,
+            extent: None,
+            expand_parent: None,
+            size: None,
+            hidden: false,
+            collapsed: false,
+            ports: Vec::new(),
+            data: condition_data("Retired condition", &[]),
+        },
+        ports: BTreeMap::new(),
+        title: "Retired condition".to_owned(),
+        cases: Vec::new(),
+        else_branch: None,
+        inputs: Vec::new(),
+    }
+}
+
+fn condition_action_satisfied(
+    node_id: NodeId,
+    node: &Node,
+    ports: &BTreeMap<PortId, Port>,
+    action: &ConditionCaseAction,
+) -> bool {
+    let Ok(cases) = parse_condition_cases(node_id, &node.data) else {
+        return false;
+    };
+    let Ok(else_branch) = parse_else_branch(node_id, &node.data, ports) else {
+        return false;
+    };
+    ensure_kind(node_id, node).is_ok()
+        && validate_condition_ports(node_id, node, &cases, &else_branch, ports).is_ok()
+        && condition_action_satisfied_from_cases(&cases, action)
+}
+
+fn condition_action_satisfied_from_cases(
+    cases: &[WorkflowCase],
+    action: &ConditionCaseAction,
+) -> bool {
     match action {
         ConditionCaseAction::Add(case) => cases.iter().any(|current| current == case),
         ConditionCaseAction::Reorder { case_id, index } => {
@@ -1074,6 +1202,22 @@ fn validate_condition_ports(
     else_branch: &WorkflowElseBranch,
     ports: &BTreeMap<PortId, Port>,
 ) -> Result<(), WorkflowNodeError> {
+    let mut input_ports = node.ports.iter().filter_map(|port_id| {
+        ports
+            .get(port_id)
+            .filter(|port| port.node == node_id && port.key.0 == CONDITION_INPUT_PORT_KEY)
+            .map(|port| (*port_id, port))
+    });
+    let Some((input_port_id, input_port)) = input_ports.next() else {
+        return Err(WorkflowNodeError::InvalidConditionPortOrder { node: node_id });
+    };
+    if input_ports.next().is_some()
+        || input_port.dir != PortDirection::In
+        || input_port.kind != PortKind::Exec
+        || input_port.capacity != PortCapacity::Single
+    {
+        return Err(WorkflowNodeError::InvalidConditionPortOrder { node: node_id });
+    }
     for case in cases {
         let port = ports
             .get(&case.port_id)
@@ -1087,6 +1231,8 @@ fn validate_condition_ports(
             || port.kind != PortKind::Exec
             || port.capacity != PortCapacity::Multi
             || port.key.0 != case_key(case.id())
+            || port.data.get("case_id").and_then(serde_json::Value::as_str) != Some(case.id())
+            || port.data.get("label").and_then(serde_json::Value::as_str) != Some(case.label())
         {
             return Err(WorkflowNodeError::InvalidCasePort {
                 node: node_id,
@@ -1110,22 +1256,16 @@ fn validate_condition_ports(
             port: else_branch.port_id,
         });
     }
-    let actual_outputs = node
-        .ports
-        .iter()
-        .filter(|port_id| {
-            ports
-                .get(port_id)
-                .is_some_and(|port| port.dir == PortDirection::Out && port.kind == PortKind::Exec)
-        })
-        .copied()
-        .collect::<Vec<_>>();
-    let expected_outputs = cases
-        .iter()
-        .map(WorkflowCase::port_id)
+    let expected_ports = std::iter::once(input_port_id)
+        .chain(cases.iter().map(WorkflowCase::port_id))
         .chain(std::iter::once(else_branch.port_id))
         .collect::<Vec<_>>();
-    if actual_outputs != expected_outputs {
+    if node.ports != expected_ports
+        || ports.len() != expected_ports.len()
+        || expected_ports
+            .iter()
+            .any(|port_id| !ports.contains_key(port_id))
+    {
         return Err(WorkflowNodeError::InvalidConditionPortOrder { node: node_id });
     }
     Ok(())
@@ -1213,7 +1353,7 @@ fn case_key(case_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jellyflow_runtime::GraphRuntime;
+    use jellyflow_runtime::graph::GraphRuntime;
 
     #[test]
     fn legacy_branch_schema_is_rejected_instead_of_silently_migrated() {
@@ -1237,11 +1377,74 @@ mod tests {
         let case =
             WorkflowCase::new("case-stable", "Stable", PortId::from_u128(0xd1fa_ff01)).unwrap();
         let cases = vec![case.clone()];
-        assert!(condition_action_satisfied(
+        assert!(condition_action_satisfied_from_cases(
             &cases,
             &ConditionCaseAction::Add(case)
         ));
         assert!(cases.iter().all(|case| case.id() != "else"));
+    }
+
+    #[test]
+    fn satisfied_action_requires_complete_ordered_authoritative_ports() {
+        let runtime = GraphRuntime::builder(crate::nodes::native_node_catalog().unwrap())
+            .build(super::super::workflow_demo_graph().unwrap())
+            .unwrap();
+        let snapshot = runtime.snapshot().unwrap();
+        let node_id = workflow_condition_node_id();
+        let node = snapshot.graph().node(&node_id).unwrap().clone();
+        let ports = node
+            .ports
+            .iter()
+            .map(|port_id| (*port_id, snapshot.graph().port(port_id).unwrap().clone()))
+            .collect::<BTreeMap<_, _>>();
+        let case = parse_condition_cases(node_id, &node.data).unwrap()[0].clone();
+        let action = ConditionCaseAction::Add(case.clone());
+        assert!(condition_action_satisfied(node_id, &node, &ports, &action));
+
+        let mut missing = ports.clone();
+        missing.remove(&case.port_id());
+        assert!(!condition_action_satisfied(
+            node_id, &node, &missing, &action
+        ));
+
+        let mut wrong_owner = ports.clone();
+        wrong_owner.get_mut(&case.port_id()).unwrap().node = NodeId::from_u128(0xdead);
+        assert!(!condition_action_satisfied(
+            node_id,
+            &node,
+            &wrong_owner,
+            &action
+        ));
+
+        let mut wrong_direction = ports.clone();
+        wrong_direction.get_mut(&case.port_id()).unwrap().dir = PortDirection::In;
+        assert!(!condition_action_satisfied(
+            node_id,
+            &node,
+            &wrong_direction,
+            &action
+        ));
+
+        let mut wrong_key = ports.clone();
+        wrong_key.get_mut(&case.port_id()).unwrap().key = PortKey::new("case.replacement");
+        assert!(!condition_action_satisfied(
+            node_id, &node, &wrong_key, &action
+        ));
+
+        let mut wrong_order = node.clone();
+        let case_index = wrong_order
+            .ports
+            .iter()
+            .position(|port_id| *port_id == case.port_id())
+            .unwrap();
+        let else_index = wrong_order.ports.len() - 1;
+        wrong_order.ports.swap(case_index, else_index);
+        assert!(!condition_action_satisfied(
+            node_id,
+            &wrong_order,
+            &ports,
+            &action
+        ));
     }
 
     #[test]

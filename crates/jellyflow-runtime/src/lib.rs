@@ -1,16 +1,22 @@
-//! Headless runtime, rules, schema, and profile pipeline for Jellyflow.
+//! Headless graph runtime, interaction protocol, schema, and persistence for Jellyflow.
 //!
-//! This crate owns the portable graph runtime and view-session protocol built on top of
-//! `jellyflow-core`. It must stay free of UI, renderer, platform, and windowing dependencies.
+//! Every public concept has one owning module. Applications compose [`graph`], [`commands`],
+//! [`view`], [`interaction`], [`geometry`], and [`viewport`] without depending on the private
+//! implementation tree or a UI framework.
 //!
-//! Public API shape:
-//! - crate-root re-exports are the canonical runtime entry points,
-//! - [`io`] owns persisted graph files and versioned view-session seeds,
-//! - [`runtime::graph_runtime`] owns graph revisions and commands,
-//! - [`runtime::view_session`] owns view-local geometry and frame feedback.
+//! Root-level type aliases are intentionally absent:
 //!
-//! Applications mutate an authoritative runtime through revisioned commands. Raw rule plans and
-//! their reversible operation journals are not public mutation surfaces:
+//! ```compile_fail
+//! use jellyflow_runtime::GraphRuntime;
+//! ```
+//!
+//! The implementation tree is not a second public entry point:
+//!
+//! ```compile_fail
+//! use jellyflow_runtime::runtime::graph_runtime::GraphRuntime;
+//! ```
+//!
+//! Raw rule plans and reversible operation journals are not public mutation surfaces:
 //!
 //! ```compile_fail
 //! use jellyflow_runtime::rules::ConnectPlan;
@@ -18,65 +24,16 @@
 
 #![deny(unsafe_code)]
 
+pub mod adapter;
+pub mod commands;
+pub mod geometry;
+pub mod graph;
 mod graph_kernel;
+pub mod interaction;
 pub mod io;
 pub mod profile;
 mod rules;
-pub mod runtime;
+mod runtime;
 pub mod schema;
-
-pub use profile::{ApplyPipelineError, GraphProfile, PortTypeImpactContext, PortTypeRevalidation};
-pub use rules::{Diagnostic, DiagnosticSeverity, DiagnosticTarget, EdgeEndpoint};
-pub use runtime::adapter_protocol::{
-    AdapterEnvironment, AdapterFrame, DEFAULT_FRAME_REQUIRED_NODE_BUDGET,
-    DEFAULT_FRAME_ROUTING_DEPENDENCY_BUDGET, DEFAULT_FRAME_VISIBLE_NODE_BUDGET,
-    DEFAULT_FRAME_VISIBLE_NODE_SCAN_LIMIT, FeedbackCollector, FeedbackCollectorError,
-    FeedbackOperationReceipt, FeedbackReceipt, FeedbackSubmissionError, FrameBoundsSource,
-    FrameFeedback, FrameMaterializationBudget, FrameMaterializationError,
-    FrameMaterializationOverflow, FrameNode, FramePort, FrameRequest, GeometrySnapshot,
-    HandlePosition, LayoutNodeStatus, LayoutPublicationReceipt, NodeInstanceKey, NodeLayout,
-    NodeLayoutBuilder, NodeLayoutBuilderError, NodeLayoutTarget, PortLayoutOutcome,
-    PortLayoutTarget, PublishedEdgeRoute, PublishedNodeGeometry, PublishedPortGeometry,
-    PublishedPortOutcome, RenderedPortLayout, RendererStamp, StaleFrameReason, ViewDelta,
-    ViewPoint, ViewRect, ViewSize, side_anchor,
-};
-pub use runtime::commands::{
-    ConnectionDecision, ConnectionEdit, ConnectionEvaluation, GraphCommand, GraphCommandConflict,
-    GraphCommandNoop, GraphCommandOutcome, GraphCommandReceipt, GraphCommandRejection,
-    IncidentEdgePolicy, NodeGeometryEdit, SymbolEdit, TopologyEdit, TopologyPort,
-};
-pub use runtime::graph_runtime::{
-    CreateFromWireCandidates, CreateFromWireQueryError, DocumentEpoch, FactChange, FactChangeMask,
-    GeometryImpact, GraphRevision, GraphRuntime, GraphRuntimeBuilder, GraphRuntimeError,
-    GraphRuntimeEvent, GraphRuntimePolicy, GraphRuntimeStats, GraphRuntimeSubscriptionToken,
-    GraphSnapshot, HistoryState, NodeIncarnation, PortConnectionDragFacts,
-    PortConnectionDragIntent, PortConnectionFacts, PortConnectionSummary,
-    PortIncidentConnectionFacts, RuntimeFactDelta, RuntimeFactKey, RuntimePatch, RuntimePatchKind,
-};
-pub use runtime::interaction::{
-    AlignmentGuide, AlignmentGuideAxis, AlignmentSnapConfig, AlignmentSnapQuery,
-    AlignmentSnapQueryOutcome, AlignmentSnapResult, AlignmentSnapWork, CanvasInteractionConfig,
-    CanvasInteractionDispatch, CanvasInteractionEffect, CanvasInteractionError,
-    CanvasInteractionPhase, CanvasInteractionPresentation, CanvasInteractionQuery,
-    CanvasInteractionSession, CanvasInteractionUpdate, CanvasPressFallback, CanvasPressTarget,
-    CommandSettlement, ConnectionGestureIntent, ConnectionInteractionStart, ConnectionPresentation,
-    ConnectionProbe, ConnectionProbeTarget, ConnectionSearchRequest, ConnectionSearchSelection,
-    ConnectionSearchStatus, ConnectionTopology, EdgeDeletionIntent, FreshGraphMutation,
-    FreshGraphMutationBindError, InteractionDamage, InteractionGeneration, InteractionOwner,
-    InteractionPosition, InteractionQueryId, InteractionTerminalReason, InteractionTickDemand,
-    InteractionTicketId, NodeDragPresentation, NodeDragStart, RelativeNodeMoveIntent,
-    SelectionBaseline, SelectionMode, SelectionMutation, ViewportMutation, fit_viewport,
-};
-pub use runtime::middleware::{GraphRuntimeMiddleware, GraphRuntimeMiddlewareSnapshot};
-pub use runtime::view_session::{
-    AttachViewError, ConnectionProbeCursor, ConnectionProbeCursorStaleReason, ConnectionProbeQuery,
-    ConnectionProbeQueryError, ConnectionProbeQueryOutcome, ConnectionProbeWork, EdgePick,
-    EdgePickCursor, EdgePickCursorStaleReason, EdgePickGeometryFailure, EdgePickQuery,
-    EdgePickQueryError, EdgePickQueryOutcome, EdgePickWork, NodeBindingEvent, NodeBindingKey,
-    RouteGeometryRevision, ViewCloseOutcome, ViewCloseReason, ViewCloseReceipt, ViewCloseRequest,
-    ViewCreateFromWireQueryError, ViewGeneration, ViewId, ViewSession, ViewSessionError,
-    ViewSessionEvent, ViewSessionOptions, ViewSessionStats, ViewSubscriptionToken, VisibleRoute,
-    VisibleRouteCursor, VisibleRouteCursorStaleReason, VisibleRouteGeometryOverflow,
-    VisibleRouteQuery, VisibleRouteQueryError, VisibleRouteQueryOutcome, VisibleRouteQueryRevision,
-    VisibleRouteQueryWork, VisibleRoutes, WeakViewSession,
-};
+pub mod view;
+pub mod viewport;

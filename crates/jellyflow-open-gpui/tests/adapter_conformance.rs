@@ -7,13 +7,16 @@ use jellyflow_core::{
     Port, PortCapacity, PortDirection, PortId, PortKey, PortKind,
 };
 use jellyflow_open_gpui::authoring::{
-    OpenGpuiNodeAuthoring, OpenGpuiNodeBinding, OpenGpuiPortSide,
+    OpenGpuiCommandTicketResult, OpenGpuiNodeAuthoring, OpenGpuiNodeBinding, OpenGpuiPortSide,
 };
-use jellyflow_open_gpui::{OpenGpuiCommandTicketResult, OpenGpuiNodeRegistry, OpenGpuiSceneHost};
+use jellyflow_open_gpui::host::OpenGpuiSceneHost;
+use jellyflow_open_gpui::registry::OpenGpuiNodeRegistry;
 use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec};
 use jellyflow_runtime::{
-    AdapterEnvironment, GraphCommand, GraphRuntime, IncidentEdgePolicy, PublishedPortOutcome,
-    TopologyEdit, TopologyPort, ViewSessionEvent, ViewSessionOptions, WeakViewSession,
+    commands::GraphCommand, commands::IncidentEdgePolicy, commands::TopologyEdit,
+    commands::TopologyPort, graph::GraphRuntime, view::AdapterEnvironment,
+    view::PublishedPortOutcome, view::ViewSessionEvent, view::ViewSessionOptions,
+    view::WeakViewSession,
 };
 use open_gpui::{
     AppContext, Context, Entity, InteractiveElement, ParentElement, Render, Styled, Window, div, px,
@@ -396,7 +399,7 @@ fn native_vertical_tracer_runs_commands_and_layout_through_one_real_host_frame(
             host.set_adapter_environment(AdapterEnvironment::new(2, 3, 5, 7), cx)
                 .expect("environment advances")
         );
-        geometry_is_withdrawn(&host.view_handle(), ids.node)
+        geometry_is_withdrawn(&host_view_handle, ids.node)
     });
     assert!(environment_withdrew_geometry);
     draw(cx);
@@ -427,7 +430,7 @@ fn native_vertical_tracer_runs_commands_and_layout_through_one_real_host_frame(
 
 fn next_topology_command(authoring: &OpenGpuiNodeAuthoring, ids: TracerIds) -> GraphCommand {
     if authoring.port(ids.dynamic_port).is_some() {
-        return GraphCommand::undo(authoring.revision());
+        return GraphCommand::undo(authoring.version());
     }
     let base = authoring
         .port(ids.base_port)
@@ -435,7 +438,7 @@ fn next_topology_command(authoring: &OpenGpuiNodeAuthoring, ids: TracerIds) -> G
         .facts()
         .clone();
     GraphCommand::topology(
-        authoring.revision(),
+        authoring.version(),
         TopologyEdit::new().replace_node_ports(
             ids.node,
             [
@@ -521,7 +524,7 @@ fn geometry_is_withdrawn(view: &WeakViewSession, node: NodeId) -> bool {
         .is_none_or(|geometry| !geometry.is_fresh() && geometry.ports().is_empty())
 }
 
-fn assert_other_view_isolated(view: &jellyflow_runtime::ViewSession) {
+fn assert_other_view_isolated(view: &jellyflow_runtime::view::ViewSession) {
     assert!(
         view.geometry_snapshot()
             .expect("other view geometry")

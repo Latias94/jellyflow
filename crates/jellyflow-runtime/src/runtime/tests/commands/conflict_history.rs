@@ -6,10 +6,11 @@ fn stale_command_returns_current_snapshot_and_zero_side_effects() {
     let runtime = GraphRuntime::builder(Default::default())
         .build(graph)
         .unwrap();
+    let stale_version = runtime.snapshot().unwrap().version();
 
     runtime
         .execute(GraphCommand::set_node_data(
-            0,
+            stale_version,
             nodes[0],
             serde_json::json!({ "value": 1 }),
         ))
@@ -21,7 +22,7 @@ fn stale_command_returns_current_snapshot_and_zero_side_effects() {
 
     let outcome = runtime
         .execute(GraphCommand::set_node_data(
-            0,
+            stale_version,
             nodes[0],
             serde_json::json!({ "value": 2 }),
         ))
@@ -84,9 +85,10 @@ fn stale_topology_and_connection_conflicts_include_current_dependencies() {
     let runtime = GraphRuntime::builder(Default::default())
         .build(builder.build().expect("valid bound graph"))
         .unwrap();
+    let stale_version = runtime.snapshot().unwrap().version();
     runtime
         .execute(GraphCommand::set_node_data(
-            0,
+            stale_version,
             ids.target,
             serde_json::json!({ "winner": true }),
         ))
@@ -111,7 +113,7 @@ fn stale_topology_and_connection_conflicts_include_current_dependencies() {
     claimed_port.node = ids.alternate_source;
     let replace_conflict = runtime
         .execute(GraphCommand::topology(
-            0,
+            stale_version,
             TopologyEdit::new().replace_node_ports(
                 ids.alternate_source,
                 [TopologyPort::new(ids.source_port, claimed_port)],
@@ -134,15 +136,15 @@ fn stale_topology_and_connection_conflicts_include_current_dependencies() {
 
     for command in [
         GraphCommand::connect(
-            0,
+            stale_version,
             ids.edge,
             ids.source_port,
             ids.target_port,
             NodeGraphConnectionMode::Strict,
         ),
-        GraphCommand::disconnect(0, ids.edge),
+        GraphCommand::disconnect(stale_version, ids.edge),
         GraphCommand::reconnect(
-            0,
+            stale_version,
             ids.edge,
             EdgeEndpoint::From,
             ids.alternate_source_port,
@@ -178,9 +180,10 @@ fn stale_history_command_conflicts_without_consuming_history() {
     let runtime = GraphRuntime::builder(Default::default())
         .build(graph)
         .unwrap();
+    let stale_version = runtime.snapshot().unwrap().version();
     runtime
         .execute(GraphCommand::set_node_data(
-            0,
+            stale_version,
             nodes[0],
             serde_json::json!({ "value": 1 }),
         ))
@@ -196,7 +199,7 @@ fn stale_history_command_conflicts_without_consuming_history() {
         .subscribe(move |_| callback_count.set(callback_count.get() + 1))
         .unwrap();
 
-    let outcome = runtime.execute(GraphCommand::undo(0)).unwrap();
+    let outcome = runtime.execute(GraphCommand::undo(stale_version)).unwrap();
     let conflict = outcome.conflict().expect("stale undo conflicts");
 
     assert_eq!(conflict.expected_revision(), 0);
@@ -222,7 +225,10 @@ fn empty_history_commands_are_zero_side_effect_noops() {
         .subscribe(move |_| callback_count.set(callback_count.get() + 1))
         .unwrap();
 
-    for command in [GraphCommand::undo(0), GraphCommand::redo(0)] {
+    for command in [
+        GraphCommand::undo(before.version()),
+        GraphCommand::redo(before.version()),
+    ] {
         let outcome = runtime.execute(command).unwrap();
         let GraphCommandOutcome::Noop(noop) = outcome else {
             panic!("empty history command must be a no-op");
@@ -244,11 +250,12 @@ fn invalid_command_geometry_is_structurally_rejected_without_side_effects() {
     let runtime = GraphRuntime::builder(Default::default())
         .build(graph)
         .unwrap();
+    let version = runtime.snapshot().unwrap().version();
 
     assert_rejected_without_side_effects(
         &runtime,
         GraphCommand::set_node_position(
-            0,
+            version,
             nodes[0],
             CanvasPoint {
                 x: f32::NAN,
@@ -260,7 +267,7 @@ fn invalid_command_geometry_is_structurally_rejected_without_side_effects() {
     assert_rejected_without_side_effects(
         &runtime,
         GraphCommand::set_node_size(
-            0,
+            version,
             nodes[0],
             Some(CanvasSize {
                 width: 0.0,
@@ -272,7 +279,7 @@ fn invalid_command_geometry_is_structurally_rejected_without_side_effects() {
     assert_rejected_without_side_effects(
         &runtime,
         GraphCommand::set_node_size(
-            0,
+            version,
             nodes[0],
             Some(CanvasSize {
                 width: f32::INFINITY,
@@ -287,7 +294,7 @@ fn invalid_command_geometry_is_structurally_rejected_without_side_effects() {
     assert_rejected_without_side_effects(
         &runtime,
         GraphCommand::topology(
-            0,
+            version,
             TopologyEdit::new().add_node(NodeId::from_u128(99), invalid_node, []),
         ),
         "tx.non_finite",
@@ -302,7 +309,7 @@ fn failed_history_install_preserves_graph_history_stats_and_notifications() {
         .unwrap();
     runtime
         .execute(GraphCommand::topology(
-            0,
+            runtime.snapshot().unwrap().version(),
             TopologyEdit::new().remove_node(nodes[0], IncidentEdgePolicy::Reject),
         ))
         .unwrap()
@@ -320,7 +327,7 @@ fn failed_history_install_preserves_graph_history_stats_and_notifications() {
         .unwrap();
 
     let error = runtime
-        .execute(GraphCommand::undo(before.revision()))
+        .execute(GraphCommand::undo(before.version()))
         .expect_err("incarnation allocation fails before history installation");
 
     assert!(matches!(error, GraphRuntimeError::IdentityExhausted));

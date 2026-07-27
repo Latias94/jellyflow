@@ -1,37 +1,37 @@
 use std::collections::VecDeque;
 
 use egui::{Context, Event, Id, Key, PointerButton, Pos2, Rect, Response};
-use jellyflow_core::{EdgeId, NodeGraphConnectionMode, NodeId, PortId};
-use jellyflow_runtime::{
+use jellyflow_core::{EdgeId, NodeGraphConnectionMode, PortId};
+use jellyflow_runtime::commands::GraphCommand;
+use jellyflow_runtime::geometry::{HandlePosition, ViewPoint, ViewSize};
+use jellyflow_runtime::graph::{NodeLifetimeKey, PortInstanceKey};
+use jellyflow_runtime::interaction::{
     CanvasInteractionConfig, CanvasInteractionEffect, CanvasInteractionError,
     CanvasInteractionPhase, CanvasInteractionPresentation, CanvasInteractionQuery,
     CanvasInteractionSession, CanvasInteractionUpdate, CanvasPressTarget, CommandSettlement,
-    ConnectionInteractionStart, ConnectionProbeQueryError, ConnectionSearchSelection,
-    EdgePickQueryError, InteractionDamage, InteractionGeneration, InteractionOwner,
-    InteractionPosition, InteractionTickDemand, InteractionTicketId, SelectionMode, ViewPoint,
-    ViewSession, ViewSessionError, ViewSize,
+    ConnectionInteractionStart, ConnectionSearchRequest, ConnectionSearchSelection,
+    InteractionDamage, InteractionGraphSubmission, InteractionGraphSubmissionBindError,
+    InteractionOwner, InteractionTickDemand, InteractionTicketId, SelectionMode,
 };
+use jellyflow_runtime::schema::NodeCreation;
+use jellyflow_runtime::view::{ViewSession, ViewSessionError, WeakViewSession};
+use jellyflow_runtime::viewport::ViewportPointerSample;
 
-/// Renderer-neutral query work resolved by the egui adapter during one transition.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EguiInteractionQueryKind {
-    AlignmentSnap,
-    ConnectionProbe,
-    EdgePick,
-}
+const MAX_RENDERER_QUERY_PAGES_PER_FRAME: usize = 1;
 
 /// Ordered semantic work emitted while translating egui input.
 ///
-/// Selection and viewport effects are applied to the bound [`ViewSession`] before queries run.
+/// View-owned selection and viewport changes are committed by the headless interaction session.
 /// Search and graph-submission effects remain explicit so the application can connect them to its
 /// native search UI and ordered command transport.
 #[derive(Debug, Default)]
 pub struct EguiInteractionOutput {
     effects: Vec<CanvasInteractionEffect>,
-    resolved_queries: Vec<EguiInteractionQueryKind>,
+    resolved_query_count: usize,
     damage: InteractionDamage,
     tick_demand: InteractionTickDemand,
     released_native_ownership: bool,
+    renderer_work_pending: bool,
 }
 
 impl EguiInteractionOutput {
@@ -47,8 +47,9 @@ impl EguiInteractionOutput {
         self.effects
     }
 
-    pub fn resolved_queries(&self) -> &[EguiInteractionQueryKind] {
-        &self.resolved_queries
+    /// Returns how many opaque query pages the adapter handed back to the bound session.
+    pub fn resolved_query_count(&self) -> usize {
+        self.resolved_query_count
     }
 
     pub fn damage(&self) -> InteractionDamage {
@@ -63,22 +64,29 @@ impl EguiInteractionOutput {
         self.released_native_ownership
     }
 
+    /// Returns whether a bounded renderer query has continuation work for a later frame.
+    pub fn renderer_work_pending(&self) -> bool {
+        self.renderer_work_pending
+    }
+
     pub fn has_work(&self) -> bool {
         !self.effects.is_empty()
-            || !self.resolved_queries.is_empty()
+            || self.resolved_query_count != 0
             || self.damage != InteractionDamage::default()
             || self.tick_demand != InteractionTickDemand::None
             || self.released_native_ownership
+            || self.renderer_work_pending
     }
 
     pub fn merge(&mut self, other: Self) {
         self.effects.extend(other.effects);
-        self.resolved_queries.extend(other.resolved_queries);
+        self.resolved_query_count += other.resolved_query_count;
         merge_damage(&mut self.damage, other.damage);
         if other.tick_demand == InteractionTickDemand::WhileActive {
             self.tick_demand = InteractionTickDemand::WhileActive;
         }
         self.released_native_ownership |= other.released_native_ownership;
+        self.renderer_work_pending |= other.renderer_work_pending;
     }
 }
 
@@ -89,17 +97,13 @@ pub enum EguiInteractionError {
     #[error(transparent)]
     View(#[from] ViewSessionError),
     #[error(transparent)]
-    ConnectionProbe(#[from] ConnectionProbeQueryError),
-    #[error(transparent)]
-    EdgePick(#[from] EdgePickQueryError),
+    Submission(#[from] InteractionGraphSubmissionBindError),
     #[error("an egui interaction frame is already open")]
     FrameAlreadyOpen,
     #[error("no egui interaction frame is open")]
     FrameNotOpen,
     #[error("the egui scene rectangle is invalid")]
     InvalidSceneRect,
-    #[error("the supplied view does not own this egui interaction session")]
-    ViewMismatch,
 }
 
 #[derive(Debug)]
@@ -109,6 +113,8 @@ struct EguiInteractionFrame {
     primary_pressed: bool,
     primary_released: bool,
     primary_down: bool,
+    selection_delete_pressed: bool,
+    selection_delete_handled: bool,
     escape_pressed: bool,
     pointer_gone: bool,
     elapsed_seconds: f32,
@@ -126,11 +132,14 @@ struct EguiInteractionFrame {
 /// cancels the session deterministically.
 #[derive(Debug)]
 pub struct EguiCanvasInteraction {
+    view: WeakViewSession,
     session: CanvasInteractionSession,
     tracked_response: Option<Id>,
     tracked_owner: Option<InteractionOwner>,
     native_capture: bool,
-    last_position: Option<InteractionPosition>,
+    last_position: Option<ViewportPointerSample>,
+    pending_queries: VecDeque<CanvasInteractionQuery>,
+    renderer_query_pages_remaining: usize,
     frame: Option<EguiInteractionFrame>,
 }
 
@@ -139,13 +148,16 @@ impl EguiCanvasInteraction {
         view: &ViewSession,
         config: CanvasInteractionConfig,
     ) -> Result<Self, EguiInteractionError> {
-        let session = CanvasInteractionSession::new(view.id(), view.generation()?, config)?;
+        let session = CanvasInteractionSession::attach(view, config)?;
         Ok(Self {
+            view: view.downgrade(),
             session,
             tracked_response: None,
             tracked_owner: None,
             native_capture: false,
             last_position: None,
+            pending_queries: VecDeque::new(),
+            renderer_query_pages_remaining: MAX_RENDERER_QUERY_PAGES_PER_FRAME,
             frame: None,
         })
     }
@@ -165,12 +177,11 @@ impl EguiCanvasInteraction {
     /// Resolves an explicit node drag handle from authoritative graph and selection facts.
     pub fn node_drag_target(
         &self,
-        view: &ViewSession,
-        node: NodeId,
+        node: NodeLifetimeKey,
         selection_mode: SelectionMode,
     ) -> Result<Option<CanvasPressTarget>, EguiInteractionError> {
-        self.ensure_view(view)?;
-        Ok(view
+        Ok(self
+            .view
             .node_drag_start(node, selection_mode)?
             .map(CanvasPressTarget::NodeDrag))
     }
@@ -178,43 +189,70 @@ impl EguiCanvasInteraction {
     /// Resolves an explicit port handle from authoritative policy and published geometry.
     pub fn connection_target(
         &self,
-        view: &ViewSession,
-        port: PortId,
+        port: PortInstanceKey,
         new_edge: EdgeId,
         mode: NodeGraphConnectionMode,
         allow_create_from_wire: bool,
     ) -> Result<Option<CanvasPressTarget>, EguiInteractionError> {
-        self.ensure_view(view)?;
-        let Some(drag_intent) = view.port_connection_drag_intent(port)? else {
+        let drag_intent = self.view.port_connection_drag_intent(port)?;
+        let binding =
+            ConnectionInteractionStart::binding_from_port_drag(drag_intent, new_edge, mode);
+        let Some(binding) = binding else {
             return Ok(None);
         };
-        let Some(intent) =
-            ConnectionInteractionStart::intent_from_port_drag(drag_intent, new_edge, mode)
-        else {
+        let geometry = self.view.geometry_snapshot()?;
+        let Some(fixed) = geometry.port(binding.fixed_port_instance().port()) else {
             return Ok(None);
         };
-        let geometry = view.geometry_snapshot()?;
-        let Some(fixed) = geometry.port(intent.fixed_port()) else {
-            return Ok(None);
+        let moving_outward = if let Some(detached) = binding.detached_port_instance() {
+            let Some(moving) = geometry.port(detached.port()) else {
+                return Ok(None);
+            };
+            moving.outward()
+        } else {
+            opposite_handle_position(fixed.outward())
         };
-        Ok(ConnectionInteractionStart::from_port_drag_intent(
-            drag_intent,
-            new_edge,
-            mode,
-            fixed.route_anchor(),
-            fixed.outward(),
-            allow_create_from_wire,
-        )
-        .map(CanvasPressTarget::Connection))
+        Ok(self
+            .view
+            .connection_start_from_port_drag_intent(
+                drag_intent,
+                new_edge,
+                mode,
+                fixed.route_anchor(),
+                fixed.outward(),
+                moving_outward,
+                allow_create_from_wire,
+            )?
+            .map(CanvasPressTarget::Connection))
+    }
+
+    /// Activates one real port through the shared non-drag connection authority.
+    ///
+    /// The first activation arms a source and the next activation evaluates a target. The supplied
+    /// port instance must come from the current adapter frame; source/target state remains
+    /// exclusively owned by the renderer-neutral interaction session.
+    pub fn activate_connection_port(
+        &mut self,
+        ctx: &Context,
+        port: PortInstanceKey,
+        prospective_edge: EdgeId,
+        mode: NodeGraphConnectionMode,
+    ) -> Result<EguiInteractionOutput, EguiInteractionError> {
+        let port = self.view.keyboard_connection_port(port)?;
+        let mut output = self.drain_frame_output();
+        let update = self
+            .session
+            .activate_connection_port(port, prospective_edge, mode)?;
+        self.process_update(update, &mut output)?;
+        self.sync_tracked_response(ctx, &mut output);
+        Ok(finish_output(ctx, output))
     }
 
     pub fn begin_frame(
         &mut self,
-        view: &ViewSession,
         ctx: &Context,
         scene_rect: Rect,
     ) -> Result<(), EguiInteractionError> {
-        self.ensure_view(view)?;
         if self.frame.is_some() {
             return Err(EguiInteractionError::FrameAlreadyOpen);
         }
@@ -225,11 +263,13 @@ impl EguiCanvasInteraction {
         {
             return Err(EguiInteractionError::InvalidSceneRect);
         }
+        self.renderer_query_pages_remaining = MAX_RENDERER_QUERY_PAGES_PER_FRAME;
         let (
             pointer_pos,
             primary_pressed,
             primary_released,
             primary_down,
+            selection_delete_pressed,
             escape_pressed,
             pointer_gone,
             elapsed_seconds,
@@ -239,6 +279,7 @@ impl EguiCanvasInteraction {
                 input.pointer.button_pressed(PointerButton::Primary),
                 input.pointer.button_released(PointerButton::Primary),
                 input.pointer.button_down(PointerButton::Primary),
+                input.key_pressed(Key::Delete) || input.key_pressed(Key::Backspace),
                 input.key_pressed(Key::Escape),
                 input
                     .events
@@ -253,6 +294,8 @@ impl EguiCanvasInteraction {
             primary_pressed,
             primary_released,
             primary_down,
+            selection_delete_pressed,
+            selection_delete_handled: false,
             escape_pressed,
             pointer_gone,
             elapsed_seconds,
@@ -264,13 +307,18 @@ impl EguiCanvasInteraction {
         Ok(())
     }
 
+    /// Maps one explicit graph-interactive response to semantic pointer and keyboard input.
+    ///
+    /// A focused non-native response owns Delete and Backspace while the semantic session is idle.
+    /// Text-edit focus and [`CanvasPressTarget::NativeControl`] keep those keys inside the widget.
     pub fn handle_response(
         &mut self,
-        view: &ViewSession,
         response: &Response,
         target: CanvasPressTarget,
     ) -> Result<(), EguiInteractionError> {
-        self.ensure_view(view)?;
+        if self.handle_selection_delete_shortcut(response, &target)? {
+            return Ok(());
+        }
         let frame = self
             .frame
             .as_mut()
@@ -292,12 +340,12 @@ impl EguiCanvasInteraction {
             .interact_pointer_pos()
             .or(frame.pointer_pos)
             .ok_or(CanvasInteractionError::InvalidPosition)?;
-        let position = interaction_position(view, scene_rect, pointer)?;
+        let position = interaction_position(&self.view, scene_rect, pointer)?;
         let owner = interaction_owner(&target);
         let native_control = matches!(target, CanvasPressTarget::NativeControl);
         let update = self.session.press(target, position)?;
         let mut output = EguiInteractionOutput::default();
-        self.process_update(view, update, &mut output)?;
+        self.process_update(update, &mut output)?;
 
         if !native_control && self.session.presentation().phase() != CanvasInteractionPhase::Idle {
             response.ctx.set_dragged_id(response.id);
@@ -321,22 +369,53 @@ impl EguiCanvasInteraction {
         Ok(())
     }
 
+    fn handle_selection_delete_shortcut(
+        &mut self,
+        response: &Response,
+        target: &CanvasPressTarget,
+    ) -> Result<bool, EguiInteractionError> {
+        let should_delete = {
+            let frame = self
+                .frame
+                .as_ref()
+                .ok_or(EguiInteractionError::FrameNotOpen)?;
+            frame.selection_delete_pressed
+                && !frame.selection_delete_handled
+                && self.session.presentation().phase() == CanvasInteractionPhase::Idle
+                && !matches!(target, CanvasPressTarget::NativeControl)
+                && response.has_focus()
+                && !response.ctx.text_edit_focused()
+        };
+        if !should_delete {
+            return Ok(false);
+        }
+
+        self.frame
+            .as_mut()
+            .expect("the interaction frame remains open while handling keyboard input")
+            .selection_delete_handled = true;
+        let update = self.session.delete_selection()?;
+        let mut output = EguiInteractionOutput::default();
+        self.process_update(update, &mut output)?;
+        self.frame
+            .as_mut()
+            .expect("the interaction frame remains open while merging keyboard output")
+            .output
+            .merge(output);
+        Ok(true)
+    }
+
     pub fn end_frame(
         &mut self,
-        view: &ViewSession,
         ctx: &Context,
     ) -> Result<EguiInteractionOutput, EguiInteractionError> {
-        if view.id() != self.session.view() {
-            return Err(EguiInteractionError::ViewMismatch);
-        }
-        if view.close_reason().is_none() {
-            self.ensure_view(view)?;
-        }
+        let view_closed = !self.view.is_open();
         let mut frame = self
             .frame
             .take()
             .ok_or(EguiInteractionError::FrameNotOpen)?;
-        if view.close_reason().is_some() {
+        if view_closed {
+            self.pending_queries.clear();
             let update = self.session.close();
             collect_terminal_update(update, &mut frame.output);
             self.release_native_ownership(ctx, &mut frame.output);
@@ -345,15 +424,17 @@ impl EguiCanvasInteraction {
         }
 
         if frame.escape_pressed || frame.pointer_gone {
-            let update = self.session.cancel();
-            self.process_update(view, update, &mut frame.output)?;
+            self.pending_queries.clear();
+            let update = self.session.cancel()?;
+            self.process_update(update, &mut frame.output)?;
             self.release_native_ownership(ctx, &mut frame.output);
         } else if self.tracked_response.is_some() && !frame.tracked_response_seen {
             let update = match self.tracked_owner {
                 Some(owner) => self.session.owner_retired(owner),
-                None => self.session.cancel(),
+                None => self.session.cancel()?,
             };
-            self.process_update(view, update, &mut frame.output)?;
+            self.process_update(update, &mut frame.output)?;
+            self.discard_pending_work_if_terminal();
             self.release_native_ownership(ctx, &mut frame.output);
         } else if self.native_capture
             && frame.primary_down
@@ -362,56 +443,56 @@ impl EguiCanvasInteraction {
                     .dragged_id()
                     .is_some_and(|id| Some(id) != self.tracked_response))
         {
-            let update = self.session.cancel();
-            self.process_update(view, update, &mut frame.output)?;
+            self.pending_queries.clear();
+            let update = self.session.cancel()?;
+            self.process_update(update, &mut frame.output)?;
             self.release_native_ownership(ctx, &mut frame.output);
         } else if self.native_capture {
             let pointer = frame
                 .tracked_response_pointer
                 .or(frame.pointer_pos)
-                .and_then(|pointer| interaction_position(view, frame.scene_rect, pointer).ok())
+                .and_then(|pointer| {
+                    interaction_position(&self.view, frame.scene_rect, pointer).ok()
+                })
                 .or(self.last_position);
             if frame.primary_released {
                 let position = pointer.ok_or(CanvasInteractionError::InvalidPosition)?;
                 self.last_position = Some(position);
-                if self.session.presentation().phase() == CanvasInteractionPhase::Armed {
-                    let update = self.session.move_to(position)?;
-                    self.process_update(view, update, &mut frame.output)?;
-                }
                 let update = self.session.release(position)?;
-                self.process_update(view, update, &mut frame.output)?;
+                self.process_update(update, &mut frame.output)?;
+                self.discard_pending_work_if_terminal();
                 self.release_native_ownership(ctx, &mut frame.output);
             } else if frame.primary_down {
                 let position = pointer.ok_or(CanvasInteractionError::InvalidPosition)?;
-                self.last_position = Some(position);
-                let update = self.session.move_to(position)?;
-                self.process_update(view, update, &mut frame.output)?;
+                if self.last_position != Some(position) || !self.has_pending_renderer_query() {
+                    self.last_position = Some(position);
+                    let update = self.session.move_to(position)?;
+                    self.process_update(update, &mut frame.output)?;
+                }
                 let tick = self.session.tick(
                     frame.elapsed_seconds,
                     ViewSize::new(frame.scene_rect.width(), frame.scene_rect.height()),
-                    view.viewport_transform()?,
                 )?;
-                self.process_update(view, tick, &mut frame.output)?;
+                self.process_update(tick, &mut frame.output)?;
             } else {
-                let update = self.session.cancel();
-                self.process_update(view, update, &mut frame.output)?;
+                self.pending_queries.clear();
+                let update = self.session.cancel()?;
+                self.process_update(update, &mut frame.output)?;
                 self.release_native_ownership(ctx, &mut frame.output);
             }
         }
 
+        self.process_pending_work(&mut frame.output)?;
         self.sync_tracked_response(ctx, &mut frame.output);
         Ok(finish_output(ctx, frame.output))
     }
 
-    pub fn cancel(
-        &mut self,
-        view: &ViewSession,
-        ctx: &Context,
-    ) -> Result<EguiInteractionOutput, EguiInteractionError> {
-        self.ensure_view(view)?;
+    pub fn cancel(&mut self, ctx: &Context) -> Result<EguiInteractionOutput, EguiInteractionError> {
         let mut output = self.drain_frame_output();
-        let update = self.session.cancel();
-        self.process_update(view, update, &mut output)?;
+        self.pending_queries.clear();
+        let update = self.session.cancel()?;
+        self.process_update(update, &mut output)?;
+        self.discard_pending_work_if_terminal();
         self.release_native_ownership(ctx, &mut output);
         self.sync_tracked_response(ctx, &mut output);
         Ok(finish_output(ctx, output))
@@ -419,78 +500,94 @@ impl EguiCanvasInteraction {
 
     pub fn owner_retired(
         &mut self,
-        view: &ViewSession,
         ctx: &Context,
         owner: InteractionOwner,
     ) -> Result<EguiInteractionOutput, EguiInteractionError> {
-        self.ensure_view(view)?;
         let mut output = self.drain_frame_output();
         let update = self.session.owner_retired(owner);
-        self.process_update(view, update, &mut output)?;
+        self.process_update(update, &mut output)?;
+        self.discard_pending_work_if_terminal();
         self.sync_tracked_response(ctx, &mut output);
         Ok(finish_output(ctx, output))
     }
 
     pub fn settle(
         &mut self,
-        view: &ViewSession,
         ctx: &Context,
         ticket: InteractionTicketId,
         settlement: CommandSettlement,
     ) -> Result<EguiInteractionOutput, EguiInteractionError> {
-        self.ensure_view(view)?;
         let mut output = self.drain_frame_output();
         let update = self.session.settle(ticket, settlement)?;
-        self.process_update(view, update, &mut output)?;
+        self.process_update(update, &mut output)?;
+        self.discard_pending_work_if_terminal();
         self.sync_tracked_response(ctx, &mut output);
         Ok(finish_output(ctx, output))
     }
 
-    pub fn request_connection_commit_revalidation(
-        &mut self,
-        view: &ViewSession,
-        ctx: &Context,
-        ticket: InteractionTicketId,
-    ) -> Result<EguiInteractionOutput, EguiInteractionError> {
-        self.ensure_view(view)?;
-        let mut output = self.drain_frame_output();
-        let update = self
-            .session
-            .request_connection_commit_revalidation(ticket)?;
-        self.process_update(view, update, &mut output)?;
-        Ok(finish_output(ctx, output))
+    /// Accepts one current graph submission into the application's command transport.
+    ///
+    /// A successful return is the transport-acceptance linearization point: cancellation,
+    /// closure, view retirement, or a successor ticket can revoke the submission before this
+    /// call, but not after it. The caller must execute or enqueue the returned command
+    /// immediately, then report its receipt through [`Self::settle`].
+    pub fn bind_submission(
+        &self,
+        submission: InteractionGraphSubmission,
+    ) -> Result<Option<GraphCommand>, EguiInteractionError> {
+        Ok(self.session.bind_submission(submission)?)
     }
 
     pub fn search_ready(
         &mut self,
-        view: &ViewSession,
         ctx: &Context,
-        generation: InteractionGeneration,
+        request: &ConnectionSearchRequest,
         result_count: usize,
     ) -> Result<EguiInteractionOutput, EguiInteractionError> {
-        self.ensure_view(view)?;
         let mut output = self.drain_frame_output();
-        let update = self.session.search_ready(generation, result_count)?;
-        self.process_update(view, update, &mut output)?;
+        let update = self.session.search_ready(request, result_count)?;
+        self.process_update(update, &mut output)?;
         Ok(finish_output(ctx, output))
+    }
+
+    /// Creates one sealed search selection through the bound headless interaction session.
+    pub fn create_search_selection(
+        &self,
+        request: &ConnectionSearchRequest,
+        target: PortId,
+        creation: NodeCreation,
+    ) -> Result<Option<ConnectionSearchSelection>, EguiInteractionError> {
+        Ok(self
+            .session
+            .create_search_selection(request, target, creation)?)
     }
 
     pub fn select_search_result(
         &mut self,
-        view: &ViewSession,
         ctx: &Context,
-        generation: InteractionGeneration,
         selection: ConnectionSearchSelection,
     ) -> Result<EguiInteractionOutput, EguiInteractionError> {
-        self.ensure_view(view)?;
         let mut output = self.drain_frame_output();
-        let update = self.session.select_search_result(generation, selection)?;
-        self.process_update(view, update, &mut output)?;
+        let update = self.session.select_search_result(selection)?;
+        self.process_update(update, &mut output)?;
+        Ok(finish_output(ctx, output))
+    }
+
+    /// Resumes one opaque graph submission after an application-owned command prefix settles.
+    pub fn resume_submission_after_prefix(
+        &mut self,
+        ctx: &Context,
+        submission: InteractionGraphSubmission,
+    ) -> Result<EguiInteractionOutput, EguiInteractionError> {
+        let mut output = self.drain_frame_output();
+        let update = self.session.resume_submission_after_prefix(submission)?;
+        self.process_update(update, &mut output)?;
         Ok(finish_output(ctx, output))
     }
 
     pub fn close(&mut self, ctx: &Context) -> EguiInteractionOutput {
         let mut output = self.drain_frame_output();
+        self.pending_queries.clear();
         collect_terminal_update(self.session.close(), &mut output);
         self.release_native_ownership(ctx, &mut output);
         self.clear_tracked_response();
@@ -499,89 +596,77 @@ impl EguiCanvasInteraction {
 
     fn process_update(
         &mut self,
-        view: &ViewSession,
         update: CanvasInteractionUpdate,
         output: &mut EguiInteractionOutput,
     ) -> Result<(), EguiInteractionError> {
-        let mut pending = VecDeque::from([update]);
-        while let Some(update) = pending.pop_front() {
-            let dispatch = update.into_dispatch();
-            merge_damage(&mut output.damage, dispatch.damage);
-            if dispatch.tick_demand == InteractionTickDemand::WhileActive {
-                output.tick_demand = InteractionTickDemand::WhileActive;
+        self.collect_update(update, output);
+        self.process_pending_work(output)
+    }
+
+    fn process_pending_work(
+        &mut self,
+        output: &mut EguiInteractionOutput,
+    ) -> Result<(), EguiInteractionError> {
+        while let Some(query) = self.pending_queries.pop_front() {
+            if self.renderer_query_pages_remaining == 0 {
+                self.pending_queries.push_front(query);
+                break;
             }
-            for effect in dispatch.pre_query_effects {
-                match effect {
-                    CanvasInteractionEffect::Selection(mutation) => {
-                        view.apply_selection_mutation(mutation)?;
-                    }
-                    CanvasInteractionEffect::Viewport(mutation) => {
-                        view.apply_viewport_mutation(mutation)?;
-                    }
-                    effect @ (CanvasInteractionEffect::Search(_)
-                    | CanvasInteractionEffect::SubmitGraph { .. }) => {
-                        output.effects.push(effect);
-                    }
+            self.renderer_query_pages_remaining -= 1;
+            match self.resolve_renderer_query(query, output) {
+                Ok(next) => self.collect_update(next, output),
+                Err(error) => {
+                    self.pending_queries.clear();
+                    let cancelled = self.session.cancel()?;
+                    self.collect_update(cancelled, output);
+                    return Err(error);
                 }
             }
-            for query in dispatch.queries {
-                let next = match query {
-                    CanvasInteractionQuery::AlignmentSnap { id, query, .. } => {
-                        output
-                            .resolved_queries
-                            .push(EguiInteractionQueryKind::AlignmentSnap);
-                        self.session
-                            .resolve_alignment_snap(id, view.alignment_snap(query)?)?
-                    }
-                    CanvasInteractionQuery::ConnectionProbe { id, query, .. } => {
-                        output
-                            .resolved_queries
-                            .push(EguiInteractionQueryKind::ConnectionProbe);
-                        match view.connection_probe(query) {
-                            Ok(outcome) => self.session.resolve_connection_probe(id, outcome)?,
-                            Err(ConnectionProbeQueryError::StaleCursor(reason))
-                                if reason.is_restartable() =>
-                            {
-                                self.session.restart_stale_query(id)?
-                            }
-                            Err(error) => {
-                                let cancelled = self.session.cancel();
-                                self.process_update(view, cancelled, output)?;
-                                return Err(error.into());
-                            }
-                        }
-                    }
-                    CanvasInteractionQuery::EdgePick { id, query } => {
-                        output
-                            .resolved_queries
-                            .push(EguiInteractionQueryKind::EdgePick);
-                        match view.edge_pick(query) {
-                            Ok(outcome) => self.session.resolve_edge_pick(id, outcome)?,
-                            Err(EdgePickQueryError::StaleCursor(reason))
-                                if reason.is_restartable() =>
-                            {
-                                self.session.restart_stale_query(id)?
-                            }
-                            Err(error) => {
-                                let cancelled = self.session.cancel();
-                                self.process_update(view, cancelled, output)?;
-                                return Err(error.into());
-                            }
-                        }
-                    }
-                };
-                pending.push_back(next);
-            }
         }
+        output.renderer_work_pending = !self.pending_queries.is_empty();
         Ok(())
     }
 
-    fn ensure_view(&self, view: &ViewSession) -> Result<(), EguiInteractionError> {
-        if view.id() != self.session.view() || view.generation()? != self.session.view_generation()
-        {
-            return Err(EguiInteractionError::ViewMismatch);
+    fn collect_update(
+        &mut self,
+        update: CanvasInteractionUpdate,
+        output: &mut EguiInteractionOutput,
+    ) {
+        let dispatch = update.into_dispatch();
+        merge_damage(&mut output.damage, dispatch.damage);
+        if dispatch.tick_demand == InteractionTickDemand::WhileActive {
+            output.tick_demand = InteractionTickDemand::WhileActive;
         }
-        Ok(())
+        output.effects.extend(dispatch.effects);
+        for query in dispatch.queries {
+            self.queue_renderer_query(query);
+        }
+    }
+
+    fn queue_renderer_query(&mut self, query: CanvasInteractionQuery) {
+        self.pending_queries.push_back(query);
+    }
+
+    fn has_pending_renderer_query(&self) -> bool {
+        !self.pending_queries.is_empty()
+    }
+
+    fn discard_pending_work_if_terminal(&mut self) {
+        if matches!(
+            self.session.presentation().phase(),
+            CanvasInteractionPhase::Idle | CanvasInteractionPhase::Closed
+        ) {
+            self.pending_queries.clear();
+        }
+    }
+
+    fn resolve_renderer_query(
+        &mut self,
+        query: CanvasInteractionQuery,
+        output: &mut EguiInteractionOutput,
+    ) -> Result<CanvasInteractionUpdate, EguiInteractionError> {
+        output.resolved_query_count += 1;
+        Ok(self.session.resolve_query(query)?)
     }
 
     fn drain_frame_output(&mut self) -> EguiInteractionOutput {
@@ -619,26 +704,38 @@ impl EguiCanvasInteraction {
     }
 }
 
+const fn opposite_handle_position(position: HandlePosition) -> HandlePosition {
+    match position {
+        HandlePosition::Top => HandlePosition::Bottom,
+        HandlePosition::Right => HandlePosition::Left,
+        HandlePosition::Bottom => HandlePosition::Top,
+        HandlePosition::Left => HandlePosition::Right,
+    }
+}
+
 fn interaction_position(
-    view: &ViewSession,
+    view: &WeakViewSession,
     scene_rect: Rect,
     pointer: Pos2,
-) -> Result<InteractionPosition, EguiInteractionError> {
+) -> Result<ViewportPointerSample, EguiInteractionError> {
     let point = ViewPoint::new(pointer.x - scene_rect.min.x, pointer.y - scene_rect.min.y);
-    InteractionPosition::from_view(point, view.viewport_transform()?)
-        .ok_or(CanvasInteractionError::InvalidPosition.into())
+    Ok(view.viewport_pointer_sample(point)?)
 }
 
 fn interaction_owner(target: &CanvasPressTarget) -> Option<InteractionOwner> {
     match target {
-        CanvasPressTarget::NodeDrag(start) => Some(InteractionOwner::Node(start.clicked())),
-        CanvasPressTarget::Connection(start) => Some(InteractionOwner::Port(
-            start
-                .intent()
-                .detached_port()
-                .unwrap_or_else(|| start.intent().fixed_port()),
-        )),
-        CanvasPressTarget::Edge { edge, .. } => Some(InteractionOwner::Edge(*edge)),
+        CanvasPressTarget::NodeDrag(start) => {
+            Some(InteractionOwner::Node(start.clicked_lifetime()))
+        }
+        CanvasPressTarget::Connection(start) => {
+            let binding = start.binding();
+            Some(InteractionOwner::Port(
+                binding
+                    .detached_port_instance()
+                    .unwrap_or_else(|| binding.fixed_port_instance()),
+            ))
+        }
+        CanvasPressTarget::Edge { instance, .. } => Some(InteractionOwner::Edge(*instance)),
         CanvasPressTarget::NativeControl
         | CanvasPressTarget::Pan
         | CanvasPressTarget::Marquee { .. }
@@ -648,7 +745,7 @@ fn interaction_owner(target: &CanvasPressTarget) -> Option<InteractionOwner> {
 
 fn collect_terminal_update(update: CanvasInteractionUpdate, output: &mut EguiInteractionOutput) {
     let dispatch = update.into_dispatch();
-    debug_assert!(dispatch.pre_query_effects.is_empty());
+    debug_assert!(dispatch.effects.is_empty());
     debug_assert!(dispatch.queries.is_empty());
     merge_damage(&mut output.damage, dispatch.damage);
     if dispatch.tick_demand == InteractionTickDemand::WhileActive {

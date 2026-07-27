@@ -1,23 +1,35 @@
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::future::Future;
+use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use jellyflow_open_gpui::{OpenGpuiConnectionSearchError, OpenGpuiNodeRegistry, OpenGpuiSceneHost};
-use jellyflow_runtime::schema::NodeCatalog;
-use jellyflow_runtime::{
-    CanvasInteractionPhase, ConnectionSearchRequest, ConnectionSearchStatus,
-    CreateFromWireCandidates, InteractionTerminalReason, ViewCloseReason, ViewSession, ViewSize,
+use futures_util::FutureExt;
+use jellyflow_open_gpui::host::{
+    InitialViewportPolicy, OpenGpuiConnectionSearchError, OpenGpuiSceneHost,
 };
+use jellyflow_open_gpui::navigation::OpenGpuiNavigationConfig;
+use jellyflow_open_gpui::registry::OpenGpuiNodeRegistry;
+use jellyflow_runtime::geometry::{ViewPoint, ViewSize};
+use jellyflow_runtime::graph::CreateFromWireCandidates;
+use jellyflow_runtime::interaction::{
+    CanvasInteractionPhase, ConnectionSearchRequest, ConnectionSearchStatus,
+    InteractionTerminalReason,
+};
+use jellyflow_runtime::schema::NodeCatalog;
+use jellyflow_runtime::view::{ViewCloseReason, ViewSession};
 use open_gpui::prelude::FluentBuilder;
 use open_gpui::{
     AppContext, Context, Entity, FocusHandle, Focusable, InteractiveElement, KeyDownEvent,
-    MouseButton, ParentElement, Render, ScrollHandle, StatefulInteractiveElement, Styled,
-    Subscription, Task, WeakFocusHandle, Window, div, px, rgb,
+    MouseButton, ParentElement, Render, Role, ScrollHandle, StatefulInteractiveElement, Styled,
+    Subscription, Task, WeakFocusHandle, Window, div, px,
 };
 use open_gpui_ui_components::gpui_adapter::TextInputController;
 use open_gpui_ui_components::{Button, ButtonVariant, TextInput};
+
+use crate::product_theme::NativeProductTheme;
 
 pub const NATIVE_GRAPH_SURFACE_SELECTOR: &str = "jellyflow-native-graph-surface";
 pub const NATIVE_CONNECTION_SEARCH_SELECTOR: &str = "jellyflow-native-connection-search";
@@ -32,6 +44,7 @@ pub const NATIVE_CONNECTION_SEARCH_LOADING_SELECTOR: &str =
     "jellyflow-native-connection-search-loading";
 pub const NATIVE_CONNECTION_SEARCH_RESULTS_SELECTOR: &str =
     "jellyflow-native-connection-search-results";
+const NATIVE_CONNECTION_SEARCH_RESULTS_ROLE: Role = Role::ListBox;
 const NATIVE_CONNECTION_SEARCH_INPUT_SELECTOR: &str = "jellyflow-native-connection-search-input";
 const NATIVE_CONNECTION_SEARCH_SAFE_INSET: f32 = 12.0;
 const NATIVE_CONNECTION_SEARCH_PREFERRED_WIDTH: f32 = 320.0;
@@ -51,11 +64,7 @@ struct NativeConnectionSearchLayout {
 }
 
 impl NativeConnectionSearchLayout {
-    fn resolve(
-        surface: ViewSize,
-        anchor: jellyflow_runtime::ViewPoint,
-        has_diagnostic: bool,
-    ) -> Self {
+    fn resolve(surface: ViewSize, anchor: ViewPoint, has_diagnostic: bool) -> Self {
         let surface_width = finite_non_negative(surface.width);
         let surface_height = finite_non_negative(surface.height);
         let available_width = (surface_width - 2.0 * NATIVE_CONNECTION_SEARCH_SAFE_INSET).max(0.0);
@@ -162,6 +171,7 @@ impl NativeConnectionSearchSource for RuntimeConnectionSearchSource {
 /// controls, filtering, focus, diagnostics, and visual treatment.
 pub struct NativeGraphSurface {
     host: Entity<OpenGpuiSceneHost>,
+    product_theme: NativeProductTheme,
     catalog: NodeCatalog,
     search_source: Arc<dyn NativeConnectionSearchSource>,
     query_controller: Entity<TextInputController>,
@@ -170,6 +180,7 @@ pub struct NativeGraphSurface {
     cleanup_search_focus: bool,
     previous_focus: Option<WeakFocusHandle>,
     surface_focus: FocusHandle,
+    candidate_focus_handles: HashMap<NativeCandidateIdentity, FocusHandle>,
     search_scroll: ScrollHandle,
     search_load_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
@@ -220,6 +231,40 @@ enum NativeConnectionSearchProjection {
 enum NativeCandidateNavigation {
     Previous,
     Next,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NativeCandidateSemantics {
+    role: Role,
+    selected: bool,
+    disabled: bool,
+    tab_stop: bool,
+}
+
+fn native_candidate_semantics(
+    active: bool,
+    candidate_actions_enabled: bool,
+) -> NativeCandidateSemantics {
+    NativeCandidateSemantics {
+        role: Role::ListBoxOption,
+        selected: active,
+        disabled: !candidate_actions_enabled,
+        tab_stop: active && candidate_actions_enabled,
+    }
+}
+
+fn native_candidate_commit_target(
+    active: Option<&NativeCandidateIdentity>,
+    query_focused: bool,
+    focused_candidate: Option<&NativeCandidateIdentity>,
+) -> Option<NativeCandidateIdentity> {
+    let active = active?;
+    match focused_candidate {
+        Some(focused) if focused == active => Some(focused.clone()),
+        Some(_) => None,
+        None if query_focused => Some(active.clone()),
+        None => None,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -371,7 +416,7 @@ impl<C> NativeConnectionSearchState<C> {
             .position(|candidate| candidate == active)
     }
 
-    fn hover(&mut self, identity: &NativeCandidateIdentity) -> bool {
+    fn focus(&mut self, identity: &NativeCandidateIdentity) -> bool {
         if self.status != NativeSearchProductStatus::Ready
             || self.commit_started
             || self.active.as_ref() == Some(identity)
@@ -434,6 +479,55 @@ impl<C> NativeConnectionSearchState<C> {
         self.commit_started = false;
         self.status = NativeSearchProductStatus::StaleCandidate;
         self.diagnostic = Some(message);
+    }
+
+    fn apply_runtime_feedback(
+        &mut self,
+        status: Option<ConnectionSearchStatus>,
+        terminal: Option<InteractionTerminalReason>,
+    ) -> bool {
+        let diagnostic = match status {
+            Some(ConnectionSearchStatus::Error) => {
+                Some("Search failed; retry to query the current graph.".to_owned())
+            }
+            Some(ConnectionSearchStatus::CommitRejected) => Some(match terminal {
+                Some(InteractionTerminalReason::Conflict) => {
+                    "Graph changed before the connection was applied; retry with refreshed candidates."
+                        .to_owned()
+                }
+                Some(InteractionTerminalReason::TransportFailure) => {
+                    "Connection result is unavailable; retry after the command queue recovers."
+                        .to_owned()
+                }
+                _ => "Connection was rejected; retry with refreshed candidates.".to_owned(),
+            }),
+            Some(
+                ConnectionSearchStatus::Loading
+                | ConnectionSearchStatus::Ready { .. }
+                | ConnectionSearchStatus::Empty,
+            )
+            | None => None,
+        };
+        match (status, diagnostic) {
+            (Some(ConnectionSearchStatus::Error), Some(diagnostic))
+                if self.pending_load().is_none()
+                    && self.diagnostic.as_ref() != Some(&diagnostic) =>
+            {
+                self.mark_source_error(diagnostic);
+                true
+            }
+            (Some(ConnectionSearchStatus::CommitRejected), Some(diagnostic))
+                if self.diagnostic.as_ref() != Some(&diagnostic) =>
+            {
+                if terminal == Some(InteractionTerminalReason::Conflict) {
+                    self.mark_stale_candidate(diagnostic);
+                } else {
+                    self.mark_source_error(diagnostic);
+                }
+                true
+            }
+            _ => false,
+        }
     }
 
     fn projection(
@@ -515,11 +609,42 @@ impl NativeConnectionSearchState<CreateFromWireCandidates> {
 }
 
 impl NativeGraphSurface {
+    /// Builds a surface with the default Workflow/Dify product theme.
     #[must_use]
     pub fn new(view: ViewSession, registry: OpenGpuiNodeRegistry, cx: &mut Context<Self>) -> Self {
-        Self::new_with_search_source(view, registry, Arc::new(RuntimeConnectionSearchSource), cx)
+        Self::new_with_search_source_and_visual_profile(
+            view,
+            registry,
+            Arc::new(RuntimeConnectionSearchSource),
+            crate::nodes::NativeGraphVisualProfile::default(),
+            OpenGpuiNavigationConfig::default(),
+            InitialViewportPolicy::Preserve,
+            cx,
+        )
     }
 
+    /// Builds a product surface from an explicitly injected visual profile.
+    #[must_use]
+    pub fn new_with_visual_profile(
+        view: ViewSession,
+        registry: OpenGpuiNodeRegistry,
+        visual_profile: crate::nodes::NativeGraphVisualProfile,
+        navigation: OpenGpuiNavigationConfig,
+        initial_viewport_policy: InitialViewportPolicy,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::new_with_search_source_and_visual_profile(
+            view,
+            registry,
+            Arc::new(RuntimeConnectionSearchSource),
+            visual_profile,
+            navigation,
+            initial_viewport_policy,
+            cx,
+        )
+    }
+
+    /// Builds a default Workflow/Dify surface with an application-provided search source.
     #[must_use]
     pub fn new_with_search_source(
         view: ViewSession,
@@ -527,10 +652,37 @@ impl NativeGraphSurface {
         search_source: Arc<dyn NativeConnectionSearchSource>,
         cx: &mut Context<Self>,
     ) -> Self {
+        Self::new_with_search_source_and_visual_profile(
+            view,
+            registry,
+            search_source,
+            crate::nodes::NativeGraphVisualProfile::default(),
+            OpenGpuiNavigationConfig::default(),
+            InitialViewportPolicy::Preserve,
+            cx,
+        )
+    }
+
+    /// Builds a product surface with explicit search and visual dependencies.
+    #[must_use]
+    pub fn new_with_search_source_and_visual_profile(
+        view: ViewSession,
+        registry: OpenGpuiNodeRegistry,
+        search_source: Arc<dyn NativeConnectionSearchSource>,
+        visual_profile: crate::nodes::NativeGraphVisualProfile,
+        navigation: OpenGpuiNavigationConfig,
+        initial_viewport_policy: InitialViewportPolicy,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let catalog = view.catalog().clone();
+        let product_theme = visual_profile.product_theme();
+        let (graph_theme, edge_painters) = visual_profile.into_host_parts();
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new_measured_surface(view, registry)
-                .with_graph_theme(crate::nodes::native_graph_theme())
+                .with_navigation_config(navigation)
+                .with_initial_viewport_policy(initial_viewport_policy)
+                .with_graph_theme(graph_theme)
+                .with_edge_painter_registry(edge_painters)
         });
         let query_controller = cx.new(TextInputController::new);
         let host_subscription = cx.observe(&host, |surface, _, cx| {
@@ -556,6 +708,7 @@ impl NativeGraphSurface {
         });
         Self {
             host,
+            product_theme,
             catalog,
             search_source,
             query_controller,
@@ -564,6 +717,7 @@ impl NativeGraphSurface {
             cleanup_search_focus: false,
             previous_focus: None,
             surface_focus: cx.focus_handle(),
+            candidate_focus_handles: HashMap::new(),
             search_scroll: ScrollHandle::new(),
             search_load_task: None,
             _subscriptions: vec![host_subscription, query_subscription],
@@ -583,6 +737,7 @@ impl NativeGraphSurface {
     #[must_use]
     pub fn connection_search_has_focus(&self, window: &Window, cx: &open_gpui::App) -> bool {
         self.query_controller.focus_handle(cx).is_focused(window)
+            || self.focused_candidate_identity(window).is_some()
     }
 
     fn sync_host_state(&mut self, cx: &mut Context<Self>) -> bool {
@@ -593,6 +748,11 @@ impl NativeGraphSurface {
         let host = self.host.read(cx);
         let request = host.connection_search_request();
         let presentation = host.interaction_presentation();
+        let phase = presentation.phase();
+        let terminal = presentation.terminal();
+        let search_status = presentation
+            .connection()
+            .and_then(|connection| connection.search());
         match request {
             Some(request)
                 if self
@@ -601,23 +761,20 @@ impl NativeGraphSurface {
                     .is_none_or(|search| search.request != request) =>
             {
                 self.search_load_task = None;
+                self.candidate_focus_handles.clear();
                 self.query_controller
                     .update(cx, |controller, cx| controller.set_value("", cx));
-                self.search = Some(NativeConnectionSearch {
-                    request,
-                    state: NativeConnectionSearchState::loading(),
-                });
+                let mut state = NativeConnectionSearchState::loading();
+                state.apply_runtime_feedback(search_status, terminal);
+                self.search = Some(NativeConnectionSearch { request, state });
                 self.focus_search_on_next_render = true;
                 true
             }
-            None if presentation.phase() == CanvasInteractionPhase::Committing
-                && self.search.is_some() =>
-            {
-                false
-            }
+            None if phase == CanvasInteractionPhase::Committing && self.search.is_some() => false,
             None => {
                 if self.search.take().is_some() {
                     self.search_load_task = None;
+                    self.candidate_focus_handles.clear();
                     self.focus_search_on_next_render = false;
                     self.cleanup_search_focus = true;
                     self.query_controller
@@ -628,68 +785,27 @@ impl NativeGraphSurface {
                 }
             }
             Some(_) => {
-                let search_status = presentation
-                    .connection()
-                    .and_then(|connection| connection.search());
-                let diagnostic = search_status.and_then(|status| match status {
-                        ConnectionSearchStatus::Error => {
-                            Some("Search failed; retry to query the current graph.".to_owned())
-                        }
-                        ConnectionSearchStatus::CommitRejected => Some(match presentation.terminal()
-                        {
-                            Some(InteractionTerminalReason::Conflict) => {
-                                "Graph changed before the connection was applied; retry with refreshed candidates."
-                                    .to_owned()
-                            }
-                            Some(InteractionTerminalReason::TransportFailure) => {
-                                "Connection result is unavailable; retry after the command queue recovers."
-                                    .to_owned()
-                            }
-                            _ => "Connection was rejected; retry with refreshed candidates."
-                                .to_owned(),
-                        }),
-                        ConnectionSearchStatus::Loading
-                        | ConnectionSearchStatus::Ready { .. }
-                        | ConnectionSearchStatus::Empty => None,
-                    });
                 let Some(search) = self.search.as_mut() else {
                     return false;
                 };
-                match (search_status, diagnostic) {
-                    (Some(ConnectionSearchStatus::Error), Some(diagnostic))
-                        if search.state.pending_load().is_none()
-                            && search.state.diagnostic.as_ref() != Some(&diagnostic) =>
-                    {
-                        search.state.mark_source_error(diagnostic);
-                        true
-                    }
-                    (Some(ConnectionSearchStatus::CommitRejected), Some(diagnostic))
-                        if search.state.diagnostic.as_ref() != Some(&diagnostic) =>
-                    {
-                        if presentation.terminal() == Some(InteractionTerminalReason::Conflict) {
-                            search.state.mark_stale_candidate(diagnostic);
-                        } else {
-                            search.state.mark_source_error(diagnostic);
-                        }
-                        true
-                    }
-                    _ => false,
-                }
+                search.state.apply_runtime_feedback(search_status, terminal)
             }
         }
     }
 
     fn query_search_candidates(
         &self,
-        request: ConnectionSearchRequest,
+        request: &ConnectionSearchRequest,
         generation: NativeSearchLoadGeneration,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<Result<CreateFromWireCandidates, NativeConnectionSearchSourceError>> {
         let search_is_current = self.search.as_ref().is_some_and(|search| {
-            search.request == request && search.state.pending_load() == Some(generation)
+            search.request.eq(request) && search.state.pending_load() == Some(generation)
         });
-        if !search_is_current || self.host.read(cx).connection_search_request() != Some(request) {
+        if !search_is_current
+            || self.host.read(cx).connection_search_request().as_ref() != Some(request)
+        {
             return None;
         }
         Some(
@@ -703,15 +819,17 @@ impl NativeGraphSurface {
 
     fn publish_search_result(
         &mut self,
-        request: ConnectionSearchRequest,
+        request: &ConnectionSearchRequest,
         generation: NativeSearchLoadGeneration,
         result: Result<CreateFromWireCandidates, NativeConnectionSearchSourceError>,
         cx: &mut Context<Self>,
     ) {
         let search_is_current = self.search.as_ref().is_some_and(|search| {
-            search.request == request && search.state.pending_load() == Some(generation)
+            search.request.eq(request) && search.state.pending_load() == Some(generation)
         });
-        if !search_is_current || self.host.read(cx).connection_search_request() != Some(request) {
+        if !search_is_current
+            || self.host.read(cx).connection_search_request().as_ref() != Some(request)
+        {
             return;
         }
         self.search_load_task = None;
@@ -724,7 +842,7 @@ impl NativeGraphSurface {
         let changed = self
             .search
             .as_mut()
-            .filter(|search| search.request == request)
+            .filter(|search| search.request.eq(request))
             .is_some_and(|search| search.state.finish_load(generation, result));
         if changed {
             let index = self
@@ -746,7 +864,7 @@ impl NativeGraphSurface {
         let Some(generation) = self
             .search
             .as_ref()
-            .filter(|search| search.request == request)
+            .filter(|search| search.request.eq(&request))
             .and_then(|search| search.state.pending_load())
         else {
             return;
@@ -761,7 +879,7 @@ impl NativeGraphSurface {
             let Some(authoritative) = cx.update(|cx| {
                 let Ok(query) = window_handle.update(cx, |_, window, cx| {
                     surface.update(cx, |surface, cx| {
-                        surface.query_search_candidates(request, generation, window, cx)
+                        surface.query_search_candidates(&request, generation, window, cx)
                     })
                 }) else {
                     return None;
@@ -772,8 +890,21 @@ impl NativeGraphSurface {
             };
             let result = match authoritative {
                 Ok(authoritative) => {
+                    let source_request = request.clone();
                     cx.background_executor()
-                        .spawn(async move { source.candidates(request, authoritative).await })
+                        .spawn(async move {
+                            match AssertUnwindSafe(async move {
+                                source.candidates(source_request, authoritative).await
+                            })
+                            .catch_unwind()
+                            .await
+                            {
+                                Ok(result) => result,
+                                Err(_) => Err(NativeConnectionSearchSourceError::new(
+                                    "connection search source panicked",
+                                )),
+                            }
+                        })
                         .await
                 }
                 Err(error) => Err(error),
@@ -781,7 +912,7 @@ impl NativeGraphSurface {
             cx.update(|cx| {
                 surface
                     .update(cx, |surface, cx| {
-                        surface.publish_search_result(request, generation, result, cx);
+                        surface.publish_search_result(&request, generation, result, cx);
                     })
                     .ok();
             });
@@ -823,7 +954,7 @@ impl NativeGraphSurface {
     }
 
     fn retry_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(request) = self.search.as_ref().map(|search| search.request) else {
+        let Some(request) = self.search.as_ref().map(|search| search.request.clone()) else {
             return;
         };
         if self
@@ -834,7 +965,7 @@ impl NativeGraphSurface {
             return;
         }
         let result = self.host.update(cx, |host, cx| {
-            host.retry_connection_search(request, window, cx)
+            host.retry_connection_search(&request, window, cx)
         });
         if let Err(error) = result {
             if let Some(search) = self.search.as_mut() {
@@ -880,14 +1011,14 @@ impl NativeGraphSurface {
                 search
                     .state
                     .begin_commit(identity)
-                    .map(|(candidates, index)| (search.request, candidates, index))
+                    .map(|(candidates, index)| (search.request.clone(), candidates, index))
             })
         else {
             return;
         };
         let result = self.host.update(cx, |host, cx| {
             let result = host.select_connection_search_candidate(
-                request,
+                &request,
                 &candidates,
                 candidate_index,
                 window,
@@ -929,50 +1060,138 @@ impl NativeGraphSurface {
         }
     }
 
-    fn commit_active_candidate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(identity) = self
+    fn reconcile_candidate_focus_handles(&mut self, cx: &mut Context<Self>) {
+        let identities = self
             .search
             .as_ref()
-            .and_then(|search| search.state.active.clone())
-        else {
-            return;
-        };
-        self.commit_candidate(&identity, window, cx);
+            .map(|search| {
+                search
+                    .state
+                    .rows
+                    .iter()
+                    .map(|row| row.identity.clone())
+                    .collect::<HashSet<_>>()
+            })
+            .unwrap_or_default();
+        self.candidate_focus_handles
+            .retain(|identity, _| identities.contains(identity));
+        for identity in identities {
+            self.candidate_focus_handles
+                .entry(identity)
+                .or_insert_with(|| cx.focus_handle());
+        }
     }
 
-    fn hover_candidate(&mut self, identity: &NativeCandidateIdentity, cx: &mut Context<Self>) {
-        if self
-            .search
-            .as_mut()
-            .is_some_and(|search| search.state.hover(identity))
-        {
+    fn focused_candidate_identity(&self, window: &Window) -> Option<NativeCandidateIdentity> {
+        self.candidate_focus_handles
+            .iter()
+            .find_map(|(identity, focus)| focus.is_focused(window).then(|| identity.clone()))
+    }
+
+    fn candidate_actions_enabled(&self, cx: &open_gpui::App) -> bool {
+        let Some(search) = self.search.as_ref() else {
+            return false;
+        };
+        let host = self.host.read(cx);
+        let presentation = host.interaction_presentation();
+        search.state.projection(
+            presentation.phase(),
+            presentation.terminal(),
+            host.close_reason(),
+        ) == NativeConnectionSearchProjection::Ready
+    }
+
+    fn focus_candidate(
+        &mut self,
+        identity: &NativeCandidateIdentity,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.candidate_actions_enabled(cx) {
+            return false;
+        }
+        let Some(focus) = self.candidate_focus_handles.get(identity).cloned() else {
+            return false;
+        };
+        let Some(search) = self.search.as_mut() else {
+            return false;
+        };
+        if !search.state.visible.contains(identity) {
+            return false;
+        }
+        let active_changed = search.state.focus(identity);
+        let focus_changed = !focus.is_focused(window);
+        if focus_changed {
+            focus.focus(window, cx);
+        }
+        if let Some(index) = search.state.active_visible_index() {
+            self.search_scroll.scroll_to_item(index);
+        }
+        if active_changed || focus_changed {
             cx.notify();
         }
+        true
+    }
+
+    fn commit_active_candidate(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if !self.candidate_actions_enabled(cx) {
+            return false;
+        }
+        let query_focused = self.query_controller.focus_handle(cx).is_focused(window);
+        let focused_candidate = self.focused_candidate_identity(window);
+        let Some(identity) = native_candidate_commit_target(
+            self.search
+                .as_ref()
+                .and_then(|search| search.state.active.as_ref()),
+            query_focused,
+            focused_candidate.as_ref(),
+        ) else {
+            return false;
+        };
+        self.commit_candidate(&identity, window, cx);
+        true
     }
 
     fn navigate_candidates(
         &mut self,
         navigation: NativeCandidateNavigation,
+        window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
-        let changed = self
-            .search
-            .as_mut()
-            .is_some_and(|search| search.state.navigate(navigation));
-        if changed {
-            if let Some(index) = self
+    ) -> bool {
+        if !self.candidate_actions_enabled(cx) {
+            return false;
+        }
+        let query_focused = self.query_controller.focus_handle(cx).is_focused(window);
+        let focused_candidate = self.focused_candidate_identity(window);
+        if !query_focused && focused_candidate.is_none() {
+            return false;
+        }
+        if query_focused {
+            let Some(active) = self
                 .search
                 .as_ref()
-                .and_then(|search| search.state.active_visible_index())
-            {
-                self.search_scroll.scroll_to_item(index);
-            }
-            cx.notify();
+                .and_then(|search| search.state.active.clone())
+            else {
+                return false;
+            };
+            return self.focus_candidate(&active, window, cx);
         }
+
+        let Some(focused) = focused_candidate else {
+            return false;
+        };
+        let Some(next) = self.search.as_mut().and_then(|search| {
+            search.state.focus(&focused);
+            search.state.navigate(navigation);
+            search.state.active.clone()
+        }) else {
+            return false;
+        };
+        self.focus_candidate(&next, window, cx)
     }
 
     fn cancel_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(request) = self.search.as_ref().map(|search| search.request) else {
+        let Some(request) = self.search.as_ref().map(|search| search.request.clone()) else {
             return;
         };
         if self.host.read(cx).interaction_presentation().phase()
@@ -991,7 +1210,7 @@ impl NativeGraphSurface {
             cx,
         );
         let _ = self.host.update(cx, |host, cx| {
-            let result = host.cancel_connection_search(request, window, cx);
+            let result = host.cancel_connection_search(&request, window, cx);
             cx.notify();
             result
         });
@@ -1001,6 +1220,7 @@ impl NativeGraphSurface {
     fn close_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.search = None;
         self.search_load_task = None;
+        self.candidate_focus_handles.clear();
         self.focus_search_on_next_render = false;
         self.cleanup_search_focus = false;
         self.query_controller
@@ -1009,7 +1229,12 @@ impl NativeGraphSurface {
         cx.notify();
     }
 
-    fn render_search(&self, cx: &mut Context<Self>) -> Option<impl open_gpui::IntoElement> {
+    fn render_search(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Option<impl open_gpui::IntoElement + use<>> {
+        self.reconcile_candidate_focus_handles(cx);
+        let theme = self.product_theme;
         let search = self.search.as_ref()?;
         let row_indices = search.state.visible_row_indices();
         let rows_empty = row_indices.is_empty();
@@ -1027,7 +1252,7 @@ impl NativeGraphSurface {
             let fallback = host.frame_bounds().size;
             ViewSize::new(fallback.width, fallback.height)
         });
-        let anchor = search.request.position().view();
+        let anchor = search.request.view_position();
         let surface = cx.weak_entity();
         let backdrop_surface = surface.clone();
         let retry_surface = surface.clone();
@@ -1043,55 +1268,99 @@ impl NativeGraphSurface {
         let mut results = div()
             .id(NATIVE_CONNECTION_SEARCH_RESULTS_SELECTOR)
             .debug_selector(|| NATIVE_CONNECTION_SEARCH_RESULTS_SELECTOR.to_owned())
+            .role(NATIVE_CONNECTION_SEARCH_RESULTS_ROLE)
+            .aria_label("Compatible nodes")
             .min_h(px(0.0))
             .max_h(px(layout.results_max_height))
             .flex()
             .flex_col()
-            .gap(px(6.0))
+            .gap(px(theme.spacing.sm))
             .overflow_y_scroll()
             .track_scroll(&self.search_scroll)
             .scrollbar_width(px(7.0));
         for row_index in row_indices {
             let row = &search.state.rows[row_index];
             let candidate_surface = surface.clone();
-            let candidate_hover_surface = surface.clone();
+            let candidate_focus_surface = surface.clone();
+            let candidate_a11y_surface = surface.clone();
             let identity = row.identity.clone();
-            let hover_identity = identity.clone();
+            let focus_identity = identity.clone();
+            let a11y_identity = identity.clone();
             let active = search.state.active.as_ref() == Some(&identity);
+            let semantics = native_candidate_semantics(active, candidate_actions_enabled);
+            let candidate_focus = self
+                .candidate_focus_handles
+                .get(&identity)
+                .expect("candidate focus handles are reconciled before rendering")
+                .clone();
             let selector = row.selector.clone();
             let debug_selector = selector.clone();
+            let accessible_label = format!("{}; {}", row.title, row.detail);
             results = results.child(
                 div()
                     .id(selector)
                     .debug_selector(move || debug_selector)
-                    .rounded(px(4.0))
+                    .min_w(px(0.0))
+                    .w_full()
+                    .min_h(px(42.0))
+                    .px(px(10.0))
+                    .py(px(7.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(theme.spacing.md))
+                    .rounded(px(theme.radius.control))
                     .border_1()
-                    .border_color(rgb(0x1d2128))
+                    .border_color(theme.border.subtle)
+                    .role(semantics.role)
+                    .aria_label(accessible_label)
+                    .aria_selected(semantics.selected)
+                    .aria_disabled(semantics.disabled)
+                    .track_focus(&candidate_focus)
+                    .tab_stop(semantics.tab_stop)
+                    .focus_visible(move |style| style.border_color(theme.selection.focus))
                     .when(active, |row| {
-                        row.bg(rgb(0x2d3745)).border_color(rgb(0x6f94c9))
+                        row.bg(theme.selection.surface)
+                            .border_color(theme.selection.border)
                     })
-                    .on_hover(move |hovered, _, cx| {
-                        if *hovered {
-                            let _ = candidate_hover_surface.update(cx, |surface, cx| {
-                                surface.hover_candidate(&hover_identity, cx);
-                            });
-                        }
+                    .when(!candidate_actions_enabled, |row| {
+                        row.opacity(0.56).cursor_not_allowed()
+                    })
+                    .when(candidate_actions_enabled, |row| {
+                        row.cursor_pointer()
+                            .hover(move |style| style.bg(theme.control.hover))
+                            .on_click(move |_, window, cx| {
+                                cx.stop_propagation();
+                                let _ = candidate_surface.update(cx, |surface, cx| {
+                                    surface.commit_candidate(&identity, window, cx)
+                                });
+                            })
+                    })
+                    .on_a11y_action(open_gpui::accesskit::Action::Focus, move |_, window, cx| {
+                        let _ = candidate_focus_surface.update(cx, |surface, cx| {
+                            surface.focus_candidate(&focus_identity, window, cx);
+                        });
+                    })
+                    .on_a11y_action(open_gpui::accesskit::Action::Click, move |_, window, cx| {
+                        let _ = candidate_a11y_surface.update(cx, |surface, cx| {
+                            surface.commit_candidate(&a11y_identity, window, cx);
+                        });
                     })
                     .child(
-                        Button::new(
-                            format!(
-                                "jellyflow-native-search-candidate-{}-{}",
-                                identity.kind, identity.port
-                            ),
-                            format!("{}  {}", row.title, row.detail),
-                        )
-                        .variant(ButtonVariant::Secondary)
-                        .disabled(!candidate_actions_enabled)
-                        .on_click(move |_, window, cx| {
-                            let _ = candidate_surface.update(cx, |surface, cx| {
-                                surface.commit_candidate(&identity, window, cx)
-                            });
-                        }),
+                        div()
+                            .min_w(px(0.0))
+                            .flex_1()
+                            .truncate()
+                            .text_sm()
+                            .child(row.title.clone()),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .max_w(px(112.0))
+                            .truncate()
+                            .text_xs()
+                            .text_color(theme.text.muted)
+                            .child(row.detail.clone()),
                     ),
             );
         }
@@ -1106,7 +1375,7 @@ impl NativeGraphSurface {
                     .debug_selector(|| NATIVE_CONNECTION_SEARCH_LOADING_SELECTOR.to_owned())
                     .py(px(16.0))
                     .text_sm()
-                    .text_color(rgb(0x9aa3af))
+                    .text_color(theme.text.muted)
                     .child(match projection {
                         NativeConnectionSearchProjection::Committing => "Applying connection...",
                         NativeConnectionSearchProjection::Retrying => {
@@ -1121,7 +1390,7 @@ impl NativeGraphSurface {
                     .debug_selector(|| NATIVE_CONNECTION_SEARCH_EMPTY_SELECTOR.to_owned())
                     .py(px(16.0))
                     .text_sm()
-                    .text_color(rgb(0x9aa3af))
+                    .text_color(theme.text.muted)
                     .child(if search.state.query.is_empty() {
                         "No compatible nodes"
                     } else {
@@ -1133,15 +1402,15 @@ impl NativeGraphSurface {
             .debug_selector(|| NATIVE_CONNECTION_SEARCH_SELECTOR.to_owned())
             .w(px(layout.width))
             .max_h(px(layout.max_height))
-            .p(px(10.0))
+            .p(px(theme.spacing.lg))
             .flex()
             .flex_col()
-            .gap(px(8.0))
-            .rounded(px(6.0))
+            .gap(px(theme.spacing.md))
+            .rounded(px(theme.radius.panel))
             .border_1()
-            .border_color(rgb(0x3b4350))
-            .bg(rgb(0x1d2128))
-            .text_color(rgb(0xecf0f5))
+            .border_color(theme.overlay.border)
+            .bg(theme.overlay.surface)
+            .text_color(theme.text.primary)
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(div().text_sm().child("Add connected node"))
             .child(
@@ -1163,10 +1432,10 @@ impl NativeGraphSurface {
                     .max_h(px(NATIVE_CONNECTION_SEARCH_DIAGNOSTIC_MAX_HEIGHT))
                     .overflow_y_scroll()
                     .scrollbar_width(px(7.0))
-                    .rounded(px(4.0))
-                    .bg(rgb(0x3a292b))
+                    .rounded(px(theme.radius.control))
+                    .bg(theme.overlay.diagnostic_surface)
                     .text_xs()
-                    .text_color(rgb(0xffb4a8))
+                    .text_color(theme.status.danger.text)
                     .child(message)
             }))
             .children(show_retry.then(|| {
@@ -1212,7 +1481,7 @@ impl Render for NativeGraphSurface {
             .search
             .as_ref()
             .filter(|search| search.state.pending_load().is_some())
-            .map(|search| search.request)
+            .map(|search| search.request.clone())
         {
             self.schedule_search_load(request, window, cx);
         }
@@ -1241,6 +1510,7 @@ impl Render for NativeGraphSurface {
                 }
             }
         }
+        let search = self.render_search(cx);
         div()
             .debug_selector(|| NATIVE_GRAPH_SURFACE_SELECTOR.to_owned())
             .relative()
@@ -1251,22 +1521,25 @@ impl Render for NativeGraphSurface {
                     return;
                 }
                 let key = event.keystroke.key.as_str();
-                if key.eq_ignore_ascii_case("escape") {
+                let handled = if key.eq_ignore_ascii_case("escape") {
                     surface.cancel_search(window, cx);
+                    true
                 } else if key.eq_ignore_ascii_case("up") {
-                    surface.navigate_candidates(NativeCandidateNavigation::Previous, cx);
+                    surface.navigate_candidates(NativeCandidateNavigation::Previous, window, cx)
                 } else if key.eq_ignore_ascii_case("down") {
-                    surface.navigate_candidates(NativeCandidateNavigation::Next, cx);
+                    surface.navigate_candidates(NativeCandidateNavigation::Next, window, cx)
                 } else if key.eq_ignore_ascii_case("enter") {
-                    surface.commit_active_candidate(window, cx);
+                    surface.commit_active_candidate(window, cx)
                 } else {
-                    return;
+                    false
+                };
+                if handled {
+                    window.prevent_default();
+                    cx.stop_propagation();
                 }
-                window.prevent_default();
-                cx.stop_propagation();
             }))
             .child(div().absolute().size_full().child(self.host.clone()))
-            .children(self.render_search(cx))
+            .children(search)
     }
 }
 
@@ -1295,7 +1568,7 @@ pub fn native_connection_search_candidate_selector(kind: &str, port: &str) -> St
 
 #[cfg(test)]
 mod tests {
-    use jellyflow_runtime::{ViewPoint, ViewSize};
+    use jellyflow_runtime::geometry::{ViewPoint, ViewSize};
     use open_gpui::{ParentElement, Render, Styled, VisualContext};
 
     use super::*;
@@ -1340,7 +1613,7 @@ mod tests {
         let mut state = ready_search_state();
         assert_eq!(state.active, Some(candidate_identity("alpha")));
 
-        assert!(state.hover(&candidate_identity("beta")));
+        assert!(state.focus(&candidate_identity("beta")));
         assert!(state.set_query("texture"));
         assert_eq!(state.active, Some(candidate_identity("beta")));
 
@@ -1358,7 +1631,7 @@ mod tests {
     #[test]
     fn refresh_preserves_a_still_available_active_identity() {
         let mut state = ready_search_state();
-        assert!(state.hover(&candidate_identity("beta")));
+        assert!(state.focus(&candidate_identity("beta")));
         state.mark_stale_candidate("refresh".to_owned());
         let generation = state.begin_retry().expect("refresh generation");
 
@@ -1376,26 +1649,70 @@ mod tests {
     }
 
     #[test]
-    fn hover_and_keyboard_navigation_share_active_identity_and_wrap() {
+    fn focus_and_keyboard_navigation_share_active_identity_and_wrap() {
         let mut state = ready_search_state();
 
         assert!(state.navigate(NativeCandidateNavigation::Previous));
         assert_eq!(state.active, Some(candidate_identity("gamma")));
         assert!(state.navigate(NativeCandidateNavigation::Next));
         assert_eq!(state.active, Some(candidate_identity("alpha")));
-        assert!(state.hover(&candidate_identity("beta")));
+        assert!(state.focus(&candidate_identity("beta")));
         assert_eq!(state.active, Some(candidate_identity("beta")));
     }
 
     #[test]
-    fn commit_latch_accepts_once_and_freezes_filter_hover_and_navigation() {
+    fn candidate_semantics_form_one_roving_listbox_focus_stop() {
+        let inactive = native_candidate_semantics(false, true);
+        let active = native_candidate_semantics(true, true);
+        let disabled = native_candidate_semantics(true, false);
+
+        assert_eq!(NATIVE_CONNECTION_SEARCH_RESULTS_ROLE, Role::ListBox);
+        assert_eq!(inactive.role, Role::ListBoxOption);
+        assert!(!inactive.selected);
+        assert!(!inactive.disabled);
+        assert!(!inactive.tab_stop);
+        assert_eq!(active.role, Role::ListBoxOption);
+        assert!(active.selected);
+        assert!(!active.disabled);
+        assert!(active.tab_stop);
+        assert_eq!(disabled.role, Role::ListBoxOption);
+        assert!(disabled.selected);
+        assert!(disabled.disabled);
+        assert!(!disabled.tab_stop);
+    }
+
+    #[test]
+    fn enter_target_requires_query_authority_or_a_focused_active_match() {
+        let active = candidate_identity("alpha");
+        let other = candidate_identity("beta");
+
+        assert_eq!(
+            native_candidate_commit_target(Some(&active), true, None),
+            Some(active.clone()),
+        );
+        assert_eq!(
+            native_candidate_commit_target(Some(&active), false, Some(&active)),
+            Some(active.clone()),
+        );
+        assert_eq!(
+            native_candidate_commit_target(Some(&active), false, Some(&other)),
+            None,
+        );
+        assert_eq!(
+            native_candidate_commit_target(Some(&active), false, None),
+            None,
+        );
+    }
+
+    #[test]
+    fn commit_latch_accepts_once_and_freezes_filter_focus_and_navigation() {
         let mut state = ready_search_state();
         let candidate = candidate_identity("beta");
 
         assert!(state.freeze_for_commit(&candidate));
         assert!(!state.freeze_for_commit(&candidate));
         assert!(!state.set_query("gamma"));
-        assert!(!state.hover(&candidate_identity("gamma")));
+        assert!(!state.focus(&candidate_identity("gamma")));
         assert!(!state.navigate(NativeCandidateNavigation::Next));
         assert_eq!(state.active, Some(candidate));
     }

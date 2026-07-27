@@ -5,8 +5,9 @@ use std::rc::{Rc, Weak};
 
 use jellyflow_core::NodeId;
 use jellyflow_runtime::{
-    GraphRevision, NodeIncarnation, NodeInstanceKey, ViewId, ViewSessionError, ViewSessionEvent,
-    ViewSubscriptionToken, WeakViewSession,
+    graph::GraphRevision, graph::NodeLifetimeKey, view::NodeInstanceKey, view::ViewId,
+    view::ViewProvenance, view::ViewSessionError, view::ViewSessionEvent,
+    view::ViewSubscriptionToken, view::WeakViewSession,
 };
 
 use crate::draft::{DraftPhase, DraftRestore, ExternalizedDraft, RevisionedDraft};
@@ -30,13 +31,15 @@ impl RetainedFieldStoreKey {
 }
 
 struct RetainedFieldStoreBinding {
+    provenance: ViewProvenance,
     view: WeakViewSession,
     subscription: ViewSubscriptionToken,
 }
 
 struct RetainedFieldStoreState<T> {
     bindings: BTreeMap<ViewId, RetainedFieldStoreBinding>,
-    entries: BTreeMap<(ViewId, NodeId), BTreeMap<RetainedFieldStoreKey, ExternalizedDraft<T>>>,
+    entries:
+        BTreeMap<(ViewProvenance, NodeId), BTreeMap<RetainedFieldStoreKey, ExternalizedDraft<T>>>,
     len: usize,
     capacity: usize,
 }
@@ -62,16 +65,28 @@ impl<T> RetainedFieldStoreState<T> {
         }
     }
 
-    fn handle_view_event(&mut self, view: ViewId, event: ViewSessionEvent) {
+    fn handle_view_event(&mut self, provenance: ViewProvenance, event: ViewSessionEvent) {
         match event {
             ViewSessionEvent::RuntimePatched { patch } => {
-                for (node, current) in patch.node_incarnation_changes() {
-                    self.reconcile_node_incarnation(view, node, current);
+                for node in patch.affected_nodes().iter().copied() {
+                    if patch.node_lifetime_change(node).is_some() {
+                        self.reconcile_node_lifetime(
+                            provenance,
+                            node,
+                            patch.snapshot().node_lifetime_key(node),
+                        );
+                    }
                 }
             }
             ViewSessionEvent::Closed { .. } => {
-                self.clear_view(view);
-                self.bindings.remove(&view);
+                self.clear_view(provenance);
+                if self
+                    .bindings
+                    .get(&provenance.view())
+                    .is_some_and(|binding| binding.provenance == provenance)
+                {
+                    self.bindings.remove(&provenance.view());
+                }
             }
             ViewSessionEvent::ViewportChanged { .. }
             | ViewSessionEvent::SelectionChanged { .. }
@@ -82,14 +97,14 @@ impl<T> RetainedFieldStoreState<T> {
     fn ensure_bound_instance(
         &self,
         instance: &NodeInstanceKey,
-    ) -> Result<(), RetainedFieldStoreError> {
-        if self.bindings.contains_key(&instance.view()) {
-            Ok(())
-        } else {
-            Err(RetainedFieldStoreError::NotBound {
+    ) -> Result<ViewProvenance, RetainedFieldStoreError> {
+        self.bindings
+            .get(&instance.view())
+            .map(|binding| binding.provenance)
+            .filter(|provenance| provenance.runtime() == instance.lifetime().provenance())
+            .ok_or(RetainedFieldStoreError::NotBound {
                 view: instance.view(),
             })
-        }
     }
 }
 
@@ -102,7 +117,8 @@ mod tests {
         CanvasPoint, CanvasRect, CanvasSize, GraphBuilder, GraphId, Node, NodeId, NodeKindKey,
     };
     use jellyflow_runtime::{
-        FrameRequest, GraphRuntime, NodeInstanceKey, RendererStamp, ViewSession, ViewSessionOptions,
+        graph::GraphRuntime, view::FrameRequest, view::NodeInstanceKey, view::RendererStamp,
+        view::ViewSession, view::ViewSessionOptions,
     };
 
     use super::{RetainedFieldStore, RetainedFieldStoreError};
@@ -178,10 +194,10 @@ mod tests {
             .expect("retained field view");
         let store = RetainedFieldStore::<String>::new();
         store
-            .ensure_bound(view.id(), &view.downgrade())
+            .ensure_bound(&view.downgrade())
             .expect("bind retained field store");
         store
-            .ensure_bound(view.id(), &view.downgrade())
+            .ensure_bound(&view.downgrade())
             .expect("reuse retained field store binding");
         assert_eq!(store.state.borrow().bindings.len(), 1);
         let shared = Rc::downgrade(&store.state);
@@ -210,10 +226,10 @@ mod tests {
             .expect("second retained field view");
         let store = RetainedFieldStore::<String>::new();
         store
-            .ensure_bound(first.id(), &first.downgrade())
+            .ensure_bound(&first.downgrade())
             .expect("bind first view");
         store
-            .ensure_bound(second.id(), &second.downgrade())
+            .ensure_bound(&second.downgrade())
             .expect("bind second view");
         assert_eq!(store.state.borrow().bindings.len(), 2);
 
@@ -226,6 +242,34 @@ mod tests {
     }
 
     #[test]
+    fn binding_is_scoped_to_exact_runtime_provenance_even_when_local_view_ids_match() {
+        let first_runtime = runtime_with_node();
+        let first = first_runtime
+            .attach_view(ViewSessionOptions::default())
+            .expect("first retained field store view");
+        let second_runtime = runtime_with_node();
+        let second = second_runtime
+            .attach_view(ViewSessionOptions::default())
+            .expect("second retained field store view");
+        assert_eq!(first.id().get(), second.id().get());
+
+        let store = RetainedFieldStore::new();
+        store
+            .ensure_bound(&first.downgrade())
+            .expect("bind first runtime view");
+        let second_instance = instance_for(&second);
+        assert!(matches!(
+            store.externalize_overflow(
+                &second_instance,
+                "field",
+                &dirty_draft("foreign runtime local"),
+            ),
+            Err(RetainedFieldStoreError::NotBound { view }) if view == second.id()
+        ));
+        assert!(store.is_empty());
+    }
+
+    #[test]
     fn capacity_rejects_a_new_identity_without_evicting_existing_draft() {
         let runtime = runtime_with_node();
         let view = runtime
@@ -234,7 +278,7 @@ mod tests {
         let instance = instance_for(&view);
         let store = RetainedFieldStore::with_capacity(NonZeroUsize::new(1).unwrap());
         store
-            .ensure_bound(view.id(), &view.downgrade())
+            .ensure_bound(&view.downgrade())
             .expect("bind retained field store");
 
         assert!(
@@ -277,7 +321,7 @@ mod tests {
         let instance = instance_for(&view);
         let store = RetainedFieldStore::with_capacity(NonZeroUsize::new(1).unwrap());
         store
-            .ensure_bound(view.id(), &view.downgrade())
+            .ensure_bound(&view.downgrade())
             .expect("bind retained field store");
 
         store
@@ -305,7 +349,7 @@ mod tests {
         let instance = instance_for(&view);
         let store = RetainedFieldStore::with_capacity(NonZeroUsize::new(1).unwrap());
         store
-            .ensure_bound(view.id(), &view.downgrade())
+            .ensure_bound(&view.downgrade())
             .expect("bind retained field store");
 
         for cycle in 0..64 {
@@ -337,10 +381,10 @@ mod tests {
         let second_instance = instance_for(&second);
         let store = RetainedFieldStore::with_capacity(NonZeroUsize::new(1).unwrap());
         store
-            .ensure_bound(first.id(), &first.downgrade())
+            .ensure_bound(&first.downgrade())
             .expect("bind first retained field store view");
         store
-            .ensure_bound(second.id(), &second.downgrade())
+            .ensure_bound(&second.downgrade())
             .expect("bind second retained field store view");
 
         store
@@ -382,12 +426,13 @@ pub enum RetainedFieldStoreError {
 
 /// Application-owned overflow storage for retained native fields of one value type.
 ///
-/// A mounted retained field binds its weak view capability exactly once per view. Every clone
-/// shares those bindings. A terminal view event clears only that view's fields, and the final store
-/// clone automatically unsubscribes every remaining live binding. Capacity is global across those
-/// clones and views, and defaults to [`OPEN_GPUI_DEFAULT_RETAINED_FIELD_STORE_CAPACITY`]. The store
-/// never silently evicts an unsaved draft and never revives framework tasks, IME state, or
-/// interrupted commands.
+/// A mounted retained field binds its weak view capability exactly once per view generation. Every
+/// clone shares those bindings. Entries are bucketed by the complete [`ViewProvenance`], so a
+/// terminal callback cannot clear or revive drafts owned by another runtime or generation. The
+/// final store clone automatically unsubscribes every remaining live binding. Capacity is global
+/// across those clones and views, and defaults to
+/// [`OPEN_GPUI_DEFAULT_RETAINED_FIELD_STORE_CAPACITY`]. The store never silently evicts an unsaved
+/// draft and never revives framework tasks, IME state, or interrupted commands.
 #[derive(Clone)]
 pub struct RetainedFieldStore<T> {
     state: Rc<RefCell<RetainedFieldStoreState<T>>>,
@@ -433,12 +478,15 @@ impl<T: 'static> RetainedFieldStore<T> {
         }
     }
 
-    pub(crate) fn ensure_bound(
-        &self,
-        view_id: ViewId,
-        view: &WeakViewSession,
-    ) -> Result<(), ViewSessionError> {
-        if self.state.borrow().bindings.contains_key(&view_id) {
+    pub(crate) fn ensure_bound(&self, view: &WeakViewSession) -> Result<(), ViewSessionError> {
+        let provenance = view.provenance()?;
+        if self
+            .state
+            .borrow()
+            .bindings
+            .get(&provenance.view())
+            .is_some_and(|binding| binding.provenance == provenance)
+        {
             return Ok(());
         }
 
@@ -447,16 +495,26 @@ impl<T: 'static> RetainedFieldStore<T> {
             let Some(state) = weak_state.upgrade() else {
                 return;
             };
-            state.borrow_mut().handle_view_event(view_id, event);
+            state.borrow_mut().handle_view_event(provenance, event);
         })?;
         let mut state = self.state.borrow_mut();
-        if state.bindings.contains_key(&view_id) {
+        if state
+            .bindings
+            .get(&provenance.view())
+            .is_some_and(|binding| binding.provenance == provenance)
+        {
             let _ = view.unsubscribe(subscription);
             return Ok(());
         }
+        if state.bindings.contains_key(&provenance.view()) {
+            drop(state);
+            let _ = view.unsubscribe(subscription);
+            return Err(ViewSessionError::ForeignInteractionFacts);
+        }
         state.bindings.insert(
-            view_id,
+            provenance.view(),
             RetainedFieldStoreBinding {
+                provenance,
                 view: view.clone(),
                 subscription,
             },
@@ -486,8 +544,11 @@ impl<T: 'static> RetainedFieldStore<T> {
         field: &str,
     ) -> Result<bool, RetainedFieldStoreError> {
         let mut state = self.state.borrow_mut();
-        state.ensure_bound_instance(instance)?;
-        Ok(state.remove(&RetainedFieldStoreKey::new(instance.clone(), field)))
+        let provenance = state.ensure_bound_instance(instance)?;
+        Ok(state.remove(
+            provenance,
+            &RetainedFieldStoreKey::new(instance.clone(), field),
+        ))
     }
 }
 
@@ -504,11 +565,11 @@ where
     ) -> Result<bool, RetainedFieldStoreError> {
         let key = RetainedFieldStoreKey::new(instance.clone(), field);
         let mut state = self.state.borrow_mut();
-        state.ensure_bound_instance(instance)?;
+        let provenance = state.ensure_bound_instance(instance)?;
         if draft.phase() == DraftPhase::Clean && draft.pending_attempt().is_none() {
-            return Ok(state.remove(&key));
+            return Ok(state.remove(provenance, &key));
         }
-        state.insert(key, draft.externalized_snapshot())?;
+        state.insert(provenance, key, draft.externalized_snapshot())?;
         Ok(true)
     }
 
@@ -523,9 +584,9 @@ where
         let key = RetainedFieldStoreKey::new(instance.clone(), field);
         let snapshot = {
             let mut state = self.state.borrow_mut();
-            state.ensure_bound_instance(instance)?;
-            state.reconcile_node_identity(instance);
-            state.take(&key)
+            let provenance = state.ensure_bound_instance(instance)?;
+            state.reconcile_node_identity(provenance, instance);
+            state.take(provenance, &key)
         };
         Ok(match snapshot {
             Some(snapshot) => snapshot.restore_against(revision, authoritative),
@@ -535,8 +596,8 @@ where
 }
 
 impl<T> RetainedFieldStoreState<T> {
-    fn remove(&mut self, key: &RetainedFieldStoreKey) -> bool {
-        let bucket = (key.instance.view(), key.instance.node());
+    fn remove(&mut self, provenance: ViewProvenance, key: &RetainedFieldStoreKey) -> bool {
+        let bucket = (provenance, key.instance.node());
         let Some(entries) = self.entries.get_mut(&bucket) else {
             return false;
         };
@@ -551,27 +612,29 @@ impl<T> RetainedFieldStoreState<T> {
         removed
     }
 
-    fn reconcile_node_identity(&mut self, current: &NodeInstanceKey) -> usize {
-        self.retain_node_bucket(current.view(), current.node(), |key| {
-            key.instance == *current
-        })
-    }
-
-    fn reconcile_node_incarnation(
+    fn reconcile_node_identity(
         &mut self,
-        view: ViewId,
-        node: NodeId,
-        current: Option<NodeIncarnation>,
+        provenance: ViewProvenance,
+        current: &NodeInstanceKey,
     ) -> usize {
-        self.retain_node_bucket(view, node, |key| {
-            current.is_some_and(|current| key.instance.incarnation() == current)
+        self.retain_node_bucket(provenance, current.node(), |key| key.instance == *current)
+    }
+
+    fn reconcile_node_lifetime(
+        &mut self,
+        provenance: ViewProvenance,
+        node: NodeId,
+        current: Option<NodeLifetimeKey>,
+    ) -> usize {
+        self.retain_node_bucket(provenance, node, |key| {
+            current.is_some_and(|current| key.instance.lifetime() == current)
         })
     }
 
-    fn clear_view(&mut self, view: ViewId) -> usize {
+    fn clear_view(&mut self, provenance: ViewProvenance) -> usize {
         let mut removed = 0;
         self.entries.retain(|(entry_view, _), entries| {
-            if *entry_view == view {
+            if *entry_view == provenance {
                 removed += entries.len();
                 false
             } else {
@@ -584,11 +647,11 @@ impl<T> RetainedFieldStoreState<T> {
 
     fn retain_node_bucket(
         &mut self,
-        view: ViewId,
+        provenance: ViewProvenance,
         node: NodeId,
         mut keep: impl FnMut(&RetainedFieldStoreKey) -> bool,
     ) -> usize {
-        let bucket = (view, node);
+        let bucket = (provenance, node);
         let Some(entries) = self.entries.get_mut(&bucket) else {
             return 0;
         };
@@ -604,10 +667,11 @@ impl<T> RetainedFieldStoreState<T> {
 
     fn insert(
         &mut self,
+        provenance: ViewProvenance,
         key: RetainedFieldStoreKey,
         draft: ExternalizedDraft<T>,
     ) -> Result<Option<ExternalizedDraft<T>>, RetainedFieldStoreError> {
-        let bucket = (key.instance.view(), key.instance.node());
+        let bucket = (provenance, key.instance.node());
         let already_present = self
             .entries
             .get(&bucket)
@@ -624,8 +688,12 @@ impl<T> RetainedFieldStoreState<T> {
         Ok(previous)
     }
 
-    fn take(&mut self, key: &RetainedFieldStoreKey) -> Option<ExternalizedDraft<T>> {
-        let bucket = (key.instance.view(), key.instance.node());
+    fn take(
+        &mut self,
+        provenance: ViewProvenance,
+        key: &RetainedFieldStoreKey,
+    ) -> Option<ExternalizedDraft<T>> {
+        let bucket = (provenance, key.instance.node());
         let entries = self.entries.get_mut(&bucket)?;
         let draft = entries.remove(key);
         if entries.is_empty() {

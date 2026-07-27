@@ -11,9 +11,9 @@ use jellyflow_core::core::{Graph, validate_graph_structural};
 use crate::profile::{ApplyPipelineError, validate_profile_graph};
 use crate::rules::{Diagnostic, DiagnosticTarget};
 use crate::runtime::commands::{
-    GraphCommand, GraphCommandConflict, GraphCommandExecutionKind, GraphCommandNoop,
-    GraphCommandOutcome, GraphCommandPlanningError, GraphCommandRejection, PlannedGraphCommand,
-    plan_graph_command,
+    GraphCommand, GraphCommandConflict, GraphCommandExecutionKind, GraphCommandIdentity,
+    GraphCommandNoop, GraphCommandOutcome, GraphCommandPlanningError, GraphCommandRejection,
+    PlannedGraphCommand, plan_graph_command,
 };
 use crate::runtime::middleware::GraphRuntimeMiddlewareSnapshot;
 use crate::runtime::transaction_gate::GraphTransactionGate;
@@ -22,8 +22,9 @@ use crate::schema::NodeCatalog;
 
 use super::impact::InstalledTransactionImpact;
 use super::{
-    GraphRuntimeError, GraphSnapshot, HistoryState, NodeIncarnation, RuntimePatch, RuntimeShared,
-    RuntimeState,
+    EdgeIncarnation, EdgeIncarnationEntry, GraphRuntimeError, GraphSnapshot, GraphVersion,
+    HistoryState, NodeIncarnation, PortIncarnation, PortIncarnationEntry, RuntimePatch,
+    RuntimeShared, RuntimeState,
 };
 
 pub(super) struct MutationGuard<'a>(&'a Cell<bool>);
@@ -76,6 +77,7 @@ impl HistoryDirection {
 pub(super) enum CommandExecution {
     Outcome(GraphCommandOutcome),
     Committed {
+        identity: GraphCommandIdentity,
         patch: RuntimePatch,
         sessions: Vec<(Rc<ViewShared>, ViewGeneration)>,
         footprint: GraphMutationFootprint,
@@ -87,15 +89,31 @@ pub(super) fn execute_command_locked(
     catalog: &NodeCatalog,
     command: &GraphCommand,
 ) -> Result<CommandExecution, GraphRuntimeError> {
+    let current_version = GraphVersion::new(state.provenance, state.revision);
+    if command.expected_version().provenance() != state.provenance {
+        return Err(GraphRuntimeError::ForeignCommandRuntime {
+            command: command.expected_version().provenance(),
+            runtime: state.provenance,
+        });
+    }
     let mut declared_footprint = command.conflict_footprint(&state.graph, &state.index);
     if state.profile.is_some() {
         declared_footprint.touch_graph();
     }
-    if state.revision != command.expected_revision() {
+    if current_version != command.expected_version() {
         return Ok(CommandExecution::Outcome(GraphCommandOutcome::Conflict(
             GraphCommandConflict::new(
-                command.expected_revision(),
-                GraphSnapshot::new(state.graph.clone(), state.revision, state.document_epoch),
+                command.identity().clone(),
+                command.expected_version(),
+                GraphSnapshot::new(
+                    state.provenance,
+                    state.graph.clone(),
+                    state.revision,
+                    state.document_epoch,
+                    state.incarnations.clone(),
+                    state.edge_incarnations.clone(),
+                    state.port_incarnations.clone(),
+                ),
                 declared_footprint,
             ),
         )));
@@ -128,13 +146,13 @@ pub(super) fn execute_command_locked(
         Ok(planned) => planned,
         Err(error) => {
             return Ok(CommandExecution::Outcome(GraphCommandOutcome::Rejected(
-                command_rejection_from_planning(error),
+                command_rejection_from_planning(command.identity().clone(), current_version, error),
             )));
         }
     };
     if let Err(error) = run_before_command_middleware(state, command) {
         return Ok(CommandExecution::Outcome(GraphCommandOutcome::Rejected(
-            command_rejection_from_apply(error),
+            command_rejection_from_apply(command.identity().clone(), current_version, error),
         )));
     }
     state.stats.command_planning_fact_reads = state
@@ -160,7 +178,7 @@ pub(super) fn execute_command_locked(
 
     if transaction.is_empty() {
         return Ok(CommandExecution::Outcome(GraphCommandOutcome::Noop(
-            GraphCommandNoop::new(state.revision, footprint),
+            GraphCommandNoop::new(command.identity().clone(), current_version, footprint),
         )));
     }
 
@@ -168,6 +186,7 @@ pub(super) fn execute_command_locked(
         install_incremental(state, graph, transaction, command.records_history())?;
 
     Ok(CommandExecution::Committed {
+        identity: command.identity().clone(),
         patch,
         sessions,
         footprint,
@@ -179,9 +198,10 @@ fn execute_history_command_locked(
     command: &GraphCommand,
     direction: HistoryDirection,
 ) -> Result<CommandExecution, GraphRuntimeError> {
+    let current_version = GraphVersion::new(state.provenance, state.revision);
     if let Err(error) = run_before_command_middleware(state, command) {
         return Ok(CommandExecution::Outcome(GraphCommandOutcome::Rejected(
-            command_rejection_from_apply(error),
+            command_rejection_from_apply(command.identity().clone(), current_version, error),
         )));
     }
     state
@@ -190,20 +210,28 @@ fn execute_history_command_locked(
         .ok_or(GraphRuntimeError::RevisionExhausted)?;
     let Some(transaction) = direction.prepare(&state.history) else {
         return Ok(CommandExecution::Outcome(GraphCommandOutcome::Noop(
-            GraphCommandNoop::new(state.revision, GraphMutationFootprint::new()),
+            GraphCommandNoop::new(
+                command.identity().clone(),
+                current_version,
+                GraphMutationFootprint::new(),
+            ),
         )));
     };
     let replayed = match GraphTransactionGate::normalize_and_validate(transaction) {
         Ok(replayed) => replayed,
         Err(error) => {
             return Ok(CommandExecution::Outcome(GraphCommandOutcome::Rejected(
-                command_rejection_from_apply(error),
+                command_rejection_from_apply(command.identity().clone(), current_version, error),
             )));
         }
     };
     if replayed.is_empty() {
         return Ok(CommandExecution::Outcome(GraphCommandOutcome::Noop(
-            GraphCommandNoop::new(state.revision, GraphMutationFootprint::new()),
+            GraphCommandNoop::new(
+                command.identity().clone(),
+                current_version,
+                GraphMutationFootprint::new(),
+            ),
         )));
     }
 
@@ -217,7 +245,7 @@ fn execute_history_command_locked(
     })();
     if let Err(error) = replay_result {
         return Ok(CommandExecution::Outcome(GraphCommandOutcome::Rejected(
-            command_rejection_from_apply(error),
+            command_rejection_from_apply(command.identity().clone(), current_version, error),
         )));
     }
 
@@ -225,6 +253,7 @@ fn execute_history_command_locked(
     let (patch, sessions) = install_incremental(state, after, replayed, false)?;
     direction.commit(&mut state.history);
     Ok(CommandExecution::Committed {
+        identity: command.identity().clone(),
         patch,
         sessions,
         footprint,
@@ -247,6 +276,8 @@ fn run_before_command_middleware(
 }
 
 pub(super) fn command_rejection_from_planning(
+    identity: GraphCommandIdentity,
+    version: GraphVersion,
     error: GraphCommandPlanningError,
 ) -> GraphCommandRejection {
     if let GraphCommandPlanningError::RuleRejected {
@@ -254,14 +285,16 @@ pub(super) fn command_rejection_from_planning(
         diagnostics,
     } = error
     {
-        return GraphCommandRejection::new(message, diagnostics);
+        return GraphCommandRejection::new(identity, version, message, diagnostics);
     }
     if let GraphCommandPlanningError::Profile(error) = error {
-        return command_rejection_from_apply(error);
+        return command_rejection_from_apply(identity, version, error);
     }
     let (key, target) = planning_error_diagnostic(&error);
     let message = error.to_string();
     GraphCommandRejection::new(
+        identity,
+        version,
         message.clone(),
         vec![Diagnostic::error(key, target, message)],
     )
@@ -288,10 +321,6 @@ fn planning_error_diagnostic(
         ),
         GraphCommandPlanningError::PortOwnerMismatch { port, .. } => (
             "topology.port_owner_mismatch",
-            DiagnosticTarget::Port { id: *port },
-        ),
-        GraphCommandPlanningError::PortIdentityChanged { port } => (
-            "topology.port_identity_changed",
             DiagnosticTarget::Port { id: *port },
         ),
         GraphCommandPlanningError::PortConnected(id) => (
@@ -368,15 +397,21 @@ fn mutation_error_diagnostic(error: &GraphMutationError) -> (&'static str, Diagn
     }
 }
 
-fn command_rejection_from_apply(error: ApplyPipelineError) -> GraphCommandRejection {
+fn command_rejection_from_apply(
+    identity: GraphCommandIdentity,
+    version: GraphVersion,
+    error: ApplyPipelineError,
+) -> GraphCommandRejection {
     match error {
         ApplyPipelineError::Rejected {
             message,
             diagnostics,
-        } => GraphCommandRejection::new(message, diagnostics),
+        } => GraphCommandRejection::new(identity, version, message, diagnostics),
         error => {
             let message = error.to_string();
             GraphCommandRejection::new(
+                identity,
+                version,
                 message.clone(),
                 vec![Diagnostic::error(
                     "graph.command.apply_failed",
@@ -390,7 +425,15 @@ fn command_rejection_from_apply(error: ApplyPipelineError) -> GraphCommandReject
 
 pub(super) fn middleware_snapshot(state: &RuntimeState) -> GraphRuntimeMiddlewareSnapshot {
     GraphRuntimeMiddlewareSnapshot::new(
-        GraphSnapshot::new(state.graph.clone(), state.revision, state.document_epoch),
+        GraphSnapshot::new(
+            state.provenance,
+            state.graph.clone(),
+            state.revision,
+            state.document_epoch,
+            state.incarnations.clone(),
+            state.edge_incarnations.clone(),
+            state.port_incarnations.clone(),
+        ),
         HistoryState {
             undo_len: state.history.undo_len(),
             redo_len: state.history.redo_len(),
@@ -414,6 +457,8 @@ pub(super) fn install_incremental(
         session,
         index,
         identities,
+        edge_identities,
+        port_identities,
     } = InstalledTransactionImpact::derive(&before, &graph, &state.index, &committed);
     let mut next_incarnation = state.next_incarnation;
     let mut incarnation_delta = BTreeMap::new();
@@ -423,9 +468,50 @@ pub(super) fn install_incremental(
     for node in &identities.added {
         incarnation_delta.insert(*node, Some(allocate_incarnation(&mut next_incarnation)?));
     }
+    let mut incarnations = state.incarnations.clone();
+    for node in &identities.retired {
+        incarnations.remove_mut(node);
+    }
+    for (node, incarnation) in &incarnation_delta {
+        if let Some(incarnation) = incarnation {
+            incarnations.insert_mut(*node, *incarnation);
+        }
+    }
+    let mut edge_incarnations = state.edge_incarnations.clone();
+    if !edge_identities.retired.is_empty() || !edge_identities.added.is_empty() {
+        for edge in &edge_identities.retired {
+            edge_incarnations.remove_mut(edge);
+        }
+        for edge in &edge_identities.added {
+            edge_incarnations.insert_mut(
+                *edge,
+                EdgeIncarnationEntry(allocate_edge_incarnation(&mut next_incarnation)?),
+            );
+        }
+    }
+    let mut port_incarnations = state.port_incarnations.clone();
+    if !port_identities.retired.is_empty() || !port_identities.added.is_empty() {
+        for port in &port_identities.retired {
+            port_incarnations.remove_mut(port);
+        }
+        for port in &port_identities.added {
+            port_incarnations.insert_mut(
+                *port,
+                PortIncarnationEntry(allocate_port_incarnation(&mut next_incarnation)?),
+            );
+        }
+    }
 
     let graph = Arc::new(graph);
-    let snapshot = GraphSnapshot::new(graph.clone(), to_revision, state.document_epoch);
+    let snapshot = GraphSnapshot::new(
+        state.provenance,
+        graph.clone(),
+        to_revision,
+        state.document_epoch,
+        incarnations.clone(),
+        edge_incarnations.clone(),
+        port_incarnations.clone(),
+    );
     let patch = RuntimePatch::incremental(
         state.revision,
         to_revision,
@@ -438,14 +524,9 @@ pub(super) fn install_incremental(
     state.index.apply_impact(&graph, &index);
     state.graph = graph;
     state.revision = to_revision;
-    for node in identities.retired {
-        state.incarnations.remove(&node);
-    }
-    for (node, incarnation) in incarnation_delta {
-        if let Some(incarnation) = incarnation {
-            state.incarnations.insert(node, incarnation);
-        }
-    }
+    state.incarnations = incarnations;
+    state.edge_incarnations = edge_incarnations;
+    state.port_incarnations = port_incarnations;
     state.next_incarnation = next_incarnation;
     if record_history {
         state.history.record(committed);
@@ -482,11 +563,27 @@ pub(super) fn collect_live_sessions(
 }
 
 pub(super) fn allocate_incarnation(next: &mut u64) -> Result<NodeIncarnation, GraphRuntimeError> {
+    allocate_identity(next).map(NodeIncarnation)
+}
+
+pub(super) fn allocate_edge_incarnation(
+    next: &mut u64,
+) -> Result<EdgeIncarnation, GraphRuntimeError> {
+    allocate_identity(next).map(EdgeIncarnation)
+}
+
+pub(super) fn allocate_port_incarnation(
+    next: &mut u64,
+) -> Result<PortIncarnation, GraphRuntimeError> {
+    allocate_identity(next).map(PortIncarnation)
+}
+
+fn allocate_identity(next: &mut u64) -> Result<u64, GraphRuntimeError> {
     let value = *next;
     *next = next
         .checked_add(1)
         .ok_or(GraphRuntimeError::IdentityExhausted)?;
-    Ok(NodeIncarnation(value))
+    Ok(value)
 }
 
 pub(super) fn validate_graph(graph: &Graph) -> Result<(), GraphRuntimeError> {

@@ -6,23 +6,54 @@ use jellyflow_core::core::{CanvasPoint, CanvasRect, EdgeId, NodeId, PortId};
 use rpds::RedBlackTreeMapSync;
 
 use crate::runtime::geometry::{EdgeRouteFacts, HandlePosition};
-use crate::runtime::graph_runtime::NodeIncarnation;
+use crate::runtime::graph_runtime::{EdgeInstanceKey, NodeLifetimeKey};
+use crate::runtime::view_session::ViewProvenance;
 
 use super::RendererStamp;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct PublishedEdgeRoute {
-    edge: EdgeId,
+    provenance: ViewProvenance,
+    instance: EdgeInstanceKey,
     facts: EdgeRouteFacts,
+    publication_incarnation: Arc<()>,
 }
 
 impl PublishedEdgeRoute {
-    pub(crate) fn new(edge: EdgeId, facts: EdgeRouteFacts) -> Self {
-        Self { edge, facts }
+    pub(crate) fn new(
+        provenance: ViewProvenance,
+        instance: EdgeInstanceKey,
+        facts: EdgeRouteFacts,
+    ) -> Option<Self> {
+        (provenance.runtime() == instance.provenance()).then_some(Self {
+            provenance,
+            instance,
+            facts,
+            publication_incarnation: Arc::new(()),
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_test(edge: EdgeId, facts: EdgeRouteFacts) -> Self {
+        Self::new(
+            ViewProvenance::unavailable(),
+            EdgeInstanceKey::unavailable(edge),
+            facts,
+        )
+        .expect("test view and edge provenance must match")
+    }
+
+    pub fn provenance(&self) -> ViewProvenance {
+        self.provenance
     }
 
     pub fn edge(&self) -> EdgeId {
-        self.edge
+        self.instance.edge()
+    }
+
+    /// Returns the unforgeable runtime identity of this exact edge lifetime.
+    pub fn instance(&self) -> EdgeInstanceKey {
+        self.instance
     }
 
     pub fn facts(&self) -> &EdgeRouteFacts {
@@ -33,6 +64,21 @@ impl PublishedEdgeRoute {
         self.facts.interaction.selected = selected;
         self
     }
+
+    pub(crate) fn same_publication(&self, other: &Self) -> bool {
+        Arc::ptr_eq(
+            &self.publication_incarnation,
+            &other.publication_incarnation,
+        )
+    }
+}
+
+impl PartialEq for PublishedEdgeRoute {
+    fn eq(&self, other: &Self) -> bool {
+        self.provenance == other.provenance
+            && self.instance == other.instance
+            && self.facts == other.facts
+    }
 }
 
 /// Published canvas-space geometry for one real graph port.
@@ -41,7 +87,7 @@ pub struct PublishedPortGeometry {
     port: PortId,
     node: NodeId,
     visual_bounds: CanvasRect,
-    hit_bounds: CanvasRect,
+    hit_bounds: Option<CanvasRect>,
     route_anchor: CanvasPoint,
     outward: HandlePosition,
 }
@@ -51,7 +97,7 @@ impl PublishedPortGeometry {
         port: PortId,
         node: NodeId,
         visual_bounds: CanvasRect,
-        hit_bounds: CanvasRect,
+        hit_bounds: Option<CanvasRect>,
         route_anchor: CanvasPoint,
         outward: HandlePosition,
     ) -> Self {
@@ -78,8 +124,11 @@ impl PublishedPortGeometry {
         self.visual_bounds
     }
 
-    /// Bounds used by the adapter for pointer targeting.
-    pub fn hit_bounds(&self) -> CanvasRect {
+    /// Effective visible bounds that may participate in connection probing.
+    ///
+    /// Route geometry remains available when this is `None`, allowing existing edges to stay
+    /// attached while a port is fully clipped by native UI content.
+    pub fn hit_bounds(&self) -> Option<CanvasRect> {
         self.hit_bounds
     }
 
@@ -91,6 +140,12 @@ impl PublishedPortGeometry {
     /// Cardinal direction in which the route leaves the anchor.
     pub fn outward(&self) -> HandlePosition {
         self.outward
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_hit_bounds_for_test(mut self, hit_bounds: Option<CanvasRect>) -> Self {
+        self.hit_bounds = hit_bounds;
+        self
     }
 }
 
@@ -114,8 +169,7 @@ impl PublishedPortOutcome {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PublishedNodeGeometry {
-    node: NodeId,
-    incarnation: NodeIncarnation,
+    lifetime: NodeLifetimeKey,
     renderer: RendererStamp,
     layout_generation: u64,
     fresh: bool,
@@ -126,8 +180,7 @@ pub struct PublishedNodeGeometry {
 
 impl PublishedNodeGeometry {
     pub(crate) fn new(
-        node: NodeId,
-        incarnation: NodeIncarnation,
+        lifetime: NodeLifetimeKey,
         renderer: RendererStamp,
         layout_generation: u64,
         bounds: CanvasRect,
@@ -135,8 +188,7 @@ impl PublishedNodeGeometry {
     ) -> Self {
         let ports = rendered_ports(&port_outcomes);
         Self {
-            node,
-            incarnation,
+            lifetime,
             renderer,
             layout_generation,
             fresh: true,
@@ -147,11 +199,11 @@ impl PublishedNodeGeometry {
     }
 
     pub fn node(&self) -> NodeId {
-        self.node
+        self.lifetime.node()
     }
 
-    pub fn incarnation(&self) -> NodeIncarnation {
-        self.incarnation
+    pub fn lifetime(&self) -> NodeLifetimeKey {
+        self.lifetime
     }
 
     pub fn renderer(&self) -> &RendererStamp {
@@ -186,8 +238,10 @@ impl PublishedNodeGeometry {
             if let PublishedPortOutcome::Rendered(port) = outcome {
                 port.visual_bounds.origin.x += x;
                 port.visual_bounds.origin.y += y;
-                port.hit_bounds.origin.x += x;
-                port.hit_bounds.origin.y += y;
+                if let Some(bounds) = port.hit_bounds.as_mut() {
+                    bounds.origin.x += x;
+                    bounds.origin.y += y;
+                }
                 port.route_anchor.x += x;
                 port.route_anchor.y += y;
             }
@@ -225,8 +279,7 @@ impl PublishedNodeGeometry {
     }
 
     pub(crate) fn approximately_eq(&self, other: &Self, epsilon: f32) -> bool {
-        self.node == other.node
-            && self.incarnation == other.incarnation
+        self.lifetime == other.lifetime
             && self.renderer == other.renderer
             && self.layout_generation == other.layout_generation
             && self.fresh == other.fresh
@@ -268,10 +321,22 @@ fn port_outcomes_approximately_eq(
                 && left.node == right.node
                 && left.outward == right.outward
                 && rect_approximately_eq(left.visual_bounds, right.visual_bounds, epsilon)
-                && rect_approximately_eq(left.hit_bounds, right.hit_bounds, epsilon)
+                && optional_rect_approximately_eq(left.hit_bounds, right.hit_bounds, epsilon)
                 && point_approximately_eq(left.route_anchor, right.route_anchor, epsilon)
         }
         _ => false,
+    }
+}
+
+fn optional_rect_approximately_eq(
+    left: Option<CanvasRect>,
+    right: Option<CanvasRect>,
+    epsilon: f32,
+) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => rect_approximately_eq(left, right, epsilon),
+        (None, None) => true,
+        (Some(_), None) | (None, Some(_)) => false,
     }
 }
 
@@ -417,8 +482,9 @@ impl<K: Ord, V> DoubleEndedIterator for GeometryElementValues<'_, K, V> {
 
 impl<K: Ord, V> ExactSizeIterator for GeometryElementValues<'_, K, V> {}
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct GeometrySnapshotInner {
+    provenance: ViewProvenance,
     layout_revision: u64,
     nodes: SharedGeometryMap<NodeId, PublishedNodeGeometry>,
     ports: SharedGeometryMap<PortId, PublishedPortGeometry>,
@@ -426,7 +492,7 @@ struct GeometrySnapshotInner {
     routes: SharedGeometryMap<EdgeId, PublishedEdgeRoute>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct GeometrySnapshot {
     inner: Arc<GeometrySnapshotInner>,
 }
@@ -444,6 +510,7 @@ fn point_approximately_eq(left: CanvasPoint, right: CanvasPoint, epsilon: f32) -
 
 impl GeometrySnapshot {
     pub(crate) fn new(
+        provenance: ViewProvenance,
         layout_revision: u64,
         nodes: SharedGeometryMap<NodeId, PublishedNodeGeometry>,
         ports: SharedGeometryMap<PortId, PublishedPortGeometry>,
@@ -452,6 +519,7 @@ impl GeometrySnapshot {
     ) -> Self {
         Self {
             inner: Arc::new(GeometrySnapshotInner {
+                provenance,
                 layout_revision,
                 nodes,
                 ports,
@@ -459,6 +527,10 @@ impl GeometrySnapshot {
                 routes,
             }),
         }
+    }
+
+    pub fn provenance(&self) -> ViewProvenance {
+        self.inner.provenance
     }
 
     pub fn layout_revision(&self) -> u64 {

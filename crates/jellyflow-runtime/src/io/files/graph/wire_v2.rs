@@ -1298,11 +1298,12 @@ mod tests {
     fn decoded_v2_route_spec_cannot_bypass_graph_storage_validation() {
         let graph_id = GraphId::from_u128(1);
         let edge_id = EdgeId::from_u128(2);
-        let mut graph = Graph::new(graph_id);
-        graph.insert_edge(
+        let mut builder = GraphBuilder::new(graph_id);
+        builder.insert_edge(
             edge_id,
             Edge::new(EdgeKind::Data, PortId::from_u128(3), PortId::from_u128(4)),
         );
+        let graph = builder.build_unchecked();
         let mut wire = GraphFileWireV2::from_file(&GraphFile::from_graph(graph));
         wire.graph
             .edges

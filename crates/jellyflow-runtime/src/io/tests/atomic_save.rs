@@ -246,9 +246,10 @@ fn parent_directory_sync_failure_recovers_without_mutating_the_live_runtime() {
         GraphRuntime::from_canonical(GraphFile::load_canonical_json(&path, &catalog).unwrap())
             .unwrap();
     let live_symbol = SymbolId::from_u128(0x51);
+    let live_version = live_runtime.snapshot().unwrap().version();
     live_runtime
         .execute(GraphCommand::symbols(
-            0,
+            live_version,
             SymbolEdit::new().add(
                 live_symbol,
                 Symbol {

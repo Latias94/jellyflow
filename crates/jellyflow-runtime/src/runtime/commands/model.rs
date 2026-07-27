@@ -1,4 +1,6 @@
 use std::collections::BTreeSet;
+use std::fmt;
+use std::sync::Arc;
 
 use crate::graph_kernel::GraphMutationFootprint;
 use jellyflow_core::core::{
@@ -8,16 +10,49 @@ use jellyflow_core::core::{
 use jellyflow_core::interaction::NodeGraphConnectionMode;
 
 use crate::rules::{ConnectDecision, Diagnostic, EdgeEndpoint};
-use crate::runtime::graph_runtime::{GraphIndex, GraphRevision, GraphSnapshot, RuntimePatch};
+use crate::runtime::graph_runtime::{
+    GraphIndex, GraphRevision, GraphSnapshot, GraphVersion, RuntimePatch,
+};
 
 /// A graph mutation planned against one owned graph snapshot.
 #[derive(Debug, Clone)]
 pub struct GraphCommand {
-    pub(super) expected_revision: GraphRevision,
+    identity: GraphCommandIdentity,
+    pub(super) expected_version: GraphVersion,
     pub(super) label: Option<String>,
     pub(super) record_history: bool,
     pub(super) action: GraphCommandAction,
 }
+
+struct GraphCommandIdentityMarker;
+
+/// Opaque identity shared by one command and every outcome issued for it.
+///
+/// Cloning a command preserves this identity. Constructing another command, even with identical
+/// payload and expected version, creates a different identity. This lets asynchronous consumers
+/// reject a valid outcome that belongs to a different command without exposing a forgeable counter.
+#[derive(Clone)]
+pub struct GraphCommandIdentity(Arc<GraphCommandIdentityMarker>);
+
+impl GraphCommandIdentity {
+    fn new() -> Self {
+        Self(Arc::new(GraphCommandIdentityMarker))
+    }
+}
+
+impl fmt::Debug for GraphCommandIdentity {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("GraphCommandIdentity(<opaque>)")
+    }
+}
+
+impl PartialEq for GraphCommandIdentity {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for GraphCommandIdentity {}
 
 #[derive(Debug, Clone)]
 pub(super) enum GraphCommandAction {
@@ -83,18 +118,20 @@ impl NodeGeometryEdit {
 }
 
 impl GraphCommand {
-    pub fn undo(expected_revision: GraphRevision) -> Self {
+    pub fn undo(expected_version: GraphVersion) -> Self {
         Self {
-            expected_revision,
+            identity: GraphCommandIdentity::new(),
+            expected_version,
             label: Some("undo".to_owned()),
             record_history: true,
             action: GraphCommandAction::Undo,
         }
     }
 
-    pub fn redo(expected_revision: GraphRevision) -> Self {
+    pub fn redo(expected_version: GraphVersion) -> Self {
         Self {
-            expected_revision,
+            identity: GraphCommandIdentity::new(),
+            expected_version,
             label: Some("redo".to_owned()),
             record_history: true,
             action: GraphCommandAction::Redo,
@@ -102,12 +139,13 @@ impl GraphCommand {
     }
 
     pub fn set_node_data(
-        expected_revision: GraphRevision,
+        expected_version: GraphVersion,
         node: NodeId,
         data: serde_json::Value,
     ) -> Self {
         Self {
-            expected_revision,
+            identity: GraphCommandIdentity::new(),
+            expected_version,
             label: None,
             record_history: true,
             action: GraphCommandAction::SetNodeData { node, data },
@@ -115,23 +153,23 @@ impl GraphCommand {
     }
 
     pub fn set_node_position(
-        expected_revision: GraphRevision,
+        expected_version: GraphVersion,
         node: NodeId,
         position: CanvasPoint,
     ) -> Self {
         Self::set_node_geometry(
-            expected_revision,
+            expected_version,
             [NodeGeometryEdit::new(node).with_position(position)],
         )
     }
 
     pub fn set_node_size(
-        expected_revision: GraphRevision,
+        expected_version: GraphVersion,
         node: NodeId,
         size: Option<CanvasSize>,
     ) -> Self {
         Self::set_node_geometry(
-            expected_revision,
+            expected_version,
             [NodeGeometryEdit::new(node).with_size(size)],
         )
     }
@@ -142,11 +180,12 @@ impl GraphCommand {
     /// `Node::expand_parent` as adapter-facing interaction preferences but does not clamp geometry
     /// or mutate parent groups implicitly.
     pub fn set_node_geometry(
-        expected_revision: GraphRevision,
+        expected_version: GraphVersion,
         edits: impl IntoIterator<Item = NodeGeometryEdit>,
     ) -> Self {
         Self {
-            expected_revision,
+            identity: GraphCommandIdentity::new(),
+            expected_version,
             label: None,
             record_history: true,
             action: GraphCommandAction::SetNodeGeometry(edits.into_iter().collect()),
@@ -154,12 +193,13 @@ impl GraphCommand {
     }
 
     pub fn set_port_data(
-        expected_revision: GraphRevision,
+        expected_version: GraphVersion,
         port: PortId,
         data: serde_json::Value,
     ) -> Self {
         Self {
-            expected_revision,
+            identity: GraphCommandIdentity::new(),
+            expected_version,
             label: None,
             record_history: true,
             action: GraphCommandAction::SetPortData { port, data },
@@ -167,54 +207,56 @@ impl GraphCommand {
     }
 
     /// Applies one revision-checked, atomic edit to graph-scoped symbols.
-    pub fn symbols(expected_revision: GraphRevision, edit: SymbolEdit) -> Self {
+    pub fn symbols(expected_version: GraphVersion, edit: SymbolEdit) -> Self {
         Self {
-            expected_revision,
+            identity: GraphCommandIdentity::new(),
+            expected_version,
             label: None,
             record_history: true,
             action: GraphCommandAction::Symbols(edit),
         }
     }
 
-    pub fn topology(expected_revision: GraphRevision, edit: TopologyEdit) -> Self {
+    pub fn topology(expected_version: GraphVersion, edit: TopologyEdit) -> Self {
         Self {
-            expected_revision,
+            identity: GraphCommandIdentity::new(),
+            expected_version,
             label: None,
             record_history: true,
             action: GraphCommandAction::Topology(edit),
         }
     }
 
-    pub fn connection(expected_revision: GraphRevision, edit: ConnectionEdit) -> Self {
-        Self::topology(expected_revision, TopologyEdit::new().connection(edit))
+    pub fn connection(expected_version: GraphVersion, edit: ConnectionEdit) -> Self {
+        Self::topology(expected_version, TopologyEdit::new().connection(edit))
     }
 
     pub fn connect(
-        expected_revision: GraphRevision,
+        expected_version: GraphVersion,
         edge: EdgeId,
         from: PortId,
         to: PortId,
         mode: NodeGraphConnectionMode,
     ) -> Self {
         Self::connection(
-            expected_revision,
+            expected_version,
             ConnectionEdit::connect(edge, from, to, mode),
         )
     }
 
-    pub fn disconnect(expected_revision: GraphRevision, edge: EdgeId) -> Self {
-        Self::connection(expected_revision, ConnectionEdit::disconnect(edge))
+    pub fn disconnect(expected_version: GraphVersion, edge: EdgeId) -> Self {
+        Self::connection(expected_version, ConnectionEdit::disconnect(edge))
     }
 
     pub fn reconnect(
-        expected_revision: GraphRevision,
+        expected_version: GraphVersion,
         edge: EdgeId,
         endpoint: EdgeEndpoint,
         new_port: PortId,
         mode: NodeGraphConnectionMode,
     ) -> Self {
         Self::connection(
-            expected_revision,
+            expected_version,
             ConnectionEdit::reconnect(edge, endpoint, new_port, mode),
         )
     }
@@ -239,8 +281,12 @@ impl GraphCommand {
         self.record_history
     }
 
-    pub fn expected_revision(&self) -> GraphRevision {
-        self.expected_revision
+    pub fn expected_version(&self) -> GraphVersion {
+        self.expected_version
+    }
+
+    pub fn identity(&self) -> &GraphCommandIdentity {
+        &self.identity
     }
 
     pub fn label(&self) -> Option<&str> {
@@ -339,42 +385,44 @@ pub enum ConnectionEdit {
     },
 }
 
-pub type ConnectionDecision = ConnectDecision;
-
 #[derive(Debug, Clone)]
 pub struct ConnectionEvaluation {
-    revision: GraphRevision,
-    decision: ConnectionDecision,
+    version: GraphVersion,
+    decision: ConnectDecision,
     diagnostics: Vec<Diagnostic>,
 }
 
 impl ConnectionEvaluation {
-    pub(crate) fn accepted(revision: GraphRevision) -> Self {
+    pub(crate) fn accepted(version: GraphVersion) -> Self {
         Self {
-            revision,
-            decision: ConnectionDecision::Accept,
+            version,
+            decision: ConnectDecision::Accept,
             diagnostics: Vec::new(),
         }
     }
 
-    pub(crate) fn rejected(revision: GraphRevision, diagnostics: Vec<Diagnostic>) -> Self {
+    pub(crate) fn rejected(version: GraphVersion, diagnostics: Vec<Diagnostic>) -> Self {
         Self {
-            revision,
-            decision: ConnectionDecision::Reject,
+            version,
+            decision: ConnectDecision::Reject,
             diagnostics,
         }
     }
 
     pub fn revision(&self) -> GraphRevision {
-        self.revision
+        self.version.revision()
     }
 
-    pub fn decision(&self) -> ConnectionDecision {
+    pub fn version(&self) -> GraphVersion {
+        self.version
+    }
+
+    pub fn decision(&self) -> ConnectDecision {
         self.decision
     }
 
     pub fn is_accept(&self) -> bool {
-        self.decision == ConnectionDecision::Accept
+        self.decision == ConnectDecision::Accept
     }
 
     pub fn diagnostics(&self) -> &[Diagnostic] {
@@ -771,13 +819,33 @@ fn append_binding_dependencies(
 
 #[derive(Debug, Clone)]
 pub struct GraphCommandReceipt {
+    identity: GraphCommandIdentity,
+    version: GraphVersion,
     patch: RuntimePatch,
     footprint: GraphMutationFootprint,
 }
 
 impl GraphCommandReceipt {
-    pub(crate) fn new(patch: RuntimePatch, footprint: GraphMutationFootprint) -> Self {
-        Self { patch, footprint }
+    pub(crate) fn new(
+        identity: GraphCommandIdentity,
+        version: GraphVersion,
+        patch: RuntimePatch,
+        footprint: GraphMutationFootprint,
+    ) -> Self {
+        Self {
+            identity,
+            version,
+            patch,
+            footprint,
+        }
+    }
+
+    pub fn version(&self) -> GraphVersion {
+        self.version
+    }
+
+    pub fn identity(&self) -> &GraphCommandIdentity {
+        &self.identity
     }
 
     pub fn revision(&self) -> GraphRevision {
@@ -795,20 +863,34 @@ impl GraphCommandReceipt {
 
 #[derive(Debug, Clone)]
 pub struct GraphCommandNoop {
-    revision: GraphRevision,
+    identity: GraphCommandIdentity,
+    version: GraphVersion,
     footprint: GraphMutationFootprint,
 }
 
 impl GraphCommandNoop {
-    pub(crate) fn new(revision: GraphRevision, footprint: GraphMutationFootprint) -> Self {
+    pub(crate) fn new(
+        identity: GraphCommandIdentity,
+        version: GraphVersion,
+        footprint: GraphMutationFootprint,
+    ) -> Self {
         Self {
-            revision,
+            identity,
+            version,
             footprint,
         }
     }
 
     pub fn revision(&self) -> GraphRevision {
-        self.revision
+        self.version.revision()
+    }
+
+    pub fn version(&self) -> GraphVersion {
+        self.version
+    }
+
+    pub fn identity(&self) -> &GraphCommandIdentity {
+        &self.identity
     }
 
     pub fn footprint(&self) -> &GraphMutationFootprint {
@@ -818,26 +900,41 @@ impl GraphCommandNoop {
 
 #[derive(Debug, Clone)]
 pub struct GraphCommandConflict {
-    expected_revision: GraphRevision,
+    identity: GraphCommandIdentity,
+    expected_version: GraphVersion,
     current: GraphSnapshot,
     footprint: GraphMutationFootprint,
 }
 
 impl GraphCommandConflict {
     pub(crate) fn new(
-        expected_revision: GraphRevision,
+        identity: GraphCommandIdentity,
+        expected_version: GraphVersion,
         current: GraphSnapshot,
         footprint: GraphMutationFootprint,
     ) -> Self {
         Self {
-            expected_revision,
+            identity,
+            expected_version,
             current,
             footprint,
         }
     }
 
     pub fn expected_revision(&self) -> GraphRevision {
-        self.expected_revision
+        self.expected_version.revision()
+    }
+
+    pub fn identity(&self) -> &GraphCommandIdentity {
+        &self.identity
+    }
+
+    pub fn expected_version(&self) -> GraphVersion {
+        self.expected_version
+    }
+
+    pub fn current_version(&self) -> GraphVersion {
+        self.current.version()
     }
 
     pub fn current(&self) -> &GraphSnapshot {
@@ -851,13 +948,22 @@ impl GraphCommandConflict {
 
 #[derive(Debug, Clone)]
 pub struct GraphCommandRejection {
+    identity: GraphCommandIdentity,
+    version: GraphVersion,
     message: String,
     diagnostics: Vec<Diagnostic>,
 }
 
 impl GraphCommandRejection {
-    pub(crate) fn new(message: impl Into<String>, diagnostics: Vec<Diagnostic>) -> Self {
+    pub(crate) fn new(
+        identity: GraphCommandIdentity,
+        version: GraphVersion,
+        message: impl Into<String>,
+        diagnostics: Vec<Diagnostic>,
+    ) -> Self {
         Self {
+            identity,
+            version,
             message: message.into(),
             diagnostics,
         }
@@ -865,6 +971,18 @@ impl GraphCommandRejection {
 
     pub fn message(&self) -> &str {
         &self.message
+    }
+
+    pub fn identity(&self) -> &GraphCommandIdentity {
+        &self.identity
+    }
+
+    pub fn version(&self) -> GraphVersion {
+        self.version
+    }
+
+    pub fn revision(&self) -> GraphRevision {
+        self.version.revision()
     }
 
     pub fn diagnostics(&self) -> &[Diagnostic] {
@@ -881,6 +999,25 @@ pub enum GraphCommandOutcome {
 }
 
 impl GraphCommandOutcome {
+    pub fn identity(&self) -> &GraphCommandIdentity {
+        match self {
+            Self::Applied(receipt) => receipt.identity(),
+            Self::Noop(noop) => noop.identity(),
+            Self::Conflict(conflict) => conflict.identity(),
+            Self::Rejected(rejection) => rejection.identity(),
+        }
+    }
+
+    /// Returns the authoritative runtime version observed after this command completed.
+    pub fn version(&self) -> GraphVersion {
+        match self {
+            Self::Applied(receipt) => receipt.version(),
+            Self::Noop(noop) => noop.version(),
+            Self::Conflict(conflict) => conflict.current_version(),
+            Self::Rejected(rejection) => rejection.version(),
+        }
+    }
+
     pub fn applied(&self) -> Option<&GraphCommandReceipt> {
         match self {
             Self::Applied(receipt) => Some(receipt),

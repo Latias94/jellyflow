@@ -3,9 +3,10 @@
 mod model;
 mod planning;
 
+pub use crate::rules::ConnectDecision;
 pub(crate) use model::GraphCommandExecutionKind;
 pub use model::{
-    ConnectionDecision, ConnectionEdit, ConnectionEvaluation, GraphCommand, GraphCommandConflict,
+    ConnectionEdit, ConnectionEvaluation, GraphCommand, GraphCommandConflict, GraphCommandIdentity,
     GraphCommandNoop, GraphCommandOutcome, GraphCommandReceipt, GraphCommandRejection,
     IncidentEdgePolicy, NodeGeometryEdit, SymbolEdit, TopologyEdit, TopologyPort,
 };

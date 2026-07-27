@@ -4,23 +4,131 @@ use open_gpui::Hsla;
 
 use crate::theme::{
     OPEN_GPUI_DEFAULT_EDGE_EMPHASIZED_WIDTH, OPEN_GPUI_DEFAULT_EDGE_HOVERED_WIDTH,
-    OPEN_GPUI_DEFAULT_EDGE_ORDINARY_WIDTH, OpenGpuiGraphPalette, OpenGpuiGraphTheme,
+    OPEN_GPUI_DEFAULT_EDGE_ORDINARY_WIDTH, OPEN_GPUI_DEFAULT_EDGE_STRONG_EMPHASIZED_WIDTH,
+    OPEN_GPUI_DEFAULT_EDGE_STRONG_HOVERED_WIDTH, OPEN_GPUI_DEFAULT_EDGE_STRONG_ORDINARY_WIDTH,
+    OpenGpuiGraphPalette, OpenGpuiGraphStyleSlot, OpenGpuiGraphTheme,
 };
 
-/// Semantic visual state of a native edge.
+use super::positive_or;
+
+/// Orthogonal, allocation-free visual facts for one native edge.
+///
+/// Pointer, selection, keyboard focus, active interaction, and preview ownership remain separate
+/// facts. Resolution composes them into one bounded halo recipe while the typed ordinary stroke is
+/// retained as an independent base layer.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum OpenGpuiEdgeVisualState {
-    /// Ordinary committed edge.
+pub struct OpenGpuiEdgeVisualFacts {
+    hovered: bool,
+    selected: bool,
+    focused: bool,
+    active: bool,
+    preview: bool,
+}
+
+impl OpenGpuiEdgeVisualFacts {
+    /// Returns whether the pointer currently emphasizes this edge.
+    #[must_use]
+    pub const fn hovered(self) -> bool {
+        self.hovered
+    }
+
+    /// Returns whether this edge belongs to the current selection.
+    #[must_use]
+    pub const fn selected(self) -> bool {
+        self.selected
+    }
+
+    /// Returns whether keyboard focus currently targets this edge.
+    #[must_use]
+    pub const fn focused(self) -> bool {
+        self.focused
+    }
+
+    /// Returns whether this edge participates in an active graph interaction.
+    #[must_use]
+    pub const fn active(self) -> bool {
+        self.active
+    }
+
+    /// Returns whether this edge is an adapter-owned connection preview.
+    #[must_use]
+    pub const fn preview(self) -> bool {
+        self.preview
+    }
+
+    /// Sets pointer emphasis without replacing any other fact.
+    #[must_use]
+    pub const fn with_hovered(mut self, hovered: bool) -> Self {
+        self.hovered = hovered;
+        self
+    }
+
+    /// Sets selection membership without replacing any other fact.
+    #[must_use]
+    pub const fn with_selected(mut self, selected: bool) -> Self {
+        self.selected = selected;
+        self
+    }
+
+    /// Sets keyboard focus without replacing any other fact.
+    #[must_use]
+    pub const fn with_focused(mut self, focused: bool) -> Self {
+        self.focused = focused;
+        self
+    }
+
+    /// Sets active-interaction emphasis without replacing any other fact.
+    #[must_use]
+    pub const fn with_active(mut self, active: bool) -> Self {
+        self.active = active;
+        self
+    }
+
+    /// Sets preview ownership without replacing any other fact.
+    #[must_use]
+    pub const fn with_preview(mut self, preview: bool) -> Self {
+        self.preview = preview;
+        self
+    }
+
+    /// Returns whether at least one non-base visual layer is present.
+    #[must_use]
+    pub const fn has_emphasis(self) -> bool {
+        self.hovered || self.selected || self.focused || self.active || self.preview
+    }
+
+    /// Returns the deterministic topmost semantic layer for the composed halo.
+    ///
+    /// Priority is preview, active interaction, keyboard focus, selection, then hover.
+    #[must_use]
+    pub const fn dominant_layer(self) -> OpenGpuiEdgeLayer {
+        if self.preview {
+            OpenGpuiEdgeLayer::Preview
+        } else if self.active {
+            OpenGpuiEdgeLayer::Active
+        } else if self.focused {
+            OpenGpuiEdgeLayer::Focused
+        } else if self.selected {
+            OpenGpuiEdgeLayer::Selected
+        } else if self.hovered {
+            OpenGpuiEdgeLayer::Hovered
+        } else {
+            OpenGpuiEdgeLayer::Base
+        }
+    }
+}
+
+/// Closed screen-space weight vocabulary for native edge painters.
+///
+/// Tiers select one of the theme's two validated width tables. They cannot carry an arbitrary
+/// width or callback, so application edge recipes retain a finite paint vocabulary.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum OpenGpuiEdgeWeightTier {
+    /// Standard data-flow weight.
     #[default]
-    Ordinary,
-    /// Edge currently under the pointer.
-    Hovered,
-    /// Selected committed edge.
-    Selected,
-    /// Edge participating in an active reconnect or commit presentation.
-    Active,
-    /// Adapter-owned connection preview.
-    Preview,
+    Regular,
+    /// Emphasized control-flow weight.
+    Strong,
 }
 
 /// Explicit paint layer for batchable native edge chrome.
@@ -28,29 +136,19 @@ pub enum OpenGpuiEdgeVisualState {
 /// Variant order is paint order: later variants must be painted over earlier variants.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum OpenGpuiEdgeLayer {
-    /// Ordinary committed edges.
-    #[default]
-    Ordinary,
     /// Hovered committed edges.
     Hovered,
     /// Selected committed edges.
     Selected,
+    /// Keyboard-focused committed edges.
+    Focused,
     /// Active reconnect or commit presentation.
     Active,
     /// Adapter-owned connection preview.
     Preview,
-}
-
-impl From<OpenGpuiEdgeVisualState> for OpenGpuiEdgeLayer {
-    fn from(state: OpenGpuiEdgeVisualState) -> Self {
-        match state {
-            OpenGpuiEdgeVisualState::Ordinary => Self::Ordinary,
-            OpenGpuiEdgeVisualState::Hovered => Self::Hovered,
-            OpenGpuiEdgeVisualState::Selected => Self::Selected,
-            OpenGpuiEdgeVisualState::Active => Self::Active,
-            OpenGpuiEdgeVisualState::Preview => Self::Preview,
-        }
-    }
+    /// Typed ordinary stroke retained and painted over every halo.
+    #[default]
+    Base,
 }
 
 /// Normalized semantic tone selected by an edge style token.
@@ -106,8 +204,11 @@ impl OpenGpuiEdgeTone {
 pub struct OpenGpuiEdgeStyle {
     color: Hsla,
     stroke_width: f32,
-    layer: OpenGpuiEdgeLayer,
     tone: OpenGpuiEdgeTone,
+    style_slot: Option<OpenGpuiGraphStyleSlot>,
+    weight_tier: OpenGpuiEdgeWeightTier,
+    visual_facts: OpenGpuiEdgeVisualFacts,
+    halo: Option<OpenGpuiEdgeHaloStyle>,
 }
 
 impl OpenGpuiEdgeStyle {
@@ -123,10 +224,10 @@ impl OpenGpuiEdgeStyle {
         self.stroke_width
     }
 
-    /// Returns the explicit paint layer.
+    /// Returns the typed base paint layer.
     #[must_use]
     pub const fn layer(self) -> OpenGpuiEdgeLayer {
-        self.layer
+        OpenGpuiEdgeLayer::Base
     }
 
     /// Returns the normalized semantic tone.
@@ -135,23 +236,89 @@ impl OpenGpuiEdgeStyle {
         self.tone
     }
 
-    /// Reapplies only the visual treatment while preserving the semantic tone.
+    /// Returns the registered application-native style slot used by this edge.
+    ///
+    /// An absent or theme-unregistered slot resolves to `None` and uses the semantic tone.
+    #[must_use]
+    pub const fn style_slot(self) -> Option<OpenGpuiGraphStyleSlot> {
+        self.style_slot
+    }
+
+    /// Returns the closed weight tier that selected this style's screen-space width table.
+    #[must_use]
+    pub const fn weight_tier(self) -> OpenGpuiEdgeWeightTier {
+        self.weight_tier
+    }
+
+    /// Returns every orthogonal fact used to compose the optional halo.
+    #[must_use]
+    pub const fn visual_facts(self) -> OpenGpuiEdgeVisualFacts {
+        self.visual_facts
+    }
+
+    /// Returns the optional composed halo painted behind the typed base stroke.
+    #[must_use]
+    pub const fn halo(self) -> Option<OpenGpuiEdgeHaloStyle> {
+        self.halo
+    }
+
+    /// Reapplies visual facts while preserving semantic tone, style slot, and weight tier.
     ///
     /// Stroke widths remain screen-space metrics. Callers must project route geometry before
     /// painting and must not multiply this style by canvas zoom.
     #[must_use]
-    pub fn with_visual_state(
+    pub fn with_visual_facts(
         self,
-        state: OpenGpuiEdgeVisualState,
+        visual_facts: OpenGpuiEdgeVisualFacts,
         theme: &OpenGpuiGraphTheme,
     ) -> Self {
-        theme.resolve_edge_tone_style(state, self.tone)
+        theme.resolve_edge_tone_style(visual_facts, self.tone, self.style_slot, self.weight_tier)
     }
 
     /// Returns the allocation-free key used to group compatible paint work.
     #[must_use]
     pub fn batch_key(self) -> OpenGpuiEdgeBatchKey {
         OpenGpuiEdgeBatchKey::from_style(self)
+    }
+
+    /// Returns the allocation-free halo key when at least one emphasis fact is active.
+    #[must_use]
+    pub fn halo_batch_key(self) -> Option<OpenGpuiEdgeBatchKey> {
+        self.halo.map(OpenGpuiEdgeBatchKey::from_halo)
+    }
+}
+
+/// Fully resolved, finite halo painted behind an edge's typed base stroke.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OpenGpuiEdgeHaloStyle {
+    color: Hsla,
+    stroke_width: f32,
+    layer: OpenGpuiEdgeLayer,
+}
+
+impl OpenGpuiEdgeHaloStyle {
+    /// Returns the composed halo color.
+    #[must_use]
+    pub const fn color(self) -> Hsla {
+        self.color
+    }
+
+    /// Returns the halo width in screen pixels.
+    #[must_use]
+    pub const fn stroke_width(self) -> f32 {
+        self.stroke_width
+    }
+
+    /// Returns the deterministic dominant semantic layer.
+    #[must_use]
+    pub const fn layer(self) -> OpenGpuiEdgeLayer {
+        self.layer
+    }
+
+    /// Returns the allocation-free key used to batch this halo.
+    #[must_use]
+    pub fn batch_key(self) -> OpenGpuiEdgeBatchKey {
+        OpenGpuiEdgeBatchKey::from_halo(self)
     }
 }
 
@@ -171,9 +338,17 @@ impl OpenGpuiEdgeBatchKey {
     #[must_use]
     pub fn from_style(style: OpenGpuiEdgeStyle) -> Self {
         Self {
-            layer: style.layer,
+            layer: OpenGpuiEdgeLayer::Base,
             color: style.color,
             stroke_width_bits: style.stroke_width.to_bits(),
+        }
+    }
+
+    fn from_halo(halo: OpenGpuiEdgeHaloStyle) -> Self {
+        Self {
+            layer: halo.layer,
+            color: halo.color,
+            stroke_width_bits: halo.stroke_width.to_bits(),
         }
     }
 
@@ -197,141 +372,239 @@ impl OpenGpuiEdgeBatchKey {
 }
 
 impl OpenGpuiGraphTheme {
-    /// Resolves native edge chrome from visual state and an optional persisted style token.
+    /// Resolves native edge chrome from orthogonal visual facts and an optional style token.
     ///
     /// Unknown tokens deliberately share the default tone and batch key. State tinting preserves a
     /// hint of the semantic tone while making hover, selection, active, and preview states obvious.
     #[must_use]
     pub fn resolve_edge_style(
         &self,
-        state: OpenGpuiEdgeVisualState,
+        visual_facts: OpenGpuiEdgeVisualFacts,
         style_token: Option<&str>,
     ) -> OpenGpuiEdgeStyle {
+        self.resolve_edge_style_with_weight_tier(
+            visual_facts,
+            style_token,
+            OpenGpuiEdgeWeightTier::Regular,
+        )
+    }
+
+    /// Resolves native edge chrome from a closed weight tier and optional persisted style token.
+    ///
+    /// Unknown tokens still share the default tone. `weight_tier` selects only a validated theme
+    /// metric table and never introduces arbitrary edge-specific paint state.
+    #[must_use]
+    pub fn resolve_edge_style_with_weight_tier(
+        &self,
+        visual_facts: OpenGpuiEdgeVisualFacts,
+        style_token: Option<&str>,
+        weight_tier: OpenGpuiEdgeWeightTier,
+    ) -> OpenGpuiEdgeStyle {
         let tone = OpenGpuiEdgeTone::from_style_token(style_token);
-        self.resolve_edge_tone_style(state, tone)
+        self.resolve_edge_tone_style(visual_facts, tone, None, weight_tier)
+    }
+
+    /// Resolves native edge chrome from a bounded application-native style slot.
+    ///
+    /// The semantic tone remains the deterministic fallback when the theme did not register the
+    /// requested slot. No arbitrary application token enters the resulting batch key.
+    #[must_use]
+    pub fn resolve_edge_style_slot(
+        &self,
+        visual_facts: OpenGpuiEdgeVisualFacts,
+        tone: OpenGpuiEdgeTone,
+        style_slot: Option<OpenGpuiGraphStyleSlot>,
+    ) -> OpenGpuiEdgeStyle {
+        self.resolve_edge_style_slot_with_weight_tier(
+            visual_facts,
+            tone,
+            style_slot,
+            OpenGpuiEdgeWeightTier::Regular,
+        )
+    }
+
+    /// Resolves native edge chrome from a bounded style slot and closed weight tier.
+    #[must_use]
+    pub fn resolve_edge_style_slot_with_weight_tier(
+        &self,
+        visual_facts: OpenGpuiEdgeVisualFacts,
+        tone: OpenGpuiEdgeTone,
+        style_slot: Option<OpenGpuiGraphStyleSlot>,
+        weight_tier: OpenGpuiEdgeWeightTier,
+    ) -> OpenGpuiEdgeStyle {
+        self.resolve_edge_tone_style(visual_facts, tone, style_slot, weight_tier)
     }
 
     fn resolve_edge_tone_style(
         &self,
-        state: OpenGpuiEdgeVisualState,
+        visual_facts: OpenGpuiEdgeVisualFacts,
         tone: OpenGpuiEdgeTone,
+        requested_slot: Option<OpenGpuiGraphStyleSlot>,
+        weight_tier: OpenGpuiEdgeWeightTier,
     ) -> OpenGpuiEdgeStyle {
-        let base = tone.color(self.palette);
-        let (color, configured_width) = match state {
-            OpenGpuiEdgeVisualState::Ordinary => (base, self.metrics.edge_ordinary_width),
-            OpenGpuiEdgeVisualState::Hovered => (
-                base.blend(self.palette.edge_hover_tint),
-                self.metrics.edge_hovered_width,
-            ),
-            OpenGpuiEdgeVisualState::Selected => (
-                base.blend(self.palette.edge_selection_tint),
-                self.metrics.edge_selected_width,
-            ),
-            OpenGpuiEdgeVisualState::Active => (
-                base.blend(self.palette.edge_active_tint),
-                self.metrics.edge_active_width,
-            ),
-            OpenGpuiEdgeVisualState::Preview => (
-                base.blend(self.palette.edge_preview_tint),
-                self.metrics.edge_active_width,
-            ),
-        };
-        let fallback_width = match state {
-            OpenGpuiEdgeVisualState::Ordinary => OPEN_GPUI_DEFAULT_EDGE_ORDINARY_WIDTH,
-            OpenGpuiEdgeVisualState::Hovered => OPEN_GPUI_DEFAULT_EDGE_HOVERED_WIDTH,
-            OpenGpuiEdgeVisualState::Selected
-            | OpenGpuiEdgeVisualState::Active
-            | OpenGpuiEdgeVisualState::Preview => OPEN_GPUI_DEFAULT_EDGE_EMPHASIZED_WIDTH,
-        };
+        let style_slot = requested_slot.filter(|slot| self.style_slot(*slot).is_some());
+        let base = style_slot
+            .and_then(|slot| self.style_slot(slot))
+            .map_or_else(|| tone.color(self.palette), |recipe| recipe.color());
+        let (ordinary_width, hovered_width, selected_width, active_width, fallback_widths) =
+            match weight_tier {
+                OpenGpuiEdgeWeightTier::Regular => (
+                    self.metrics.edge_ordinary_width,
+                    self.metrics.edge_hovered_width,
+                    self.metrics.edge_selected_width,
+                    self.metrics.edge_active_width,
+                    (
+                        OPEN_GPUI_DEFAULT_EDGE_ORDINARY_WIDTH,
+                        OPEN_GPUI_DEFAULT_EDGE_HOVERED_WIDTH,
+                        OPEN_GPUI_DEFAULT_EDGE_EMPHASIZED_WIDTH,
+                    ),
+                ),
+                OpenGpuiEdgeWeightTier::Strong => (
+                    self.metrics.edge_strong_ordinary_width,
+                    self.metrics.edge_strong_hovered_width,
+                    self.metrics.edge_strong_selected_width,
+                    self.metrics.edge_strong_active_width,
+                    (
+                        OPEN_GPUI_DEFAULT_EDGE_STRONG_ORDINARY_WIDTH,
+                        OPEN_GPUI_DEFAULT_EDGE_STRONG_HOVERED_WIDTH,
+                        OPEN_GPUI_DEFAULT_EDGE_STRONG_EMPHASIZED_WIDTH,
+                    ),
+                ),
+            };
+        let base_width = positive_or(ordinary_width, fallback_widths.0);
+        let hovered_width = positive_or(hovered_width, fallback_widths.1);
+        let selected_width = positive_or(selected_width, fallback_widths.2);
+        let active_width = positive_or(active_width, fallback_widths.2);
+        let halo = visual_facts.has_emphasis().then(|| {
+            let mut color = base;
+            let mut stroke_width = base_width;
+            if visual_facts.hovered() {
+                color = color.blend(self.palette.edge_hover_tint);
+                stroke_width = stroke_width.max(hovered_width);
+            }
+            if visual_facts.selected() {
+                color = color.blend(self.palette.edge_selection_tint);
+                stroke_width = stroke_width.max(selected_width);
+            }
+            if visual_facts.focused() {
+                color = color.blend(self.palette.focus.opacity(0.72));
+                stroke_width = stroke_width.max(selected_width);
+            }
+            if visual_facts.active() {
+                color = color.blend(self.palette.edge_active_tint);
+                stroke_width = stroke_width.max(active_width);
+            }
+            if visual_facts.preview() {
+                color = color.blend(self.palette.edge_preview_tint);
+                stroke_width = stroke_width.max(active_width);
+            }
+            OpenGpuiEdgeHaloStyle {
+                color,
+                stroke_width,
+                layer: visual_facts.dominant_layer(),
+            }
+        });
 
         OpenGpuiEdgeStyle {
-            color,
-            stroke_width: positive_or(configured_width, fallback_width),
-            layer: state.into(),
+            color: base,
+            stroke_width: base_width,
             tone,
+            style_slot,
+            weight_tier,
+            visual_facts,
+            halo,
         }
-    }
-}
-
-fn positive_or(value: f32, fallback: f32) -> f32 {
-    if value.is_finite() && value > 0.0 {
-        value
-    } else {
-        fallback
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
 
     #[test]
-    fn visual_states_resolve_to_ordered_layers_and_expected_widths() {
-        let theme = OpenGpuiGraphTheme::default();
-        let cases = [
-            (
-                OpenGpuiEdgeVisualState::Ordinary,
-                OpenGpuiEdgeLayer::Ordinary,
-                1.5,
-            ),
-            (
-                OpenGpuiEdgeVisualState::Hovered,
-                OpenGpuiEdgeLayer::Hovered,
-                2.0,
-            ),
-            (
-                OpenGpuiEdgeVisualState::Selected,
-                OpenGpuiEdgeLayer::Selected,
-                2.5,
-            ),
-            (
-                OpenGpuiEdgeVisualState::Active,
-                OpenGpuiEdgeLayer::Active,
-                2.5,
-            ),
-            (
-                OpenGpuiEdgeVisualState::Preview,
-                OpenGpuiEdgeLayer::Preview,
-                2.5,
-            ),
-        ];
+    fn visual_facts_are_orthogonal_and_have_deterministic_layer_priority() {
+        let facts = OpenGpuiEdgeVisualFacts::default()
+            .with_hovered(true)
+            .with_selected(true)
+            .with_focused(true)
+            .with_active(true)
+            .with_preview(true);
 
-        for (state, layer, width) in cases {
-            let style = theme.resolve_edge_style(state, None);
-            assert_eq!(style.layer(), layer);
-            assert_eq!(style.stroke_width(), width);
-        }
-        assert!(OpenGpuiEdgeLayer::Ordinary < OpenGpuiEdgeLayer::Hovered);
+        assert!(facts.hovered());
+        assert!(facts.selected());
+        assert!(facts.focused());
+        assert!(facts.active());
+        assert!(facts.preview());
+        assert_eq!(facts.dominant_layer(), OpenGpuiEdgeLayer::Preview);
+        assert_eq!(
+            facts.with_preview(false).dominant_layer(),
+            OpenGpuiEdgeLayer::Active
+        );
+        assert_eq!(
+            facts
+                .with_preview(false)
+                .with_active(false)
+                .dominant_layer(),
+            OpenGpuiEdgeLayer::Focused
+        );
         assert!(OpenGpuiEdgeLayer::Hovered < OpenGpuiEdgeLayer::Selected);
-        assert!(OpenGpuiEdgeLayer::Selected < OpenGpuiEdgeLayer::Active);
-        assert!(OpenGpuiEdgeLayer::Active < OpenGpuiEdgeLayer::Preview);
+        assert!(OpenGpuiEdgeLayer::Preview < OpenGpuiEdgeLayer::Base);
     }
 
     #[test]
-    fn known_tokens_resolve_to_bounded_semantic_tones() {
-        assert_eq!(
-            OpenGpuiEdgeTone::from_style_token(Some("data.primary")),
-            OpenGpuiEdgeTone::Data
+    fn emphasis_adds_a_halo_without_replacing_the_typed_base_stroke() {
+        let theme = OpenGpuiGraphTheme::default();
+        let ordinary =
+            theme.resolve_edge_style(OpenGpuiEdgeVisualFacts::default(), Some("data.primary"));
+        let emphasized = ordinary.with_visual_facts(
+            OpenGpuiEdgeVisualFacts::default()
+                .with_hovered(true)
+                .with_selected(true),
+            &theme,
         );
-        assert_eq!(
-            OpenGpuiEdgeTone::from_style_token(Some("flow.control")),
-            OpenGpuiEdgeTone::Control
+
+        assert_eq!(emphasized.color(), ordinary.color());
+        assert_eq!(emphasized.stroke_width(), ordinary.stroke_width());
+        assert_eq!(emphasized.layer(), OpenGpuiEdgeLayer::Base);
+        assert_eq!(emphasized.batch_key(), ordinary.batch_key());
+        let halo = emphasized.halo().expect("selected hover halo");
+        assert_eq!(halo.layer(), OpenGpuiEdgeLayer::Selected);
+        assert_eq!(halo.stroke_width(), 2.5);
+        assert_ne!(halo.color(), emphasized.color());
+        assert_ne!(halo.batch_key(), emphasized.batch_key());
+    }
+
+    #[test]
+    fn weight_tiers_change_only_finite_base_and_halo_width_tables() {
+        let theme = OpenGpuiGraphTheme::default();
+        let facts = OpenGpuiEdgeVisualFacts::default().with_active(true);
+        let regular = theme.resolve_edge_style_with_weight_tier(
+            facts,
+            Some("control"),
+            OpenGpuiEdgeWeightTier::Regular,
         );
-        assert_eq!(
-            OpenGpuiEdgeTone::from_style_token(Some("flow.error")),
-            OpenGpuiEdgeTone::Danger
+        let strong = theme.resolve_edge_style_with_weight_tier(
+            facts,
+            Some("control"),
+            OpenGpuiEdgeWeightTier::Strong,
         );
+
+        assert_eq!(regular.stroke_width(), 1.5);
+        assert_eq!(regular.halo().expect("regular halo").stroke_width(), 2.5);
+        assert_eq!(strong.stroke_width(), 2.0);
+        assert_eq!(strong.halo().expect("strong halo").stroke_width(), 3.0);
+        assert_eq!(strong.weight_tier(), OpenGpuiEdgeWeightTier::Strong);
     }
 
     #[test]
     fn absent_blank_and_unknown_tokens_share_a_stable_fallback() {
         let theme = OpenGpuiGraphTheme::default();
-        let absent = theme.resolve_edge_style(OpenGpuiEdgeVisualState::Ordinary, None);
-        let blank = theme.resolve_edge_style(OpenGpuiEdgeVisualState::Ordinary, Some("  "));
-        let unknown = theme.resolve_edge_style(
-            OpenGpuiEdgeVisualState::Ordinary,
-            Some("plugin.unregistered"),
-        );
+        let facts = OpenGpuiEdgeVisualFacts::default().with_selected(true);
+        let absent = theme.resolve_edge_style(facts, None);
+        let blank = theme.resolve_edge_style(facts, Some("  "));
+        let unknown = theme.resolve_edge_style(facts, Some("plugin.unregistered"));
 
         assert_eq!(absent, blank);
         assert_eq!(blank, unknown);
@@ -340,15 +613,25 @@ mod tests {
     }
 
     #[test]
-    fn state_tints_preserve_token_specific_paint_batches() {
+    fn every_fact_combination_keeps_batch_cardinality_finite() {
         let theme = OpenGpuiGraphTheme::default();
-        let selected_data =
-            theme.resolve_edge_style(OpenGpuiEdgeVisualState::Selected, Some("data.primary"));
-        let selected_control =
-            theme.resolve_edge_style(OpenGpuiEdgeVisualState::Selected, Some("flow.control"));
-
-        assert_ne!(selected_data.color(), selected_control.color());
-        assert_ne!(selected_data.batch_key(), selected_control.batch_key());
+        let mut keys = BTreeSet::new();
+        for mask in 0_u8..32 {
+            let facts = OpenGpuiEdgeVisualFacts::default()
+                .with_hovered(mask & 1 != 0)
+                .with_selected(mask & 2 != 0)
+                .with_focused(mask & 4 != 0)
+                .with_active(mask & 8 != 0)
+                .with_preview(mask & 16 != 0);
+            for token in [None, Some("data"), Some("control"), Some("warning")] {
+                let style = theme.resolve_edge_style(facts, token);
+                keys.insert(style.batch_key());
+                if let Some(key) = style.halo_batch_key() {
+                    keys.insert(key);
+                }
+            }
+        }
+        assert!(keys.len() <= 4 * 33);
     }
 
     #[test]
@@ -356,25 +639,32 @@ mod tests {
         let mut theme = OpenGpuiGraphTheme::default();
         theme.metrics.edge_hovered_width = f32::NAN;
 
-        let style = theme.resolve_edge_style(OpenGpuiEdgeVisualState::Hovered, None);
-        assert_eq!(style.stroke_width(), 2.0);
+        let style =
+            theme.resolve_edge_style(OpenGpuiEdgeVisualFacts::default().with_hovered(true), None);
+        assert_eq!(style.stroke_width(), 1.5);
+        assert_eq!(style.halo().expect("hover halo").stroke_width(), 2.0);
     }
 
     #[test]
-    fn visual_restyling_preserves_tone_and_screen_space_width_contract() {
-        let theme = OpenGpuiGraphTheme::default();
-        let ordinary = theme.resolve_edge_style(OpenGpuiEdgeVisualState::Ordinary, Some("control"));
-        let selected = ordinary.with_visual_state(OpenGpuiEdgeVisualState::Selected, &theme);
+    fn registered_style_slot_survives_composed_visual_facts() {
+        let slot = OpenGpuiGraphStyleSlot::new(2).expect("in-range style slot");
+        let color = open_gpui::rgb(0xe8b95c).into();
+        let theme = OpenGpuiGraphTheme::default()
+            .with_style_slot(slot, crate::theme::OpenGpuiGraphStyleRecipe::new(color));
+        let preview = theme.resolve_edge_style_slot(
+            OpenGpuiEdgeVisualFacts::default()
+                .with_selected(true)
+                .with_preview(true),
+            OpenGpuiEdgeTone::Data,
+            Some(slot),
+        );
 
-        assert_eq!(ordinary.tone(), selected.tone());
-        assert_eq!(ordinary.layer(), OpenGpuiEdgeLayer::Ordinary);
-        assert_eq!(selected.layer(), OpenGpuiEdgeLayer::Selected);
-        assert_eq!(ordinary.stroke_width(), 1.5);
-        assert_eq!(selected.stroke_width(), 2.5);
-
-        for _zoom in [0.5_f32, 1.0, 2.0] {
-            assert_eq!(ordinary.stroke_width(), 1.5);
-            assert_eq!(selected.stroke_width(), 2.5);
-        }
+        assert_eq!(preview.color(), color);
+        assert_eq!(preview.style_slot(), Some(slot));
+        assert_eq!(preview.tone(), OpenGpuiEdgeTone::Data);
+        assert_eq!(
+            preview.halo().expect("preview halo").layer(),
+            OpenGpuiEdgeLayer::Preview
+        );
     }
 }

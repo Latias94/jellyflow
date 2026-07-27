@@ -16,12 +16,12 @@ use super::{DummyMigrator, demo_add_node};
 use crate::io::PersistenceLimits;
 use crate::profile::{ApplyPipelineError, GraphProfile};
 use crate::rules::{Diagnostic, DiagnosticTarget};
-use crate::runtime::commands::{ConnectionEdit, GraphCommand};
+use crate::runtime::commands::{ConnectionEdit, GraphCommand, IncidentEdgePolicy, TopologyEdit};
 use crate::runtime::graph_runtime::{CreateFromWireQueryError, GraphRuntime, GraphRuntimeError};
 use crate::schema::{
-    NodeCatalog, NodeCatalogMigrationError, NodeCatalogRegistrationError, NodeCreation,
-    NodeKindMigrateError, NodeKindMigrationIssue, NodeKindMigrator, NodeKindSpec, NodePortSpec,
-    PortPresentationHint, PortSide,
+    NodeCatalog, NodeCatalogInstantiationError, NodeCatalogMigrationError,
+    NodeCatalogRegistrationError, NodeCreation, NodeKindMigrateError, NodeKindMigrationIssue,
+    NodeKindMigrator, NodeKindSpec, NodePortSpec, PortPresentationHint, PortSide,
 };
 
 struct FailingMigrator;
@@ -201,6 +201,40 @@ fn semantic_catalog_resolves_aliases_and_instantiates_real_ports() {
 }
 
 #[test]
+fn semantic_catalog_rejects_duplicate_supplied_port_ids() {
+    let mut catalog = NodeCatalog::new();
+    catalog
+        .register(
+            NodeKindSpec::builder("math.binary", "Binary", "math.binary")
+                .port(NodePortSpec::new(
+                    "lhs",
+                    PortDirection::In,
+                    PortKind::Data,
+                    PortCapacity::Single,
+                ))
+                .port(NodePortSpec::new(
+                    "rhs",
+                    PortDirection::In,
+                    PortKind::Data,
+                    PortCapacity::Single,
+                ))
+                .build(),
+        )
+        .unwrap();
+    let duplicate = PortId::from_u128(72);
+
+    assert!(matches!(
+        catalog.instantiate_node_with_ids(
+            &NodeKindKey::new("math.binary"),
+            NodeId::from_u128(71),
+            CanvasPoint::default(),
+            [duplicate, duplicate],
+        ),
+        Err(NodeCatalogInstantiationError::DuplicatePortId { port }) if port == duplicate
+    ));
+}
+
+#[test]
 fn catalog_registration_conflicts_never_depend_on_registration_order() {
     let mut alias_first = NodeCatalog::new();
     alias_first
@@ -283,11 +317,27 @@ fn catalog_creation_can_only_publish_through_a_revisioned_graph_command() {
     let runtime = GraphRuntime::builder(catalog.clone())
         .build(Graph::new(GraphId::from_u128(12)))
         .unwrap();
+    let stale_version = runtime.snapshot().unwrap().version();
 
     let stale_creation: NodeCreation = catalog
         .instantiate_node_with_ids(&NodeKindKey::new("math.add"), node_id, position, [port_id])
         .unwrap();
-    let stale = runtime.execute(stale_creation.into_command(1)).unwrap();
+    let prefix = catalog
+        .instantiate_node_with_ids(
+            &NodeKindKey::new("math.add"),
+            NodeId::from_u128(3),
+            CanvasPoint::default(),
+            [PortId::from_u128(4)],
+        )
+        .unwrap();
+    let prefix = runtime.execute(prefix.into_command(stale_version)).unwrap();
+    let current_version = prefix
+        .applied()
+        .expect("prefix advances the authoritative graph")
+        .version();
+    let stale = runtime
+        .execute(stale_creation.into_command(stale_version))
+        .unwrap();
 
     assert!(stale.conflict().is_some());
     assert!(runtime.snapshot().unwrap().graph().node(&node_id).is_none());
@@ -295,11 +345,13 @@ fn catalog_creation_can_only_publish_through_a_revisioned_graph_command() {
     let creation = catalog
         .instantiate_node_with_ids(&NodeKindKey::new("math.add"), node_id, position, [port_id])
         .unwrap();
-    let applied = runtime.execute(creation.into_command(0)).unwrap();
+    let applied = runtime
+        .execute(creation.into_command(current_version))
+        .unwrap();
 
     assert!(applied.applied().is_some());
     let snapshot = runtime.snapshot().unwrap();
-    assert_eq!(snapshot.revision(), 1);
+    assert_eq!(snapshot.revision(), 2);
     assert_eq!(snapshot.graph().node(&node_id).unwrap().ports, [port_id]);
     assert_eq!(snapshot.graph().port(&port_id).unwrap().node, node_id);
 }
@@ -468,12 +520,16 @@ fn runtime_create_from_wire_query_is_revisioned_and_builds_one_atomic_command() 
     let runtime = GraphRuntime::builder(catalog.clone())
         .build(graph_with_source_port(source_id, source, true))
         .unwrap();
+    let source_instance = runtime
+        .port_instance_key(source_id)
+        .unwrap()
+        .expect("source port has an exact lifetime");
 
     let query = runtime
-        .create_from_wire_candidates(source_id, NodeGraphConnectionMode::Strict)
+        .create_from_wire_candidates(source_instance, NodeGraphConnectionMode::Strict)
         .unwrap();
     assert_eq!(query.revision(), 0);
-    assert_eq!(query.source(), source_id);
+    assert_eq!(query.source_instance().port(), source_id);
     assert_eq!(query.candidates().len(), 1);
     assert_eq!(
         query.candidates()[0].node_kind(),
@@ -488,9 +544,10 @@ fn runtime_create_from_wire_query_is_revisioned_and_builds_one_atomic_command() 
         .port(&source_id)
         .unwrap()
         .node;
+    let source_version = runtime.snapshot().unwrap().version();
     runtime
         .execute(GraphCommand::set_node_data(
-            0,
+            source_version,
             source_node,
             json!({ "changed": true }),
         ))
@@ -513,7 +570,7 @@ fn runtime_create_from_wire_query_is_revisioned_and_builds_one_atomic_command() 
         Some(created_port)
     );
     let command = GraphCommand::topology(
-        query.revision(),
+        query.version(),
         creation
             .into_topology_edit()
             .connection(ConnectionEdit::connect(
@@ -532,7 +589,7 @@ fn runtime_create_from_wire_query_is_revisioned_and_builds_one_atomic_command() 
     assert!(snapshot.graph().edge(&edge).is_none());
 
     let refreshed = runtime
-        .create_from_wire_candidates(source_id, NodeGraphConnectionMode::Strict)
+        .create_from_wire_candidates(source_instance, NodeGraphConnectionMode::Strict)
         .unwrap();
     let creation = catalog
         .instantiate_node_with_ids(
@@ -544,7 +601,7 @@ fn runtime_create_from_wire_query_is_revisioned_and_builds_one_atomic_command() 
         .unwrap();
     runtime
         .execute(GraphCommand::topology(
-            refreshed.revision(),
+            refreshed.version(),
             creation
                 .into_topology_edit()
                 .connection(ConnectionEdit::connect(
@@ -580,24 +637,45 @@ fn runtime_create_from_wire_query_uses_current_profile_and_source_policy() {
         }))
         .build(graph)
         .unwrap();
+    let source_instance = runtime
+        .port_instance_key(source_id)
+        .unwrap()
+        .expect("source port has an exact lifetime");
 
     let query = runtime
-        .create_from_wire_candidates(source_id, NodeGraphConnectionMode::Strict)
+        .create_from_wire_candidates(source_instance, NodeGraphConnectionMode::Strict)
         .unwrap();
     assert!(query.candidates().is_empty());
 
+    let snapshot = runtime.snapshot().unwrap();
+    let source_node = snapshot.graph().port(&source_id).unwrap().node;
+    let removed = runtime
+        .execute(GraphCommand::topology(
+            snapshot.version(),
+            TopologyEdit::new().remove_node(source_node, IncidentEdgePolicy::Cascade),
+        ))
+        .unwrap();
+    let removed_version = removed.applied().unwrap().version();
+    runtime
+        .execute(GraphCommand::undo(removed_version))
+        .unwrap()
+        .applied()
+        .unwrap();
     assert!(matches!(
-        runtime
-            .create_from_wire_candidates(PortId::from_u128(999), NodeGraphConnectionMode::Strict,),
-        Err(CreateFromWireQueryError::MissingSourcePort { .. })
+        runtime.create_from_wire_candidates(source_instance, NodeGraphConnectionMode::Strict),
+        Err(CreateFromWireQueryError::SourcePortRetired { port }) if port == source_id
     ));
 
     let disabled = GraphRuntime::builder(catalog)
         .build(graph_with_source_port(source_id, source, false))
         .unwrap();
+    let disabled_source = disabled
+        .port_instance_key(source_id)
+        .unwrap()
+        .expect("disabled source port still has an exact lifetime");
     assert!(matches!(
         disabled.create_from_wire_candidates(
-            source_id,
+            disabled_source,
             NodeGraphConnectionMode::Strict,
         ),
         Err(CreateFromWireQueryError::SourceNotConnectable { port }) if port == source_id

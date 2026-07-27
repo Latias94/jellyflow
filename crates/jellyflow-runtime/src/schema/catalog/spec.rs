@@ -269,6 +269,10 @@ impl NodeKindSpec {
                 actual: ports.len(),
             });
         }
+        let mut unique = BTreeSet::new();
+        if let Some(port) = ports.iter().copied().find(|port| !unique.insert(*port)) {
+            return Err(NodeCatalogInstantiationError::DuplicatePortId { port });
+        }
         Ok(self.instantiate_from_port_ids(node, position, ports))
     }
 
@@ -366,3 +370,4 @@ impl NodeKindSpecBuilder {
         self.spec
     }
 }
+use std::collections::BTreeSet;

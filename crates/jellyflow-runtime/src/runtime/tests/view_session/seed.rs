@@ -2,7 +2,9 @@ use jellyflow_core::core::{CanvasPoint, GraphId, NodeId};
 
 use crate::io::{ViewSelectionSeed, ViewSessionSeed, ViewStackingSeed, ViewportSeed};
 use crate::runtime::graph_runtime::GraphRuntime;
+use crate::runtime::tests::fixtures::set_selection_by_id;
 use crate::runtime::view_session::{AttachViewError, ViewSessionOptions};
+use crate::runtime::viewport::ViewportTransform;
 
 use super::fixtures::{graph_with_nodes, view_options};
 
@@ -75,10 +77,9 @@ fn exporting_a_seed_never_changes_graph_revision_or_history() {
     let view = runtime
         .attach_view(view_options(ViewSessionSeed::new(graph_id)))
         .expect("view");
-    view.set_viewport(CanvasPoint { x: 4.0, y: 8.0 }, 1.5)
+    view.set_viewport(ViewportTransform::new(CanvasPoint { x: 4.0, y: 8.0 }, 1.5).unwrap())
         .unwrap();
-    view.set_selection(vec![ids[1]], Vec::new(), Vec::new())
-        .unwrap();
+    set_selection_by_id(&view, [ids[1]], [], Vec::new()).unwrap();
 
     let before = runtime.snapshot().unwrap();
     let history = runtime.history_state().unwrap();

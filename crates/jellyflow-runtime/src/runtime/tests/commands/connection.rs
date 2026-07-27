@@ -93,7 +93,7 @@ fn connect_command_commits_and_replays_one_stable_edge() {
 
     runtime
         .execute(GraphCommand::connect(
-            0,
+            runtime.snapshot().unwrap().version(),
             edge,
             ids.alternate_source_port,
             ids.target_port,
@@ -125,7 +125,7 @@ fn strict_connect_normalizes_reversed_input_output_arguments() {
 
     runtime
         .execute(GraphCommand::connect(
-            0,
+            runtime.snapshot().unwrap().version(),
             edge,
             ids.target_port,
             ids.alternate_source_port,
@@ -156,7 +156,7 @@ fn loose_connect_preserves_same_direction_argument_order() {
 
     runtime
         .execute(GraphCommand::connect(
-            0,
+            runtime.snapshot().unwrap().version(),
             edge,
             ids.source_port,
             ids.alternate_source_port,
@@ -193,7 +193,7 @@ fn connect_rejects_node_and_target_port_connectability_overrides() {
     assert_rejected_without_side_effects(
         &runtime,
         GraphCommand::connect(
-            0,
+            runtime.snapshot().unwrap().version(),
             EdgeId::from_u128(224),
             ids.alternate_source_port,
             ids.target_port,
@@ -216,7 +216,7 @@ fn connect_rejects_node_and_target_port_connectability_overrides() {
     assert_rejected_without_side_effects(
         &runtime,
         GraphCommand::connect(
-            0,
+            runtime.snapshot().unwrap().version(),
             EdgeId::from_u128(225),
             ids.alternate_source_port,
             ids.target_port,
@@ -243,7 +243,7 @@ fn connect_replaces_occupied_single_input_as_one_history_entry() {
 
     runtime
         .execute(GraphCommand::connect(
-            0,
+            runtime.snapshot().unwrap().version(),
             replacement,
             ids.alternate_source_port,
             ids.target_port,
@@ -302,7 +302,7 @@ fn single_input_replacement_respects_existing_edge_deletion_policy() {
 
     let outcome = assert_rejected_without_side_effects(
         &runtime,
-        GraphCommand::connection(0, edit),
+        GraphCommand::connection(evaluation.version(), edit),
         "delete.edge_not_deletable",
     );
     assert!(matches!(
@@ -320,7 +320,7 @@ fn disconnect_and_reconnect_are_revisioned_exact_history_commands() {
 
     runtime
         .execute(GraphCommand::reconnect(
-            0,
+            runtime.snapshot().unwrap().version(),
             ids.edge,
             EdgeEndpoint::From,
             ids.alternate_source_port,
@@ -335,7 +335,10 @@ fn disconnect_and_reconnect_are_revisioned_exact_history_commands() {
     assert_eq!(reconnected.to, ids.target_port);
 
     runtime
-        .execute(GraphCommand::disconnect(1, ids.edge))
+        .execute(GraphCommand::disconnect(
+            runtime.snapshot().unwrap().version(),
+            ids.edge,
+        ))
         .unwrap()
         .applied()
         .expect("disconnect applies");
@@ -383,7 +386,7 @@ fn reconnect_rejects_an_existing_connection_without_side_effects() {
 
     runtime
         .execute(GraphCommand::connect(
-            0,
+            runtime.snapshot().unwrap().version(),
             duplicate,
             ids.alternate_source_port,
             ids.target_port,
@@ -396,7 +399,7 @@ fn reconnect_rejects_an_existing_connection_without_side_effects() {
     assert_rejected_without_side_effects(
         &runtime,
         GraphCommand::reconnect(
-            1,
+            runtime.snapshot().unwrap().version(),
             ids.edge,
             EdgeEndpoint::From,
             ids.alternate_source_port,
@@ -442,7 +445,7 @@ fn reconnect_to_single_target_removes_competing_edge_and_retains_identity() {
 
     runtime
         .execute(GraphCommand::reconnect(
-            0,
+            runtime.snapshot().unwrap().version(),
             ids.edge,
             EdgeEndpoint::To,
             ids.target_port,
@@ -493,7 +496,7 @@ fn runtime_policy_keeps_reconnect_and_disconnect_evaluation_equal_to_commit() {
     );
     let reconnect_outcome = runtime
         .execute(GraphCommand::reconnect(
-            0,
+            reconnect_evaluation.version(),
             ids.edge,
             EdgeEndpoint::From,
             ids.alternate_source_port,
@@ -514,7 +517,10 @@ fn runtime_policy_keeps_reconnect_and_disconnect_evaluation_equal_to_commit() {
         "delete.edge_not_deletable"
     );
     let disconnect_outcome = runtime
-        .execute(GraphCommand::disconnect(0, ids.edge))
+        .execute(GraphCommand::disconnect(
+            disconnect_evaluation.version(),
+            ids.edge,
+        ))
         .unwrap();
     assert_eq!(
         disconnect_outcome.rejection().unwrap().diagnostics()[0].key,
@@ -534,7 +540,7 @@ fn connection_rule_rejections_preserve_diagnostics_and_runtime_state() {
 
     let duplicate_id = runtime
         .execute(GraphCommand::connect(
-            0,
+            before.version(),
             ids.edge,
             ids.alternate_source_port,
             ids.target_port,
@@ -549,7 +555,7 @@ fn connection_rule_rejections_preserve_diagnostics_and_runtime_state() {
 
     let wrong_direction = runtime
         .execute(GraphCommand::connect(
-            0,
+            before.version(),
             EdgeId::from_u128(222),
             ids.source_port,
             ids.alternate_source_port,
@@ -577,10 +583,11 @@ fn command_rejections_expose_stable_machine_keys_and_precise_targets() {
         .unwrap();
     let missing_node = NodeId::from_u128(90_001);
     let missing_port = PortId::from_u128(90_002);
+    let version = runtime.snapshot().unwrap().version();
 
     let missing_node_outcome = assert_rejected_without_side_effects(
         &runtime,
-        GraphCommand::set_node_data(0, missing_node, serde_json::Value::Null),
+        GraphCommand::set_node_data(version, missing_node, serde_json::Value::Null),
         "topology.node_missing",
     );
     assert!(matches!(
@@ -591,7 +598,7 @@ fn command_rejections_expose_stable_machine_keys_and_precise_targets() {
     let missing_port_outcome = assert_rejected_without_side_effects(
         &runtime,
         GraphCommand::connect(
-            0,
+            version,
             EdgeId::from_u128(90_003),
             ids.source_port,
             missing_port,
@@ -607,7 +614,7 @@ fn command_rejections_expose_stable_machine_keys_and_precise_targets() {
     let self_connection = assert_rejected_without_side_effects(
         &runtime,
         GraphCommand::connect(
-            0,
+            version,
             EdgeId::from_u128(90_004),
             ids.source_port,
             ids.source_port,
@@ -645,7 +652,7 @@ fn reconnect_uses_the_same_type_compatibility_rule_as_connect() {
 
     let outcome = runtime
         .execute(GraphCommand::reconnect(
-            0,
+            before.version(),
             ids.edge,
             EdgeEndpoint::From,
             ids.alternate_source_port,

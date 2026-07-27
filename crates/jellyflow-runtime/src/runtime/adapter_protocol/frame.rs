@@ -3,9 +3,11 @@ use std::sync::Arc;
 
 use jellyflow_core::core::{CanvasRect, CanvasSize, Node, NodeId, NodeKindKey, Port, PortId};
 
-use crate::runtime::graph_runtime::{DocumentEpoch, GraphRevision, GraphSnapshot, NodeIncarnation};
+use crate::runtime::graph_runtime::{
+    DocumentEpoch, GraphRevision, GraphSnapshot, GraphVersion, NodeLifetimeKey, PortInstanceKey,
+};
 use crate::runtime::view_session::{ViewGeneration, ViewId};
-use crate::runtime::viewport::ViewportTransform;
+use crate::runtime::viewport::{ViewportSnapshot, ViewportTransform};
 
 use super::feedback::{FeedbackCollector, NodeLayoutBuilder};
 
@@ -91,9 +93,8 @@ impl RendererStamp {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NodeInstanceKey {
     view: ViewId,
-    node: NodeId,
     renderer: RendererStamp,
-    incarnation: NodeIncarnation,
+    lifetime: NodeLifetimeKey,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -120,7 +121,7 @@ impl NodeLayoutTarget {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PortLayoutTarget {
     pub(crate) node: Arc<NodeLayoutTarget>,
-    pub(crate) port: PortId,
+    pub(crate) port_instance: PortInstanceKey,
 }
 
 impl PortLayoutTarget {
@@ -133,7 +134,11 @@ impl PortLayoutTarget {
     }
 
     pub fn port(&self) -> PortId {
-        self.port
+        self.port_instance.port()
+    }
+
+    pub fn port_instance(&self) -> PortInstanceKey {
+        self.port_instance
     }
 
     pub(crate) fn frame_sequence(&self) -> u64 {
@@ -144,7 +149,7 @@ impl PortLayoutTarget {
     pub(crate) fn with_port_for_test(&self, port: PortId) -> Self {
         Self {
             node: Arc::clone(&self.node),
-            port,
+            port_instance: self.port_instance.with_port_for_test(port),
         }
     }
 }
@@ -152,16 +157,14 @@ impl PortLayoutTarget {
 impl NodeInstanceKey {
     pub(crate) fn new(
         view: ViewId,
-        node: NodeId,
         renderer: RendererStamp,
-        incarnation: NodeIncarnation,
-    ) -> Self {
-        Self {
+        lifetime: NodeLifetimeKey,
+    ) -> Option<Self> {
+        (view.runtime_provenance() == lifetime.provenance()).then_some(Self {
             view,
-            node,
             renderer,
-            incarnation,
-        }
+            lifetime,
+        })
     }
 
     pub fn view(&self) -> ViewId {
@@ -169,15 +172,16 @@ impl NodeInstanceKey {
     }
 
     pub fn node(&self) -> NodeId {
-        self.node
+        self.lifetime.node()
     }
 
     pub fn renderer(&self) -> &RendererStamp {
         &self.renderer
     }
 
-    pub fn incarnation(&self) -> NodeIncarnation {
-        self.incarnation
+    /// Returns the exact semantic lifetime represented by this native node instance.
+    pub fn lifetime(&self) -> NodeLifetimeKey {
+        self.lifetime
     }
 }
 
@@ -472,19 +476,23 @@ impl FramePort {
     pub(crate) fn new(
         snapshot: GraphSnapshot,
         node_target: Arc<NodeLayoutTarget>,
-        id: PortId,
+        port_instance: PortInstanceKey,
     ) -> Self {
         Self {
             snapshot,
             layout_target: PortLayoutTarget {
                 node: node_target,
-                port: id,
+                port_instance,
             },
         }
     }
 
     pub fn id(&self) -> PortId {
         self.layout_target.port()
+    }
+
+    pub fn instance(&self) -> PortInstanceKey {
+        self.layout_target.port_instance()
     }
 
     pub fn port(&self) -> Option<&Port> {
@@ -538,10 +546,6 @@ impl FrameNode {
 
     pub fn layout_target(&self) -> &NodeLayoutTarget {
         &self.layout_target
-    }
-
-    pub fn incarnation(&self) -> NodeIncarnation {
-        self.layout_target.instance().incarnation()
     }
 
     pub fn renderer(&self) -> &RendererStamp {
@@ -598,9 +602,9 @@ impl FrameNode {
 #[derive(Debug, Clone)]
 pub struct AdapterFrame {
     collector: FeedbackCollector,
-    graph_revision: GraphRevision,
+    graph_version: GraphVersion,
     document_epoch: DocumentEpoch,
-    transform: ViewportTransform,
+    viewport: ViewportSnapshot,
     nodes: Vec<FrameNode>,
     materialization_overflow: FrameMaterializationOverflow,
 }
@@ -608,33 +612,42 @@ pub struct AdapterFrame {
 impl AdapterFrame {
     pub(crate) fn new(
         token: FrameToken,
-        graph_revision: GraphRevision,
+        graph_version: GraphVersion,
         document_epoch: DocumentEpoch,
-        transform: ViewportTransform,
+        viewport: ViewportSnapshot,
         nodes: Vec<FrameNode>,
         materialization_overflow: FrameMaterializationOverflow,
     ) -> Self {
         Self {
             collector: FeedbackCollector::new(token),
-            graph_revision,
+            graph_version,
             document_epoch,
-            transform,
+            viewport,
             nodes,
             materialization_overflow,
         }
     }
 
     pub fn graph_revision(&self) -> GraphRevision {
-        self.graph_revision
+        self.graph_version.revision()
+    }
+
+    pub fn graph_version(&self) -> GraphVersion {
+        self.graph_version
     }
 
     pub fn document_epoch(&self) -> DocumentEpoch {
         self.document_epoch
     }
 
-    /// Viewport transform captured by this frame and its one-shot feedback token.
+    /// Exact viewport identity captured by this frame and its one-shot feedback token.
+    pub fn viewport_snapshot(&self) -> ViewportSnapshot {
+        self.viewport
+    }
+
+    /// Viewport transform captured by this frame.
     pub fn transform(&self) -> ViewportTransform {
-        self.transform
+        self.viewport.transform()
     }
 
     /// Concrete admitted nodes in back-to-front paint order.

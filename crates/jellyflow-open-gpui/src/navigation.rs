@@ -1,5 +1,9 @@
 use jellyflow_core::CanvasSize;
-use jellyflow_runtime::{AlignmentSnapConfig, CanvasInteractionConfig};
+use jellyflow_runtime::{
+    interaction::AlignmentSnapConfig, interaction::CanvasInteractionConfig,
+    interaction::SelectionMode,
+};
+use open_gpui::Modifiers;
 
 const DEFAULT_MIN_ZOOM: f32 = 0.1;
 const DEFAULT_MAX_ZOOM: f32 = 4.0;
@@ -12,25 +16,212 @@ const DEFAULT_GRID_SIZE: CanvasSize = CanvasSize {
     height: 20.0,
 };
 
-/// Native input mapping for one Open GPUI graph surface.
+/// Named native input presets for one Open GPUI graph surface.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum OpenGpuiNavigationProfile {
+pub enum OpenGpuiInputPreset {
     /// Wheel zoom, Shift/horizontal wheel pan, middle-button drag pan.
     #[default]
     Mouse,
     /// Two-axis wheel pan, pinch zoom, middle-button drag pan.
     Trackpad,
+    /// Dify-like two-axis wheel pan, middle-button pan, and Space-plus-left pan.
+    Dify,
     /// Wheel zoom plus middle- or right-button drag pan.
     Blueprint,
 }
 
-impl OpenGpuiNavigationProfile {
+/// Native wheel behavior selected by an input-binding preset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpenGpuiWheelBinding {
+    Zoom,
+    Pan,
+}
+
+/// One native modifier that can alter graph selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpenGpuiSelectionModifier {
+    Shift,
+    Secondary,
+    Alt,
+}
+
+impl OpenGpuiSelectionModifier {
+    fn is_pressed(self, modifiers: Modifiers) -> bool {
+        match self {
+            Self::Shift => modifiers.shift,
+            Self::Secondary => modifiers.secondary(),
+            Self::Alt => modifiers.alt,
+        }
+    }
+}
+
+/// Shared native modifier policy for node, edge, and marquee selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OpenGpuiSelectionBindings {
+    add: Option<OpenGpuiSelectionModifier>,
+    toggle: Option<OpenGpuiSelectionModifier>,
+}
+
+impl OpenGpuiSelectionBindings {
+    #[must_use]
+    pub const fn new(
+        add: Option<OpenGpuiSelectionModifier>,
+        toggle: Option<OpenGpuiSelectionModifier>,
+    ) -> Self {
+        Self { add, toggle }
+    }
+
+    #[must_use]
+    pub const fn add(self) -> Option<OpenGpuiSelectionModifier> {
+        self.add
+    }
+
+    #[must_use]
+    pub const fn toggle(self) -> Option<OpenGpuiSelectionModifier> {
+        self.toggle
+    }
+
+    pub(crate) fn selection_mode(self, modifiers: Modifiers) -> SelectionMode {
+        if self
+            .toggle
+            .is_some_and(|modifier| modifier.is_pressed(modifiers))
+        {
+            SelectionMode::Toggle
+        } else if self
+            .add
+            .is_some_and(|modifier| modifier.is_pressed(modifiers))
+        {
+            SelectionMode::Add
+        } else {
+            SelectionMode::Replace
+        }
+    }
+}
+
+impl Default for OpenGpuiSelectionBindings {
+    fn default() -> Self {
+        Self::new(
+            Some(OpenGpuiSelectionModifier::Shift),
+            Some(OpenGpuiSelectionModifier::Secondary),
+        )
+    }
+}
+
+/// Adapter-local native event bindings.
+///
+/// Runtime interaction state remains renderer-neutral. This value only determines how Open GPUI
+/// wheel, button, held-key, and modifier facts map onto those semantic interactions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OpenGpuiInputBindings {
+    wheel: OpenGpuiWheelBinding,
+    middle_button_pan: bool,
+    right_button_pan: bool,
+    space_left_pan: bool,
+    connect_on_click: bool,
+    selection: OpenGpuiSelectionBindings,
+}
+
+impl OpenGpuiInputBindings {
+    #[must_use]
+    pub const fn for_preset(preset: OpenGpuiInputPreset) -> Self {
+        match preset {
+            OpenGpuiInputPreset::Mouse => Self {
+                wheel: OpenGpuiWheelBinding::Zoom,
+                middle_button_pan: true,
+                right_button_pan: false,
+                space_left_pan: true,
+                connect_on_click: true,
+                selection: OpenGpuiSelectionBindings::new(
+                    Some(OpenGpuiSelectionModifier::Shift),
+                    Some(OpenGpuiSelectionModifier::Secondary),
+                ),
+            },
+            OpenGpuiInputPreset::Trackpad => Self {
+                wheel: OpenGpuiWheelBinding::Pan,
+                middle_button_pan: false,
+                right_button_pan: false,
+                space_left_pan: true,
+                connect_on_click: true,
+                selection: OpenGpuiSelectionBindings::new(
+                    Some(OpenGpuiSelectionModifier::Shift),
+                    Some(OpenGpuiSelectionModifier::Secondary),
+                ),
+            },
+            OpenGpuiInputPreset::Dify => Self {
+                wheel: OpenGpuiWheelBinding::Pan,
+                middle_button_pan: true,
+                right_button_pan: false,
+                space_left_pan: true,
+                connect_on_click: true,
+                selection: OpenGpuiSelectionBindings::new(
+                    Some(OpenGpuiSelectionModifier::Shift),
+                    Some(OpenGpuiSelectionModifier::Secondary),
+                ),
+            },
+            OpenGpuiInputPreset::Blueprint => Self {
+                wheel: OpenGpuiWheelBinding::Zoom,
+                middle_button_pan: true,
+                right_button_pan: true,
+                space_left_pan: true,
+                connect_on_click: false,
+                selection: OpenGpuiSelectionBindings::new(
+                    Some(OpenGpuiSelectionModifier::Shift),
+                    Some(OpenGpuiSelectionModifier::Secondary),
+                ),
+            },
+        }
+    }
+
+    #[must_use]
+    pub const fn wheel(self) -> OpenGpuiWheelBinding {
+        self.wheel
+    }
+
+    #[must_use]
+    pub const fn selection(self) -> OpenGpuiSelectionBindings {
+        self.selection
+    }
+
+    #[must_use]
+    pub const fn with_selection(mut self, selection: OpenGpuiSelectionBindings) -> Self {
+        self.selection = selection;
+        self
+    }
+
+    /// Returns whether a click on one port arms a non-drag connection and the next port click
+    /// activates its target.
+    #[must_use]
+    pub const fn connects_on_click(self) -> bool {
+        self.connect_on_click
+    }
+
+    /// Replaces click-to-connect mapping without changing runtime connection semantics.
+    #[must_use]
+    pub const fn with_connect_on_click(mut self, enabled: bool) -> Self {
+        self.connect_on_click = enabled;
+        self
+    }
+
     pub(crate) const fn wheel_pans(self) -> bool {
-        matches!(self, Self::Trackpad)
+        matches!(self.wheel, OpenGpuiWheelBinding::Pan)
+    }
+
+    pub(crate) const fn middle_button_pans(self) -> bool {
+        self.middle_button_pan
     }
 
     pub(crate) const fn right_button_pans(self) -> bool {
-        matches!(self, Self::Blueprint)
+        self.right_button_pan
+    }
+
+    pub(crate) const fn space_left_pans(self) -> bool {
+        self.space_left_pan
+    }
+}
+
+impl Default for OpenGpuiInputBindings {
+    fn default() -> Self {
+        Self::for_preset(OpenGpuiInputPreset::default())
     }
 }
 
@@ -40,7 +231,7 @@ impl OpenGpuiNavigationProfile {
 /// alignment facts. This type only adds native event mapping and presentation settings.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct OpenGpuiNavigationConfig {
-    profile: OpenGpuiNavigationProfile,
+    input_bindings: OpenGpuiInputBindings,
     interaction: CanvasInteractionConfig,
     grid_size_in_canvas: Option<CanvasSize>,
     snap_to_grid: bool,
@@ -54,14 +245,20 @@ pub struct OpenGpuiNavigationConfig {
 impl OpenGpuiNavigationConfig {
     /// Creates the native defaults for an explicit input profile.
     #[must_use]
-    pub fn for_profile(profile: OpenGpuiNavigationProfile) -> Self {
+    pub fn for_preset(preset: OpenGpuiInputPreset) -> Self {
+        Self::for_input_bindings(OpenGpuiInputBindings::for_preset(preset))
+    }
+
+    /// Creates native navigation settings for an explicit event-binding policy.
+    #[must_use]
+    pub fn for_input_bindings(input_bindings: OpenGpuiInputBindings) -> Self {
         let interaction = CanvasInteractionConfig {
             node_drag_threshold_in_view: DEFAULT_NATIVE_DRAG_THRESHOLD_IN_VIEW,
             connection_drag_threshold_in_view: DEFAULT_NATIVE_DRAG_THRESHOLD_IN_VIEW,
             ..CanvasInteractionConfig::default()
         };
         Self {
-            profile,
+            input_bindings,
             interaction,
             grid_size_in_canvas: Some(DEFAULT_GRID_SIZE),
             snap_to_grid: false,
@@ -74,8 +271,15 @@ impl OpenGpuiNavigationConfig {
     }
 
     #[must_use]
-    pub const fn profile(self) -> OpenGpuiNavigationProfile {
-        self.profile
+    pub const fn input_bindings(self) -> OpenGpuiInputBindings {
+        self.input_bindings
+    }
+
+    /// Replaces only the adapter-local event mapping.
+    #[must_use]
+    pub const fn with_input_bindings(mut self, input_bindings: OpenGpuiInputBindings) -> Self {
+        self.input_bindings = input_bindings;
+        self
     }
 
     #[must_use]
@@ -192,7 +396,7 @@ impl OpenGpuiNavigationConfig {
     }
 
     pub(crate) fn sanitized(mut self) -> Self {
-        let defaults = Self::for_profile(self.profile);
+        let defaults = Self::for_input_bindings(self.input_bindings);
         if !self.interaction.is_valid() {
             self.interaction = defaults.interaction;
         }
@@ -230,7 +434,7 @@ impl OpenGpuiNavigationConfig {
 
 impl Default for OpenGpuiNavigationConfig {
     fn default() -> Self {
-        Self::for_profile(OpenGpuiNavigationProfile::default())
+        Self::for_preset(OpenGpuiInputPreset::default())
     }
 }
 
@@ -239,16 +443,48 @@ mod tests {
     use super::*;
 
     #[test]
-    fn profiles_only_change_native_event_mapping() {
-        let mouse = OpenGpuiNavigationConfig::for_profile(OpenGpuiNavigationProfile::Mouse);
-        let trackpad = OpenGpuiNavigationConfig::for_profile(OpenGpuiNavigationProfile::Trackpad);
-        let blueprint = OpenGpuiNavigationConfig::for_profile(OpenGpuiNavigationProfile::Blueprint);
+    fn presets_only_change_native_event_mapping() {
+        let mouse = OpenGpuiNavigationConfig::for_preset(OpenGpuiInputPreset::Mouse);
+        let trackpad = OpenGpuiNavigationConfig::for_preset(OpenGpuiInputPreset::Trackpad);
+        let dify = OpenGpuiNavigationConfig::for_preset(OpenGpuiInputPreset::Dify);
+        let blueprint = OpenGpuiNavigationConfig::for_preset(OpenGpuiInputPreset::Blueprint);
 
         assert_eq!(mouse.runtime_config(), trackpad.runtime_config());
+        assert_eq!(mouse.runtime_config(), dify.runtime_config());
         assert_eq!(mouse.runtime_config(), blueprint.runtime_config());
-        assert!(!mouse.profile().wheel_pans());
-        assert!(trackpad.profile().wheel_pans());
-        assert!(blueprint.profile().right_button_pans());
+        assert!(!mouse.input_bindings().wheel_pans());
+        assert!(trackpad.input_bindings().wheel_pans());
+        assert!(dify.input_bindings().wheel_pans());
+        assert!(!blueprint.input_bindings().wheel_pans());
+        assert!(dify.input_bindings().middle_button_pans());
+        assert!(blueprint.input_bindings().right_button_pans());
+        assert!(mouse.input_bindings().connects_on_click());
+        assert!(trackpad.input_bindings().connects_on_click());
+        assert!(dify.input_bindings().connects_on_click());
+        assert!(!blueprint.input_bindings().connects_on_click());
+    }
+
+    #[test]
+    fn selection_policy_is_shared_and_toggle_has_precedence() {
+        let selection = OpenGpuiSelectionBindings::default();
+        assert_eq!(
+            selection.selection_mode(Modifiers::default()),
+            SelectionMode::Replace
+        );
+        assert_eq!(
+            selection.selection_mode(Modifiers::shift()),
+            SelectionMode::Add
+        );
+        assert_eq!(
+            selection.selection_mode(Modifiers::secondary_key()),
+            SelectionMode::Toggle
+        );
+
+        let mut both = Modifiers::shift();
+        let secondary = Modifiers::secondary_key();
+        both.control |= secondary.control;
+        both.platform |= secondary.platform;
+        assert_eq!(selection.selection_mode(both), SelectionMode::Toggle);
     }
 
     #[test]

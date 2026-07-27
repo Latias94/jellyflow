@@ -1,15 +1,22 @@
 use jellyflow_core::core::{
-    Edge, EdgeId, EdgeKind, EdgeReconnectable, Graph, GraphBuilder, GraphId, NodeId, Port,
-    PortCapacity, PortDirection, PortId, PortKey, PortKind,
+    CanvasPoint, Edge, EdgeId, EdgeKind, EdgeReconnectable, Graph, GraphBuilder, GraphId, NodeId,
+    Port, PortCapacity, PortDirection, PortId, PortKey, PortKind,
 };
 use jellyflow_core::interaction::NodeGraphConnectionMode;
 
 use crate::rules::EdgeEndpoint;
-use crate::runtime::commands::{ConnectionEdit, GraphCommand};
+use crate::runtime::commands::{
+    ConnectionEdit, GraphCommand, IncidentEdgePolicy, TopologyEdit, TopologyPort,
+};
+use crate::runtime::geometry::HandlePosition;
 use crate::runtime::graph_runtime::{GraphRuntime, GraphRuntimePolicy, PortConnectionDragIntent};
-use crate::runtime::tests::fixtures::GraphFixtureMutExt;
+use crate::runtime::interaction::{ConnectionGestureBinding, ConnectionInteractionStart};
+use crate::runtime::tests::fixtures::{
+    GraphFixtureMutExt, current_port_instance, port_connection_drag_intent_by_id,
+};
 use crate::runtime::view_session::{
-    ViewCloseReason, ViewCreateFromWireQueryError, ViewSessionError, ViewSessionOptions,
+    ViewCloseReason, ViewCreateFromWireQueryError, ViewSession, ViewSessionError,
+    ViewSessionOptions,
 };
 use crate::schema::{NodeCatalog, NodeKindSpec, NodePortSpec};
 
@@ -54,6 +61,11 @@ fn strong_and_weak_views_expose_symmetric_connection_queries() {
     assert_eq!(strong_facts.revision(), 0);
     assert_eq!(strong_facts.port(), ids.target_port);
     assert_eq!(strong_facts.node(), ids.target);
+    let target_instance = runtime
+        .port_instance_key(ids.target_port)
+        .unwrap()
+        .expect("target port identity");
+    assert_eq!(strong_facts.instance(), target_instance);
     assert_eq!(strong_facts.direction(), PortDirection::In);
     assert_eq!(strong_facts.capacity(), PortCapacity::Single);
     assert!(strong_facts.can_begin_connection());
@@ -80,6 +92,7 @@ fn strong_and_weak_views_expose_symmetric_connection_queries() {
     assert_eq!(strong_summary.revision(), 0);
     assert_eq!(strong_summary.port(), ids.target_port);
     assert_eq!(strong_summary.node(), ids.target);
+    assert_eq!(strong_summary.instance(), target_instance);
     assert_eq!(strong_summary.direction(), PortDirection::In);
     assert_eq!(strong_summary.capacity(), PortCapacity::Single);
     assert!(strong_summary.can_begin_connection());
@@ -98,16 +111,15 @@ fn strong_and_weak_views_expose_symmetric_connection_queries() {
     );
 
     let strong_drag_intent = view
-        .port_connection_drag_intent(ids.target_port)
-        .unwrap()
+        .port_connection_drag_intent(target_instance)
         .expect("target drag intent");
     let weak_drag_intent = weak
-        .port_connection_drag_intent(ids.target_port)
-        .unwrap()
+        .port_connection_drag_intent(target_instance)
         .expect("target drag intent");
     assert_eq!(strong_drag_intent, weak_drag_intent);
     assert_eq!(strong_drag_intent.revision(), 0);
     assert_eq!(strong_drag_intent.port(), ids.target_port);
+    assert_eq!(strong_drag_intent.instance(), target_instance);
     assert!(matches!(
         strong_drag_intent,
         PortConnectionDragIntent::Reconnect { candidate, .. }
@@ -115,16 +127,314 @@ fn strong_and_weak_views_expose_symmetric_connection_queries() {
                 && candidate.endpoint() == EdgeEndpoint::To
                 && candidate.opposite_port() == ids.source_port
     ));
-    assert!(
-        view.port_connection_drag_intent(PortId::new())
+}
+
+#[test]
+fn same_id_port_replacement_refreshes_every_connection_fact_identity() {
+    let (graph, ids) = graph_with_routed_edge();
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .unwrap();
+    let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    let initial_snapshot = runtime.snapshot().unwrap();
+    let initial_facts = view
+        .port_connection_facts(ids.target_port)
+        .unwrap()
+        .expect("initial facts");
+    let initial_summary = view
+        .port_connection_summary(ids.target_port)
+        .unwrap()
+        .expect("initial summary");
+    let initial_drag =
+        port_connection_drag_intent_by_id(&view, ids.target_port).expect("initial drag intent");
+    assert_eq!(initial_facts.instance(), initial_summary.instance());
+    assert_eq!(initial_facts.instance(), initial_drag.instance());
+
+    let target_node = initial_snapshot.graph().node(&ids.target).unwrap();
+    let replacement_ports = target_node
+        .ports
+        .iter()
+        .copied()
+        .map(|port_id| {
+            let mut record = initial_snapshot.graph().port(&port_id).unwrap().clone();
+            if port_id == ids.target_port {
+                record.key = PortKey::new("replacement-target");
+            }
+            TopologyPort::new(port_id, record)
+        })
+        .collect::<Vec<_>>();
+    runtime
+        .execute(GraphCommand::topology(
+            initial_snapshot.version(),
+            TopologyEdit::new().replace_node_ports(
+                ids.target,
+                replacement_ports,
+                IncidentEdgePolicy::Cascade,
+            ),
+        ))
+        .unwrap()
+        .applied()
+        .expect("semantic replacement applies");
+
+    let current_instance = runtime
+        .port_instance_key(ids.target_port)
+        .unwrap()
+        .expect("replacement identity");
+    assert_ne!(current_instance, initial_facts.instance());
+    assert!(matches!(
+        view.port_connection_drag_intent(initial_facts.instance()),
+        Err(ViewSessionError::StaleInteractionFacts)
+    ));
+    assert_eq!(
+        view.port_connection_facts(ids.target_port)
             .unwrap()
-            .is_none()
-    );
-    assert!(
-        weak.port_connection_drag_intent(PortId::new())
             .unwrap()
-            .is_none()
+            .instance(),
+        current_instance,
     );
+    assert_eq!(
+        view.port_connection_summary(ids.target_port)
+            .unwrap()
+            .unwrap()
+            .instance(),
+        current_instance,
+    );
+    assert_eq!(
+        view.port_connection_drag_intent(current_instance)
+            .unwrap()
+            .instance(),
+        current_instance,
+    );
+
+    runtime
+        .execute(GraphCommand::undo(runtime.snapshot().unwrap().version()))
+        .unwrap()
+        .applied()
+        .expect("undo restores port semantics");
+    let restored_instance = runtime
+        .port_instance_key(ids.target_port)
+        .unwrap()
+        .expect("restored identity");
+    assert_ne!(restored_instance, initial_facts.instance());
+    assert_ne!(restored_instance, current_instance);
+    assert_eq!(
+        view.port_connection_summary(ids.target_port)
+            .unwrap()
+            .unwrap()
+            .instance(),
+        restored_instance,
+    );
+}
+
+#[test]
+fn occupied_input_drag_facts_carry_the_edge_lifetime_not_only_its_id() {
+    let (graph, ids) = graph_with_routed_edge();
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .unwrap();
+    let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+
+    let initial = runtime.snapshot().unwrap();
+    let initial_drag = port_connection_drag_intent_by_id(&view, ids.target_port)
+        .expect("occupied input drag facts");
+    let PortConnectionDragIntent::Reconnect {
+        candidate: initial_candidate,
+        ..
+    } = initial_drag
+    else {
+        panic!("occupied input must issue a reconnect candidate");
+    };
+    assert_eq!(initial_candidate.edge(), ids.edge);
+    assert_eq!(
+        initial_candidate.edge_instance(),
+        initial
+            .edge_instance_key(ids.edge)
+            .expect("initial edge lifetime")
+    );
+
+    runtime
+        .execute(GraphCommand::disconnect(initial.version(), ids.edge))
+        .unwrap()
+        .applied()
+        .expect("edge retirement applies");
+    let retired = runtime.snapshot().unwrap();
+    assert_eq!(retired.edge_instance_key(ids.edge), None);
+
+    runtime
+        .execute(GraphCommand::undo(retired.version()))
+        .unwrap()
+        .applied()
+        .expect("undo restores the edge id");
+    let restored = runtime.snapshot().unwrap();
+    let restored_drag = port_connection_drag_intent_by_id(&view, ids.target_port)
+        .expect("restored occupied input drag facts");
+    let PortConnectionDragIntent::Reconnect {
+        candidate: restored_candidate,
+        ..
+    } = restored_drag
+    else {
+        panic!("restored input must issue a reconnect candidate");
+    };
+    assert_eq!(restored_candidate.edge(), ids.edge);
+    assert_eq!(
+        restored_candidate.edge_instance(),
+        restored
+            .edge_instance_key(ids.edge)
+            .expect("restored edge lifetime")
+    );
+    assert_ne!(
+        restored_candidate.edge_instance(),
+        initial_candidate.edge_instance(),
+        "a restored edge id must not revalidate an old reconnect drag"
+    );
+}
+
+#[test]
+fn port_drag_facts_are_accepted_only_by_the_issuing_runtime() {
+    let (graph, ids) = graph_with_routed_edge();
+    let first_runtime = GraphRuntime::builder(Default::default())
+        .build(graph.clone())
+        .unwrap();
+    let second_runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .unwrap();
+    let first = first_runtime
+        .attach_view(ViewSessionOptions::default())
+        .unwrap();
+    let second = second_runtime
+        .attach_view(ViewSessionOptions::default())
+        .unwrap();
+    let drag =
+        port_connection_drag_intent_by_id(&first, ids.source_port).expect("source port drag facts");
+
+    assert!(
+        first
+            .connection_start_from_port_drag_intent(
+                drag,
+                EdgeId::from_u128(90),
+                NodeGraphConnectionMode::Strict,
+                CanvasPoint::default(),
+                HandlePosition::Right,
+                HandlePosition::Left,
+                false,
+            )
+            .unwrap()
+            .is_some()
+    );
+    assert!(matches!(
+        second.connection_start_from_port_drag_intent(
+            drag,
+            EdgeId::from_u128(90),
+            NodeGraphConnectionMode::Strict,
+            CanvasPoint::default(),
+            HandlePosition::Right,
+            HandlePosition::Left,
+            false,
+        ),
+        Err(ViewSessionError::ForeignInteractionFacts)
+    ));
+}
+
+#[test]
+fn batched_port_summaries_preserve_order_missing_positions_and_one_revision() {
+    let (graph, ids) = graph_with_routed_edge();
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .unwrap();
+    let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    let weak = view.downgrade();
+    let missing = PortId::from_u128(u128::MAX - 1);
+    let requested = [ids.target_port, missing, ids.source_port, ids.target_port];
+
+    let before_strong = runtime.stats().unwrap();
+    let strong = view.port_connection_summaries(&requested).unwrap();
+    let after_strong = runtime.stats().unwrap();
+    assert_eq!(
+        after_strong.connection_query_fact_reads - before_strong.connection_query_fact_reads,
+        7,
+    );
+    assert_eq!(
+        after_strong.connection_query_index_bucket_reads
+            - before_strong.connection_query_index_bucket_reads,
+        0,
+    );
+    assert_eq!(
+        after_strong.connection_query_index_entries_read
+            - before_strong.connection_query_index_entries_read,
+        0,
+    );
+
+    let weak = weak.port_connection_summaries(&requested).unwrap();
+    let after_weak = runtime.stats().unwrap();
+    assert_eq!(
+        after_weak.connection_query_fact_reads - after_strong.connection_query_fact_reads,
+        7,
+    );
+    assert_eq!(
+        after_weak.connection_query_index_bucket_reads
+            - after_strong.connection_query_index_bucket_reads,
+        0,
+    );
+    assert_eq!(
+        after_weak.connection_query_index_entries_read
+            - after_strong.connection_query_index_entries_read,
+        0,
+    );
+
+    assert_eq!(strong, weak);
+    assert_eq!(strong.revision(), 0);
+    assert_eq!(strong.len(), requested.len());
+    assert!(!strong.is_empty());
+    let entries = strong.iter().collect::<Vec<_>>();
+    assert_eq!(
+        entries.iter().map(|(port, _)| *port).collect::<Vec<_>>(),
+        requested
+    );
+    assert!(entries[1].1.is_none());
+    assert_eq!(entries[0].1, entries[3].1);
+    for (requested_port, summary) in entries {
+        if let Some(summary) = summary {
+            assert_eq!(summary.revision(), strong.revision());
+            assert_eq!(summary.port(), requested_port);
+        }
+    }
+
+    view.execute(GraphCommand::set_node_data(
+        view.graph_snapshot().unwrap().version(),
+        ids.source,
+        serde_json::json!({ "revision": 1 }),
+    ))
+    .unwrap()
+    .applied()
+    .expect("unrelated node update applies");
+    let before_updated = runtime.stats().unwrap();
+    let updated = view.port_connection_summaries(&requested).unwrap();
+    let after_updated = runtime.stats().unwrap();
+    assert_eq!(updated.revision(), 1);
+    assert!(
+        updated
+            .iter()
+            .filter_map(|(_, summary)| summary)
+            .all(|summary| summary.revision() == updated.revision()),
+    );
+    assert_eq!(
+        after_updated.connection_query_fact_reads - before_updated.connection_query_fact_reads,
+        7,
+    );
+    assert_eq!(
+        after_updated.connection_query_index_bucket_reads
+            - before_updated.connection_query_index_bucket_reads,
+        0,
+    );
+    assert_eq!(
+        after_updated.connection_query_index_entries_read
+            - before_updated.connection_query_index_entries_read,
+        0,
+    );
+
+    let empty = view.port_connection_summaries(&[]).unwrap();
+    assert!(empty.is_empty());
+    assert_eq!(empty.revision(), updated.revision());
 }
 
 #[test]
@@ -161,16 +471,20 @@ fn runtime_owned_policy_keeps_connection_queries_and_commands_consistent() {
     assert!(!first_facts.can_accept_connection());
     assert!(!first_facts.incident()[0].can_reconnect());
 
+    let disabled_binding = ConnectionGestureBinding::connect(
+        runtime
+            .port_instance_key(ids.alternate_source_port)
+            .unwrap()
+            .expect("disabled source still has an exact lifetime"),
+        EdgeEndpoint::From,
+        EdgeId::from_u128(90),
+        NodeGraphConnectionMode::Strict,
+    );
     assert!(matches!(
-        first.create_from_wire_candidates(
-            ids.alternate_source_port,
-            NodeGraphConnectionMode::Strict,
-        ),
-        Err(ViewCreateFromWireQueryError::Query(
-            crate::runtime::graph_runtime::CreateFromWireQueryError::SourceNotConnectable {
-                port,
-            }
-        )) if port == ids.alternate_source_port
+        first.create_from_wire_candidates(&disabled_binding),
+        Err(ViewCreateFromWireQueryError::Session(
+            ViewSessionError::StaleInteractionFacts
+        ))
     ));
 
     let edge = EdgeId::from_u128(91);
@@ -189,7 +503,7 @@ fn runtime_owned_policy_keeps_connection_queries_and_commands_consistent() {
 
     let outcome = first
         .execute(GraphCommand::connect(
-            0,
+            evaluation.version(),
             edge,
             ids.alternate_source_port,
             ids.target_port,
@@ -222,30 +536,54 @@ fn create_from_wire_query_preserves_results_and_errors_across_view_capabilities(
     let runtime = GraphRuntime::builder(catalog).build(graph).unwrap();
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     let weak = view.downgrade();
+    let binding = connection_binding(&view, ids.alternate_source_port, EdgeId::from_u128(0xcafe));
 
-    let strong = view
-        .create_from_wire_candidates(ids.alternate_source_port, NodeGraphConnectionMode::Strict)
-        .unwrap();
-    let weak_result = weak
-        .create_from_wire_candidates(ids.alternate_source_port, NodeGraphConnectionMode::Strict)
-        .unwrap();
+    let strong = view.create_from_wire_candidates(&binding).unwrap();
+    let weak_result = weak.create_from_wire_candidates(&binding).unwrap();
     assert_eq!(strong.revision(), weak_result.revision());
+    assert_eq!(strong.source_instance(), binding.fixed_port_instance());
     assert_eq!(strong.candidates(), weak_result.candidates());
 
-    let missing = PortId::new();
+    let snapshot = runtime.snapshot().unwrap();
+    let source = snapshot.graph().node(&ids.alternate_source).unwrap();
+    let replacement_ports = source
+        .ports
+        .iter()
+        .copied()
+        .map(|port_id| {
+            let mut record = snapshot.graph().port(&port_id).unwrap().clone();
+            record.key = PortKey::new("replacement-source");
+            TopologyPort::new(port_id, record)
+        })
+        .collect::<Vec<_>>();
+    runtime
+        .execute(GraphCommand::topology(
+            snapshot.version(),
+            TopologyEdit::new().replace_node_ports(
+                ids.alternate_source,
+                replacement_ports,
+                IncidentEdgePolicy::Cascade,
+            ),
+        ))
+        .unwrap()
+        .applied()
+        .expect("source replacement applies");
     assert!(matches!(
-        weak.create_from_wire_candidates(missing, NodeGraphConnectionMode::Strict),
-        Err(ViewCreateFromWireQueryError::Query(
-            crate::runtime::graph_runtime::CreateFromWireQueryError::MissingSourcePort { port }
-        )) if port == missing
+        view.create_from_wire_candidates(&binding),
+        Err(ViewCreateFromWireQueryError::Session(
+            ViewSessionError::StaleInteractionFacts
+        ))
+    ));
+    assert!(matches!(
+        weak.create_from_wire_candidates(&binding),
+        Err(ViewCreateFromWireQueryError::Session(
+            ViewSessionError::StaleInteractionFacts
+        ))
     ));
 
     view.close().unwrap();
     assert!(matches!(
-        weak.create_from_wire_candidates(
-            ids.alternate_source_port,
-            NodeGraphConnectionMode::Strict,
-        ),
+        weak.create_from_wire_candidates(&binding),
         Err(ViewCreateFromWireQueryError::Session(
             ViewSessionError::Closed {
                 reason: ViewCloseReason::HostClosed,
@@ -385,10 +723,7 @@ fn output_drag_intent_skips_a_high_fanout_incident_bucket() {
     );
     let before = runtime.stats().unwrap();
 
-    let intent = view
-        .port_connection_drag_intent(output)
-        .unwrap()
-        .expect("output drag intent");
+    let intent = port_connection_drag_intent_by_id(&view, output).expect("output drag intent");
 
     assert!(matches!(intent, PortConnectionDragIntent::Connect { .. }));
     assert_eq!(intent.revision(), 0);
@@ -420,9 +755,7 @@ fn input_drag_intent_is_explicit_and_selects_the_first_reconnectable_edge() {
     let vacant_view = vacant_runtime
         .attach_view(ViewSessionOptions::default())
         .unwrap();
-    let vacant = vacant_view
-        .port_connection_drag_intent(PortId::from_u128(10))
-        .unwrap()
+    let vacant = port_connection_drag_intent_by_id(&vacant_view, PortId::from_u128(10))
         .expect("vacant input drag intent");
     assert!(matches!(vacant, PortConnectionDragIntent::Connect { .. }));
     assert_eq!(vacant.direction(), PortDirection::In);
@@ -435,9 +768,7 @@ fn input_drag_intent_is_explicit_and_selects_the_first_reconnectable_edge() {
         .attach_view(ViewSessionOptions::default())
         .unwrap();
     let reconnect_before = reconnect_runtime.stats().unwrap();
-    let reconnect = reconnect_view
-        .port_connection_drag_intent(PortId::from_u128(10))
-        .unwrap()
+    let reconnect = port_connection_drag_intent_by_id(&reconnect_view, PortId::from_u128(10))
         .expect("reconnect drag intent");
     assert!(matches!(
         reconnect,
@@ -470,9 +801,7 @@ fn input_drag_intent_is_explicit_and_selects_the_first_reconnectable_edge() {
         .attach_view(ViewSessionOptions::default())
         .unwrap();
     let blocked_before = blocked_runtime.stats().unwrap();
-    let blocked = blocked_view
-        .port_connection_drag_intent(PortId::from_u128(10))
-        .unwrap()
+    let blocked = port_connection_drag_intent_by_id(&blocked_view, PortId::from_u128(10))
         .expect("blocked drag intent");
     assert!(matches!(
         blocked,
@@ -528,4 +857,12 @@ fn port(node: NodeId, key: &str, direction: PortDirection) -> Port {
         ty: None,
         data: serde_json::Value::Null,
     }
+}
+
+fn connection_binding(view: &ViewSession, port: PortId, edge: EdgeId) -> ConnectionGestureBinding {
+    let drag = view
+        .port_connection_drag_intent(current_port_instance(view, port))
+        .expect("connection facts are readable");
+    ConnectionInteractionStart::binding_from_port_drag(drag, edge, NodeGraphConnectionMode::Strict)
+        .expect("source port can begin a connection")
 }

@@ -1,4 +1,6 @@
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+#[cfg(test)]
+use std::collections::HashSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound::{Excluded, Unbounded};
 
 use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize, EdgeId};
@@ -7,22 +9,47 @@ use crate::runtime::adapter_protocol::ViewPoint;
 use crate::runtime::geometry::{
     DEFAULT_EDGE_INTERACTION_WIDTH, EdgePathFlattenError, FlattenedEdgePath,
 };
+use crate::runtime::graph_runtime::EdgeInstanceKey;
 use crate::runtime::viewport::ViewportTransform;
 
 use super::order::render_order_key;
 use super::route_geometry::{
     RouteFlattenWork, RouteGeometryIndex, RouteQuerySource, RouteSegmentKey,
 };
-use super::{ViewGeneration, ViewId, ViewSession, ViewSessionError, ensure_open};
+use super::{
+    EdgePickQueryReceipt, InteractionQueryBinding, SelectedEdgeMembership, ViewQueryIdentity,
+    ViewQueryIdentityStaleReason, ViewSession, ViewSessionError, ViewShared, WeakViewSession,
+    ensure_open,
+};
+#[cfg(test)]
+use super::{ViewGeneration, ViewId};
 
 const HARD_EDGE_PICK_ENTRY_LIMIT: u64 = 16_384;
 const MIN_PICK_RADIUS_IN_VIEW: f32 = 0.001;
+
+pub(super) trait EdgeSelectionLookup {
+    fn contains(&self, edge: EdgeInstanceKey) -> bool;
+}
+
+impl EdgeSelectionLookup for SelectedEdgeMembership {
+    fn contains(&self, edge: EdgeInstanceKey) -> bool {
+        self.contains(edge)
+    }
+}
+
+#[cfg(test)]
+impl EdgeSelectionLookup for HashSet<EdgeId> {
+    fn contains(&self, edge: EdgeInstanceKey) -> bool {
+        HashSet::contains(self, &edge.edge())
+    }
+}
 
 /// A bounded edge-pick query expressed in framework view-space logical pixels.
 #[derive(Debug)]
 pub struct EdgePickQuery {
     request: EdgePickRequest,
     entry_budget: usize,
+    interaction_binding: Option<InteractionQueryBinding>,
 }
 
 impl EdgePickQuery {
@@ -33,6 +60,7 @@ impl EdgePickQuery {
                 radius_in_view,
             },
             entry_budget,
+            interaction_binding: None,
         }
     }
 
@@ -40,7 +68,13 @@ impl EdgePickQuery {
         Self {
             request: EdgePickRequest::Resume(cursor),
             entry_budget,
+            interaction_binding: None,
         }
+    }
+
+    pub(crate) fn bind_interaction(mut self, binding: InteractionQueryBinding) -> Self {
+        self.interaction_binding = Some(binding);
+        self
     }
 }
 
@@ -56,9 +90,7 @@ enum EdgePickRequest {
 /// Opaque continuation for a bounded edge-pick query.
 #[derive(Debug)]
 pub struct EdgePickCursor {
-    view: ViewId,
-    generation: ViewGeneration,
-    transform_revision: u64,
+    identity: ViewQueryIdentity,
     path_epoch: u128,
     pick_epoch: u128,
     order_revision: u128,
@@ -75,20 +107,33 @@ pub struct EdgePickCursor {
     total_entries_examined: u64,
 }
 
-/// One deterministic edge pick and its exact distance from the pointer in logical pixels.
+/// One deterministic edge pick and its flattened-path distance from the pointer.
+///
+/// The analytic curve distance differs from `distance_in_view` by no more than
+/// `distance_error_bound_in_view` logical pixels.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EdgePick {
-    edge: EdgeId,
+    instance: EdgeInstanceKey,
     distance_in_view: f32,
+    distance_error_bound_in_view: f32,
 }
 
 impl EdgePick {
     pub fn edge(self) -> EdgeId {
-        self.edge
+        self.instance.edge()
+    }
+
+    /// Returns the unforgeable identity of the picked edge lifetime.
+    pub fn instance(self) -> EdgeInstanceKey {
+        self.instance
     }
 
     pub fn distance_in_view(self) -> f32 {
         self.distance_in_view
+    }
+
+    pub fn distance_error_bound_in_view(self) -> f32 {
+        self.distance_error_bound_in_view
     }
 }
 
@@ -121,9 +166,19 @@ pub struct EdgePickWork {
     pub flatten_cache_evictions: u64,
     pub flatten_segments_built: u64,
     pub flatten_overflows: u64,
+    receipt: Option<EdgePickQueryReceipt>,
 }
 
 impl EdgePickWork {
+    pub fn receipt(self) -> Option<EdgePickQueryReceipt> {
+        self.receipt
+    }
+
+    fn with_receipt(mut self, receipt: Option<EdgePickQueryReceipt>) -> Self {
+        self.receipt = receipt;
+        self
+    }
+
     fn record_flatten(&mut self, work: RouteFlattenWork) {
         self.flatten_cache_hits = self.flatten_cache_hits.saturating_add(work.cache_hits);
         self.flatten_cache_misses = self.flatten_cache_misses.saturating_add(work.cache_misses);
@@ -155,6 +210,17 @@ pub enum EdgePickQueryOutcome {
         failures: Vec<EdgePickGeometryFailure>,
         work: EdgePickWork,
     },
+}
+
+impl EdgePickQueryOutcome {
+    pub fn receipt(&self) -> Option<EdgePickQueryReceipt> {
+        match self {
+            Self::Complete { work, .. }
+            | Self::Incomplete { work, .. }
+            | Self::BudgetExhausted { work }
+            | Self::GeometryIndeterminate { work, .. } => work.receipt(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -202,7 +268,7 @@ pub enum EdgePickQueryError {
 #[derive(Debug, Clone, Copy)]
 struct EdgePickCandidate {
     pick: EdgePick,
-    paint_order: (bool, bool, usize, EdgeId),
+    paint_order: (bool, bool, bool, usize, EdgeId),
 }
 
 pub(super) enum InternalEdgePickOutcome {
@@ -227,9 +293,7 @@ impl RouteGeometryIndex {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new_pick_cursor(
         &self,
-        view: ViewId,
-        generation: ViewGeneration,
-        transform_revision: u64,
+        identity: ViewQueryIdentity,
         order_revision: u128,
         pointer: ViewPoint,
         radius_in_view: f32,
@@ -248,9 +312,7 @@ impl RouteGeometryIndex {
         }
         let query_bounds = centered_rect(canvas_pointer, broad_radius_in_canvas)?;
         Some(EdgePickCursor {
-            view,
-            generation,
-            transform_revision,
+            identity,
             path_epoch: self.index_epoch(),
             pick_epoch: self.pick_epoch(),
             order_revision,
@@ -271,7 +333,7 @@ impl RouteGeometryIndex {
     pub(super) fn query_pick_page(
         &mut self,
         edge_draw_order_ranks: &BTreeMap<EdgeId, usize>,
-        selected_edges: &HashSet<EdgeId>,
+        selected_edges: &impl EdgeSelectionLookup,
         mut cursor: EdgePickCursor,
         entry_budget: usize,
     ) -> InternalEdgePickOutcome {
@@ -348,29 +410,40 @@ impl RouteGeometryIndex {
             let mut flatten_work = RouteFlattenWork::default();
             let flattened = self.flattened_for_pick(edge, cursor.zoom, &mut flatten_work);
             work.record_flatten(flatten_work);
-            let distance_in_canvas = match flattened
-                .and_then(|path| flattened_path_distance(&path, cursor.canvas_pointer))
-            {
-                Ok(Some(distance)) => distance,
-                Ok(None) => continue,
-                Err(error) => {
-                    cursor.geometry_failures.insert(edge, error);
-                    continue;
-                }
-            };
+            let (distance_in_canvas, distance_error_bound_in_canvas) =
+                match flattened.and_then(|approximation| {
+                    flattened_path_distance(&approximation.path, cursor.canvas_pointer)
+                        .map(|distance| (distance, approximation.max_error_in_canvas))
+                }) {
+                    Ok((Some(distance), error_bound)) => (distance, error_bound),
+                    Ok((None, _)) => continue,
+                    Err(error) => {
+                        cursor.geometry_failures.insert(edge, error);
+                        continue;
+                    }
+                };
             let distance_in_view = distance_in_canvas * cursor.zoom;
-            if !distance_in_view.is_finite() || distance_in_view > threshold_in_view {
+            let distance_error_bound_in_view = distance_error_bound_in_canvas * cursor.zoom;
+            if !distance_in_view.is_finite()
+                || !distance_error_bound_in_view.is_finite()
+                || distance_in_view > threshold_in_view + distance_error_bound_in_view
+            {
                 continue;
             }
             work.candidates_matched = work.candidates_matched.saturating_add(1);
+            let instance = self
+                .edge_instance(edge)
+                .expect("pick facts must retain their indexed edge identity");
             let candidate = EdgePickCandidate {
                 pick: EdgePick {
-                    edge,
+                    instance,
                     distance_in_view,
+                    distance_error_bound_in_view,
                 },
                 paint_order: render_order_key(
                     edge,
-                    selected_edges.contains(&edge),
+                    selected_edges.contains(instance),
+                    false,
                     edge_draw_order_ranks,
                 ),
             };
@@ -390,9 +463,24 @@ impl ViewSession {
         query: EdgePickQuery,
     ) -> Result<EdgePickQueryOutcome, EdgePickQueryError> {
         self.runtime()?;
-        let outcome = {
+        self.shared.edge_pick(query)
+    }
+}
+
+impl WeakViewSession {
+    pub(crate) fn edge_pick(
+        &self,
+        query: EdgePickQuery,
+    ) -> Result<EdgePickQueryOutcome, EdgePickQueryError> {
+        let (view, _) = self.open_capability()?;
+        view.edge_pick(query)
+    }
+}
+
+impl ViewShared {
+    fn edge_pick(&self, query: EdgePickQuery) -> Result<EdgePickQueryOutcome, EdgePickQueryError> {
+        let (outcome, receipt) = {
             let mut state = self
-                .shared
                 .state
                 .try_borrow_mut()
                 .map_err(|_| ViewSessionError::Busy)?;
@@ -406,9 +494,7 @@ impl ViewSession {
                 } => state
                     .derived
                     .new_edge_pick_cursor(
-                        state.id,
-                        state.generation,
-                        state.transform_revision,
+                        state.query_identity(),
                         state.interaction_order_revision,
                         pointer,
                         radius_in_view,
@@ -420,7 +506,17 @@ impl ViewSession {
                     *cursor
                 }
             };
-            {
+            let receipt = EdgePickQueryReceipt::issue(
+                query.interaction_binding,
+                cursor.identity,
+                [
+                    cursor.path_epoch,
+                    cursor.pick_epoch,
+                    cursor.order_revision,
+                    0,
+                ],
+            )?;
+            let outcome = {
                 let state = &mut *state;
                 state.derived.query_edge_pick_page(
                     &state.edge_draw_order_ranks,
@@ -428,18 +524,25 @@ impl ViewSession {
                     cursor,
                     query.entry_budget,
                 )
-            }
+            };
+            (outcome, receipt)
         };
 
         Ok(match outcome {
-            InternalEdgePickOutcome::Complete { pick, work } => {
-                EdgePickQueryOutcome::Complete { pick, work }
-            }
+            InternalEdgePickOutcome::Complete { pick, work } => EdgePickQueryOutcome::Complete {
+                pick,
+                work: work.with_receipt(receipt),
+            },
             InternalEdgePickOutcome::Incomplete { cursor, work } => {
-                EdgePickQueryOutcome::Incomplete { cursor, work }
+                EdgePickQueryOutcome::Incomplete {
+                    cursor,
+                    work: work.with_receipt(receipt),
+                }
             }
             InternalEdgePickOutcome::BudgetExhausted { work } => {
-                EdgePickQueryOutcome::BudgetExhausted { work }
+                EdgePickQueryOutcome::BudgetExhausted {
+                    work: work.with_receipt(receipt),
+                }
             }
             InternalEdgePickOutcome::GeometryIndeterminate { failures, work } => {
                 EdgePickQueryOutcome::GeometryIndeterminate {
@@ -447,7 +550,7 @@ impl ViewSession {
                         .into_iter()
                         .map(|(edge, error)| EdgePickGeometryFailure { edge, error })
                         .collect(),
-                    work,
+                    work: work.with_receipt(receipt),
                 }
             }
         })
@@ -458,28 +561,46 @@ fn validate_edge_pick_cursor(
     state: &super::ViewState,
     cursor: &EdgePickCursor,
 ) -> Result<(), EdgePickQueryError> {
-    let reason = if cursor.view != state.id {
-        Some(EdgePickCursorStaleReason::ForeignView)
-    } else if cursor.generation != state.generation {
-        Some(EdgePickCursorStaleReason::ViewGeneration)
-    } else if cursor.transform_revision != state.transform_revision {
-        Some(EdgePickCursorStaleReason::ViewportTransform)
-    } else if cursor.path_epoch != state.derived.edge_pick_epochs().0 {
-        Some(EdgePickCursorStaleReason::RouteGeometry)
-    } else if cursor.pick_epoch != state.derived.edge_pick_epochs().1 {
-        Some(EdgePickCursorStaleReason::EdgeInteraction)
-    } else if cursor.order_revision != state.interaction_order_revision {
-        Some(EdgePickCursorStaleReason::PaintOrder)
-    } else {
-        None
-    };
-    reason
-        .map(EdgePickQueryError::StaleCursor)
-        .map_or(Ok(()), Err)
+    let (path_epoch, pick_epoch) = state.derived.edge_pick_epochs();
+    edge_pick_cursor_stale_reason(
+        state.query_identity(),
+        path_epoch,
+        pick_epoch,
+        state.interaction_order_revision,
+        cursor,
+    )
+    .map(EdgePickQueryError::StaleCursor)
+    .map_or(Ok(()), Err)
+}
+
+fn edge_pick_cursor_stale_reason(
+    identity: ViewQueryIdentity,
+    path_epoch: u128,
+    pick_epoch: u128,
+    order_revision: u128,
+    cursor: &EdgePickCursor,
+) -> Option<EdgePickCursorStaleReason> {
+    match cursor.identity.stale_reason(identity) {
+        Some(ViewQueryIdentityStaleReason::ForeignView) => {
+            Some(EdgePickCursorStaleReason::ForeignView)
+        }
+        Some(ViewQueryIdentityStaleReason::ViewGeneration) => {
+            Some(EdgePickCursorStaleReason::ViewGeneration)
+        }
+        Some(ViewQueryIdentityStaleReason::ViewportTransform) => {
+            Some(EdgePickCursorStaleReason::ViewportTransform)
+        }
+        None if cursor.path_epoch != path_epoch => Some(EdgePickCursorStaleReason::RouteGeometry),
+        None if cursor.pick_epoch != pick_epoch => Some(EdgePickCursorStaleReason::EdgeInteraction),
+        None if cursor.order_revision != order_revision => {
+            Some(EdgePickCursorStaleReason::PaintOrder)
+        }
+        None => None,
+    }
 }
 
 pub(super) fn record_edge_pick_stats(
-    stats: &mut super::ViewSessionStats,
+    stats: &mut super::DerivedGeometryStats,
     outcome: &InternalEdgePickOutcome,
 ) {
     let work = match outcome {
@@ -626,7 +747,7 @@ fn point_segment_distance(
 
 #[cfg(test)]
 mod tests {
-    use jellyflow_core::core::{Edge, EdgeKind, EdgeRouteKind, EdgeViewDescriptor, PortId};
+    use jellyflow_core::core::{Edge, EdgeKind, EdgeRouteSpec, EdgeViewDescriptor, PortId};
 
     use super::*;
     use crate::runtime::adapter_protocol::PublishedEdgeRoute;
@@ -634,6 +755,94 @@ mod tests {
         EdgeEndpointPosition, EdgePath, EdgePathLabel, EdgePosition, HandlePosition, PathCommand,
         resolve_edge_route_path,
     };
+    use crate::runtime::viewport::ViewportRevision;
+
+    #[test]
+    fn edge_pick_cursor_identity_and_epoch_staleness_matrix() {
+        let index = RouteGeometryIndex::default();
+        let cursor = cursor(&index, ViewPoint::new(0.0, 0.0), 4.0, 1.0);
+        let identity = cursor.identity;
+        let foreign_identity = ViewQueryIdentity::new(
+            ViewId {
+                runtime: identity.view.runtime,
+                local: identity.view.local.saturating_add(1),
+            },
+            identity.generation,
+            identity.viewport_revision,
+        );
+        let next_generation = ViewQueryIdentity::new(
+            identity.view,
+            identity.generation.terminal(),
+            identity.viewport_revision,
+        );
+        let next_transform = ViewQueryIdentity::new(
+            identity.view,
+            identity.generation,
+            identity.viewport_revision.checked_next().unwrap(),
+        );
+        for (current_identity, path_epoch, pick_epoch, order_revision, expected) in [
+            (
+                foreign_identity,
+                cursor.path_epoch,
+                cursor.pick_epoch,
+                cursor.order_revision,
+                Some(EdgePickCursorStaleReason::ForeignView),
+            ),
+            (
+                next_generation,
+                cursor.path_epoch,
+                cursor.pick_epoch,
+                cursor.order_revision,
+                Some(EdgePickCursorStaleReason::ViewGeneration),
+            ),
+            (
+                next_transform,
+                cursor.path_epoch,
+                cursor.pick_epoch,
+                cursor.order_revision,
+                Some(EdgePickCursorStaleReason::ViewportTransform),
+            ),
+            (
+                identity,
+                cursor.path_epoch.saturating_add(1),
+                cursor.pick_epoch,
+                cursor.order_revision,
+                Some(EdgePickCursorStaleReason::RouteGeometry),
+            ),
+            (
+                identity,
+                cursor.path_epoch,
+                cursor.pick_epoch.saturating_add(1),
+                cursor.order_revision,
+                Some(EdgePickCursorStaleReason::EdgeInteraction),
+            ),
+            (
+                identity,
+                cursor.path_epoch,
+                cursor.pick_epoch,
+                cursor.order_revision.saturating_add(1),
+                Some(EdgePickCursorStaleReason::PaintOrder),
+            ),
+            (
+                identity,
+                cursor.path_epoch,
+                cursor.pick_epoch,
+                cursor.order_revision,
+                None,
+            ),
+        ] {
+            assert_eq!(
+                edge_pick_cursor_stale_reason(
+                    current_identity,
+                    path_epoch,
+                    pick_epoch,
+                    order_revision,
+                    &cursor,
+                ),
+                expected,
+            );
+        }
+    }
 
     #[test]
     fn crossing_edges_pick_nearest_then_effective_paint_order() {
@@ -756,6 +965,65 @@ mod tests {
     }
 
     #[test]
+    fn curved_edge_pick_compensates_for_flattening_error() {
+        let edge = EdgeId::from_u128(1);
+        let mut index = RouteGeometryIndex::default();
+        index.upsert(edge, &high_curvature_route(edge, 0.02));
+
+        let (pick, work) = complete_pick(
+            cursor(&index, ViewPoint::new(21.6, 63.0), 0.0, 1.0),
+            &mut index,
+            &BTreeMap::new(),
+            &HashSet::new(),
+            64,
+        );
+
+        assert_eq!(pick.map(EdgePick::edge), Some(edge));
+        assert_eq!(work.exact_tests, 1);
+    }
+
+    #[test]
+    fn collinear_cubic_overshoot_remains_pickable_beyond_its_endpoint_chord() {
+        let edge = EdgeId::from_u128(1);
+        let mut index = RouteGeometryIndex::default();
+        index.upsert(edge, &overshooting_collinear_route(edge));
+
+        let (pick, work) = complete_pick(
+            cursor(&index, ViewPoint::new(29.6875, 0.0), 0.0, 1.0),
+            &mut index,
+            &BTreeMap::new(),
+            &HashSet::new(),
+            64,
+        );
+
+        assert_eq!(pick.map(EdgePick::edge), Some(edge));
+        assert_eq!(work.exact_tests, 1);
+    }
+
+    #[test]
+    fn extreme_finite_cubic_pick_is_geometry_indeterminate_instead_of_false() {
+        let edge = EdgeId::from_u128(1);
+        let mut index = RouteGeometryIndex::default();
+        assert!(
+            index
+                .upsert(edge, &extreme_finite_route(edge))
+                .index_changed
+        );
+        let cursor = cursor(&index, ViewPoint::new(0.0, 0.0), 1.0, 1.0);
+
+        let outcome = index.query_pick_page(&BTreeMap::new(), &HashSet::new(), cursor, 64);
+
+        let InternalEdgePickOutcome::GeometryIndeterminate { failures, work } = outcome else {
+            panic!("unrepresentable flatten distance must be explicit");
+        };
+        assert_eq!(
+            failures.get(&edge),
+            Some(&EdgePathFlattenError::InvalidGeometry)
+        );
+        assert_eq!(work.flatten_overflows, 1);
+    }
+
+    #[test]
     fn maximum_interaction_width_keeps_wide_edges_in_the_local_scan() {
         let edge = EdgeId::from_u128(1);
         let mut index = RouteGeometryIndex::default();
@@ -836,7 +1104,7 @@ mod tests {
                 offset_y: 0.0,
             },
         };
-        route = PublishedEdgeRoute::new(edge, facts);
+        route = PublishedEdgeRoute::new_for_test(edge, facts);
         let mut index = RouteGeometryIndex::default();
         index.upsert(edge, &route);
         let cursor = cursor(&index, ViewPoint::new(0.0, 0.0), 4.0, 1.0);
@@ -872,7 +1140,7 @@ mod tests {
 
         let mut changed_facts = route.facts().clone();
         changed_facts.presentation.label = Some("changed".into());
-        let changed = PublishedEdgeRoute::new(edge, changed_facts);
+        let changed = PublishedEdgeRoute::new_for_test(edge, changed_facts);
         assert!(!index.upsert(edge, &changed).index_changed);
         assert_eq!(old_cursor.path_epoch, index.index_epoch());
         assert_eq!(old_cursor.pick_epoch, index.pick_epoch());
@@ -906,7 +1174,7 @@ mod tests {
 
         let mut changed_facts = route.facts().clone();
         changed_facts.interaction.selectable = false;
-        let changed = PublishedEdgeRoute::new(edge, changed_facts);
+        let changed = PublishedEdgeRoute::new_for_test(edge, changed_facts);
         assert!(!index.upsert(edge, &changed).index_changed);
         assert_eq!(old_cursor.path_epoch, index.index_epoch());
         assert_ne!(old_cursor.pick_epoch, index.pick_epoch());
@@ -1013,9 +1281,11 @@ mod tests {
     ) -> EdgePickCursor {
         index
             .new_pick_cursor(
-                ViewId::unavailable(),
-                ViewGeneration::initial(),
-                0,
+                ViewQueryIdentity::new(
+                    ViewId::unavailable(),
+                    ViewGeneration::initial(),
+                    ViewportRevision::initial(),
+                ),
                 0,
                 pointer,
                 radius_in_view,
@@ -1045,7 +1315,7 @@ mod tests {
         selectable: bool,
     ) -> PublishedEdgeRoute {
         let mut model = Edge::new(EdgeKind::Data, PortId::from_u128(1), PortId::from_u128(2));
-        model.view = EdgeViewDescriptor::new().with_route_kind(EdgeRouteKind::Straight);
+        model.view = EdgeViewDescriptor::new().with_route(EdgeRouteSpec::straight());
         model.interaction_width = Some(interaction_width);
         model.selectable = Some(selectable);
         let facts = resolve_edge_route_path(
@@ -1065,6 +1335,76 @@ mod tests {
             },
         )
         .expect("route");
-        PublishedEdgeRoute::new(edge, facts)
+        PublishedEdgeRoute::new_for_test(edge, facts)
+    }
+
+    fn high_curvature_route(edge: EdgeId, interaction_width: f32) -> PublishedEdgeRoute {
+        let route = route_with_options(edge, 0.0, 0.0, 100.0, 0.0, interaction_width, true);
+        let mut facts = route.facts().clone();
+        facts.path = EdgePath {
+            commands: vec![
+                PathCommand::MoveTo(CanvasPoint { x: 0.0, y: 0.0 }),
+                PathCommand::CubicTo {
+                    control1: CanvasPoint { x: 0.0, y: 100.0 },
+                    control2: CanvasPoint { x: 100.0, y: 100.0 },
+                    to: CanvasPoint { x: 100.0, y: 0.0 },
+                },
+            ],
+            label: EdgePathLabel {
+                point: CanvasPoint { x: 50.0, y: 75.0 },
+                offset_x: 0.0,
+                offset_y: 0.0,
+            },
+        };
+        PublishedEdgeRoute::new_for_test(edge, facts)
+    }
+
+    fn overshooting_collinear_route(edge: EdgeId) -> PublishedEdgeRoute {
+        let route = route_with_options(edge, 0.0, 0.0, 10.0, 0.0, 0.02, true);
+        let mut facts = route.facts().clone();
+        facts.path = EdgePath {
+            commands: vec![
+                PathCommand::MoveTo(CanvasPoint { x: 0.0, y: 0.0 }),
+                PathCommand::CubicTo {
+                    control1: CanvasPoint { x: 100.0, y: 0.0 },
+                    control2: CanvasPoint { x: -90.0, y: 0.0 },
+                    to: CanvasPoint { x: 10.0, y: 0.0 },
+                },
+            ],
+            label: EdgePathLabel {
+                point: CanvasPoint { x: 5.0, y: 0.0 },
+                offset_x: 0.0,
+                offset_y: 0.0,
+            },
+        };
+        PublishedEdgeRoute::new_for_test(edge, facts)
+    }
+
+    fn extreme_finite_route(edge: EdgeId) -> PublishedEdgeRoute {
+        let extent = 1.0e20;
+        let route = route_with_options(edge, -extent, 0.0, extent, 0.0, 2.0, true);
+        let mut facts = route.facts().clone();
+        facts.path = EdgePath {
+            commands: vec![
+                PathCommand::MoveTo(CanvasPoint { x: -extent, y: 0.0 }),
+                PathCommand::CubicTo {
+                    control1: CanvasPoint {
+                        x: -extent,
+                        y: extent,
+                    },
+                    control2: CanvasPoint {
+                        x: extent,
+                        y: -extent,
+                    },
+                    to: CanvasPoint { x: extent, y: 0.0 },
+                },
+            ],
+            label: EdgePathLabel {
+                point: CanvasPoint::default(),
+                offset_x: 0.0,
+                offset_y: 0.0,
+            },
+        };
+        PublishedEdgeRoute::new_for_test(edge, facts)
     }
 }

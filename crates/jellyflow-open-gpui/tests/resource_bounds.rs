@@ -7,18 +7,26 @@ use jellyflow_core::{
     CanvasPoint, CanvasRect, CanvasSize, GraphBuilder, GraphId, Node, NodeId, NodeKindKey, Port,
     PortCapacity, PortDirection, PortId, PortKey, PortKind,
 };
-use jellyflow_open_gpui::authoring::OpenGpuiNodeBinding;
-use jellyflow_open_gpui::{
-    OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY, OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY,
+use jellyflow_open_gpui::activity::{
     OpenGpuiActivityAcquireError, OpenGpuiActivityKind, OpenGpuiActivityLease,
-    OpenGpuiNodeActivityRegistry, OpenGpuiNodeRegistry, OpenGpuiPortDragCancelReason,
-    OpenGpuiPortDragPhase, OpenGpuiPortEvent, OpenGpuiSceneHost,
+    OpenGpuiNodeActivityHandle,
 };
+use jellyflow_open_gpui::authoring::OpenGpuiNodeBinding;
+use jellyflow_open_gpui::host::{
+    OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY, OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY,
+    OpenGpuiSceneHost,
+};
+use jellyflow_open_gpui::interaction::{
+    OpenGpuiPortDragCancelReason, OpenGpuiPortDragPhase, OpenGpuiPortEvent,
+};
+use jellyflow_open_gpui::navigation::{OpenGpuiInputBindings, OpenGpuiNavigationConfig};
+use jellyflow_open_gpui::registry::OpenGpuiNodeRegistry;
 use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec};
 use jellyflow_runtime::{
-    CanvasInteractionPhase, FrameMaterializationBudget, GraphCommand, GraphRuntime,
-    IncidentEdgePolicy, TopologyEdit, TopologyPort, ViewCloseReason, ViewSessionError,
-    ViewSessionOptions, WeakViewSession,
+    commands::GraphCommand, commands::IncidentEdgePolicy, commands::TopologyEdit,
+    commands::TopologyPort, graph::GraphRuntime, interaction::CanvasInteractionPhase,
+    view::FrameMaterializationBudget, view::ViewCloseReason, view::ViewSessionError,
+    view::ViewSessionOptions, view::WeakViewSession,
 };
 use open_gpui::{
     AnyWeakEntity, App, AppContext, Context, Entity, InteractiveElement, MouseButton,
@@ -275,7 +283,7 @@ fn protected_nodes_ignore_zero_required_budget_then_resume_ordinary_culling(
         *factory_focus.borrow_mut() = Some(activity.acquire(OpenGpuiActivityKind::Focus).unwrap());
         *factory_capture.borrow_mut() = Some(
             activity
-                .acquire(OpenGpuiActivityKind::PointerCapture)
+                .acquire(OpenGpuiActivityKind::GraphInteraction)
                 .unwrap(),
         );
         let revocations = factory_revocations.clone();
@@ -348,7 +356,10 @@ fn protected_nodes_ignore_zero_required_budget_then_resume_ordinary_culling(
 
     runtime
         .execute(GraphCommand::topology(
-            0,
+            runtime
+                .snapshot()
+                .expect("resource removal snapshot")
+                .version(),
             TopologyEdit::new().remove_node(node_id(), IncidentEdgePolicy::Reject),
         ))
         .unwrap();
@@ -362,7 +373,10 @@ fn protected_nodes_ignore_zero_required_budget_then_resume_ordinary_culling(
 
     runtime
         .execute(GraphCommand::topology(
-            1,
+            runtime
+                .snapshot()
+                .expect("resource restoration snapshot")
+                .version(),
             TopologyEdit::new().add_node(node_id(), node(), []),
         ))
         .unwrap();
@@ -399,7 +413,7 @@ fn coalesced_reincarnation_hard_retires_active_node_without_waiting_for_draw(
         let activity = binding.read(cx).activity().clone();
         let revocations = factory_revocations.clone();
         let lease = activity
-            .acquire_with_revocation(OpenGpuiActivityKind::PointerCapture, move || {
+            .acquire_with_revocation(OpenGpuiActivityKind::GraphInteraction, move || {
                 revocations.set(revocations.get().saturating_add(1));
             })
             .unwrap();
@@ -434,11 +448,20 @@ fn coalesced_reincarnation_hard_retires_active_node_without_waiting_for_draw(
 
     runtime
         .execute(GraphCommand::topology(
-            0,
+            runtime
+                .snapshot()
+                .expect("detached resource removal snapshot")
+                .version(),
             TopologyEdit::new().remove_node(node_id(), IncidentEdgePolicy::Reject),
         ))
         .unwrap();
-    runtime.execute(GraphCommand::undo(1)).unwrap();
+    let removed_version = runtime
+        .snapshot()
+        .expect("detached resource undo snapshot")
+        .version();
+    runtime
+        .execute(GraphCommand::undo(removed_version))
+        .unwrap();
     cx.run_until_parked();
 
     assert_eq!(revocations.get(), 1);
@@ -466,7 +489,7 @@ fn protected_instance_budget_is_distinct_bounded_and_reusable(cx: &mut open_gpui
         .unwrap();
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     let registries = Rc::new(RefCell::new(
-        BTreeMap::<NodeId, OpenGpuiNodeActivityRegistry>::new(),
+        BTreeMap::<NodeId, OpenGpuiNodeActivityHandle>::new(),
     ));
     let leases = Rc::new(RefCell::new(
         BTreeMap::<NodeId, OpenGpuiActivityLease>::new(),
@@ -604,6 +627,10 @@ fn sixty_fifth_real_port_drag_cancels_without_side_effects_then_retries_after_re
             view,
             registry.seal().expect("valid test registry"),
             visible_viewport(),
+        )
+        .with_navigation_config(
+            OpenGpuiNavigationConfig::default()
+                .with_input_bindings(OpenGpuiInputBindings::default().with_connect_on_click(false)),
         )
     });
     draw(cx);
@@ -839,7 +866,10 @@ fn thousand_lifecycle_cycles_return_native_resources_to_baseline(
         assert_eq!(pointer_starts.get(), cycle.saturating_mul(3) + 1);
         runtime
             .execute(GraphCommand::topology(
-                0,
+                runtime
+                    .snapshot()
+                    .expect("cycle removal snapshot")
+                    .version(),
                 TopologyEdit::new().remove_node(node_id(), IncidentEdgePolicy::Reject),
             ))
             .unwrap();
@@ -861,7 +891,10 @@ fn thousand_lifecycle_cycles_return_native_resources_to_baseline(
 
         runtime
             .execute(GraphCommand::topology(
-                1,
+                runtime
+                    .snapshot()
+                    .expect("cycle restoration snapshot")
+                    .version(),
                 TopologyEdit::new().add_node(
                     node_id(),
                     cycle_node(KIND),

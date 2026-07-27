@@ -1,7 +1,9 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::hash::{Hash, Hasher};
 
-use jellyflow_core::{EdgeId, NodeId, PortId};
-use jellyflow_runtime::EdgeEndpoint;
+use jellyflow_runtime::{
+    graph::EdgeEndpoint, graph::EdgeInstanceKey, graph::NodeLifetimeKey, graph::PortInstanceKey,
+};
 use open_gpui::{Context, FocusHandle, Window};
 
 use crate::semantic_zoom::OpenGpuiNodePresentation;
@@ -11,20 +13,17 @@ use super::OpenGpuiSceneHost;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum OpenGpuiGraphFocusTarget {
     Node {
-        node: NodeId,
+        lifetime: NodeLifetimeKey,
         presentation: OpenGpuiNodePresentation,
     },
-    Port {
-        node: NodeId,
-        port: PortId,
-    },
-    Edge(EdgeId),
-    ReconnectSource(EdgeId),
-    ReconnectTarget(EdgeId),
+    Port(PortInstanceKey),
+    Edge(EdgeInstanceKey),
+    ReconnectSource(EdgeInstanceKey),
+    ReconnectTarget(EdgeInstanceKey),
 }
 
 impl OpenGpuiGraphFocusTarget {
-    pub(super) fn reconnect(edge: EdgeId, endpoint: EdgeEndpoint) -> Self {
+    pub(super) fn reconnect(edge: EdgeInstanceKey, endpoint: EdgeEndpoint) -> Self {
         match endpoint {
             EdgeEndpoint::From => Self::ReconnectSource(edge),
             EdgeEndpoint::To => Self::ReconnectTarget(edge),
@@ -38,11 +37,36 @@ impl OpenGpuiGraphFocusTarget {
         )
     }
 
-    fn same_logical_node(self, other: Self) -> bool {
-        matches!(
-            (self, other),
-            (Self::Node { node: left, .. }, Self::Node { node: right, .. }) if left == right
-        )
+    fn logical_node(self) -> Option<NodeLifetimeKey> {
+        match self {
+            Self::Node { lifetime, .. } => Some(lifetime),
+            Self::Port(_) | Self::Edge(_) | Self::ReconnectSource(_) | Self::ReconnectTarget(_) => {
+                None
+            }
+        }
+    }
+}
+
+impl Hash for OpenGpuiGraphFocusTarget {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        std::mem::discriminant(self).hash(state);
+        match *self {
+            Self::Node {
+                lifetime,
+                presentation,
+            } => {
+                lifetime.hash(state);
+                match presentation {
+                    OpenGpuiNodePresentation::Detail => 0_u8,
+                    OpenGpuiNodePresentation::Overview => 1_u8,
+                }
+                .hash(state);
+            }
+            Self::Port(port) => port.hash(state),
+            Self::Edge(edge) | Self::ReconnectSource(edge) | Self::ReconnectTarget(edge) => {
+                edge.hash(state);
+            }
+        }
     }
 }
 
@@ -56,6 +80,106 @@ impl OpenGpuiGraphFocusEntry {
     pub(super) fn new(target: OpenGpuiGraphFocusTarget, handle: FocusHandle) -> Self {
         Self { target, handle }
     }
+}
+
+struct CurrentFocusIndex<'a> {
+    current: &'a [OpenGpuiGraphFocusEntry],
+    by_target: HashMap<OpenGpuiGraphFocusTarget, usize>,
+    first_node_by_lifetime: HashMap<NodeLifetimeKey, usize>,
+    #[cfg(test)]
+    lookups: FocusIndexLookupCounts,
+}
+
+impl<'a> CurrentFocusIndex<'a> {
+    fn new(current: &'a [OpenGpuiGraphFocusEntry]) -> Self {
+        let mut by_target = HashMap::with_capacity(current.len());
+        let mut first_node_by_lifetime = HashMap::with_capacity(current.len());
+        for (index, entry) in current.iter().enumerate() {
+            by_target.entry(entry.target).or_insert(index);
+            if let Some(node) = entry.target.logical_node() {
+                first_node_by_lifetime.entry(node).or_insert(index);
+            }
+        }
+        Self {
+            current,
+            by_target,
+            first_node_by_lifetime,
+            #[cfg(test)]
+            lookups: FocusIndexLookupCounts {
+                indexed_entries: current.len(),
+                ..FocusIndexLookupCounts::default()
+            },
+        }
+    }
+
+    fn entry_for_target(
+        &self,
+        target: OpenGpuiGraphFocusTarget,
+    ) -> Option<&'a OpenGpuiGraphFocusEntry> {
+        #[cfg(test)]
+        self.lookups.exact.set(self.lookups.exact.get() + 1);
+        self.by_target
+            .get(&target)
+            .map(|index| &self.current[*index])
+    }
+
+    fn first_node_entry(&self, node: NodeLifetimeKey) -> Option<&'a OpenGpuiGraphFocusEntry> {
+        #[cfg(test)]
+        self.lookups
+            .logical_node
+            .set(self.lookups.logical_node.get() + 1);
+        self.first_node_by_lifetime
+            .get(&node)
+            .map(|index| &self.current[*index])
+    }
+
+    fn contains_handle(&self, handle: &FocusHandle) -> bool {
+        self.current.iter().any(|entry| {
+            #[cfg(test)]
+            self.lookups
+                .handle_entries_examined
+                .set(self.lookups.handle_entries_examined.get() + 1);
+            &entry.handle == handle
+        })
+    }
+
+    fn replacement_for(
+        &self,
+        target: OpenGpuiGraphFocusTarget,
+    ) -> Option<&'a OpenGpuiGraphFocusEntry> {
+        match target.logical_node() {
+            Some(node) => self.first_node_entry(node),
+            None => self.entry_for_target(target),
+        }
+    }
+
+    #[cfg(test)]
+    fn lookup_counts(&self) -> FocusIndexLookupCountSnapshot {
+        FocusIndexLookupCountSnapshot {
+            indexed_entries: self.lookups.indexed_entries,
+            exact: self.lookups.exact.get(),
+            logical_node: self.lookups.logical_node.get(),
+            handle_entries_examined: self.lookups.handle_entries_examined.get(),
+        }
+    }
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct FocusIndexLookupCounts {
+    indexed_entries: usize,
+    exact: std::cell::Cell<usize>,
+    logical_node: std::cell::Cell<usize>,
+    handle_entries_examined: std::cell::Cell<usize>,
+}
+
+#[cfg(test)]
+#[derive(Debug, PartialEq, Eq)]
+struct FocusIndexLookupCountSnapshot {
+    indexed_entries: usize,
+    exact: usize,
+    logical_node: usize,
+    handle_entries_examined: usize,
 }
 
 #[derive(Default)]
@@ -82,6 +206,12 @@ impl OpenGpuiGraphFocusCoordinator {
             .tab_stop(true)
     }
 
+    pub(super) fn exact_focused_target(&self, window: &Window) -> Option<OpenGpuiGraphFocusTarget> {
+        self.previous
+            .iter()
+            .find_map(|entry| entry.handle.is_focused(window).then_some(entry.target))
+    }
+
     pub(super) fn remember_return_target(&mut self, target: OpenGpuiGraphFocusTarget) {
         self.return_target = Some(target);
     }
@@ -92,26 +222,29 @@ impl OpenGpuiGraphFocusCoordinator {
         root: &FocusHandle,
         allow_return: bool,
         window: &mut Window,
-        cx: &mut Context<OpenGpuiSceneHost>,
+        cx: &mut open_gpui::App,
     ) {
-        if allow_return
-            && let Some(target) = self.return_target.take()
-            && (root.is_focused(window) || window.focused(cx).is_none())
         {
-            if let Some(entry) = current.iter().find(|entry| entry.target == target) {
-                window.focus(&entry.handle, cx);
-            } else {
-                window.focus(root, cx);
+            let current_index = CurrentFocusIndex::new(&current);
+            if allow_return
+                && let Some(target) = self.return_target.take()
+                && (root.is_focused(window) || window.focused(cx).is_none())
+            {
+                if let Some(entry) = current_index.entry_for_target(target) {
+                    window.focus(&entry.handle, cx);
+                } else {
+                    window.focus(root, cx);
+                }
+            } else if allow_return {
+                self.return_target = None;
             }
-        } else if allow_return {
-            self.return_target = None;
-        }
 
-        if let Some(index) = self.disappeared_focus_index(&current, window, cx) {
-            if let Some(fallback) = self.fallback_for(index, &current) {
-                window.focus(&fallback.handle, cx);
-            } else {
-                window.focus(root, cx);
+            if let Some(index) = self.disappeared_focus_index(&current_index, window, cx) {
+                if let Some(fallback) = self.fallback_for(index, &current_index) {
+                    window.focus(&fallback.handle, cx);
+                } else {
+                    window.focus(root, cx);
+                }
             }
         }
 
@@ -125,62 +258,61 @@ impl OpenGpuiGraphFocusCoordinator {
 
     fn disappeared_focus_index(
         &self,
-        current: &[OpenGpuiGraphFocusEntry],
+        current: &CurrentFocusIndex<'_>,
         window: &Window,
-        cx: &Context<OpenGpuiSceneHost>,
+        cx: &open_gpui::App,
+    ) -> Option<usize> {
+        self.disappeared_focus_index_by(
+            current,
+            |handle| handle.is_focused(window),
+            |handle| handle.contains_focused(window, cx),
+        )
+    }
+
+    fn disappeared_focus_index_by(
+        &self,
+        current: &CurrentFocusIndex<'_>,
+        mut is_focused: impl FnMut(&FocusHandle) -> bool,
+        mut contains_focused: impl FnMut(&FocusHandle) -> bool,
     ) -> Option<usize> {
         if let Some(index) = self
             .previous
             .iter()
-            .position(|entry| entry.handle.is_focused(window))
+            .position(|entry| is_focused(&entry.handle))
         {
-            return (!current
-                .iter()
-                .any(|entry| entry.handle == self.previous[index].handle))
-            .then_some(index);
+            return (!current.contains_handle(&self.previous[index].handle)).then_some(index);
         }
 
         self.previous.iter().enumerate().find_map(|(index, entry)| {
-            let OpenGpuiGraphFocusTarget::Node { .. } = entry.target else {
-                return None;
-            };
+            let node = entry.target.logical_node()?;
             let same_entry_survives = current
-                .iter()
-                .any(|current| current.target == entry.target && current.handle == entry.handle);
-            let presentation_changed = current
-                .iter()
-                .any(|current| current.target.same_logical_node(entry.target));
-            (!same_entry_survives
-                && presentation_changed
-                && entry.handle.contains_focused(window, cx))
-            .then_some(index)
+                .entry_for_target(entry.target)
+                .is_some_and(|current| current.handle == entry.handle);
+            if same_entry_survives {
+                return None;
+            }
+            let presentation_changed = current.first_node_entry(node).is_some();
+            (presentation_changed && contains_focused(&entry.handle)).then_some(index)
         })
     }
 
     fn fallback_for<'a>(
         &self,
         removed: usize,
-        current: &'a [OpenGpuiGraphFocusEntry],
+        current: &CurrentFocusIndex<'a>,
     ) -> Option<&'a OpenGpuiGraphFocusEntry> {
         let removed_target = self.previous[removed].target;
-        if let Some(replacement) = current.iter().find(|entry| {
-            entry.target == removed_target || entry.target.same_logical_node(removed_target)
-        }) {
+        if let Some(replacement) = current.replacement_for(removed_target) {
             return Some(replacement);
         }
         self.previous[removed + 1..]
             .iter()
-            .find_map(|previous| {
-                current
-                    .iter()
-                    .find(|current| current.target == previous.target)
-            })
+            .find_map(|previous| current.entry_for_target(previous.target))
             .or_else(|| {
-                self.previous[..removed].iter().rev().find_map(|previous| {
-                    current
-                        .iter()
-                        .find(|current| current.target == previous.target)
-                })
+                self.previous[..removed]
+                    .iter()
+                    .rev()
+                    .find_map(|previous| current.entry_for_target(previous.target))
             })
     }
 
@@ -188,5 +320,490 @@ impl OpenGpuiGraphFocusCoordinator {
         self.actions.clear();
         self.previous.clear();
         self.return_target = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+
+    use jellyflow_core::{
+        CanvasPoint, CanvasSize, Edge, EdgeId, EdgeKind, GraphBuilder, GraphId, Node, NodeId,
+        NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKey, PortKind,
+    };
+    use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec, NodePortSpec};
+    use jellyflow_runtime::{graph::GraphRuntime, view::ViewSessionOptions};
+    use open_gpui::{Context, IntoElement, Render};
+
+    use super::*;
+
+    struct FocusTestView;
+
+    impl Render for FocusTestView {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            open_gpui::div()
+        }
+    }
+
+    fn node_target(
+        lifetime: NodeLifetimeKey,
+        presentation: OpenGpuiNodePresentation,
+    ) -> OpenGpuiGraphFocusTarget {
+        OpenGpuiGraphFocusTarget::Node {
+            lifetime,
+            presentation,
+        }
+    }
+
+    struct FocusIdentities {
+        nodes: [NodeLifetimeKey; 2],
+        ports: [PortInstanceKey; 2],
+        edge: EdgeInstanceKey,
+    }
+
+    fn focus_identities() -> FocusIdentities {
+        const KIND: &str = "test.focus-node";
+        let nodes = [NodeId::from_u128(1), NodeId::from_u128(2)];
+        let ports = [PortId::from_u128(11), PortId::from_u128(12)];
+        let edge = EdgeId::from_u128(21);
+        let mut catalog = NodeCatalog::new();
+        catalog
+            .register(
+                NodeKindSpec::builder(KIND, "Focus node", "test.focus-renderer")
+                    .default_size(CanvasSize {
+                        width: 100.0,
+                        height: 60.0,
+                    })
+                    .port(NodePortSpec::new(
+                        "out",
+                        PortDirection::Out,
+                        PortKind::Data,
+                        PortCapacity::Single,
+                    ))
+                    .port(NodePortSpec::new(
+                        "in",
+                        PortDirection::In,
+                        PortKind::Data,
+                        PortCapacity::Single,
+                    ))
+                    .build(),
+            )
+            .expect("unique focus node kind");
+        let mut graph = GraphBuilder::new(GraphId::from_u128(1));
+        graph.insert_node(nodes[0], focus_node(KIND, ports[0], 0.0));
+        graph.insert_node(nodes[1], focus_node(KIND, ports[1], 200.0));
+        graph.insert_port(ports[0], focus_port(nodes[0], "out", PortDirection::Out));
+        graph.insert_port(ports[1], focus_port(nodes[1], "in", PortDirection::In));
+        graph.insert_edge(edge, Edge::new(EdgeKind::Data, ports[0], ports[1]));
+        let runtime = GraphRuntime::builder(catalog)
+            .build(graph.build().expect("valid focus graph"))
+            .expect("valid focus runtime");
+        let view = runtime
+            .attach_view(ViewSessionOptions::default())
+            .expect("focus view");
+        let snapshot = view.graph_snapshot().expect("focus snapshot");
+        FocusIdentities {
+            nodes: nodes.map(|node| {
+                snapshot
+                    .node_lifetime_key(node)
+                    .expect("current node lifetime")
+            }),
+            ports: ports.map(|port| {
+                view.port_instance_key(port)
+                    .expect("port identity query")
+                    .expect("current port identity")
+            }),
+            edge: view
+                .edge_instance_key(edge)
+                .expect("edge identity query")
+                .expect("current edge identity"),
+        }
+    }
+
+    fn focus_node_lifetimes(count: usize) -> Vec<NodeLifetimeKey> {
+        const KIND: &str = "test.focus-portless-node";
+        let mut catalog = NodeCatalog::new();
+        catalog
+            .register(
+                NodeKindSpec::builder(KIND, "Focus portless node", "test.focus-renderer")
+                    .default_size(CanvasSize {
+                        width: 100.0,
+                        height: 60.0,
+                    })
+                    .build(),
+            )
+            .expect("unique focus portless node kind");
+        let mut graph = GraphBuilder::new(GraphId::from_u128(2));
+        let nodes = (0..count)
+            .map(|index| NodeId::from_u128(index as u128 + 1))
+            .collect::<Vec<_>>();
+        for (index, node) in nodes.iter().copied().enumerate() {
+            let mut record = focus_node(KIND, PortId::from_u128(u128::MAX), index as f32);
+            record.ports.clear();
+            graph.insert_node(node, record);
+        }
+        let runtime = GraphRuntime::builder(catalog)
+            .build(graph.build().expect("valid focus portless graph"))
+            .expect("valid focus portless runtime");
+        let snapshot = runtime.snapshot().expect("focus portless snapshot");
+        nodes
+            .into_iter()
+            .map(|node| {
+                snapshot
+                    .node_lifetime_key(node)
+                    .expect("current node lifetime")
+            })
+            .collect()
+    }
+
+    fn focus_node(kind: &str, port: PortId, x: f32) -> Node {
+        Node {
+            kind: NodeKindKey::new(kind),
+            kind_version: 1,
+            pos: CanvasPoint { x, y: 0.0 },
+            origin: None,
+            selectable: None,
+            draggable: None,
+            connectable: None,
+            deletable: None,
+            parent: None,
+            extent: None,
+            expand_parent: None,
+            size: Some(CanvasSize {
+                width: 100.0,
+                height: 60.0,
+            }),
+            hidden: false,
+            collapsed: false,
+            ports: vec![port],
+            data: serde_json::Value::Null,
+        }
+    }
+
+    fn focus_port(node: NodeId, key: &str, dir: PortDirection) -> Port {
+        Port {
+            node,
+            key: PortKey::new(key),
+            dir,
+            kind: PortKind::Data,
+            capacity: PortCapacity::Single,
+            connectable: None,
+            connectable_start: None,
+            connectable_end: None,
+            ty: None,
+            data: serde_json::Value::Null,
+        }
+    }
+
+    fn entry(target: OpenGpuiGraphFocusTarget, handle: &FocusHandle) -> OpenGpuiGraphFocusEntry {
+        OpenGpuiGraphFocusEntry::new(target, handle.clone())
+    }
+
+    #[open_gpui::test]
+    fn large_stable_unfocused_reconcile_uses_linear_structural_lookups(
+        cx: &mut open_gpui::TestAppContext,
+    ) {
+        const ENTRY_COUNT: usize = 4_096;
+
+        let (_, cx) = cx.add_window_view(|_, _| FocusTestView);
+        cx.update(|_, cx| {
+            let identities = focus_node_lifetimes(ENTRY_COUNT);
+            let current = (0..ENTRY_COUNT)
+                .map(|index| {
+                    OpenGpuiGraphFocusEntry::new(
+                        node_target(identities[index], OpenGpuiNodePresentation::Detail),
+                        cx.focus_handle(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let coordinator = OpenGpuiGraphFocusCoordinator {
+                previous: current.clone(),
+                ..OpenGpuiGraphFocusCoordinator::default()
+            };
+            let current_index = CurrentFocusIndex::new(&current);
+            let direct_focus_checks = Cell::new(0_usize);
+            let contained_focus_checks = Cell::new(0_usize);
+
+            assert_eq!(
+                coordinator.disappeared_focus_index_by(
+                    &current_index,
+                    |_| {
+                        direct_focus_checks.set(direct_focus_checks.get() + 1);
+                        false
+                    },
+                    |_| {
+                        contained_focus_checks.set(contained_focus_checks.get() + 1);
+                        false
+                    },
+                ),
+                None
+            );
+            assert_eq!(direct_focus_checks.get(), ENTRY_COUNT);
+            assert_eq!(contained_focus_checks.get(), 0);
+            assert_eq!(
+                current_index.lookup_counts(),
+                FocusIndexLookupCountSnapshot {
+                    indexed_entries: ENTRY_COUNT,
+                    exact: ENTRY_COUNT,
+                    logical_node: 0,
+                    handle_entries_examined: 0,
+                }
+            );
+        });
+    }
+
+    #[open_gpui::test]
+    fn exact_focused_handle_survives_lod_replacement_and_a_new_handle_receives_focus(
+        cx: &mut open_gpui::TestAppContext,
+    ) {
+        let (_, cx) = cx.add_window_view(|_, _| FocusTestView);
+        cx.update(|window, cx| {
+            let node = focus_identities().nodes[0];
+            let old_handle = cx.focus_handle();
+            let replacement_handle = cx.focus_handle();
+            let detail = node_target(node, OpenGpuiNodePresentation::Detail);
+            let overview = node_target(node, OpenGpuiNodePresentation::Overview);
+            let coordinator = OpenGpuiGraphFocusCoordinator {
+                previous: vec![entry(detail, &old_handle)],
+                ..OpenGpuiGraphFocusCoordinator::default()
+            };
+            window.focus(&old_handle, cx);
+
+            let surviving_handle = vec![entry(overview, &old_handle)];
+            let surviving_index = CurrentFocusIndex::new(&surviving_handle);
+            assert_eq!(
+                coordinator.disappeared_focus_index(&surviving_index, window, cx),
+                None,
+                "a presentation change must not move an exact surviving focus handle"
+            );
+
+            let replaced_handle = vec![entry(overview, &replacement_handle)];
+            let replaced_index = CurrentFocusIndex::new(&replaced_handle);
+            let removed = coordinator
+                .disappeared_focus_index(&replaced_index, window, cx)
+                .expect("focused handle disappeared");
+            assert_eq!(removed, 0);
+            assert_eq!(
+                coordinator
+                    .fallback_for(removed, &replaced_index)
+                    .map(|entry| entry.handle.clone()),
+                Some(replacement_handle)
+            );
+        });
+    }
+
+    #[open_gpui::test]
+    fn lod_replacement_uses_the_first_graph_order_target_for_the_logical_node(
+        cx: &mut open_gpui::TestAppContext,
+    ) {
+        let (_, cx) = cx.add_window_view(|_, _| FocusTestView);
+        cx.update(|_, cx| {
+            let node = focus_identities().nodes[0];
+            let old_handle = cx.focus_handle();
+            let overview_handle = cx.focus_handle();
+            let later_detail_handle = cx.focus_handle();
+            let detail = node_target(node, OpenGpuiNodePresentation::Detail);
+            let overview = node_target(node, OpenGpuiNodePresentation::Overview);
+            let coordinator = OpenGpuiGraphFocusCoordinator {
+                previous: vec![entry(detail, &old_handle)],
+                ..OpenGpuiGraphFocusCoordinator::default()
+            };
+            let current = vec![
+                entry(overview, &overview_handle),
+                entry(detail, &later_detail_handle),
+            ];
+            let current_index = CurrentFocusIndex::new(&current);
+
+            let removed = coordinator
+                .disappeared_focus_index_by(
+                    &current_index,
+                    |_| false,
+                    |handle| handle == &old_handle,
+                )
+                .expect("focused descendant lost its detail host");
+            assert_eq!(
+                coordinator
+                    .fallback_for(removed, &current_index)
+                    .map(|entry| entry.handle.clone()),
+                Some(overview_handle),
+                "overview, including an interaction island, follows graph order"
+            );
+
+            let detail_only = vec![entry(detail, &later_detail_handle)];
+            let detail_index = CurrentFocusIndex::new(&detail_only);
+            assert_eq!(
+                coordinator
+                    .fallback_for(removed, &detail_index)
+                    .map(|entry| entry.handle.clone()),
+                Some(later_detail_handle),
+                "overview-to-detail replacement resolves through the same logical node index"
+            );
+        });
+    }
+
+    #[open_gpui::test]
+    fn reused_node_id_does_not_receive_focus_from_a_retired_lifetime(
+        cx: &mut open_gpui::TestAppContext,
+    ) {
+        let (_, cx) = cx.add_window_view(|_, _| FocusTestView);
+        cx.update(|window, cx| {
+            let retired = focus_identities().nodes[0];
+            let successor = focus_identities().nodes[0];
+            assert_eq!(retired.node(), successor.node());
+            assert_ne!(retired, successor);
+            let old_handle = cx.focus_handle();
+            let successor_handle = cx.focus_handle();
+            let old_target = node_target(retired, OpenGpuiNodePresentation::Detail);
+            let successor_target = node_target(successor, OpenGpuiNodePresentation::Overview);
+            let coordinator = OpenGpuiGraphFocusCoordinator {
+                previous: vec![entry(old_target, &old_handle)],
+                ..OpenGpuiGraphFocusCoordinator::default()
+            };
+            window.focus(&old_handle, cx);
+            let current = vec![entry(successor_target, &successor_handle)];
+            let current_index = CurrentFocusIndex::new(&current);
+
+            let removed = coordinator
+                .disappeared_focus_index(&current_index, window, cx)
+                .expect("retired node focus disappeared");
+            assert!(coordinator.fallback_for(removed, &current_index).is_none());
+        });
+    }
+
+    #[open_gpui::test]
+    fn disappearing_port_and_edge_keep_previous_graph_order_fallback_semantics(
+        cx: &mut open_gpui::TestAppContext,
+    ) {
+        let (_, cx) = cx.add_window_view(|_, _| FocusTestView);
+        cx.update(|_, cx| {
+            let identities = focus_identities();
+            let node_a = identities.nodes[0];
+            let node_b = identities.nodes[1];
+            let port_a = OpenGpuiGraphFocusTarget::Port(identities.ports[0]);
+            let port_b = OpenGpuiGraphFocusTarget::Port(identities.ports[1]);
+            let edge = OpenGpuiGraphFocusTarget::Edge(identities.edge);
+            let node_a = node_target(node_a, OpenGpuiNodePresentation::Detail);
+            let node_b = node_target(node_b, OpenGpuiNodePresentation::Detail);
+            let node_a_handle = cx.focus_handle();
+            let port_a_handle = cx.focus_handle();
+            let edge_handle = cx.focus_handle();
+            let node_b_handle = cx.focus_handle();
+            let port_b_handle = cx.focus_handle();
+            let coordinator = OpenGpuiGraphFocusCoordinator {
+                previous: vec![
+                    entry(node_a, &node_a_handle),
+                    entry(port_a, &port_a_handle),
+                    entry(edge, &edge_handle),
+                    entry(node_b, &node_b_handle),
+                    entry(port_b, &port_b_handle),
+                ],
+                ..OpenGpuiGraphFocusCoordinator::default()
+            };
+
+            let without_edge = vec![
+                entry(port_b, &port_b_handle),
+                entry(node_a, &node_a_handle),
+                entry(port_a, &port_a_handle),
+                entry(node_b, &node_b_handle),
+            ];
+            let without_edge_index = CurrentFocusIndex::new(&without_edge);
+            assert_eq!(
+                coordinator
+                    .fallback_for(2, &without_edge_index)
+                    .map(|entry| entry.target),
+                Some(node_b),
+                "current render order must not replace previous-order keyboard fallback"
+            );
+
+            let without_trailing_port = vec![
+                entry(node_a, &node_a_handle),
+                entry(port_a, &port_a_handle),
+                entry(node_b, &node_b_handle),
+            ];
+            let without_trailing_port_index = CurrentFocusIndex::new(&without_trailing_port);
+            assert_eq!(
+                coordinator
+                    .fallback_for(4, &without_trailing_port_index)
+                    .map(|entry| entry.target),
+                Some(node_b),
+                "a trailing removed port falls back to the nearest surviving predecessor"
+            );
+        });
+    }
+
+    #[open_gpui::test]
+    fn return_target_resolves_exactly_and_empty_current_focuses_root(
+        cx: &mut open_gpui::TestAppContext,
+    ) {
+        let (_, cx) = cx.add_window_view(|_, _| FocusTestView);
+        cx.update(|window, cx| {
+            let target = OpenGpuiGraphFocusTarget::Edge(focus_identities().edge);
+            let root = cx.focus_handle();
+            let target_handle = cx.focus_handle();
+            let mut coordinator = OpenGpuiGraphFocusCoordinator::default();
+            coordinator.remember_return_target(target);
+            window.focus(&root, cx);
+
+            coordinator.reconcile(vec![entry(target, &target_handle)], &root, true, window, cx);
+            assert_eq!(window.focused(cx), Some(target_handle));
+
+            coordinator.reconcile(Vec::new(), &root, false, window, cx);
+            assert_eq!(window.focused(cx), Some(root));
+        });
+    }
+
+    #[open_gpui::test]
+    fn retained_return_and_actions_do_not_upgrade_to_same_id_successors(
+        cx: &mut open_gpui::TestAppContext,
+    ) {
+        let (_, cx) = cx.add_window_view(|_, _| FocusTestView);
+        cx.update(|window, cx| {
+            let retired = focus_identities();
+            let successor = focus_identities();
+            assert_eq!(retired.ports[0].port(), successor.ports[0].port());
+            assert_eq!(retired.edge.edge(), successor.edge.edge());
+            assert_ne!(retired.ports[0], successor.ports[0]);
+            assert_ne!(retired.edge, successor.edge);
+            for (retired_target, successor_target) in [
+                (
+                    OpenGpuiGraphFocusTarget::Port(retired.ports[0]),
+                    OpenGpuiGraphFocusTarget::Port(successor.ports[0]),
+                ),
+                (
+                    OpenGpuiGraphFocusTarget::Edge(retired.edge),
+                    OpenGpuiGraphFocusTarget::Edge(successor.edge),
+                ),
+                (
+                    OpenGpuiGraphFocusTarget::ReconnectSource(retired.edge),
+                    OpenGpuiGraphFocusTarget::ReconnectSource(successor.edge),
+                ),
+                (
+                    OpenGpuiGraphFocusTarget::ReconnectTarget(retired.edge),
+                    OpenGpuiGraphFocusTarget::ReconnectTarget(successor.edge),
+                ),
+            ] {
+                let root = cx.focus_handle();
+                let retired_handle = cx.focus_handle();
+                let successor_handle = cx.focus_handle();
+                let mut coordinator = OpenGpuiGraphFocusCoordinator::default();
+                if retired_target.is_retained_action() {
+                    coordinator.actions.insert(retired_target, retired_handle);
+                }
+                coordinator.remember_return_target(retired_target);
+                window.focus(&root, cx);
+
+                coordinator.reconcile(
+                    vec![entry(successor_target, &successor_handle)],
+                    &root,
+                    true,
+                    window,
+                    cx,
+                );
+
+                assert_eq!(window.focused(cx), Some(root));
+                assert!(!coordinator.actions.contains_key(&retired_target));
+                assert!(!coordinator.actions.contains_key(&successor_target));
+            }
+        });
     }
 }

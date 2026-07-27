@@ -5,15 +5,23 @@ use jellyflow_core::{
     CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId, EdgeKind, GraphBuilder, GraphId, Node,
     NodeId, NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKey, PortKind,
 };
-use jellyflow_open_gpui::authoring::OpenGpuiNodeBinding;
-use jellyflow_open_gpui::{
-    OpenGpuiActivityKind, OpenGpuiActivityLease, OpenGpuiContentHeightPolicy,
-    OpenGpuiNodeRegistrationPolicy, OpenGpuiNodeRegistry, OpenGpuiNodeSizeConvergence,
-    OpenGpuiNodeSizePolicy, OpenGpuiSceneHost, OpenGpuiSceneHostDiagnosticKind,
+use jellyflow_open_gpui::activity::{OpenGpuiActivityKind, OpenGpuiActivityLease};
+use jellyflow_open_gpui::authoring::{
+    OpenGpuiCommandTicket, OpenGpuiCommandTicketResult, OpenGpuiNodeBinding,
+};
+use jellyflow_open_gpui::host::{
+    InitialViewportPolicy, OpenGpuiSceneHost, OpenGpuiSceneHostDiagnosticKind,
+};
+use jellyflow_open_gpui::interaction::{OpenGpuiPortDragPhase, OpenGpuiPortEvent};
+use jellyflow_open_gpui::registry::{OpenGpuiNodeRegistrationPolicy, OpenGpuiNodeRegistry};
+use jellyflow_open_gpui::scale_policy::OPEN_GPUI_DEFAULT_OVERVIEW_ENTER_ZOOM;
+use jellyflow_open_gpui::size_policy::{
+    OpenGpuiContentHeightPolicy, OpenGpuiNodeSizeConvergence, OpenGpuiNodeSizePolicy,
 };
 use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec};
 use jellyflow_runtime::{
-    GraphCommand, GraphRuntime, PublishedPortOutcome, ViewCloseReason, ViewSessionOptions,
+    commands::GraphCommand, graph::GraphRuntime, view::PublishedPortOutcome, view::ViewCloseReason,
+    view::ViewSessionOptions, viewport::ViewportTransform,
 };
 use open_gpui::{
     AppContext, Context, Entity, InteractiveElement, MouseButton, ParentElement, Render, Styled,
@@ -26,6 +34,8 @@ const VALID_SIBLING_KIND: &str = "test.valid-sibling";
 const VALID_SIBLING_RENDERER: &str = "test.native.valid-sibling";
 const FIXED_NATIVE_CONTROL_SELECTOR: &str = "jellyflow-test-fixed-native-control";
 const OVERVIEW_NODE_SELECTOR: &str = "jellyflow-overview-node";
+const CONTENT_MASK_NODE_SELECTOR: &str = "jellyflow-content-mask-node";
+const CONTENT_MASK_OUTPUT_SELECTOR: &str = "jellyflow-content-mask-output-port";
 
 struct MeasuredPortsNode {
     binding: Entity<OpenGpuiNodeBinding>,
@@ -45,6 +55,12 @@ struct FixedIntrinsicChildNode {
 struct RepeatedPrepaintPortNode {
     binding: Entity<OpenGpuiNodeBinding>,
     duplicate_input: Rc<Cell<bool>>,
+}
+
+struct ContentMaskedPortsNode {
+    binding: Entity<OpenGpuiNodeBinding>,
+    output_top: Rc<Cell<f32>>,
+    output_events: Rc<Cell<u32>>,
 }
 
 struct TransactionalMeasuredPortsNode {
@@ -192,6 +208,57 @@ impl Render for RepeatedPrepaintPortNode {
     }
 }
 
+impl Render for ContentMaskedPortsNode {
+    fn render(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl open_gpui::IntoElement {
+        let binding = self.binding.read(cx);
+        let authoring = binding.authoring().expect("live authoring view");
+        let input = authoring
+            .port(input_id())
+            .expect("input belongs to this node")
+            .handle()
+            .clone();
+        let output = authoring
+            .port(output_id())
+            .expect("output belongs to this node")
+            .handle()
+            .clone();
+        let output_top = self.output_top.get();
+        let output_events = Rc::clone(&self.output_events);
+        let output_marker = div()
+            .debug_selector(|| CONTENT_MASK_OUTPUT_SELECTOR.to_owned())
+            .w(px(14.0))
+            .h(px(14.0));
+
+        div()
+            .debug_selector(|| CONTENT_MASK_NODE_SELECTOR.to_owned())
+            .relative()
+            .size_full()
+            .overflow_hidden()
+            .child(
+                div()
+                    .absolute()
+                    .left(px(0.0))
+                    .top(px(53.0))
+                    .child(input.measure(div().w(px(14.0)).h(px(14.0)))),
+            )
+            .child(div().absolute().right(px(0.0)).top(px(output_top)).child(
+                output.interactive_with_observer(output_marker, move |event, _, _| {
+                    if matches!(
+                        event,
+                        OpenGpuiPortEvent::Pointer(event)
+                            if event.phase() == OpenGpuiPortDragPhase::Start
+                    ) {
+                        output_events.set(output_events.get().saturating_add(1));
+                    }
+                }),
+            ))
+    }
+}
+
 impl Render for TransactionalMeasuredPortsNode {
     fn render(
         &mut self,
@@ -261,7 +328,7 @@ impl Render for PrefixQueuedContentNode {
                 .authoring()
                 .expect("prefix fixture binding stays live");
             let command = GraphCommand::set_node_data(
-                authoring.revision(),
+                authoring.version(),
                 NodeId::from_u128(10),
                 serde_json::json!({ "prefix": true }),
             );
@@ -310,14 +377,14 @@ impl Render for StaleContentMeasuredNode {
     ) -> impl open_gpui::IntoElement {
         self.render_count = self.render_count.saturating_add(1);
         if self.render_count == 2 {
-            let revision = self
+            let version = self
                 .runtime
                 .snapshot()
                 .expect("stale fixture snapshot")
-                .revision();
+                .version();
             self.runtime
                 .execute(GraphCommand::set_node_data(
-                    revision,
+                    version,
                     NodeId::from_u128(10),
                     serde_json::json!({ "height": 244.0 }),
                 ))
@@ -377,7 +444,7 @@ impl Render for MeasuredPortsNode {
         if let Some(runtime) = self.mutate_runtime_once.take() {
             runtime
                 .execute(GraphCommand::set_node_data(
-                    0,
+                    runtime.snapshot().unwrap().version(),
                     NodeId::from_u128(10),
                     serde_json::json!({ "label": "updated elsewhere" }),
                 ))
@@ -448,13 +515,80 @@ fn measured_surface_bootstrap_requests_a_second_frame_and_mounts_visible_nodes(
 }
 
 #[open_gpui::test]
+fn measured_initial_fit_applies_once_and_yields_to_later_user_navigation(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let runtime = GraphRuntime::builder(catalog()).build(graph()).unwrap();
+    let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    let initial = view.viewport_transform().unwrap();
+    let weak_view = view.downgrade();
+    let mut registry = OpenGpuiNodeRegistry::builder();
+    registry.register(RENDERER, |binding, _window, cx| {
+        cx.new(|_| MeasuredPortsNode {
+            binding,
+            measure_output: Rc::new(Cell::new(true)),
+            mutate_runtime_once: None,
+        })
+    });
+
+    let (host, cx) = cx.add_window_view(move |_, _| {
+        OpenGpuiSceneHost::new_measured_surface(view, registry.seal().expect("valid test registry"))
+            .with_initial_viewport_policy(InitialViewportPolicy::FitOnFirstMeasuredGeometry)
+    });
+    draw(cx);
+
+    let fitted = weak_view.viewport_transform().unwrap();
+    assert_ne!(fitted, initial);
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(
+            host.initial_viewport_policy(),
+            InitialViewportPolicy::Preserve
+        );
+    });
+
+    let user_viewport = ViewportTransform::new(CanvasPoint { x: -41.0, y: 17.0 }, 1.2).unwrap();
+    weak_view.set_viewport(user_viewport).unwrap();
+    draw(cx);
+
+    assert_eq!(weak_view.viewport_transform().unwrap(), user_viewport);
+}
+
+#[open_gpui::test]
+fn measured_initial_fit_never_overwrites_a_user_owned_viewport(cx: &mut open_gpui::TestAppContext) {
+    let runtime = GraphRuntime::builder(catalog()).build(graph()).unwrap();
+    let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    let user_viewport = ViewportTransform::new(CanvasPoint { x: 73.0, y: -29.0 }, 1.35).unwrap();
+    view.set_viewport(user_viewport).unwrap();
+    let weak_view = view.downgrade();
+    let mut registry = OpenGpuiNodeRegistry::builder();
+    registry.register(RENDERER, |binding, _window, cx| {
+        cx.new(|_| MeasuredPortsNode {
+            binding,
+            measure_output: Rc::new(Cell::new(true)),
+            mutate_runtime_once: None,
+        })
+    });
+
+    let (_, cx) = cx.add_window_view(move |_, _| {
+        OpenGpuiSceneHost::new_measured_surface(view, registry.seal().expect("valid test registry"))
+            .with_initial_viewport_policy(InitialViewportPolicy::FitOnFirstMeasuredGeometry)
+    });
+    draw(cx);
+
+    assert_eq!(weak_view.viewport_transform().unwrap(), user_viewport);
+}
+
+#[open_gpui::test]
 fn native_port_handles_publish_complete_geometry_after_prepaint(
     cx: &mut open_gpui::TestAppContext,
 ) {
     let runtime = GraphRuntime::builder(catalog()).build(graph()).unwrap();
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
-    view.set_viewport(CanvasPoint { x: 7.0, y: -3.0 }, 2.0)
-        .unwrap();
+    view.set_viewport(
+        ViewportTransform::new(CanvasPoint { x: 7.0, y: -3.0 }, 2.0)
+            .expect("valid measured-node viewport transform"),
+    )
+    .unwrap();
     let weak_view = view.downgrade();
     let measure_output = Rc::new(Cell::new(true));
     let factory_measure_output = measure_output.clone();
@@ -538,6 +672,276 @@ fn native_port_handles_publish_complete_geometry_after_prepaint(
 }
 
 #[open_gpui::test]
+fn native_content_mask_removes_and_restores_only_port_interaction_geometry(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let runtime = GraphRuntime::builder(catalog()).build(graph()).unwrap();
+    let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    let weak_view = view.downgrade();
+    let output_top = Rc::new(Cell::new(53.0));
+    let output_events = Rc::new(Cell::new(0));
+    let captured_node = Rc::new(RefCell::new(None::<Entity<ContentMaskedPortsNode>>));
+
+    let mut registry = OpenGpuiNodeRegistry::builder();
+    let factory_output_top = Rc::clone(&output_top);
+    let factory_output_events = Rc::clone(&output_events);
+    let factory_node = Rc::clone(&captured_node);
+    registry.register(RENDERER, move |binding, _window, cx| {
+        let node = cx.new(|_| ContentMaskedPortsNode {
+            binding,
+            output_top: Rc::clone(&factory_output_top),
+            output_events: Rc::clone(&factory_output_events),
+        });
+        *factory_node.borrow_mut() = Some(node.clone());
+        node
+    });
+    let (host, cx) = cx.add_window_view(move |_, _| {
+        OpenGpuiSceneHost::new(
+            view,
+            registry.seal().expect("valid content-mask registry"),
+            viewport(),
+        )
+    });
+    draw(cx);
+
+    let visible = weak_view.geometry_snapshot().unwrap();
+    let visible_output = visible.port(output_id()).expect("visible output geometry");
+    assert_eq!(visible_output.port(), output_id());
+    assert!(visible_output.hit_bounds().is_some());
+    let visible_marker = cx
+        .debug_bounds(CONTENT_MASK_OUTPUT_SELECTOR)
+        .expect("visible output marker");
+    cx.simulate_mouse_move(visible_marker.center(), None, Default::default());
+    draw(cx);
+    let node = captured_node
+        .borrow()
+        .clone()
+        .expect("captured content-mask node");
+    cx.read_entity(&node, |node, cx| {
+        assert!(
+            node.binding
+                .read(cx)
+                .presentation()
+                .port(output_id())
+                .expect("output presentation")
+                .hovered(),
+            "visible native hitbox establishes port hover",
+        );
+    });
+
+    output_top.set(114.0);
+    cx.update_entity(&node, |_, cx| cx.notify());
+    cx.update_entity(&host, |host, cx| {
+        assert!(
+            host.invalidate_node_layout(NodeId::from_u128(10), cx)
+                .unwrap()
+        );
+    });
+    draw(cx);
+    cx.read_entity(&node, |node, cx| {
+        assert!(
+            !node
+                .binding
+                .read(cx)
+                .presentation()
+                .port(output_id())
+                .expect("output presentation")
+                .hovered(),
+            "a partially clipped replacement hitbox clears stale hover without a mouse move",
+        );
+    });
+    let partial_output = weak_view
+        .geometry_snapshot()
+        .unwrap()
+        .port(output_id())
+        .expect("partially clipped output keeps interaction geometry")
+        .clone();
+    assert!(partial_output.hit_bounds().is_some());
+    let partial_node_bounds = cx
+        .debug_bounds(CONTENT_MASK_NODE_SELECTOR)
+        .expect("content-mask node bounds");
+    let partial_marker_bounds = cx
+        .debug_bounds(CONTENT_MASK_OUTPUT_SELECTOR)
+        .expect("partially clipped marker bounds");
+    let partial_node_bottom = partial_node_bounds.origin.y + partial_node_bounds.size.height;
+    assert!(partial_marker_bounds.origin.y < partial_node_bottom);
+    assert!(
+        partial_marker_bounds.origin.y + partial_marker_bounds.size.height > partial_node_bottom,
+        "the regression must exercise partial rather than complete clipping",
+    );
+
+    output_top.set(121.0);
+    cx.update_entity(&node, |_, cx| cx.notify());
+    cx.update_entity(&host, |host, cx| {
+        assert!(
+            host.invalidate_node_layout(NodeId::from_u128(10), cx)
+                .unwrap()
+        );
+    });
+    draw(cx);
+    cx.read_entity(&node, |node, cx| {
+        assert!(
+            !node
+                .binding
+                .read(cx)
+                .presentation()
+                .port(output_id())
+                .expect("output presentation")
+                .hovered(),
+            "clipping clears prior hover without waiting for another pointer move",
+        );
+    });
+
+    let clipped = weak_view.geometry_snapshot().unwrap();
+    let clipped_output = clipped
+        .port(output_id())
+        .expect("clipped output keeps published route geometry");
+    assert_eq!(clipped_output.port(), visible_output.port());
+    assert_eq!(clipped_output.hit_bounds(), None);
+    assert!(clipped_output.visual_bounds().size.is_positive_finite());
+    assert!(clipped_output.route_anchor().is_finite());
+
+    let node_bounds = cx
+        .debug_bounds(CONTENT_MASK_NODE_SELECTOR)
+        .expect("content-mask node bounds");
+    let marker_bounds = cx
+        .debug_bounds(CONTENT_MASK_OUTPUT_SELECTOR)
+        .expect("fully clipped marker keeps layout bounds");
+    let node_bottom = node_bounds.origin.y + node_bounds.size.height;
+    assert!(marker_bounds.origin.y > node_bottom);
+    let clipped_hit_slop = point(marker_bounds.center().x, node_bottom - px(1.0));
+    assert!(clipped_hit_slop.y < marker_bounds.origin.y);
+
+    cx.simulate_mouse_move(clipped_hit_slop, None, Default::default());
+    draw(cx);
+    cx.read_entity(&node, |node, cx| {
+        assert!(
+            !node
+                .binding
+                .read(cx)
+                .presentation()
+                .port(output_id())
+                .expect("output presentation")
+                .hovered(),
+            "a fully clipped marker cannot acquire hover through protruding hit slop",
+        );
+    });
+
+    cx.simulate_mouse_down(clipped_hit_slop, MouseButton::Left, Default::default());
+    assert_eq!(output_events.get(), 0);
+    cx.read_entity(&host, |host, _| {
+        assert!(host.active_port_drag().is_none());
+    });
+    cx.simulate_mouse_up(clipped_hit_slop, MouseButton::Left, Default::default());
+    cx.run_until_parked();
+
+    output_top.set(53.0);
+    cx.update_entity(&node, |_, cx| cx.notify());
+    cx.update_entity(&host, |host, cx| {
+        assert!(
+            host.invalidate_node_layout(NodeId::from_u128(10), cx)
+                .unwrap()
+        );
+    });
+    draw(cx);
+
+    let restored = weak_view.geometry_snapshot().unwrap();
+    let restored_output = restored
+        .port(output_id())
+        .expect("restored output keeps the same port id");
+    assert_eq!(restored_output.port(), visible_output.port());
+    assert!(restored_output.hit_bounds().is_some());
+    assert_eq!(
+        restored_output.route_anchor(),
+        visible_output.route_anchor()
+    );
+
+    let restored_marker = cx
+        .debug_bounds(CONTENT_MASK_OUTPUT_SELECTOR)
+        .expect("restored output marker");
+    cx.simulate_mouse_down(
+        restored_marker.center(),
+        MouseButton::Left,
+        Default::default(),
+    );
+    assert_eq!(output_events.get(), 1);
+    assert!(cx.update(|window, _| window.captured_hitbox()).is_some());
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(
+            host.active_port_drag().map(|owner| owner.port()),
+            Some(output_id())
+        );
+    });
+
+    output_top.set(114.0);
+    cx.update_entity(&node, |_, cx| cx.notify());
+    cx.update_entity(&host, |host, cx| {
+        assert!(
+            host.invalidate_node_layout(NodeId::from_u128(10), cx)
+                .unwrap()
+        );
+    });
+    draw(cx);
+
+    assert!(cx.update(|window, _| window.captured_hitbox()).is_some());
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(
+            host.active_port_drag().map(|owner| owner.port()),
+            Some(output_id()),
+            "replacing a captured port with a partially clipped hitbox must preserve the drag",
+        );
+    });
+    assert!(
+        weak_view
+            .geometry_snapshot()
+            .unwrap()
+            .port(output_id())
+            .expect("partially clipped active port keeps route geometry")
+            .hit_bounds()
+            .is_some(),
+    );
+
+    output_top.set(121.0);
+    cx.update_entity(&node, |_, cx| cx.notify());
+    cx.update_entity(&host, |host, cx| {
+        assert!(
+            host.invalidate_node_layout(NodeId::from_u128(10), cx)
+                .unwrap()
+        );
+    });
+    draw(cx);
+
+    assert!(cx.update(|window, _| window.captured_hitbox()).is_some());
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(
+            host.active_port_drag().map(|owner| owner.port()),
+            Some(output_id()),
+            "clipping prevents new hits without cancelling the captured connection drag",
+        );
+    });
+    assert_eq!(
+        weak_view
+            .geometry_snapshot()
+            .unwrap()
+            .port(output_id())
+            .expect("clipped active port keeps route geometry")
+            .hit_bounds(),
+        None,
+    );
+
+    cx.simulate_mouse_up(
+        restored_marker.center(),
+        MouseButton::Left,
+        Default::default(),
+    );
+    cx.run_until_parked();
+    assert!(cx.update(|window, _| window.captured_hitbox()).is_none());
+    cx.read_entity(&host, |host, _| {
+        assert!(host.active_port_drag().is_none());
+    });
+}
+
+#[open_gpui::test]
 fn incomplete_layout_keeps_command_and_authoritative_route_until_atomic_refresh(
     cx: &mut open_gpui::TestAppContext,
 ) {
@@ -606,7 +1010,7 @@ fn incomplete_layout_keeps_command_and_authoritative_route_until_atomic_refresh(
     let mut ticket = cx.update_entity(&sibling, |binding, cx| {
         let authoring = binding.authoring().expect("live sibling binding");
         let command = GraphCommand::set_node_data(
-            authoring.revision(),
+            authoring.version(),
             NodeId::from_u128(11),
             serde_json::json!({ "same-frame": "applied" }),
         );
@@ -998,8 +1402,11 @@ fn stale_same_node_measurement_does_not_emit_a_size_command(cx: &mut open_gpui::
 fn nested_scene_origin_is_removed_from_native_layout_feedback(cx: &mut open_gpui::TestAppContext) {
     let runtime = GraphRuntime::builder(catalog()).build(graph()).unwrap();
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
-    view.set_viewport(CanvasPoint { x: 7.0, y: -3.0 }, 2.0)
-        .unwrap();
+    view.set_viewport(
+        ViewportTransform::new(CanvasPoint { x: 7.0, y: -3.0 }, 2.0)
+            .expect("valid nested-scene viewport transform"),
+    )
+    .unwrap();
     let weak_view = view.downgrade();
 
     let mut registry = OpenGpuiNodeRegistry::builder();
@@ -1258,7 +1665,11 @@ fn semantic_zoom_uses_overview_below_one_and_native_pixels_at_or_above_one(
 
     let pan = CanvasPoint { x: -11.0, y: 13.0 };
     for (zoom, native) in [(0.05, false), (0.5, false), (1.0, true), (2.0, true)] {
-        weak_view.set_viewport(pan, zoom).unwrap();
+        weak_view
+            .set_viewport(
+                ViewportTransform::new(pan, zoom).expect("valid semantic-zoom viewport transform"),
+            )
+            .unwrap();
         draw(cx);
 
         let transform = weak_view.viewport_transform().unwrap();
@@ -1274,8 +1685,8 @@ fn semantic_zoom_uses_overview_below_one_and_native_pixels_at_or_above_one(
             }
         } else {
             CanvasSize {
-                width: 220.0,
-                height: 120.0,
+                width: 220.0 / OPEN_GPUI_DEFAULT_OVERVIEW_ENTER_ZOOM,
+                height: 120.0 / OPEN_GPUI_DEFAULT_OVERVIEW_ENTER_ZOOM,
             }
         };
         assert_close_with(
@@ -1299,20 +1710,33 @@ fn semantic_zoom_uses_overview_below_one_and_native_pixels_at_or_above_one(
             }
         } else {
             CanvasSize {
-                width: 220.0 * zoom,
-                height: 120.0 * zoom,
+                width: 220.0 * zoom / OPEN_GPUI_DEFAULT_OVERVIEW_ENTER_ZOOM,
+                height: 120.0 * zoom / OPEN_GPUI_DEFAULT_OVERVIEW_ENTER_ZOOM,
             }
         };
-        assert_close(node.bounds().size.width * zoom, expected_screen_size.width);
-        assert_close(
+        assert_close_with(
+            node.bounds().size.width * zoom,
+            expected_screen_size.width,
+            0.51,
+        );
+        assert_close_with(
             node.bounds().size.height * zoom,
             expected_screen_size.height,
+            0.51,
         );
 
         let input = geometry.port(input_id()).expect("real input geometry");
         let output = geometry.port(output_id()).expect("real output geometry");
-        assert_hit_contains_visual(input.hit_bounds(), input.visual_bounds());
-        assert_hit_contains_visual(output.hit_bounds(), output.visual_bounds());
+        assert_hit_contains_visual(
+            input.hit_bounds().expect("input is interactively visible"),
+            input.visual_bounds(),
+        );
+        assert_hit_contains_visual(
+            output
+                .hit_bounds()
+                .expect("output is interactively visible"),
+            output.visual_bounds(),
+        );
         assert_close(
             input.route_anchor().x,
             input.visual_bounds().origin.x + input.visual_bounds().size.width / 2.0,
@@ -1328,7 +1752,11 @@ fn semantic_zoom_uses_overview_below_one_and_native_pixels_at_or_above_one(
         let output_screen = transform
             .screen_point_for_canvas(output.route_anchor())
             .expect("finite output screen anchor");
-        let expected_port_y = if native { 60.0 } else { 60.0 * zoom };
+        let expected_port_y = if native {
+            60.0
+        } else {
+            60.0 * zoom / OPEN_GPUI_DEFAULT_OVERVIEW_ENTER_ZOOM
+        };
         assert_close_with(input_screen.y - node_screen_origin.y, expected_port_y, 0.51);
         assert_close_with(
             output_screen.y - node_screen_origin.y,
@@ -1363,7 +1791,11 @@ fn semantic_zoom_uses_overview_below_one_and_native_pixels_at_or_above_one(
 fn semantic_zoom_holds_presentation_inside_the_hysteresis_gap(cx: &mut open_gpui::TestAppContext) {
     let runtime = GraphRuntime::builder(catalog()).build(graph()).unwrap();
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
-    view.set_viewport(CanvasPoint::default(), 1.2).unwrap();
+    view.set_viewport(
+        ViewportTransform::new(CanvasPoint::default(), 1.2)
+            .expect("valid hysteresis viewport transform"),
+    )
+    .unwrap();
     let weak_view = view.downgrade();
     let renders = Rc::new(Cell::new(0));
     let factory_renders = renders.clone();
@@ -1394,7 +1826,10 @@ fn semantic_zoom_holds_presentation_inside_the_hysteresis_gap(cx: &mut open_gpui
         (0.92, true),
     ] {
         weak_view
-            .set_viewport(CanvasPoint::default(), zoom)
+            .set_viewport(
+                ViewportTransform::new(CanvasPoint::default(), zoom)
+                    .expect("valid hysteresis viewport transform"),
+            )
             .unwrap();
         draw(cx);
         assert_eq!(
@@ -1418,7 +1853,11 @@ fn protected_node_uses_graph_inert_interaction_island_at_low_zoom_without_remoun
 ) {
     let runtime = GraphRuntime::builder(catalog()).build(graph()).unwrap();
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
-    view.set_viewport(CanvasPoint::default(), 0.5).unwrap();
+    view.set_viewport(
+        ViewportTransform::new(CanvasPoint::default(), 0.5)
+            .expect("valid interaction-island viewport transform"),
+    )
+    .unwrap();
     let weak_view = view.downgrade();
     let renders = Rc::new(Cell::new(0));
     let factory_renders = renders.clone();
@@ -1455,12 +1894,16 @@ fn protected_node_uses_graph_inert_interaction_island_at_low_zoom_without_remoun
     assert!(cx.debug_bounds(OVERVIEW_NODE_SELECTOR).is_some());
     let protected_geometry = weak_view.geometry_snapshot().unwrap();
     let protected_node = protected_geometry.node(NodeId::from_u128(10)).unwrap();
-    assert_eq!(
-        protected_node.bounds().size,
-        CanvasSize {
-            width: 220.0,
-            height: 120.0,
-        },
+    let protected_size = protected_node.bounds().size;
+    assert_close_with(
+        protected_size.width,
+        220.0 / OPEN_GPUI_DEFAULT_OVERVIEW_ENTER_ZOOM,
+        1.1,
+    );
+    assert_close_with(
+        protected_size.height,
+        120.0 / OPEN_GPUI_DEFAULT_OVERVIEW_ENTER_ZOOM,
+        1.1,
     );
     cx.read_entity(&host, |host, _| {
         assert_eq!(host.stats().mounts(), 1);
@@ -1482,10 +1925,7 @@ fn protected_node_uses_graph_inert_interaction_island_at_low_zoom_without_remoun
             .unwrap()
             .bounds()
             .size,
-        CanvasSize {
-            width: 220.0,
-            height: 120.0,
-        },
+        protected_size,
     );
     cx.read_entity(&host, |host, _| {
         assert_eq!(host.stats().mounts(), 1);
@@ -1495,12 +1935,16 @@ fn protected_node_uses_graph_inert_interaction_island_at_low_zoom_without_remoun
 }
 
 #[open_gpui::test]
-fn pointer_capture_protects_retention_without_creating_an_interaction_island(
+fn graph_interaction_protects_retention_without_creating_an_interaction_island(
     cx: &mut open_gpui::TestAppContext,
 ) {
     let runtime = GraphRuntime::builder(catalog()).build(graph()).unwrap();
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
-    view.set_viewport(CanvasPoint::default(), 0.5).unwrap();
+    view.set_viewport(
+        ViewportTransform::new(CanvasPoint::default(), 0.5)
+            .expect("valid graph-interaction viewport transform"),
+    )
+    .unwrap();
     let renders = Rc::new(Cell::new(0));
     let factory_renders = renders.clone();
     let lease = Rc::new(RefCell::new(None::<OpenGpuiActivityLease>));
@@ -1512,8 +1956,8 @@ fn pointer_capture_protects_retention_without_creating_an_interaction_island(
             binding
                 .read(cx)
                 .activity()
-                .acquire(OpenGpuiActivityKind::PointerCapture)
-                .expect("pointer-capture lease"),
+                .acquire(OpenGpuiActivityKind::GraphInteraction)
+                .expect("graph-interaction lease"),
         );
         cx.new(|_| FixedIntrinsicChildNode {
             binding,
@@ -1579,9 +2023,7 @@ fn draw(cx: &mut open_gpui::VisualTestContext) {
     cx.run_until_parked();
 }
 
-fn poll_command_ticket(
-    ticket: &mut jellyflow_open_gpui::OpenGpuiCommandTicket,
-) -> jellyflow_open_gpui::OpenGpuiCommandTicketResult {
+fn poll_command_ticket(ticket: &mut OpenGpuiCommandTicket) -> OpenGpuiCommandTicketResult {
     let mut context = std::task::Context::from_waker(std::task::Waker::noop());
     match std::future::Future::poll(std::pin::Pin::new(ticket), &mut context) {
         std::task::Poll::Ready(result) => result,
@@ -1589,7 +2031,7 @@ fn poll_command_ticket(
     }
 }
 
-fn assert_command_ticket_pending(ticket: &mut jellyflow_open_gpui::OpenGpuiCommandTicket) {
+fn assert_command_ticket_pending(ticket: &mut OpenGpuiCommandTicket) {
     let mut context = std::task::Context::from_waker(std::task::Waker::noop());
     assert!(matches!(
         std::future::Future::poll(std::pin::Pin::new(ticket), &mut context),

@@ -3,6 +3,8 @@ use jellyflow_core::core::CanvasPoint;
 use crate::io::{ViewSelectionSeed, ViewSessionSeed, ViewportSeed};
 use crate::runtime::commands::GraphCommand;
 use crate::runtime::graph_runtime::GraphRuntime;
+use crate::runtime::tests::fixtures::set_selection_by_id;
+use crate::runtime::viewport::ViewportTransform;
 
 use super::fixtures::{graph_with_nodes, view_options};
 
@@ -31,11 +33,9 @@ fn view_only_mutations_do_not_change_shared_graph_or_history() {
     let before = runtime.snapshot().expect("runtime snapshot");
     let history_before = runtime.history_state().expect("history state");
     view_a
-        .set_viewport(CanvasPoint { x: 44.0, y: 55.0 }, 1.75)
+        .set_viewport(ViewportTransform::new(CanvasPoint { x: 44.0, y: 55.0 }, 1.75).unwrap())
         .expect("view mutation");
-    view_a
-        .set_selection(vec![ids[1]], Vec::new(), Vec::new())
-        .expect("selection mutation");
+    set_selection_by_id(&view_a, [ids[1]], [], Vec::new()).expect("selection mutation");
 
     let after = runtime.snapshot().expect("runtime snapshot");
     assert_eq!(after.revision(), before.revision());
@@ -60,7 +60,7 @@ fn runtime_snapshot_contains_owned_graph_facts_without_view_state() {
     let before = runtime.snapshot().expect("snapshot");
     runtime
         .execute(GraphCommand::set_node_data(
-            0,
+            before.version(),
             ids[0],
             serde_json::json!({ "value": 1 }),
         ))

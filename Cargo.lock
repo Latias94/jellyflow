@@ -1250,6 +1250,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e0e367e4e7da84520dedcac1901e4da967309406d1e51017ae1abfb97adbd38"
 dependencies = [
  "bitflags 2.13.0",
+ "block2",
+ "libc",
  "objc2",
 ]
 
@@ -2227,11 +2229,15 @@ dependencies = [
 name = "jellyflow-open-gpui"
 version = "0.4.0"
 dependencies = [
+ "dispatch2",
+ "futures-util",
  "jellyflow-core",
  "jellyflow-runtime",
  "lyon",
+ "objc",
  "open-gpui",
  "open-gpui-ui-components",
+ "raw-window-handle",
  "serde_json",
  "thiserror 2.0.18",
 ]

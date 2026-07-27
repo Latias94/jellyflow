@@ -14,9 +14,10 @@ fn graph_runtime_applies_profiled_commands() {
         .with_profile(Box::new(PassThroughProfile))
         .build(graph.build_unchecked())
         .expect("profiled runtime");
+    let version = runtime.snapshot().expect("snapshot").version();
     runtime
         .execute(GraphCommand::set_node_position(
-            0,
+            version,
             node,
             CanvasPoint { x: 10.0, y: 20.0 },
         ))
@@ -50,7 +51,7 @@ fn graph_runtime_profile_rejection_leaves_state_unchanged() {
     let before = runtime.snapshot().expect("snapshot");
     let outcome = runtime
         .execute(GraphCommand::set_node_position(
-            0,
+            before.version(),
             node,
             CanvasPoint { x: 10.0, y: 20.0 },
         ))

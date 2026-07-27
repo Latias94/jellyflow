@@ -2,13 +2,15 @@ use std::cell::{Cell, RefCell};
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::{Rc, Weak};
+use std::sync::Arc;
 
 use jellyflow_core::{CanvasPoint, CanvasRect, CanvasSize, NodeId, PortDirection, PortId};
-use jellyflow_runtime::runtime::geometry::HandlePosition;
-use jellyflow_runtime::runtime::viewport::ViewportTransform;
+use jellyflow_runtime::geometry::HandlePosition;
+use jellyflow_runtime::viewport::ViewportTransform;
 use jellyflow_runtime::{
-    FrameNode, NodeInstanceKey, NodeLayout, NodeLayoutBuilderError, ViewPoint, ViewRect, ViewSize,
-    side_anchor,
+    geometry::ViewPoint, geometry::ViewRect, geometry::ViewSize, geometry::side_anchor,
+    graph::PortInstanceKey, view::FrameNode, view::NodeInstanceKey, view::NodeLayout,
+    view::NodeLayoutBuilderError,
 };
 use open_gpui::{
     AnyElement, App, Bounds, CursorStyle, DispatchPhase, Div, Element, ElementId, EntityId,
@@ -35,7 +37,7 @@ use crate::theme::OPEN_GPUI_DEFAULT_PORT_HIT_DIAMETER;
 pub(crate) type OpenGpuiHostPortListener =
     Rc<dyn Fn(&OpenGpuiPortEvent, Option<OpenGpuiPortListener>, &mut Window, &mut App) + 'static>;
 pub(crate) type OpenGpuiHostPortHoverListener =
-    Rc<dyn Fn(&NodeInstanceKey, PortId, bool, &mut Window, &mut App) + 'static>;
+    Rc<dyn Fn(&NodeInstanceKey, PortInstanceKey, bool, &mut Window, &mut App) + 'static>;
 
 /// Edge-routing side associated with one native port handle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,26 +94,31 @@ impl OpenGpuiPortSide {
 /// raw bounds through a weak link to the host's current pending frame.
 #[derive(Clone)]
 pub struct OpenGpuiPortHandle {
-    instance: NodeInstanceKey,
-    port: PortId,
+    core: Rc<OpenGpuiPortHandleCore>,
+    accessible_name: Option<Arc<str>>,
     side: OpenGpuiPortSide,
-    accessible_name: String,
     interaction_enabled: bool,
     presentation: OpenGpuiPortInteractionState,
     focus_handle: Option<FocusHandle>,
     anchor: OpenGpuiPortAnchor,
     minimum_hit_diameter: f32,
     source: OpenGpuiGraphPresentationSource,
+}
+
+struct OpenGpuiPortHandleCore {
+    instance: NodeInstanceKey,
+    port_instance: PortInstanceKey,
+    default_accessible_name: Arc<str>,
     sink: OpenGpuiMeasurementSink,
 }
 
 impl std::fmt::Debug for OpenGpuiPortHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("OpenGpuiPortHandle")
-            .field("instance", &self.instance)
-            .field("port", &self.port)
+            .field("instance", &self.core.instance)
+            .field("port_instance", &self.core.port_instance)
             .field("side", &self.side)
-            .field("accessible_name", &self.accessible_name)
+            .field("accessible_name", &self.accessible_name())
             .field("interaction_enabled", &self.interaction_enabled)
             .field("presentation", &self.presentation)
             .field("has_focus_handle", &self.focus_handle.is_some())
@@ -124,9 +131,9 @@ impl std::fmt::Debug for OpenGpuiPortHandle {
 impl OpenGpuiPortHandle {
     pub(crate) fn new(
         instance: NodeInstanceKey,
-        port: PortId,
+        port_instance: PortInstanceKey,
         direction: PortDirection,
-        name: String,
+        name: Arc<str>,
         sink: OpenGpuiMeasurementSink,
     ) -> Self {
         let direction_name = match direction {
@@ -134,28 +141,37 @@ impl OpenGpuiPortHandle {
             PortDirection::Out => "output",
         };
         Self {
-            instance,
-            port,
+            core: Rc::new(OpenGpuiPortHandleCore {
+                instance,
+                port_instance,
+                default_accessible_name: Arc::from(format!("{name} {direction_name} port")),
+                sink,
+            }),
+            accessible_name: None,
             side: OpenGpuiPortSide::for_direction(direction),
-            accessible_name: format!("{name} {direction_name} port"),
             interaction_enabled: true,
             presentation: OpenGpuiPortInteractionState::idle(),
             focus_handle: None,
             anchor: OpenGpuiPortAnchor::default(),
             minimum_hit_diameter: OPEN_GPUI_DEFAULT_PORT_HIT_DIAMETER,
             source: OpenGpuiGraphPresentationSource::Detail,
-            sink,
         }
     }
 
     #[must_use]
     pub fn instance(&self) -> &NodeInstanceKey {
-        &self.instance
+        &self.core.instance
     }
 
     #[must_use]
     pub fn port(&self) -> PortId {
-        self.port
+        self.core.port_instance.port()
+    }
+
+    /// Returns the full runtime identity of this continuous real-port lifetime.
+    #[must_use]
+    pub fn port_instance(&self) -> PortInstanceKey {
+        self.core.port_instance
     }
 
     #[must_use]
@@ -166,7 +182,14 @@ impl OpenGpuiPortHandle {
     /// Returns the name exposed to assistive technology for this real graph port.
     #[must_use]
     pub fn accessible_name(&self) -> &str {
-        &self.accessible_name
+        self.accessible_name
+            .as_deref()
+            .unwrap_or(&self.core.default_accessible_name)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn shares_core_with(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.core, &other.core)
     }
 
     /// Replaces the semantic port-key fallback with an application-facing accessible name.
@@ -174,7 +197,7 @@ impl OpenGpuiPortHandle {
     pub fn with_accessible_name(mut self, name: impl Into<String>) -> Self {
         let name = name.into();
         if !name.trim().is_empty() {
-            self.accessible_name = name;
+            self.accessible_name = Some(Arc::from(name));
         }
         self
     }
@@ -256,20 +279,17 @@ impl OpenGpuiPortHandle {
     /// Wraps an ordinary Open GPUI element and reports its post-layout bounds as this real port.
     pub fn measure(&self, child: impl IntoElement) -> AnyElement {
         let child = child.into_any_element();
-        if !self.sink.admits(self.source) {
-            return child;
-        }
         OpenGpuiPortMeasurementElement {
-            id: open_gpui_port_element_id(self.sink.host, &self.instance, self.port),
+            id: open_gpui_port_element_id(self.core.sink.host, &self.core.instance, self.port()),
             child: Some(child),
-            wrapper: self.sink.allocate_port_wrapper(),
-            port: self.port,
+            wrapper: self.core.sink.allocate_port_wrapper(),
+            port_instance: self.core.port_instance,
             side: self.side,
             anchor: self.anchor,
             minimum_hit_diameter: self.minimum_hit_diameter,
             accessible_name: self.semantic_accessible_name(),
             source: self.source,
-            sink: self.sink.clone(),
+            sink: self.core.sink.clone(),
         }
         .into_any_element()
     }
@@ -296,17 +316,29 @@ impl OpenGpuiPortHandle {
         observer: Option<OpenGpuiPortListener>,
     ) -> AnyElement {
         let child = child.into_any_element();
-        if !self.sink.admits(self.source) {
+        if !self
+            .core
+            .sink
+            .admits_port(self.core.port_instance, self.source)
+        {
             return child;
         }
-        let interaction_enabled =
-            self.interaction_enabled && !self.presentation.disabled() && self.sink.mount.is_live();
-        let semantic_id = open_gpui_port_element_id(self.sink.host, &self.instance, self.port);
-        let measurement_id =
-            open_gpui_port_measurement_element_id(self.sink.host, &self.instance, self.port);
-        let owner = port_drag_owner(self.instance.clone(), self.port);
-        let host_listener = self.sink.host_port_listener.clone();
-        let mount = self.sink.mount.clone();
+        let interaction_enabled = self.interaction_enabled
+            && !self.presentation.disabled()
+            && self.core.sink.mount.is_live();
+        let semantic_id =
+            open_gpui_port_element_id(self.core.sink.host, &self.core.instance, self.port());
+        let measurement_id = open_gpui_port_measurement_element_id(
+            self.core.sink.host,
+            &self.core.instance,
+            self.port(),
+        );
+        let Some(owner) = port_drag_owner(self.core.instance.clone(), self.core.port_instance)
+        else {
+            return child;
+        };
+        let host_listener = self.core.sink.host_port_listener.clone();
+        let mount = self.core.sink.mount.clone();
         let listener: OpenGpuiPortListener = Rc::new(move |event, window, cx| {
             if !mount.is_live() && !is_retirement_cancellation(&event) {
                 return;
@@ -364,16 +396,17 @@ impl OpenGpuiPortHandle {
         OpenGpuiPortInteractionElement {
             id: measurement_id,
             child: Some(child.into_any_element()),
-            wrapper: self.sink.allocate_port_wrapper(),
+            wrapper: self.core.sink.allocate_port_wrapper(),
             owner,
+            port_instance: self.core.port_instance,
             side: self.side,
             anchor: self.anchor,
             interaction_enabled,
             minimum_hit_diameter: self.minimum_hit_diameter,
             source: self.source,
-            sink: self.sink.clone(),
-            activity: self.sink.activity.clone(),
-            interactions: self.sink.interactions.clone(),
+            sink: self.core.sink.clone(),
+            activity: self.core.sink.activity.clone(),
+            interactions: self.core.sink.interactions.clone(),
             listener,
         }
         .into_any_element()
@@ -382,7 +415,7 @@ impl OpenGpuiPortHandle {
     fn semantic_accessible_name(&self) -> String {
         format!(
             "{}, {}",
-            self.accessible_name,
+            self.accessible_name(),
             self.presentation.accessible_state_text()
         )
     }
@@ -442,7 +475,7 @@ struct OpenGpuiPortMeasurementElement {
     id: ElementId,
     child: Option<AnyElement>,
     wrapper: OpenGpuiPortWrapperId,
-    port: PortId,
+    port_instance: PortInstanceKey,
     side: OpenGpuiPortSide,
     anchor: OpenGpuiPortAnchor,
     minimum_hit_diameter: f32,
@@ -453,7 +486,7 @@ struct OpenGpuiPortMeasurementElement {
 
 impl Element for OpenGpuiPortMeasurementElement {
     type RequestLayoutState = AnyElement;
-    type PrepaintState = Hitbox;
+    type PrepaintState = Option<Hitbox>;
 
     fn id(&self) -> Option<ElementId> {
         Some(self.id.clone())
@@ -485,19 +518,23 @@ impl Element for OpenGpuiPortMeasurementElement {
         cx: &mut App,
     ) -> Self::PrepaintState {
         child.prepaint(window, cx);
+        let hit_bounds = minimum_hit_pixel_bounds(bounds, self.minimum_hit_diameter);
+        let interaction_bounds =
+            clipped_interaction_pixel_bounds(bounds, hit_bounds, window.content_mask().bounds);
         let _ = self.sink.record_port(
             self.source,
             self.wrapper,
-            self.port,
+            self.port_instance,
             bounds,
+            hit_bounds,
+            interaction_bounds,
             self.side,
             self.anchor,
-            self.minimum_hit_diameter,
         );
-        window.insert_hitbox(
-            minimum_hit_pixel_bounds(bounds, self.minimum_hit_diameter),
-            HitboxBehavior::Normal,
-        )
+        if interaction_bounds.is_none() {
+            self.sink.clear_port_hover(self.port_instance, window, cx);
+        }
+        interaction_bounds.map(|bounds| window.insert_hitbox(bounds, HitboxBehavior::Normal))
     }
 
     fn paint(
@@ -510,8 +547,12 @@ impl Element for OpenGpuiPortMeasurementElement {
         window: &mut Window,
         cx: &mut App,
     ) {
-        self.sink
-            .track_port_hover(self.port, hitbox.clone(), window);
+        if let Some(hitbox) = hitbox {
+            self.sink
+                .reconcile_port_hover(self.port_instance, hitbox, window, cx);
+            self.sink
+                .track_port_hover(self.port_instance, hitbox.clone(), window);
+        }
         child.paint(window, cx);
     }
 
@@ -537,6 +578,7 @@ struct OpenGpuiPortInteractionElement {
     child: Option<AnyElement>,
     wrapper: OpenGpuiPortWrapperId,
     owner: OpenGpuiPortDragOwner,
+    port_instance: PortInstanceKey,
     side: OpenGpuiPortSide,
     anchor: OpenGpuiPortAnchor,
     interaction_enabled: bool,
@@ -550,7 +592,7 @@ struct OpenGpuiPortInteractionElement {
 
 impl Element for OpenGpuiPortInteractionElement {
     type RequestLayoutState = AnyElement;
-    type PrepaintState = Hitbox;
+    type PrepaintState = Option<Hitbox>;
 
     fn id(&self) -> Option<ElementId> {
         Some(self.id.clone())
@@ -582,23 +624,36 @@ impl Element for OpenGpuiPortInteractionElement {
         cx: &mut App,
     ) -> Self::PrepaintState {
         child.prepaint(window, cx);
+        let hit_bounds = minimum_hit_pixel_bounds(bounds, self.minimum_hit_diameter);
+        let interaction_bounds =
+            clipped_interaction_pixel_bounds(bounds, hit_bounds, window.content_mask().bounds);
         let _ = self.sink.record_port(
             self.source,
             self.wrapper,
-            self.owner.port(),
+            self.port_instance,
             bounds,
+            hit_bounds,
+            interaction_bounds,
             self.side,
             self.anchor,
-            self.minimum_hit_diameter,
         );
-        let hitbox = window.insert_hitbox(
-            minimum_hit_pixel_bounds(bounds, self.minimum_hit_diameter),
-            HitboxBehavior::BlockMouse,
-        );
+        if interaction_bounds.is_none() {
+            self.sink
+                .clear_port_hover(self.owner.port_instance(), window, cx);
+        }
+        let hitbox = interaction_bounds
+            .map(|bounds| window.insert_hitbox(bounds, HitboxBehavior::BlockMouse));
         if self.sink.mount.is_live() {
             if self.interaction_enabled {
-                self.interactions
-                    .rebind_port(&self.owner, &self.sink.mount, hitbox.id, window, cx);
+                if let Some(hitbox) = hitbox.as_ref() {
+                    self.interactions.rebind_port(
+                        &self.owner,
+                        &self.sink.mount,
+                        hitbox.id,
+                        window,
+                        cx,
+                    );
+                }
             } else {
                 self.interactions
                     .disable_port_deferred(&self.owner, &self.sink.mount, window, cx);
@@ -617,8 +672,14 @@ impl Element for OpenGpuiPortInteractionElement {
         window: &mut Window,
         cx: &mut App,
     ) {
+        let Some(hitbox) = hitbox.as_ref() else {
+            child.paint(window, cx);
+            return;
+        };
         self.sink
-            .track_port_hover(self.owner.port(), hitbox.clone(), window);
+            .reconcile_port_hover(self.owner.port_instance(), hitbox, window, cx);
+        self.sink
+            .track_port_hover(self.owner.port_instance(), hitbox.clone(), window);
         if !self.interaction_enabled {
             let disabled_hitbox = hitbox.clone();
             window.on_mouse_event(move |_: &MouseDownEvent, phase, window, cx| {
@@ -757,6 +818,20 @@ fn minimum_hit_pixel_bounds(bounds: Bounds<Pixels>, diameter: f32) -> Bounds<Pix
     }
 }
 
+fn clipped_interaction_pixel_bounds(
+    visual_bounds: Bounds<Pixels>,
+    hit_bounds: Bounds<Pixels>,
+    content_bounds: Bounds<Pixels>,
+) -> Option<Bounds<Pixels>> {
+    let visible = visual_bounds.intersect(&content_bounds);
+    if visible.size.width.as_f32() <= 0.0 || visible.size.height.as_f32() <= 0.0 {
+        return None;
+    }
+    let interaction = hit_bounds.intersect(&content_bounds);
+    (interaction.size.width.as_f32() > 0.0 && interaction.size.height.as_f32() > 0.0)
+        .then_some(interaction)
+}
+
 #[derive(Clone)]
 pub(crate) struct OpenGpuiMeasurementSink {
     host: EntityId,
@@ -768,7 +843,7 @@ pub(crate) struct OpenGpuiMeasurementSink {
     interactions: OpenGpuiNativeInteractionHandle,
     host_port_listener: OpenGpuiHostPortListener,
     host_port_hover_listener: OpenGpuiHostPortHoverListener,
-    hovered_port: Rc<Cell<Option<PortId>>>,
+    hovered_port: Rc<Cell<Option<PortInstanceKey>>>,
     next_port_wrapper: Rc<Cell<u64>>,
     mount: OpenGpuiMountCapability,
 }
@@ -817,7 +892,7 @@ impl OpenGpuiMeasurementSink {
         OpenGpuiPortWrapperId(current)
     }
 
-    fn track_port_hover(&self, port: PortId, hitbox: Hitbox, window: &mut Window) {
+    fn track_port_hover(&self, port: PortInstanceKey, hitbox: Hitbox, window: &mut Window) {
         let hovered_port = self.hovered_port.clone();
         let listener = self.host_port_hover_listener.clone();
         let instance = self.instance.clone();
@@ -836,6 +911,26 @@ impl OpenGpuiMeasurementSink {
                 listener(&instance, port, false, window, cx);
             }
         });
+    }
+
+    fn clear_port_hover(&self, port: PortInstanceKey, window: &mut Window, cx: &mut App) {
+        if self.hovered_port.get() != Some(port) {
+            return;
+        }
+        self.hovered_port.set(None);
+        (self.host_port_hover_listener)(&self.instance, port, false, window, cx);
+    }
+
+    fn reconcile_port_hover(
+        &self,
+        port: PortInstanceKey,
+        hitbox: &Hitbox,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        if !hitbox.is_hovered(window) {
+            self.clear_port_hover(port, window, cx);
+        }
     }
 
     pub(crate) fn activate(
@@ -861,14 +956,14 @@ impl OpenGpuiMeasurementSink {
         Ok(())
     }
 
-    fn admits(&self, source: OpenGpuiGraphPresentationSource) -> bool {
+    fn admits_port(&self, port: PortInstanceKey, source: OpenGpuiGraphPresentationSource) -> bool {
         self.mount.is_live()
             && self
                 .pending
                 .try_borrow()
                 .ok()
                 .and_then(|pending| pending.as_ref().and_then(Weak::upgrade))
-                .is_some_and(|pending| pending.admits(&self.instance, source))
+                .is_some_and(|pending| pending.admits_port(&self.instance, port, source))
     }
 
     pub(crate) fn measure_content(&self, child: impl IntoElement) -> AnyElement {
@@ -919,11 +1014,12 @@ impl OpenGpuiMeasurementSink {
         &self,
         source: OpenGpuiGraphPresentationSource,
         wrapper: OpenGpuiPortWrapperId,
-        port: PortId,
+        port_instance: PortInstanceKey,
         bounds: Bounds<Pixels>,
+        hit_bounds: Bounds<Pixels>,
+        interaction_bounds: Option<Bounds<Pixels>>,
         side: OpenGpuiPortSide,
         anchor: OpenGpuiPortAnchor,
-        minimum_hit_diameter: f32,
     ) -> Result<(), OpenGpuiMeasurementError> {
         if !self.mount.is_live() {
             return Err(OpenGpuiMeasurementError::Inactive {
@@ -947,7 +1043,7 @@ impl OpenGpuiMeasurementSink {
             let route_anchor = resolve_route_anchor(visual_bounds, outward, anchor).ok_or(
                 OpenGpuiMeasurementError::InvalidPortBounds {
                     node: self.instance.node(),
-                    port,
+                    port: port_instance.port(),
                 },
             )?;
             pending.record_port(
@@ -955,9 +1051,10 @@ impl OpenGpuiMeasurementSink {
                 source,
                 wrapper,
                 RawPortMeasurement {
-                    port,
+                    port_instance,
                     visual_bounds,
-                    hit_bounds: minimum_hit_bounds(visual_bounds, minimum_hit_diameter),
+                    hit_bounds: view_rect(hit_bounds),
+                    interaction_bounds: interaction_bounds.map(view_rect),
                     route_anchor,
                     outward,
                 },
@@ -998,7 +1095,7 @@ impl OpenGpuiMeasurementSink {
 
 struct PendingNodeMeasurement {
     frame_node: FrameNode,
-    expected_ports: BTreeSet<PortId>,
+    expected_ports: BTreeMap<PortId, PortInstanceKey>,
     source: Option<OpenGpuiGraphPresentationSource>,
     content_epoch: u64,
     root: Option<ViewRect>,
@@ -1009,9 +1106,10 @@ struct PendingNodeMeasurement {
 }
 
 struct RawPortMeasurement {
-    port: PortId,
+    port_instance: PortInstanceKey,
     visual_bounds: ViewRect,
     hit_bounds: ViewRect,
+    interaction_bounds: Option<ViewRect>,
     route_anchor: ViewPoint,
     outward: HandlePosition,
 }
@@ -1058,7 +1156,11 @@ impl OpenGpuiPendingMeasurements {
                     node.instance().clone(),
                     PendingNodeMeasurement {
                         frame_node: node.clone(),
-                        expected_ports: node.ports().iter().map(|port| port.id()).collect(),
+                        expected_ports: node
+                            .ports()
+                            .iter()
+                            .map(|port| (port.id(), port.instance()))
+                            .collect(),
                         source: None,
                         content_epoch: 0,
                         root: None,
@@ -1146,14 +1248,15 @@ impl OpenGpuiPendingMeasurements {
         if node.source != Some(source) {
             return Ok(());
         }
-        if !node.expected_ports.contains(&measurement.port) {
+        let port = measurement.port_instance.port();
+        if node.expected_ports.get(&port).copied() != Some(measurement.port_instance) {
             node.has_foreign_port = true;
             return Err(OpenGpuiMeasurementError::UnknownPort {
                 node: instance.node(),
-                port: measurement.port,
+                port,
             });
         }
-        match node.ports.entry(measurement.port) {
+        match node.ports.entry(port) {
             Entry::Vacant(entry) => {
                 entry.insert(RecordedPortMeasurement {
                     wrapper,
@@ -1164,7 +1267,7 @@ impl OpenGpuiPendingMeasurements {
                 entry.get_mut().measurement = measurement;
             }
             Entry::Occupied(_) => {
-                node.duplicate_ports.insert(measurement.port);
+                node.duplicate_ports.insert(port);
             }
         }
         Ok(())
@@ -1192,13 +1295,22 @@ impl OpenGpuiPendingMeasurements {
         Ok(())
     }
 
-    fn admits(&self, instance: &NodeInstanceKey, source: OpenGpuiGraphPresentationSource) -> bool {
+    fn admits_port(
+        &self,
+        instance: &NodeInstanceKey,
+        port: PortInstanceKey,
+        source: OpenGpuiGraphPresentationSource,
+    ) -> bool {
         self.nodes
             .try_borrow()
             .ok()
-            .and_then(|nodes| nodes.get(instance).map(|node| node.source))
-            .flatten()
-            == Some(source)
+            .and_then(|nodes| {
+                let node = nodes.get(instance)?;
+                (node.source == Some(source)
+                    && node.expected_ports.get(&port.port()).copied() == Some(port))
+                .then_some(())
+            })
+            .is_some()
     }
 
     fn record_content(
@@ -1288,7 +1400,7 @@ impl OpenGpuiPendingMeasurements {
             };
             let missing_ports = node
                 .expected_ports
-                .iter()
+                .keys()
                 .filter(|port| !node.ports.contains_key(port))
                 .copied()
                 .collect::<Vec<_>>();
@@ -1309,7 +1421,20 @@ impl OpenGpuiPendingMeasurements {
                     )
                 })
                 .unwrap_or_default();
-            let root = remove_presentation_offset(measured_root, presentation_offset);
+            let measured_root = remove_presentation_offset(measured_root, presentation_offset);
+            let Some(authoritative_origin) =
+                authoritative_node_origin(&node.frame_node, self.transform)
+            else {
+                errors.push(OpenGpuiMeasurementError::InvalidContentBounds {
+                    node: instance.node(),
+                });
+                continue;
+            };
+            let root_alignment = ViewPoint::new(
+                authoritative_origin.x - measured_root.origin.x,
+                authoritative_origin.y - measured_root.origin.y,
+            );
+            let root = translate_view_rect(measured_root, root_alignment);
             let mut layout = node.frame_node.begin_layout(root);
             let mut invalid = None;
             for port in node.frame_node.ports() {
@@ -1317,19 +1442,33 @@ impl OpenGpuiPendingMeasurements {
                 else {
                     unreachable!("missing real ports are rejected before layout assembly")
                 };
-                if let Err(source) = layout.port_rendered(
+                if let Err(source) = layout.port_rendered_with_interaction_bounds(
                     port.layout_target(),
-                    remove_presentation_offset(
-                        relative_rect(measurement.visual_bounds, scene_origin),
+                    align_measured_rect(
+                        measurement.visual_bounds,
+                        scene_origin,
                         presentation_offset,
+                        root_alignment,
                     ),
-                    remove_presentation_offset(
-                        relative_rect(measurement.hit_bounds, scene_origin),
+                    align_measured_rect(
+                        measurement.hit_bounds,
+                        scene_origin,
                         presentation_offset,
+                        root_alignment,
                     ),
-                    remove_point_presentation_offset(
-                        relative_point(measurement.route_anchor, scene_origin),
+                    measurement.interaction_bounds.map(|bounds| {
+                        align_measured_rect(
+                            bounds,
+                            scene_origin,
+                            presentation_offset,
+                            root_alignment,
+                        )
+                    }),
+                    align_measured_point(
+                        measurement.route_anchor,
+                        scene_origin,
                         presentation_offset,
+                        root_alignment,
                     ),
                     measurement.outward,
                 ) {
@@ -1385,6 +1524,55 @@ fn remove_presentation_offset(rect: ViewRect, offset: ViewPoint) -> ViewRect {
 
 fn remove_point_presentation_offset(point: ViewPoint, offset: ViewPoint) -> ViewPoint {
     ViewPoint::new(point.x - offset.x, point.y - offset.y)
+}
+
+fn authoritative_node_origin(
+    frame_node: &FrameNode,
+    transform: ViewportTransform,
+) -> Option<ViewPoint> {
+    let frame_bounds = frame_node.bounds();
+    let canvas_bounds = frame_node
+        .node()
+        .and_then(|node| {
+            let size = node
+                .size
+                .filter(|size| size.is_positive_finite())
+                .unwrap_or(frame_bounds.size);
+            node.bounds_for_size(size)
+        })
+        .unwrap_or(frame_bounds);
+    let origin = transform.screen_point_for_canvas(canvas_bounds.origin)?;
+    Some(ViewPoint::new(origin.x, origin.y))
+}
+
+fn align_measured_rect(
+    rect: ViewRect,
+    scene_origin: ViewPoint,
+    presentation_offset: ViewPoint,
+    root_alignment: ViewPoint,
+) -> ViewRect {
+    translate_view_rect(
+        remove_presentation_offset(relative_rect(rect, scene_origin), presentation_offset),
+        root_alignment,
+    )
+}
+
+fn align_measured_point(
+    point: ViewPoint,
+    scene_origin: ViewPoint,
+    presentation_offset: ViewPoint,
+    root_alignment: ViewPoint,
+) -> ViewPoint {
+    let point =
+        remove_point_presentation_offset(relative_point(point, scene_origin), presentation_offset);
+    ViewPoint::new(point.x + root_alignment.x, point.y + root_alignment.y)
+}
+
+fn translate_view_rect(rect: ViewRect, delta: ViewPoint) -> ViewRect {
+    ViewRect::new(
+        ViewPoint::new(rect.origin.x + delta.x, rect.origin.y + delta.y),
+        rect.size,
+    )
 }
 
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
@@ -1460,6 +1648,7 @@ fn view_rect(bounds: Bounds<Pixels>) -> ViewRect {
     )
 }
 
+#[cfg(test)]
 fn minimum_hit_bounds(bounds: ViewRect, diameter: f32) -> ViewRect {
     if !diameter.is_finite() || diameter <= 0.0 {
         return bounds;
@@ -1512,7 +1701,11 @@ mod tests {
         CanvasPoint, CanvasRect, CanvasSize, GraphBuilder, GraphId, NodeKindKey, Port,
         PortCapacity, PortKey, PortKind,
     };
-    use jellyflow_runtime::{FrameRequest, GraphRuntime, RendererStamp, ViewSessionOptions};
+    use jellyflow_runtime::{
+        commands::GraphCommand, commands::IncidentEdgePolicy, commands::TopologyEdit,
+        commands::TopologyPort, graph::GraphRuntime, view::FrameRequest, view::RendererStamp,
+        view::ViewSessionOptions,
+    };
     use open_gpui::accesskit::{Action, Node};
 
     use super::*;
@@ -1541,6 +1734,28 @@ mod tests {
         );
         assert_eq!(pixel_hit.origin, point(px(4.0), px(15.0)));
         assert_eq!(pixel_hit.size, size(px(22.0), px(22.0)));
+    }
+
+    #[test]
+    fn native_content_mask_clips_interaction_without_moving_visual_geometry() {
+        let visual = pixel_bounds(90.0, 40.0, 12.0, 12.0);
+        let hit = minimum_hit_pixel_bounds(visual, 22.0);
+        let content = pixel_bounds(0.0, 0.0, 96.0, 80.0);
+
+        let interaction = clipped_interaction_pixel_bounds(visual, hit, content)
+            .expect("partially visible port remains interactive");
+
+        assert_eq!(visual, pixel_bounds(90.0, 40.0, 12.0, 12.0));
+        assert_eq!(interaction, pixel_bounds(85.0, 35.0, 11.0, 22.0));
+    }
+
+    #[test]
+    fn fully_clipped_visual_port_has_no_effective_interaction_bounds() {
+        let visual = pixel_bounds(98.0, 40.0, 12.0, 12.0);
+        let hit = minimum_hit_pixel_bounds(visual, 22.0);
+        let content = pixel_bounds(0.0, 0.0, 96.0, 80.0);
+
+        assert_eq!(clipped_interaction_pixel_bounds(visual, hit, content), None);
     }
 
     #[test]
@@ -1666,6 +1881,7 @@ mod tests {
 
         let repeated = view.frame(request()).expect("repeat-prepaint frame");
         let instance = repeated.nodes()[0].instance().clone();
+        let port_instance = repeated.nodes()[0].ports()[0].instance();
         let measurements = OpenGpuiPendingMeasurements::new(
             repeated.nodes(),
             repeated.transform(),
@@ -1688,7 +1904,7 @@ mod tests {
                 &instance,
                 OpenGpuiGraphPresentationSource::Detail,
                 OpenGpuiPortWrapperId(7),
-                raw_port_measurement(port_id, 40.0),
+                raw_port_measurement(port_instance, 40.0),
             )
             .expect("record initial prepaint");
         measurements
@@ -1696,7 +1912,7 @@ mod tests {
                 &instance,
                 OpenGpuiGraphPresentationSource::Detail,
                 OpenGpuiPortWrapperId(7),
-                raw_port_measurement(port_id, 56.0),
+                raw_port_measurement(port_instance, 56.0),
             )
             .expect("record final prepaint");
         let (layouts, errors) = measurements.seal_layouts().into_parts();
@@ -1707,19 +1923,19 @@ mod tests {
             .layout(layouts.into_iter().next().unwrap())
             .unwrap();
         view.submit_feedback(collector.finish().unwrap()).unwrap();
+        let geometry = view.geometry_snapshot().unwrap();
         assert_eq!(
-            view.geometry_snapshot()
-                .unwrap()
-                .port(port_id)
-                .unwrap()
-                .visual_bounds()
-                .origin
-                .y,
-            56.0
+            geometry.node(node_id).unwrap().bounds().origin,
+            CanvasPoint::default()
+        );
+        assert_eq!(
+            geometry.port(port_id).unwrap().visual_bounds().origin,
+            CanvasPoint { x: 166.0, y: 36.0 }
         );
 
         let duplicate = view.frame(request()).expect("duplicate-wrapper frame");
         let instance = duplicate.nodes()[0].instance().clone();
+        let port_instance = duplicate.nodes()[0].ports()[0].instance();
         let measurements = OpenGpuiPendingMeasurements::new(
             duplicate.nodes(),
             duplicate.transform(),
@@ -1746,7 +1962,7 @@ mod tests {
                     &instance,
                     OpenGpuiGraphPresentationSource::Detail,
                     wrapper,
-                    raw_port_measurement(port_id, y),
+                    raw_port_measurement(port_instance, y),
                 )
                 .unwrap();
         }
@@ -1759,6 +1975,160 @@ mod tests {
                 ports: vec![port_id],
             }]
         );
+    }
+
+    #[test]
+    fn same_id_port_replacement_rejects_old_measurement_identity_and_admits_new_identity() {
+        let node_id = NodeId::from_u128(0x31);
+        let port_id = PortId::from_u128(0x32);
+        let mut graph = GraphBuilder::new(GraphId::from_u128(0x33));
+        graph.insert_node(
+            node_id,
+            jellyflow_core::Node {
+                kind: NodeKindKey::new("test.port-aba"),
+                kind_version: 1,
+                pos: CanvasPoint::default(),
+                origin: None,
+                selectable: None,
+                draggable: None,
+                connectable: None,
+                deletable: None,
+                parent: None,
+                extent: None,
+                expand_parent: None,
+                size: Some(CanvasSize {
+                    width: 180.0,
+                    height: 100.0,
+                }),
+                hidden: false,
+                collapsed: false,
+                ports: vec![port_id],
+                data: serde_json::Value::Null,
+            },
+        );
+        let initial_port = test_port(node_id, "value", PortDirection::Out);
+        graph.insert_port(port_id, initial_port.clone());
+        let runtime = GraphRuntime::builder(Default::default())
+            .build(graph.build().expect("valid port ABA graph"))
+            .expect("port ABA runtime");
+        let view = runtime
+            .attach_view(ViewSessionOptions::default())
+            .expect("port ABA view");
+        let request = || {
+            FrameRequest::new(
+                CanvasRect {
+                    origin: CanvasPoint {
+                        x: -100.0,
+                        y: -100.0,
+                    },
+                    size: CanvasSize {
+                        width: 400.0,
+                        height: 300.0,
+                    },
+                },
+                RendererStamp::new("test.port-aba", 1),
+            )
+        };
+
+        let initial_frame = view.frame(request()).expect("initial port ABA frame");
+        let initial_node_instance = initial_frame.nodes()[0].instance().clone();
+        let initial_port_instance = initial_frame.nodes()[0].ports()[0].instance();
+        let initial_pending = OpenGpuiPendingMeasurements::new(
+            initial_frame.nodes(),
+            initial_frame.transform(),
+            BTreeMap::new(),
+            0,
+        );
+        initial_pending
+            .activate(
+                &initial_node_instance,
+                OpenGpuiGraphPresentationSource::Detail,
+                0,
+            )
+            .unwrap();
+        assert!(initial_pending.admits_port(
+            &initial_node_instance,
+            initial_port_instance,
+            OpenGpuiGraphPresentationSource::Detail,
+        ));
+
+        let mut replacement = initial_port;
+        replacement.key = PortKey::new("replacement-value");
+        runtime
+            .execute(GraphCommand::topology(
+                initial_frame.graph_version(),
+                TopologyEdit::new().replace_node_ports(
+                    node_id,
+                    [TopologyPort::new(port_id, replacement)],
+                    IncidentEdgePolicy::Reject,
+                ),
+            ))
+            .unwrap()
+            .applied()
+            .expect("same-ID port replacement applies");
+
+        let replacement_frame = view.frame(request()).expect("replacement port ABA frame");
+        let replacement_node_instance = replacement_frame.nodes()[0].instance().clone();
+        let replacement_port_instance = replacement_frame.nodes()[0].ports()[0].instance();
+        assert_eq!(replacement_node_instance, initial_node_instance);
+        assert_ne!(replacement_port_instance, initial_port_instance);
+        let replacement_pending = OpenGpuiPendingMeasurements::new(
+            replacement_frame.nodes(),
+            replacement_frame.transform(),
+            BTreeMap::new(),
+            0,
+        );
+        replacement_pending
+            .activate(
+                &replacement_node_instance,
+                OpenGpuiGraphPresentationSource::Detail,
+                0,
+            )
+            .unwrap();
+        assert!(!replacement_pending.admits_port(
+            &replacement_node_instance,
+            initial_port_instance,
+            OpenGpuiGraphPresentationSource::Detail,
+        ));
+        assert!(replacement_pending.admits_port(
+            &replacement_node_instance,
+            replacement_port_instance,
+            OpenGpuiGraphPresentationSource::Detail,
+        ));
+        assert_eq!(
+            replacement_pending.record_port(
+                &replacement_node_instance,
+                OpenGpuiGraphPresentationSource::Detail,
+                OpenGpuiPortWrapperId(1),
+                raw_port_measurement(initial_port_instance, 40.0),
+            ),
+            Err(OpenGpuiMeasurementError::UnknownPort {
+                node: node_id,
+                port: port_id,
+            }),
+        );
+
+        let clean_pending = OpenGpuiPendingMeasurements::new(
+            replacement_frame.nodes(),
+            replacement_frame.transform(),
+            BTreeMap::new(),
+            0,
+        );
+        clean_pending
+            .activate(
+                &replacement_node_instance,
+                OpenGpuiGraphPresentationSource::Detail,
+                0,
+            )
+            .unwrap();
+        clean_pending
+            .record_port(
+                &replacement_node_instance,
+                OpenGpuiGraphPresentationSource::Detail,
+                OpenGpuiPortWrapperId(2),
+                raw_port_measurement(replacement_port_instance, 56.0),
+            )
+            .expect("replacement identity publishes measurement");
     }
 
     #[test]
@@ -1823,8 +2193,11 @@ mod tests {
         let view = runtime
             .attach_view(ViewSessionOptions::default())
             .expect("root fallback view");
-        view.set_viewport(CanvasPoint { x: 7.0, y: -3.0 }, 2.0)
-            .expect("valid root fallback viewport");
+        view.set_viewport(
+            ViewportTransform::new(CanvasPoint { x: 7.0, y: -3.0 }, 2.0)
+                .expect("valid root fallback viewport transform"),
+        )
+        .expect("valid root fallback viewport");
         let request = || {
             FrameRequest::new(
                 CanvasRect {
@@ -1932,12 +2305,13 @@ mod tests {
         }
     }
 
-    fn raw_port_measurement(port: PortId, y: f32) -> RawPortMeasurement {
+    fn raw_port_measurement(port_instance: PortInstanceKey, y: f32) -> RawPortMeasurement {
         let visual_bounds = ViewRect::new(ViewPoint::new(176.0, y), ViewSize::new(14.0, 14.0));
         RawPortMeasurement {
-            port,
+            port_instance,
             visual_bounds,
             hit_bounds: minimum_hit_bounds(visual_bounds, 22.0),
+            interaction_bounds: Some(minimum_hit_bounds(visual_bounds, 22.0)),
             route_anchor: ViewPoint::new(183.0, y + 7.0),
             outward: HandlePosition::Right,
         }

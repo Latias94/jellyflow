@@ -10,7 +10,7 @@ GraphRuntime -> ViewSession -> native adapter
 ## Responsibilities
 
 - `GraphRuntime` owns the canonical graph, document revision, profiles, connection policy,
-  revision-checked commands, subscriptions, and undo/redo history.
+  version-checked commands, subscriptions, and undo/redo history.
 - `ViewSession` owns view-local viewport state, selection, culling, routing, geometry, frame
   tokens, and feedback lifecycle. Multiple sessions can observe one runtime without sharing view
   state.
@@ -28,9 +28,10 @@ GraphRuntime -> ViewSession -> native adapter
 For a graph created programmatically in the current process:
 
 ```rust
-use jellyflow_runtime::{GraphRuntime, ViewSessionOptions};
-use jellyflow_runtime::schema::NodeCatalog;
 use jellyflow_core::{Graph, GraphId};
+use jellyflow_runtime::graph::GraphRuntime;
+use jellyflow_runtime::schema::NodeCatalog;
+use jellyflow_runtime::view::ViewSessionOptions;
 
 let runtime = GraphRuntime::builder(NodeCatalog::new()).build(Graph::new(GraphId::new()))?;
 let view = runtime.attach_view(ViewSessionOptions::default())?;
@@ -42,7 +43,7 @@ For a persisted document, register known kinds and migrators first, then publish
 result:
 
 ```rust
-use jellyflow_runtime::GraphRuntime;
+use jellyflow_runtime::graph::GraphRuntime;
 use jellyflow_runtime::io::GraphFile;
 use jellyflow_runtime::schema::NodeCatalog;
 
@@ -60,7 +61,7 @@ The persisted-file API does not expose a raw graph load or `Deserialize` path. T
 file-version dispatch, storage validation, and atomic known-kind migration ahead of runtime
 publication. `GraphRuntime::replace_document` accepts only a `CanonicalGraph` produced by the same
 catalog provenance. On success it advances the graph revision and document epoch, clears history,
-retires every prior node incarnation, and fans out one document reset. Finalize registration before
+retires every prior node lifetime, and fans out one document reset. Finalize registration before
 runtime publication and use `runtime.catalog()` for later loads; an independently rebuilt or
 subsequently modified catalog is rejected without side effects.
 
@@ -72,8 +73,9 @@ custom persistence budgets should pass the same limits to `save_json_with_limits
 `load_canonical_json_with_limits`. `ViewSessionSeedFile` decode and load operations accept only the
 current versioned seed format and return a sanitized `ViewSessionSeed`.
 
-Graph writes use `GraphCommand` and an expected `GraphRevision`. A stale command is rejected with
-the current revision and affected footprint; the runtime never silently merges application intent.
+Graph writes use `GraphCommand` and the opaque `GraphVersion` issued by the planning snapshot. A
+stale command is rejected with the current owned snapshot and affected footprint; the runtime never
+silently merges application intent.
 Topology edits replace the complete ordered real-port set atomically and apply their declared
 incident-edge policy in the same history boundary.
 
@@ -94,7 +96,7 @@ partial side effect.
 The crate has no dependency on Open GPUI, egui, windowing, focus, IME, GPU, or platform APIs. A
 native adapter owns its framework component tree, input arbitration, accessibility, measurement
 implementation, and application services. Jellyflow only supplies graph semantics, stable IDs,
-revisioned commands, and geometry facts.
+version-checked commands, and geometry facts.
 
 ## Native adapter conformance
 
@@ -105,7 +107,7 @@ Adapter crates can enable the non-default `adapter-conformance` feature in their
 jellyflow-runtime = { version = "0.4", features = ["adapter-conformance"] }
 ```
 
-The feature exposes `runtime::adapter_protocol::conformance`: typed semantic scenarios,
+The feature exposes `adapter::conformance`: typed semantic scenarios,
 framework-independent observations, and a structured comparison function. It deliberately does not
 provide an adapter driver, raw-event abstraction, widget model, async dispatcher, or access to
 runtime internals. Each adapter must map the semantic target roles to real native controls, drive

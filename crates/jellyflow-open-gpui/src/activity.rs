@@ -4,15 +4,17 @@ use std::fmt;
 use std::mem;
 use std::rc::Rc;
 
-use jellyflow_runtime::NodeInstanceKey;
+use jellyflow_runtime::view::NodeInstanceKey;
+use open_gpui::{HitboxId, Window};
 use thiserror::Error;
+
+use crate::panic_sink::OpenGpuiPanicAccumulator;
 
 /// A native resource or interaction that remains owned by a retained node.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum OpenGpuiActivityKind {
     Focus,
     Ime,
-    PointerCapture,
     GraphInteraction,
     Overlay,
     Task,
@@ -28,12 +30,48 @@ impl OpenGpuiActivityKind {
     fn requires_window_cleanup(self) -> bool {
         matches!(
             self,
-            Self::Focus | Self::Ime | Self::PointerCapture | Self::GraphInteraction | Self::Overlay
+            Self::Focus | Self::Ime | Self::GraphInteraction | Self::Overlay
         )
     }
 
     fn requires_interaction_island(self) -> bool {
         matches!(self, Self::Focus | Self::Ime | Self::Overlay)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ActivityEntryKind {
+    Activity(OpenGpuiActivityKind),
+    PointerCapture(HitboxId),
+}
+
+impl ActivityEntryKind {
+    fn protects_retention(self) -> bool {
+        match self {
+            Self::Activity(kind) => kind.protects_retention(),
+            Self::PointerCapture(_) => true,
+        }
+    }
+
+    fn requires_window_cleanup(self) -> bool {
+        match self {
+            Self::Activity(kind) => kind.requires_window_cleanup(),
+            Self::PointerCapture(_) => true,
+        }
+    }
+
+    fn requires_interaction_island(self) -> bool {
+        match self {
+            Self::Activity(kind) => kind.requires_interaction_island(),
+            Self::PointerCapture(_) => true,
+        }
+    }
+
+    fn pointer_capture(self) -> Option<HitboxId> {
+        match self {
+            Self::PointerCapture(hitbox) => Some(hitbox),
+            Self::Activity(_) => None,
+        }
     }
 }
 
@@ -87,7 +125,7 @@ impl OpenGpuiActivityCoordinator {
     fn acquire(
         &self,
         instance: &NodeInstanceKey,
-        kind: OpenGpuiActivityKind,
+        kind: ActivityEntryKind,
     ) -> Result<(), OpenGpuiActivityAcquireError> {
         let mut state = self.state.borrow_mut();
         if let Some(count) = state.protected.get_mut(instance) {
@@ -151,7 +189,7 @@ struct CoordinatedInstance {
 }
 
 struct ActivityEntry {
-    kind: OpenGpuiActivityKind,
+    kind: ActivityEntryKind,
     revoke: Option<RevocationCallback>,
 }
 
@@ -175,8 +213,90 @@ impl Default for ActivityState {
 
 /// A single-threaded activity ledger shared by a retained node and its leases.
 #[derive(Clone)]
-pub struct OpenGpuiNodeActivityRegistry {
+pub(crate) struct OpenGpuiNodeActivityRegistry {
     state: Rc<RefCell<ActivityState>>,
+}
+
+/// Renderer-owned capability for acquiring and inspecting native activity leases.
+///
+/// Revocation remains owned by the scene host, so a custom node cannot invalidate sibling
+/// resources that share its mount-scoped activity ledger.
+///
+/// ```compile_fail
+/// use jellyflow_open_gpui::activity::OpenGpuiNodeActivityHandle;
+///
+/// fn revoke_host_activity(activity: &OpenGpuiNodeActivityHandle) {
+///     activity.revoke_all();
+/// }
+/// ```
+#[derive(Clone)]
+pub struct OpenGpuiNodeActivityHandle {
+    registry: OpenGpuiNodeActivityRegistry,
+}
+
+impl OpenGpuiNodeActivityHandle {
+    pub fn acquire(
+        &self,
+        kind: OpenGpuiActivityKind,
+    ) -> Result<OpenGpuiActivityLease, OpenGpuiActivityAcquireError> {
+        self.registry.acquire(kind)
+    }
+
+    pub fn acquire_with_revocation(
+        &self,
+        kind: OpenGpuiActivityKind,
+        revoke: impl FnOnce() + 'static,
+    ) -> Result<OpenGpuiActivityLease, OpenGpuiActivityAcquireError> {
+        self.registry.acquire_with_revocation(kind, revoke)
+    }
+
+    /// Captures the window pointer for one exact hitbox and registers that ownership with the host.
+    ///
+    /// The returned lease keeps the node resident and lets terminal host cleanup release only this
+    /// capture. Call [`OpenGpuiPointerCaptureLease::release`] when the component finishes normally.
+    pub fn capture_pointer(
+        &self,
+        hitbox: HitboxId,
+        window: &mut Window,
+    ) -> Result<OpenGpuiPointerCaptureLease, OpenGpuiActivityAcquireError> {
+        let activity = self.registry.acquire_pointer_capture(hitbox)?;
+        window.capture_pointer(hitbox);
+        Ok(OpenGpuiPointerCaptureLease {
+            hitbox,
+            activity: Some(activity),
+        })
+    }
+
+    #[must_use]
+    pub fn active_count(&self) -> usize {
+        self.registry.active_count()
+    }
+
+    #[must_use]
+    pub fn protected_count(&self) -> usize {
+        self.registry.protected_count()
+    }
+
+    #[must_use]
+    pub fn is_active(&self, id: u64) -> bool {
+        self.registry.is_active(id)
+    }
+
+    #[must_use]
+    pub fn is_revoked(&self) -> bool {
+        self.registry.is_revoked()
+    }
+}
+
+impl fmt::Debug for OpenGpuiNodeActivityHandle {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("OpenGpuiNodeActivityHandle")
+            .field("active_count", &self.active_count())
+            .field("protected_count", &self.protected_count())
+            .field("revoked", &self.is_revoked())
+            .finish()
+    }
 }
 
 impl OpenGpuiNodeActivityRegistry {
@@ -198,26 +318,39 @@ impl OpenGpuiNodeActivityRegistry {
         registry
     }
 
-    pub fn acquire(
+    pub(crate) fn renderer_handle(&self) -> OpenGpuiNodeActivityHandle {
+        OpenGpuiNodeActivityHandle {
+            registry: self.clone(),
+        }
+    }
+
+    pub(crate) fn acquire(
         &self,
         kind: OpenGpuiActivityKind,
     ) -> Result<OpenGpuiActivityLease, OpenGpuiActivityAcquireError> {
-        self.acquire_inner(kind, None)
+        self.acquire_inner(ActivityEntryKind::Activity(kind), None)
     }
 
-    pub fn acquire_with_revocation(
+    pub(crate) fn acquire_with_revocation(
         &self,
         kind: OpenGpuiActivityKind,
         revoke: impl FnOnce() + 'static,
     ) -> Result<OpenGpuiActivityLease, OpenGpuiActivityAcquireError> {
-        self.acquire_inner(kind, Some(Box::new(revoke)))
+        self.acquire_inner(ActivityEntryKind::Activity(kind), Some(Box::new(revoke)))
     }
 
-    pub fn active_count(&self) -> usize {
+    fn acquire_pointer_capture(
+        &self,
+        hitbox: HitboxId,
+    ) -> Result<OpenGpuiActivityLease, OpenGpuiActivityAcquireError> {
+        self.acquire_inner(ActivityEntryKind::PointerCapture(hitbox), None)
+    }
+
+    pub(crate) fn active_count(&self) -> usize {
         self.state.borrow().entries.len()
     }
 
-    pub fn protected_count(&self) -> usize {
+    pub(crate) fn protected_count(&self) -> usize {
         self.state
             .borrow()
             .entries
@@ -234,11 +367,27 @@ impl OpenGpuiNodeActivityRegistry {
             .any(|entry| entry.kind.requires_interaction_island())
     }
 
-    pub fn is_active(&self, id: u64) -> bool {
+    pub(crate) fn release_pointer_capture_if_owned(&self, window: &mut Window) -> bool {
+        let Some(captured) = window.captured_hitbox() else {
+            return false;
+        };
+        let owns_capture = self
+            .state
+            .borrow()
+            .entries
+            .values()
+            .any(|entry| entry.kind.pointer_capture() == Some(captured));
+        if owns_capture {
+            window.release_pointer();
+        }
+        owns_capture
+    }
+
+    pub(crate) fn is_active(&self, id: u64) -> bool {
         self.state.borrow().entries.contains_key(&id)
     }
 
-    pub fn is_revoked(&self) -> bool {
+    pub(crate) fn is_revoked(&self) -> bool {
         self.state.borrow().revoked
     }
 
@@ -246,7 +395,7 @@ impl OpenGpuiNodeActivityRegistry {
     ///
     /// Callbacks run in acquisition order and outside the registry's `RefCell`
     /// borrow, so they may safely query the registry or release other leases.
-    pub fn revoke_all(&self) -> usize {
+    pub(crate) fn revoke_all(&self) -> usize {
         let (entries, coordinated_instance) = {
             let mut state = self.state.borrow_mut();
             if state.revoked {
@@ -277,27 +426,19 @@ impl OpenGpuiNodeActivityRegistry {
             );
         }
 
-        let mut first_panic = None;
+        let mut panics = OpenGpuiPanicAccumulator::default();
         for entry in entries.into_values() {
             if let Some(revoke) = entry.revoke {
-                let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(revoke)).err();
-                if first_panic.is_none() {
-                    first_panic = panic;
-                } else if let Some(payload) = panic {
-                    std::mem::forget(payload);
-                }
+                panics.capture(revoke);
             }
         }
-
-        if let Some(payload) = first_panic {
-            std::panic::resume_unwind(payload);
-        }
+        panics.resume();
         revoked_count
     }
 
     fn acquire_inner(
         &self,
-        kind: OpenGpuiActivityKind,
+        kind: ActivityEntryKind,
         revoke: Option<RevocationCallback>,
     ) -> Result<OpenGpuiActivityLease, OpenGpuiActivityAcquireError> {
         let mut revoke = revoke;
@@ -355,6 +496,73 @@ impl fmt::Debug for OpenGpuiNodeActivityRegistry {
 pub struct OpenGpuiActivityLease {
     id: u64,
     state: Option<Rc<RefCell<ActivityState>>>,
+}
+
+/// Exact pointer-capture ownership registered to one retained node mount.
+#[must_use = "pointer capture must remain registered until it is released or the host retires it"]
+pub struct OpenGpuiPointerCaptureLease {
+    hitbox: HitboxId,
+    activity: Option<OpenGpuiActivityLease>,
+}
+
+impl OpenGpuiPointerCaptureLease {
+    #[must_use]
+    pub fn hitbox(&self) -> HitboxId {
+        self.hitbox
+    }
+
+    /// Transfers this still-owned capture to a replacement hitbox after native redraw.
+    ///
+    /// Open GPUI assigns a fresh hitbox identity during prepaint. Retained controls should call
+    /// this method before registering listeners for the replacement hitbox. The transfer fails
+    /// without changing either owner when the lease was revoked, its ledger entry no longer
+    /// matches, or another control has replaced the window capture.
+    #[must_use]
+    pub fn rebind(&mut self, hitbox: HitboxId, window: &mut Window) -> bool {
+        if window.captured_hitbox() != Some(self.hitbox) {
+            return false;
+        }
+        let Some(activity) = self.activity.as_ref() else {
+            return false;
+        };
+        let Some(state) = activity.state.as_ref() else {
+            return false;
+        };
+        let mut state = state.borrow_mut();
+        let Some(entry) = state.entries.get_mut(&activity.id) else {
+            return false;
+        };
+        if entry.kind.pointer_capture() != Some(self.hitbox) {
+            return false;
+        }
+
+        window.capture_pointer(hitbox);
+        entry.kind = ActivityEntryKind::PointerCapture(hitbox);
+        self.hitbox = hitbox;
+        true
+    }
+
+    /// Releases this pointer capture when it is still current, then unregisters host ownership.
+    pub fn release(mut self, window: &mut Window) -> bool {
+        let released = if window.captured_hitbox() == Some(self.hitbox) {
+            window.release_pointer();
+            true
+        } else {
+            false
+        };
+        drop(self.activity.take());
+        released
+    }
+}
+
+impl fmt::Debug for OpenGpuiPointerCaptureLease {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("OpenGpuiPointerCaptureLease")
+            .field("hitbox", &self.hitbox)
+            .field("active", &self.activity.is_some())
+            .finish()
+    }
 }
 
 impl OpenGpuiActivityLease {
@@ -469,7 +677,7 @@ mod tests {
         let revoked = Rc::new(RefCell::new(Vec::new()));
         let first_revoked = revoked.clone();
         let first = registry
-            .acquire_with_revocation(OpenGpuiActivityKind::PointerCapture, move || {
+            .acquire_with_revocation(OpenGpuiActivityKind::GraphInteraction, move || {
                 first_revoked.borrow_mut().push("capture");
             })
             .unwrap();
@@ -532,5 +740,17 @@ mod tests {
 
         assert_eq!(registry.active_count(), 2);
         assert_eq!(registry.protected_count(), 0);
+    }
+
+    #[test]
+    fn pointer_capture_requires_an_interaction_island_until_release() {
+        let registry = OpenGpuiNodeActivityRegistry::detached();
+        let capture = registry
+            .acquire_pointer_capture(HitboxId::placeholder())
+            .unwrap();
+
+        assert!(registry.requires_interaction_island());
+        drop(capture);
+        assert!(!registry.requires_interaction_island());
     }
 }

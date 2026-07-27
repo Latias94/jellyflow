@@ -1,5 +1,6 @@
 mod connect;
 mod edge_delete;
+mod lod;
 mod reconnect;
 mod search;
 mod setup_node;
@@ -23,14 +24,18 @@ pub(super) fn advance(
         | ProbePhase::Capture
         | ProbePhase::Fit
         | ProbePhase::FitWait
-        | ProbePhase::RestoreFit
-        | ProbePhase::RestoreFitWait
         | ProbePhase::PlanInput
         | ProbePhase::NodePress
         | ProbePhase::NodeMove
         | ProbePhase::NodeWaitActive
+        | ProbePhase::NodeAutoPanMove
+        | ProbePhase::NodeAutoPanWait
         | ProbePhase::NodeRelease
-        | ProbePhase::NodeWaitSettled => {
+        | ProbePhase::NodeWaitSettled
+        | ProbePhase::TabForward
+        | ProbePhase::TabForwardWait
+        | ProbePhase::TabBackward
+        | ProbePhase::TabBackwardWait => {
             probe.advance_setup_node(window, cx, surface, view, expectations, surface_size)
         }
         ProbePhase::PanPress
@@ -38,7 +43,11 @@ pub(super) fn advance(
         | ProbePhase::PanRelease
         | ProbePhase::PanWait
         | ProbePhase::Zoom
-        | ProbePhase::ZoomWait => probe.advance_viewport(window, cx, surface, view, surface_size),
+        | ProbePhase::ZoomWait
+        | ProbePhase::ZoomRestore
+        | ProbePhase::ZoomRestoreWait => {
+            probe.advance_viewport(window, cx, surface, view, surface_size)
+        }
         ProbePhase::FirstEdgePress
         | ProbePhase::FirstEdgeRelease
         | ProbePhase::FirstEdgeWaitSelected
@@ -48,11 +57,16 @@ pub(super) fn advance(
         | ProbePhase::SecondEdgeRelease
         | ProbePhase::SecondEdgeWaitSelected
         | ProbePhase::SecondEdgeDelete
-        | ProbePhase::SecondEdgeWaitDeleted => probe.advance_edge_delete(window, cx, surface, view),
+        | ProbePhase::SecondEdgeWaitDeleted => {
+            probe.advance_edge_delete(window, cx, surface, view, surface_size)
+        }
         ProbePhase::ConnectPress
-        | ProbePhase::ConnectMove
+        | ProbePhase::ConnectAutoPanMove
+        | ProbePhase::ConnectAutoPanWait
+        | ProbePhase::ConnectMaterializeTarget
         | ProbePhase::ConnectWaitCandidate
         | ProbePhase::ConnectRelease
+        | ProbePhase::ConnectVerifyReleaseFrame
         | ProbePhase::ConnectWaitCommitted => {
             probe.advance_connect(window, cx, surface, view, surface_size)
         }
@@ -60,9 +74,12 @@ pub(super) fn advance(
         | ProbePhase::ReconnectEdgeRelease
         | ProbePhase::ReconnectEdgeWaitSelected
         | ProbePhase::ReconnectPress
-        | ProbePhase::ReconnectMove
+        | ProbePhase::ReconnectAutoPanMove
+        | ProbePhase::ReconnectAutoPanWait
+        | ProbePhase::ReconnectMaterializeTarget
         | ProbePhase::ReconnectWaitCandidate
         | ProbePhase::ReconnectRelease
+        | ProbePhase::ReconnectVerifyReleaseFrame
         | ProbePhase::ReconnectWaitCommitted => {
             probe.advance_reconnect(window, cx, surface, view, surface_size)
         }
@@ -74,6 +91,9 @@ pub(super) fn advance(
         | ProbePhase::SearchEscape
         | ProbePhase::SearchWaitClosed => {
             probe.advance_search(window, cx, surface, view, surface_size)
+        }
+        ProbePhase::LodSet | ProbePhase::LodWait | ProbePhase::LodCapture => {
+            probe.advance_lod(window, cx, surface, view, expectations, surface_size)
         }
         ProbePhase::Complete => probe.complete(),
     }

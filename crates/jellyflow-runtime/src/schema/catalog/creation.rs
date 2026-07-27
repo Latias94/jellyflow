@@ -1,13 +1,14 @@
 use jellyflow_core::core::{Node, NodeId, Port, PortId, PortKey};
 
 use crate::runtime::commands::{GraphCommand, TopologyEdit, TopologyPort};
-use crate::runtime::graph_runtime::GraphRevision;
+use crate::runtime::graph_runtime::GraphVersion;
 
 /// Concrete graph records created from one semantic node-kind definition.
 ///
 /// A creation can be inspected or combined with other topology edits, but it does not expose
-/// raw graph operations or transactions. Publishing it through [`GraphRuntime`](crate::GraphRuntime)
-/// therefore always requires an expected graph revision.
+/// raw graph operations or transactions. Publishing it through
+/// [`GraphRuntime`](crate::graph::GraphRuntime) therefore always requires an exact graph version
+/// minted by a snapshot.
 ///
 /// ```compile_fail
 /// use jellyflow_core::CanvasPoint;
@@ -34,6 +35,15 @@ impl NodeCreation {
             node,
             ports,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_parts_for_test(
+        node_id: NodeId,
+        node: Node,
+        ports: Vec<(PortId, Port)>,
+    ) -> Self {
+        Self::new(node_id, node, ports)
     }
 
     pub fn node_id(&self) -> NodeId {
@@ -66,7 +76,7 @@ impl NodeCreation {
         TopologyEdit::new().add_node(self.node_id, self.node, ports)
     }
 
-    pub fn into_command(self, expected_revision: GraphRevision) -> GraphCommand {
-        GraphCommand::topology(expected_revision, self.into_topology_edit())
+    pub fn into_command(self, expected_version: GraphVersion) -> GraphCommand {
+        GraphCommand::topology(expected_version, self.into_topology_edit())
     }
 }

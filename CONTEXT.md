@@ -9,7 +9,7 @@ ownership boundary; plans and research are historical implementation evidence.
 ## Product Intent
 
 Jellyflow is a headless Rust node/flow graph engine extracted from Fret. It owns portable graph
-documents, revisioned commands, graph policies, persistence, and renderer-neutral protocol
+documents, version-checked commands, graph policies, persistence, and renderer-neutral protocol
 contracts.
 Framework adapters own native node component trees, input, focus, layout, and measurement.
 
@@ -24,7 +24,7 @@ with Open GPUI as the first native host and other frameworks supported through i
   descriptors, interaction-policy value types, and mutation footprints. It has no raw Serde graph
   representation or public operation journal.
 - `jellyflow-runtime` exposes an authoritative `GraphRuntime` plus independent `ViewSession`s.
-  The runtime owns revisioned graph commands, the private reversible mutation/history kernel,
+  The runtime owns opaque-version graph commands, the private reversible mutation/history kernel,
   persistence, and renderer-neutral graph facts; sessions own transform, selection, geometry,
   routing, culling, and frame/feedback state.
 - `jellyflow-open-gpui` is the first real native adapter. It may depend on Open GPUI and owns the
@@ -41,17 +41,19 @@ manifests or public boundaries.
 The active architecture keeps graph semantics in direct core/runtime dependencies and native UI in
 independent adapters. Its contracts live in public types, executable conformance, protocol tests,
 and migration tests. Real-window smoke belongs in the single flagship product through `--smoke`
-and `--workflow --smoke`; CI runs both at capture zooms `0.5`, `1`, and `2` and retains all
-interaction-state screenshots.
+and `--workflow --smoke`. CI runs six compact interaction processes across both products and zooms
+`0.5`, `1`, and `2`, two normal-bounds interaction processes at zoom `1`, and one directed Shader
+LOD-threshold process. The gate validates and retains 75 uniquely named state screenshots plus a
+sorted manifest.
 
 ## Runtime Interaction Strategy
 
 Adapters consume an owned render frame, render ordinary framework-native components, collect
-complete node and real-port geometry after layout, append revisioned commands and layouts to the
+complete node and real-port geometry after layout, append version-checked commands and layouts to the
 frame's ordered feedback log, then submit it once. They must not expose framework widgets through
 the headless crates or recreate a cross-framework UI DSL.
 
-- Use `GraphRuntime` for authoritative graph snapshots, revisioned commands, history, and fan-out.
+- Use `GraphRuntime` for authoritative graph snapshots, version-checked commands, history, and fan-out.
 - Attach one `ViewSession` per native canvas; transform, selection, geometry, routing, and frame
   admission remain view-local.
 - Use `GraphCommand::set_node_geometry` for atomic multi-node drag, resize, and layout commits.
@@ -61,7 +63,9 @@ the headless crates or recreate a cross-framework UI DSL.
   frame and measurement integration.
 - Use `runtime::geometry` for handle endpoints, edge paths, and numeric hit testing.
 - Use `GraphRuntimePolicy` for authoritative connection, deletion, and reconnection fallbacks.
-  Framework-local selection, focus, drag, gesture, and hit-target policy stays in each adapter.
+  Raw framework input, focus, pointer capture, gesture recognition, and hit-target mechanics stay in
+  each adapter. Normalized selection and drag decisions and their state transitions stay in the
+  runtime interaction session.
 
 ## Testing And Validation
 
@@ -71,11 +75,11 @@ workstream.
 Common gates:
 
 ```text
-cargo fmt --check
-cargo check --workspace
-cargo nextest run --workspace
+cargo fmt --all -- --check
+cargo check --workspace --locked
+cargo nextest run --workspace --locked --cargo-quiet
 cargo test --workspace --doc --locked
-cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --workspace --all-targets --locked -- -D warnings
 python3 tools/check_no_fret_dependencies.py
 python3 -m unittest discover -s tools/tests -p "test_*.py"
 python3 tools/check_external_consumer_smoke.py
@@ -85,8 +89,8 @@ git diff --check
 Adapter-facing gates:
 
 ```text
-cargo nextest run -p jellyflow-open-gpui
-cargo nextest run -p jellyflow-egui
+cargo nextest run -p jellyflow-open-gpui --locked
+cargo nextest run -p jellyflow-egui --locked
 cargo test --manifest-path examples/canvas-jellyflow/Cargo.toml --workspace --doc --locked
 cargo run --manifest-path examples/canvas-jellyflow/Cargo.toml \
   -p open-gpui-canvas-jellyflow --locked --features real-window-smoke -- --smoke

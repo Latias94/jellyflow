@@ -374,18 +374,11 @@ jobs:
           RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
         run: |
           set -euo pipefail
-          version="$RELEASE_VERSION"
           notes="$RUNNER_TEMP/release-notes.md"
 
-          awk -v version="$version" '
-            $0 ~ "^## \\[" version "\\]" { in_section = 1; next }
-            in_section && /^## \\[/ { exit }
-            in_section { print }
-          ' CHANGELOG.md > "$notes"
-
-          if [ ! -s "$notes" ]; then
-            echo "Jellyflow $version" > "$notes"
-          fi
+          python3 scripts/release-version.py release-notes \
+            --version "$RELEASE_VERSION" > "$notes"
+          test -s "$notes"
 
           echo "path=$notes" >> "$GITHUB_OUTPUT"
 

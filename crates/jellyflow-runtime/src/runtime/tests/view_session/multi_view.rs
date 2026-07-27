@@ -60,7 +60,7 @@ fn graph_commit_fans_out_one_shared_patch_while_view_facts_stay_isolated() {
 
     view_b
         .execute(GraphCommand::set_node_position(
-            0,
+            runtime.snapshot().unwrap().version(),
             ids[0],
             CanvasPoint { x: 32.0, y: 48.0 },
         ))

@@ -647,20 +647,6 @@ class ExternalConsumerScenarioTests(unittest.TestCase):
                     "fixture-consumer",
                 )
 
-            lock_path.write_text(
-                self._package_lock_text(packaged, set(expected), index_url)
-                + '\n[[package]]\nname = "jellyflow"\nversion = "0.4.0"\n',
-                encoding="utf-8",
-            )
-            with self.assertRaisesRegex(RuntimeError, "outside the release set"):
-                external_smoke.assert_package_lock_sources(
-                    lock_path,
-                    index_url,
-                    packaged,
-                    expected,
-                    "fixture-consumer",
-                )
-
     def test_package_lock_rejects_wrong_registry_source(self) -> None:
         self._assert_package_lock_mutation_rejected(
             "resolved from",

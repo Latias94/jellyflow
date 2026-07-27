@@ -1,4 +1,4 @@
-use jellyflow_runtime::GraphRevision;
+use jellyflow_runtime::graph::GraphRevision;
 
 /// The local editing phase of a revision-aware retained value.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -7,6 +7,7 @@ use crate::runtime::graph_runtime::{GraphRuntime, GraphRuntimeError};
 use crate::runtime::view_session::{
     ViewCloseReason, ViewCloseRequest, ViewSessionError, ViewSessionEvent,
 };
+use crate::runtime::viewport::ViewportTransform;
 
 use super::fixtures::{graph_with_nodes, publish_graph_layouts, view_options};
 
@@ -36,7 +37,7 @@ fn close_is_terminal_and_idempotent() {
         Err(ViewSessionError::Closed { .. })
     ));
     assert!(matches!(
-        view.set_viewport(Default::default(), 1.0),
+        view.set_viewport(ViewportTransform::new(Default::default(), 1.0).unwrap()),
         Err(ViewSessionError::Closed { .. })
     ));
     assert_eq!(runtime.live_view_count(), 0);
@@ -214,20 +215,22 @@ fn weak_session_executes_commands_only_while_its_view_capability_is_open() {
         .attach_view(view_options(ViewSessionSeed::new(graph_id)))
         .expect("view");
     let weak = view.downgrade();
+    let initial_version = weak.graph_snapshot().expect("initial snapshot").version();
 
     let outcome = weak
         .execute(GraphCommand::set_node_data(
-            0,
+            initial_version,
             ids[0],
             serde_json::json!({ "source": "weak view" }),
         ))
         .expect("open weak session executes commands");
-    assert_eq!(outcome.applied().expect("command applies").revision(), 1);
+    let committed_version = outcome.applied().expect("command applies").version();
+    assert_eq!(committed_version.revision(), 1);
 
     view.close().expect("close view");
     assert!(matches!(
         weak.execute(GraphCommand::set_node_data(
-            1,
+            committed_version,
             ids[0],
             serde_json::json!({ "source": "closed weak view" }),
         )),
@@ -256,10 +259,11 @@ fn close_drains_final_command_once_and_preserves_its_receipt() {
         }
     })
     .unwrap();
+    let initial_version = view.graph_snapshot().expect("initial snapshot").version();
     let outcome = view
         .close_with_request(
             ViewCloseRequest::new().with_command(GraphCommand::set_node_data(
-                0,
+                initial_version,
                 ids[0],
                 serde_json::json!({ "saved": true }),
             )),
@@ -302,23 +306,24 @@ fn close_drains_final_command_once_and_preserves_its_receipt() {
 }
 
 #[test]
-fn close_executes_final_commands_in_order_and_preserves_each_receipt() {
+fn close_applies_at_most_one_command_planned_from_the_same_current_version() {
     let (graph, ids) = graph_with_nodes(1);
     let runtime = GraphRuntime::builder(Default::default())
         .build(graph)
         .expect("runtime");
     let view = runtime.attach_view(Default::default()).expect("view");
+    let current_version = view.graph_snapshot().expect("initial snapshot").version();
 
     let outcome = view
         .close_with_request(
             ViewCloseRequest::new()
                 .with_command(GraphCommand::set_node_data(
-                    0,
+                    current_version,
                     ids[0],
                     serde_json::json!({ "step": 1 }),
                 ))
                 .with_command(GraphCommand::set_node_data(
-                    1,
+                    current_version,
                     ids[0],
                     serde_json::json!({ "step": 2 }),
                 )),
@@ -326,23 +331,28 @@ fn close_executes_final_commands_in_order_and_preserves_each_receipt() {
         .expect("close with ordered final commands");
 
     assert_eq!(outcome.receipts().len(), 2);
-    for (receipt, expected_revision) in outcome.receipts().iter().zip([1, 2]) {
-        assert_eq!(
-            receipt
-                .command_outcome()
-                .and_then(|outcome| outcome.applied())
-                .expect("final command applies")
-                .revision(),
-            expected_revision
-        );
-    }
+    assert_eq!(
+        outcome.receipts()[0]
+            .command_outcome()
+            .and_then(|outcome| outcome.applied())
+            .expect("first current command applies")
+            .revision(),
+        1
+    );
+    assert!(
+        outcome.receipts()[1]
+            .command_outcome()
+            .expect("second command has an outcome")
+            .conflict()
+            .is_some()
+    );
     let snapshot = runtime.snapshot().expect("final runtime snapshot");
-    assert_eq!(snapshot.revision(), 2);
+    assert_eq!(snapshot.revision(), 1);
     assert_eq!(
         snapshot.graph().node(&ids[0]).expect("node remains").data,
-        serde_json::json!({ "step": 2 })
+        serde_json::json!({ "step": 1 })
     );
-    assert_eq!(runtime.history_state().unwrap().undo_len(), 2);
+    assert_eq!(runtime.history_state().unwrap().undo_len(), 1);
 }
 
 #[test]
@@ -352,17 +362,28 @@ fn close_records_conflict_and_continues_final_command_log() {
         .build(graph)
         .expect("runtime");
     let view = runtime.attach_view(Default::default()).expect("view");
+    let stale_version = view.graph_snapshot().expect("initial snapshot").version();
+    let current_version = runtime
+        .execute(GraphCommand::set_node_data(
+            stale_version,
+            ids[0],
+            serde_json::json!({ "seed": true }),
+        ))
+        .expect("seed command")
+        .applied()
+        .expect("seed applies")
+        .version();
 
     let outcome = view
         .close_with_request(
             ViewCloseRequest::new()
                 .with_command(GraphCommand::set_node_data(
-                    1,
+                    stale_version,
                     ids[0],
                     serde_json::json!({ "stale": true }),
                 ))
                 .with_command(GraphCommand::set_node_data(
-                    0,
+                    current_version,
                     ids[0],
                     serde_json::json!({ "saved": true }),
                 )),
@@ -384,7 +405,7 @@ fn close_records_conflict_and_continues_final_command_log() {
             .and_then(|outcome| outcome.applied())
             .expect("later valid command applies")
             .revision(),
-        1
+        2
     );
     assert_eq!(
         runtime
@@ -397,6 +418,49 @@ fn close_records_conflict_and_continues_final_command_log() {
         serde_json::json!({ "saved": true })
     );
     assert_eq!(view.close_reason(), Some(ViewCloseReason::HostClosed));
+}
+
+#[test]
+fn close_records_a_foreign_command_failure_without_mutating_the_graph() {
+    let (graph, ids) = graph_with_nodes(1);
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .expect("runtime");
+    let view = runtime.attach_view(Default::default()).expect("view");
+    let (foreign_graph, _) = graph_with_nodes(1);
+    let foreign_runtime = GraphRuntime::builder(Default::default())
+        .build(foreign_graph)
+        .expect("foreign runtime");
+    let foreign_version = foreign_runtime
+        .snapshot()
+        .expect("foreign snapshot")
+        .version();
+
+    let outcome = view
+        .close_with_request(
+            ViewCloseRequest::new().with_command(GraphCommand::set_node_data(
+                foreign_version,
+                ids[0],
+                serde_json::json!({ "must_not_apply": true }),
+            )),
+        )
+        .expect("foreign command is recorded while closing");
+
+    assert!(matches!(
+        outcome.receipts(),
+        [
+            crate::runtime::view_session::ViewCloseReceipt::CommandFailed {
+                error: GraphRuntimeError::ForeignCommandRuntime { .. }
+            }
+        ]
+    ));
+    let snapshot = runtime.snapshot().expect("unchanged runtime snapshot");
+    assert_eq!(snapshot.revision(), 0);
+    assert_eq!(
+        snapshot.graph().node(&ids[0]).expect("node remains").data,
+        serde_json::Value::Null
+    );
+    assert_eq!(runtime.history_state().unwrap().undo_len(), 0);
 }
 
 #[test]
@@ -415,11 +479,16 @@ fn reentrant_close_with_command_is_rejected_and_leaves_view_open() {
     let close_was_rejected = Rc::new(Cell::new(false));
     let callback_view = view.clone();
     let callback_close_was_rejected = close_was_rejected.clone();
+    let initial_version = runtime.snapshot().expect("initial snapshot").version();
     runtime
         .subscribe(move |_| {
             callback_close_was_rejected.set(matches!(
                 callback_view.close_with_request(ViewCloseRequest::new().with_command(
-                    GraphCommand::set_node_data(1, node, serde_json::json!({ "value": 2 }),),
+                    GraphCommand::set_node_data(
+                        initial_version,
+                        node,
+                        serde_json::json!({ "value": 2 }),
+                    ),
                 )),
                 Err(ViewSessionError::Runtime(
                     GraphRuntimeError::ReentrantMutation
@@ -430,7 +499,7 @@ fn reentrant_close_with_command_is_rejected_and_leaves_view_open() {
 
     runtime
         .execute(GraphCommand::set_node_data(
-            0,
+            initial_version,
             node,
             serde_json::json!({ "value": 1 }),
         ))
@@ -470,10 +539,11 @@ fn close_reentered_from_patch_callback_preserves_the_terminal_event() {
         | ViewSessionEvent::SelectionChanged { .. } => {}
     })
     .expect("view subscription");
+    let initial_version = runtime.snapshot().expect("initial snapshot").version();
 
     runtime
         .execute(GraphCommand::set_node_data(
-            0,
+            initial_version,
             ids[0],
             serde_json::json!({ "value": 1 }),
         ))
@@ -491,33 +561,34 @@ fn node_incarnation_advances_across_hard_retirement_and_document_replacement() {
     let runtime = GraphRuntime::builder(Default::default())
         .build(graph.clone())
         .expect("runtime");
-    let initial = runtime.node_incarnation(ids[0]).unwrap().unwrap();
+    let initial = runtime.node_lifetime_key(ids[0]).unwrap().unwrap();
+    let initial_version = runtime.snapshot().expect("initial snapshot").version();
 
     runtime
         .execute(GraphCommand::topology(
-            0,
+            initial_version,
             TopologyEdit::new().remove_node(ids[0], IncidentEdgePolicy::Reject),
         ))
         .expect("remove command")
         .applied()
         .expect("remove applies");
-    assert!(runtime.node_incarnation(ids[0]).unwrap().is_none());
+    assert!(runtime.node_lifetime_key(ids[0]).unwrap().is_none());
 
-    let revision = runtime.snapshot().unwrap().revision();
+    let removed_version = runtime.snapshot().unwrap().version();
     runtime
-        .execute(GraphCommand::undo(revision))
+        .execute(GraphCommand::undo(removed_version))
         .expect("undo command")
         .applied()
         .expect("undo applies");
-    let restored = runtime.node_incarnation(ids[0]).unwrap().unwrap();
-    assert!(restored > initial);
+    let restored = runtime.node_lifetime_key(ids[0]).unwrap().unwrap();
+    assert_ne!(restored, initial);
 
     let document = runtime.catalog().canonicalize_graph(&graph).unwrap();
     runtime
         .replace_document(document)
         .expect("replace document");
-    let replaced = runtime.node_incarnation(ids[0]).unwrap().unwrap();
-    assert!(replaced > restored);
+    let replaced = runtime.node_lifetime_key(ids[0]).unwrap().unwrap();
+    assert_ne!(replaced, restored);
     assert_eq!(runtime.history_state().unwrap().undo_len(), 0);
     assert_eq!(runtime.history_state().unwrap().redo_len(), 0);
 }

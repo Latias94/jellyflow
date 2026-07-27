@@ -8,25 +8,23 @@ use jellyflow_core::{
 use jellyflow_open_gpui::authoring::{
     OpenGpuiNodeAuthoring, OpenGpuiNodeBinding, OpenGpuiPortHandle,
 };
-use jellyflow_open_gpui::{
-    OpenGpuiCommandTicketResult, OpenGpuiContentHeightPolicy, OpenGpuiNodeRegistrationPolicy,
-    OpenGpuiNodeRegistryBuilder, OpenGpuiNodeSizePolicy,
-};
+use jellyflow_open_gpui::registry::{OpenGpuiNodeRegistrationPolicy, OpenGpuiNodeRegistryBuilder};
+use jellyflow_open_gpui::size_policy::{OpenGpuiContentHeightPolicy, OpenGpuiNodeSizePolicy};
+use jellyflow_runtime::commands::{GraphCommand, IncidentEdgePolicy, TopologyEdit, TopologyPort};
+use jellyflow_runtime::graph::{GraphRevision, GraphSnapshot, GraphVersion};
 use jellyflow_runtime::schema::{NodeKindSpec, NodePortSpec};
-use jellyflow_runtime::{
-    GraphCommand, GraphRevision, GraphSnapshot, IncidentEdgePolicy, NodeInstanceKey, TopologyEdit,
-    TopologyPort,
-};
+use jellyflow_runtime::view::NodeInstanceKey;
 use open_gpui::{
     AppContext, Context, Entity, InteractiveElement, ParentElement, Render,
-    StatefulInteractiveElement, Styled, Window, div, px, rgb,
+    StatefulInteractiveElement, Styled, Window, div, px,
 };
 use open_gpui_ui_components::{Button, ButtonVariant};
 
 use super::{ShaderNodeError, ShaderPort, port_element};
 use crate::nodes::topology_attempt::{
-    TopologyAttempt, TopologyAttemptPhase, TopologyDispatchRequest,
+    TopologyAttempt, TopologyAttemptPhase, TopologyDispatchRequest, TopologyTransitionEffect,
 };
+use crate::product_theme::NativeProductTheme;
 
 pub const BLUEPRINT_CALL_KIND: &str = "blueprint.call";
 pub const BLUEPRINT_CALL_RENDERER: &str = "jellyflow.open-gpui.blueprint.call";
@@ -118,6 +116,7 @@ pub struct BlueprintCallNode {
     binding: Entity<OpenGpuiNodeBinding>,
     node_id: NodeId,
     topology: TopologyAttempt<BlueprintPinIntent>,
+    product_theme: NativeProductTheme,
     diagnostic: Option<String>,
 }
 
@@ -134,11 +133,16 @@ struct BlueprintRenderData {
 
 impl BlueprintCallNode {
     #[must_use]
-    pub fn new(binding: Entity<OpenGpuiNodeBinding>, instance: NodeInstanceKey) -> Self {
+    pub fn new(
+        binding: Entity<OpenGpuiNodeBinding>,
+        instance: NodeInstanceKey,
+        product_theme: NativeProductTheme,
+    ) -> Self {
         Self {
             binding,
             node_id: instance.node(),
             topology: TopologyAttempt::new(instance),
+            product_theme,
             diagnostic: None,
         }
     }
@@ -233,20 +237,23 @@ impl BlueprintCallNode {
             &ports,
             &request.intent().action,
         ) {
-            self.topology
-                .observe(authoring.instance(), authoring.revision(), |intent| {
+            let effect = self.topology.observe(
+                authoring.instance(),
+                authoring.version().revision(),
+                |intent| {
                     blueprint_action_satisfied(
                         self.node_id,
                         authoring.node(),
                         &ports,
                         &intent.action,
                     )
-                });
-            self.diagnostic = None;
+                },
+            );
+            self.apply_topology_effect(effect, cx);
             return;
         }
         let command = build_blueprint_pin_command(
-            authoring.revision(),
+            authoring.version(),
             self.node_id,
             authoring.node(),
             &ports,
@@ -264,48 +271,36 @@ impl BlueprintCallNode {
         let dispatch = self
             .topology
             .dispatch(authoring, command, request, &activity, cx);
-        let dispatch = match dispatch {
-            Ok(dispatch) => dispatch,
+        match dispatch {
+            Ok(()) => {}
             Err(error) => {
                 self.diagnostic = Some(error.to_string());
                 return;
             }
-        };
-        let attempt = dispatch.attempt();
-        let ticket = dispatch.into_ticket();
-        let task = cx.spawn(async move |node, cx| {
-            let result = ticket.await;
-            let _ = node.update(cx, |node, cx| node.finish_command(attempt, result, cx));
-        });
-        self.topology.own_task(attempt, task);
+        }
         self.diagnostic = None;
     }
 
-    fn finish_command(
-        &mut self,
-        attempt: u64,
-        result: OpenGpuiCommandTicketResult,
-        cx: &mut Context<Self>,
-    ) {
-        if self.topology.finish(attempt, result)
+    fn reconcile_command(&mut self, data: &BlueprintRenderData, cx: &mut Context<Self>) {
+        let effect = self
+            .topology
+            .observe(&data.instance, data.revision, |intent| {
+                blueprint_action_satisfied(self.node_id, &data.node, &data.ports, &intent.action)
+            });
+        self.apply_topology_effect(effect, cx);
+    }
+
+    fn apply_topology_effect(&mut self, effect: TopologyTransitionEffect, cx: &mut Context<Self>) {
+        if effect.topology_became_visible()
             && let Err(error) = self
                 .binding
                 .update(cx, |binding, cx| binding.invalidate_layout(cx))
         {
             self.diagnostic = Some(format!(
-                "blueprint content changed but native layout invalidation failed: {error}"
+                "blueprint topology became visible but native layout invalidation failed: {error}"
             ));
-        } else {
-            self.diagnostic = self.topology.diagnostic().map(str::to_owned);
+            return;
         }
-        cx.notify();
-    }
-
-    fn reconcile_command(&mut self, data: &BlueprintRenderData) {
-        self.topology
-            .observe(&data.instance, data.revision, |intent| {
-                blueprint_action_satisfied(self.node_id, &data.node, &data.ports, &intent.action)
-            });
         self.diagnostic = self.topology.diagnostic().map(str::to_owned);
     }
 }
@@ -316,13 +311,14 @@ impl Render for BlueprintCallNode {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl open_gpui::IntoElement {
+        let theme = self.product_theme;
         let node_id = self.node_id;
         let drag_handle = self.binding.read(cx).drag_handle();
         let authoring = self.binding.read(cx).authoring();
         let (binding_valid, mut data) = match authoring {
             Ok(authoring) => match read_blueprint_authoring(&authoring) {
                 Ok(data) => {
-                    self.reconcile_command(&data);
+                    self.reconcile_command(&data, cx);
                     (true, data)
                 }
                 Err(error) => {
@@ -346,14 +342,14 @@ impl Render for BlueprintCallNode {
         let mut input_ports = data.static_inputs.drain(..);
         let mut output_ports = data.outputs.drain(..);
         let static_row_count = input_ports.len().max(output_ports.len());
-        let mut static_rows = div().flex().flex_col().gap(px(4.0));
+        let mut static_rows = div().flex().flex_col().gap(px(theme.spacing.xs));
         for _ in 0..static_row_count {
             let input = input_ports
                 .next()
-                .map(|port| port_element(port, blueprint_port_selector));
+                .map(|port| port_element(port, blueprint_port_selector, theme));
             let output = output_ports
                 .next()
-                .map(|port| port_element(port, blueprint_port_selector));
+                .map(|port| port_element(port, blueprint_port_selector, theme));
             let mut row = div()
                 .relative()
                 .h(px(BLUEPRINT_STATIC_PORT_ROW_HEIGHT))
@@ -361,9 +357,11 @@ impl Render for BlueprintCallNode {
                 .flex()
                 .items_center()
                 .justify_between()
-                .rounded(px(4.0))
-                .bg(rgb(0x1d2d39));
+                .rounded(px(theme.radius.control))
+                .bg(theme.surface.inset);
             if let Some(input) = input {
+                let input_label_selector =
+                    blueprint_port_label_selector(node_id, input.key.0.as_str());
                 row = row.child(
                     div()
                         .flex()
@@ -378,15 +376,27 @@ impl Render for BlueprintCallNode {
                                     / 2.0))
                                 .child(input.marker),
                         )
-                        .child(div().text_xs().child(input.label)),
+                        .child(
+                            div()
+                                .debug_selector(move || input_label_selector.clone())
+                                .text_xs()
+                                .child(input.label),
+                        ),
                 );
             }
             if let Some(output) = output {
+                let output_label_selector =
+                    blueprint_port_label_selector(node_id, output.key.0.as_str());
                 row = row.child(
                     div()
                         .flex()
                         .items_center()
-                        .child(div().text_xs().child(output.label))
+                        .child(
+                            div()
+                                .debug_selector(move || output_label_selector.clone())
+                                .text_xs()
+                                .child(output.label),
+                        )
                         .child(
                             div()
                                 .absolute()
@@ -418,7 +428,7 @@ impl Render for BlueprintCallNode {
                 }),
             );
 
-        let mut rows = div().flex().flex_col().gap(px(7.0));
+        let mut rows = div().flex().flex_col().gap(px(theme.spacing.sm));
         let pin_count = data.pins.len();
         for (index, (pin, handle)) in data.pins.drain(..).enumerate() {
             let port_id = pin.port_id();
@@ -427,14 +437,17 @@ impl Render for BlueprintCallNode {
                     id: port_id,
                     key: dynamic_blueprint_key(pin.id()),
                     direction: PortDirection::In,
+                    kind: PortKind::Data,
                     label: pin.name().to_owned().into(),
                     handle,
                 },
                 blueprint_port_selector,
+                theme,
             )
             .marker;
             let row_selector = blueprint_pin_row_selector(node_id, port_id);
-            let mut actions = div().flex().gap(px(4.0));
+            let label_selector = blueprint_pin_label_selector(node_id, port_id);
+            let mut actions = div().flex_none().flex().gap(px(4.0));
             if index > 0 {
                 let move_node = cx.weak_entity();
                 let pin_id = pin.id().to_owned();
@@ -511,13 +524,16 @@ impl Render for BlueprintCallNode {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .rounded(px(4.0))
-                    .bg(rgb(0x203341))
+                    .gap(px(theme.spacing.md))
+                    .rounded(px(theme.radius.control))
+                    .bg(theme.control.surface)
                     .child(
                         div()
+                            .min_w(px(0.0))
+                            .flex_1()
                             .flex()
                             .items_center()
-                            .gap(px(7.0))
+                            .gap(px(theme.spacing.sm))
                             .child(
                                 div()
                                     .absolute()
@@ -528,11 +544,20 @@ impl Render for BlueprintCallNode {
                                     ))
                                     .child(marker),
                             )
-                            .child(div().text_sm().child(pin.name().to_owned()))
                             .child(
                                 div()
+                                    .debug_selector(move || label_selector.clone())
+                                    .min_w(px(0.0))
+                                    .flex_1()
+                                    .truncate()
+                                    .text_sm()
+                                    .child(pin.name().to_owned()),
+                            )
+                            .child(
+                                div()
+                                    .flex_none()
                                     .text_xs()
-                                    .text_color(rgb(0x8fa7b8))
+                                    .text_color(theme.text.muted)
                                     .child(type_label(pin.ty())),
                             ),
                     )
@@ -554,12 +579,20 @@ impl Render for BlueprintCallNode {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .rounded(px(4.0))
+                    .gap(px(theme.spacing.md))
+                    .rounded(px(theme.radius.control))
                     .border_1()
-                    .border_color(rgb(0x476b87))
-                    .text_color(rgb(0xa8bed0))
-                    .child(div().text_sm().child(pending_action_label(&intent.action)))
-                    .child(div().text_xs().child("Pending")),
+                    .border_color(theme.status.info.border)
+                    .text_color(theme.status.info.text)
+                    .child(
+                        div()
+                            .min_w(px(0.0))
+                            .flex_1()
+                            .truncate()
+                            .text_sm()
+                            .child(pending_action_label(&intent.action)),
+                    )
+                    .child(div().flex_none().text_xs().child("Pending")),
             );
         }
 
@@ -593,14 +626,16 @@ impl Render for BlueprintCallNode {
                 .debug_selector(|| BLUEPRINT_COMMAND_DIAGNOSTIC_SELECTOR.to_owned())
                 .px(px(8.0))
                 .py(px(5.0))
-                .rounded(px(4.0))
-                .bg(rgb(0x3a2026))
+                .rounded(px(theme.radius.control))
+                .bg(theme.status.danger.surface)
                 .text_xs()
-                .text_color(rgb(0xffa5ad))
+                .text_color(theme.status.danger.text)
                 .child(message)
         });
         let pin_scroll_selector = blueprint_pin_scroll_selector(node_id);
+        let body_selector = blueprint_body_selector(node_id);
         let controls = div()
+            .debug_selector(move || body_selector.clone())
             .px(px(BLUEPRINT_BODY_HORIZONTAL_PADDING))
             .py(px(12.0))
             .flex()
@@ -619,15 +654,17 @@ impl Render for BlueprintCallNode {
             .children(retry)
             .children(diagnostic);
 
+        let header_title_selector = blueprint_header_title_selector(node_id);
+        let header_metadata_selector = blueprint_header_metadata_selector(node_id);
         let content = div()
             .debug_selector(|| BLUEPRINT_NODE_SELECTOR.to_owned())
             .relative()
             .w_full()
-            .rounded(px(5.0))
+            .rounded(px(theme.radius.node))
             .border_1()
-            .border_color(rgb(0x476b87))
-            .bg(rgb(0x182633))
-            .text_color(rgb(0xe8f1f7))
+            .border_color(theme.node.alternate_border)
+            .bg(theme.node.alternate_surface)
+            .text_color(theme.text.primary)
             .child(
                 drag_handle.wrap(
                     div()
@@ -636,10 +673,26 @@ impl Render for BlueprintCallNode {
                         .flex()
                         .items_center()
                         .justify_between()
+                        .gap(px(8.0))
                         .border_b_1()
-                        .border_color(rgb(0x35536b))
-                        .child(data.title)
-                        .child(div().text_xs().text_color(rgb(0x7ed2bd)).child("BLUEPRINT")),
+                        .border_color(theme.header.border)
+                        .bg(theme.header.alternate_surface)
+                        .child(
+                            div()
+                                .debug_selector(move || header_title_selector.clone())
+                                .min_w(px(0.0))
+                                .flex_1()
+                                .truncate()
+                                .child(data.title),
+                        )
+                        .child(
+                            div()
+                                .debug_selector(move || header_metadata_selector.clone())
+                                .flex_none()
+                                .text_xs()
+                                .text_color(theme.status.success.text)
+                                .child("BLUEPRINT"),
+                        ),
                 ),
             )
             .child(controls);
@@ -687,22 +740,29 @@ pub(super) fn catalog_spec() -> NodeKindSpec {
     .build()
 }
 
-pub(super) fn register(registry: &mut OpenGpuiNodeRegistryBuilder) {
+pub(super) fn register(
+    registry: &mut OpenGpuiNodeRegistryBuilder,
+    product_theme: NativeProductTheme,
+) {
     let policy = OpenGpuiNodeRegistrationPolicy::default().with_size_policy(
         OpenGpuiNodeSizePolicy::ContentHeight(
             OpenGpuiContentHeightPolicy::new(BLUEPRINT_MIN_HEIGHT, BLUEPRINT_MAX_HEIGHT)
                 .expect("blueprint content-height bounds must be valid"),
         ),
     );
-    registry.register_with_policy(BLUEPRINT_CALL_RENDERER, policy, |binding, _window, cx| {
-        let instance = binding
-            .read(cx)
-            .authoring()
-            .expect("a Blueprint node factory must receive a live authoring binding")
-            .instance()
-            .clone();
-        cx.new(|_| BlueprintCallNode::new(binding, instance))
-    });
+    registry.register_with_policy(
+        BLUEPRINT_CALL_RENDERER,
+        policy,
+        move |binding, _window, cx| {
+            let instance = binding
+                .read(cx)
+                .authoring()
+                .expect("a Blueprint node factory must receive a live authoring binding")
+                .instance()
+                .clone();
+            cx.new(|_| BlueprintCallNode::new(binding, instance, product_theme))
+        },
+    );
 }
 
 #[must_use]
@@ -711,8 +771,36 @@ pub fn blueprint_port_selector(port: PortId) -> String {
 }
 
 #[must_use]
+pub fn blueprint_header_title_selector(node: NodeId) -> String {
+    format!("jellyflow-native-blueprint-header-title-{}", node.0)
+}
+
+#[must_use]
+pub fn blueprint_header_metadata_selector(node: NodeId) -> String {
+    format!("jellyflow-native-blueprint-header-metadata-{}", node.0)
+}
+
+#[must_use]
+pub fn blueprint_body_selector(node: NodeId) -> String {
+    format!("jellyflow-native-blueprint-body-{}", node.0)
+}
+
+#[must_use]
+pub fn blueprint_port_label_selector(node: NodeId, port_key: &str) -> String {
+    format!(
+        "jellyflow-native-blueprint-port-label-{}-{port_key}",
+        node.0
+    )
+}
+
+#[must_use]
 pub fn blueprint_pin_row_selector(node: NodeId, port: PortId) -> String {
     format!("jellyflow-native-blueprint-pin-row-{node:?}-{port:?}")
+}
+
+#[must_use]
+pub fn blueprint_pin_label_selector(node: NodeId, port: PortId) -> String {
+    format!("jellyflow-native-blueprint-pin-label-{node:?}-{port:?}")
 }
 
 #[must_use]
@@ -764,7 +852,7 @@ pub fn plan_blueprint_pin_action(
         .ok_or(ShaderNodeError::MissingNode { node: node_id })?;
     let ports = collect_snapshot_ports(snapshot, node_id, node)?;
     build_blueprint_pin_command(
-        snapshot.revision(),
+        snapshot.version(),
         node_id,
         node,
         &ports,
@@ -833,6 +921,7 @@ fn read_blueprint_authoring(
                 id: port.id(),
                 key: port.facts().key.clone(),
                 direction: port.facts().dir,
+                kind: port.facts().kind,
                 label: blueprint_port_label(port.facts()).into(),
                 handle,
             })
@@ -849,7 +938,7 @@ fn read_blueprint_authoring(
         .to_owned();
     Ok(BlueprintRenderData {
         instance: authoring.instance().clone(),
-        revision: authoring.revision(),
+        revision: authoring.version().revision(),
         title,
         static_inputs,
         outputs,
@@ -916,7 +1005,7 @@ fn blueprint_action_satisfied_from_pins(
 }
 
 fn build_blueprint_pin_command(
-    revision: GraphRevision,
+    version: GraphVersion,
     node_id: NodeId,
     node: &Node,
     ports: &BTreeMap<PortId, Port>,
@@ -978,7 +1067,7 @@ fn build_blueprint_pin_command(
         )
         .map(|(id, port)| TopologyPort::new(id, port));
     Ok(GraphCommand::topology(
-        revision,
+        version,
         TopologyEdit::new()
             .set_node_data(node_id, data)
             .replace_node_ports(node_id, ordered, incident_edges),
@@ -1315,7 +1404,8 @@ fn type_label(ty: &TypeDesc) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use jellyflow_runtime::{GraphCommandOutcome, GraphRuntime};
+    use jellyflow_runtime::commands::GraphCommandOutcome;
+    use jellyflow_runtime::graph::GraphRuntime;
 
     use super::*;
 
@@ -1388,6 +1478,47 @@ mod tests {
     }
 
     #[test]
+    fn satisfied_action_requires_complete_ordered_authoritative_ports() {
+        let runtime = blueprint_runtime();
+        let pin = test_pin("roughness", test_dynamic_port_id());
+        apply(
+            &runtime,
+            BlueprintPinAction::Add(pin.clone()),
+            IncidentEdgePolicy::Reject,
+        );
+        let snapshot = runtime.snapshot().unwrap();
+        let node_id = test_node_id();
+        let node = snapshot.graph().node(&node_id).unwrap().clone();
+        let ports = collect_snapshot_ports(&snapshot, node_id, &node).unwrap();
+        let action = BlueprintPinAction::Add(pin.clone());
+        assert!(blueprint_action_satisfied(node_id, &node, &ports, &action));
+
+        let mut missing = ports.clone();
+        missing.remove(&pin.port_id());
+        assert!(!blueprint_action_satisfied(
+            node_id, &node, &missing, &action
+        ));
+
+        let mut wrong_owner = ports.clone();
+        wrong_owner.get_mut(&pin.port_id()).unwrap().node = NodeId::from_u128(0xdead);
+        assert!(!blueprint_action_satisfied(
+            node_id,
+            &node,
+            &wrong_owner,
+            &action
+        ));
+
+        let mut wrong_order = node.clone();
+        wrong_order.ports.swap(0, 3);
+        assert!(!blueprint_action_satisfied(
+            node_id,
+            &wrong_order,
+            &ports,
+            &action
+        ));
+    }
+
+    #[test]
     fn topology_edit_undo_and_redo_restore_data_and_ports_together() {
         let runtime = blueprint_runtime();
         let pin = test_pin("roughness", test_dynamic_port_id());
@@ -1408,7 +1539,7 @@ mod tests {
 
         assert!(matches!(
             runtime
-                .execute(GraphCommand::undo(added.revision()))
+                .execute(GraphCommand::undo(added.version()))
                 .unwrap(),
             GraphCommandOutcome::Applied(_)
         ));
@@ -1418,7 +1549,7 @@ mod tests {
 
         assert!(matches!(
             runtime
-                .execute(GraphCommand::redo(undone.revision()))
+                .execute(GraphCommand::redo(undone.version()))
                 .unwrap(),
             GraphCommandOutcome::Applied(_)
         ));

@@ -15,20 +15,28 @@ pub(super) fn sort_render_order<T, Id: Copy + Ord>(
     id: impl Fn(&T) -> Id,
     is_selected: impl Fn(&T) -> bool,
     explicit_ranks: &BTreeMap<Id, usize>,
+    recent_interaction: Option<Id>,
 ) {
     admitted.sort_unstable_by_key(|candidate| {
         let id = id(candidate);
-        render_order_key(id, is_selected(candidate), explicit_ranks)
+        render_order_key(
+            id,
+            is_selected(candidate),
+            recent_interaction == Some(id),
+            explicit_ranks,
+        )
     });
 }
 
 pub(super) fn render_order_key<Id: Copy + Ord>(
     id: Id,
     is_selected: bool,
+    is_recent_interaction: bool,
     explicit_ranks: &BTreeMap<Id, usize>,
-) -> (bool, bool, usize, Id) {
+) -> (bool, bool, bool, usize, Id) {
+    let elevated = is_selected && is_recent_interaction;
     match explicit_ranks.get(&id) {
-        Some(rank) => (is_selected, false, *rank, id),
-        None => (is_selected, true, 0, id),
+        Some(rank) => (is_selected, elevated, false, *rank, id),
+        None => (is_selected, elevated, true, 0, id),
     }
 }

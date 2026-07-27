@@ -1,16 +1,18 @@
 use std::rc::Rc;
 
-use jellyflow_core::{CanvasPoint, CanvasRect};
-use jellyflow_runtime::CanvasInteractionPhase;
-use jellyflow_runtime::runtime::viewport::{
-    ViewportPanRequest, ViewportZoomRequest, pan_viewport, zoom_viewport,
+use jellyflow_core::{CanvasPoint, CanvasRect, CanvasSize};
+use jellyflow_runtime::interaction::CanvasInteractionPhase;
+use jellyflow_runtime::viewport::{
+    ViewportPanRequest, ViewportTransform, ViewportZoomRequest, pan_viewport, zoom_viewport,
 };
 use jellyflow_runtime::{
-    CanvasInteractionError, CanvasInteractionUpdate, CanvasPressFallback, CanvasPressTarget,
-    InteractionOwner, NodeDragStart, NodeInstanceKey, SelectionBaseline, SelectionMode, ViewDelta,
+    geometry::ViewDelta, interaction::CanvasInteractionError, interaction::CanvasInteractionUpdate,
+    interaction::CanvasPressFallback, interaction::CanvasPressTarget,
+    interaction::InteractionOwner, interaction::NodeDragStart, interaction::SelectionMode,
+    view::GeometrySnapshot, view::NodeInstanceKey, viewport::ViewportPointerSample,
 };
 use open_gpui::{
-    Context, Modifiers, MouseMoveEvent, PinchEvent, Pixels, ScrollWheelEvent, Window, px,
+    Context, MouseDownEvent, MouseMoveEvent, PinchEvent, Pixels, ScrollWheelEvent, Window, px,
 };
 
 use crate::interaction::{
@@ -18,21 +20,162 @@ use crate::interaction::{
     OpenGpuiSceneGestureListener, OpenGpuiSceneGesturePhase,
 };
 
-use super::OpenGpuiSceneHost;
+use super::{
+    OpenGpuiBlankCanvasContextRequest, OpenGpuiSceneHost, PendingBlankCanvasContext,
+    node_lifecycle::MountedNode,
+};
 
 const SCENE_WHEEL_LINE_HEIGHT: f32 = 16.0;
 
+fn mounted_node_interaction_bounds(
+    instance: &NodeInstanceKey,
+    mounted: &MountedNode,
+    geometry: Option<&GeometrySnapshot>,
+    transform: ViewportTransform,
+) -> CanvasRect {
+    if let Some(bounds) = geometry
+        .and_then(|geometry| geometry.node(instance.node()))
+        .filter(|geometry| {
+            geometry.is_fresh()
+                && geometry.lifetime() == instance.lifetime()
+                && geometry.renderer() == instance.renderer()
+        })
+        .map(|geometry| geometry.bounds())
+    {
+        return bounds;
+    }
+
+    let screen_size = mounted.semantic_zoom.screen_size(
+        transform.zoom,
+        mounted.graph_presentation(),
+        mounted.registration_policy.scale_policy(),
+    );
+    CanvasRect {
+        origin: mounted.bounds.origin,
+        size: CanvasSize {
+            width: screen_size.width / transform.zoom,
+            height: screen_size.height / transform.zoom,
+        },
+    }
+}
+
 impl OpenGpuiSceneHost {
+    pub(super) fn request_blank_canvas_context(
+        &mut self,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.pending_blank_canvas_context.is_some() {
+            return true;
+        }
+        let Some(handler) = self.blank_canvas_context_handler.clone() else {
+            return false;
+        };
+        if self.interaction_owner.presentation().phase() != CanvasInteractionPhase::Idle
+            || self.interaction_owner.native_capability().overlay_active()
+        {
+            return false;
+        }
+
+        let Some(sample) = self.viewport_pointer_sample(event.position) else {
+            return false;
+        };
+        let position = sample_canvas_point(sample);
+        if self.scene_point_hits_node_or_port(position) != Some(false) {
+            return false;
+        }
+
+        self.pending_blank_canvas_context = Some(PendingBlankCanvasContext {
+            handler,
+            request: OpenGpuiBlankCanvasContextRequest {
+                position,
+                button: event.button,
+                modifiers: event.modifiers,
+            },
+        });
+        let result = self.interaction_owner.request_edge_pick(sample);
+        if !self.apply_scene_interaction_result(result, window, cx) {
+            self.pending_blank_canvas_context = None;
+            return false;
+        }
+        self.finish_blank_canvas_context_query(window, cx);
+        true
+    }
+
+    fn scene_point_hits_node_or_port(&self, point: CanvasPoint) -> Option<bool> {
+        let transform = self
+            .scene_transform
+            .or_else(|| self.view.viewport_transform().ok())?;
+        let graph = self.view.graph_snapshot().ok()?;
+        let geometry = self.view.geometry_snapshot().ok()?;
+
+        for (instance, mounted) in self.mounts.active_in_order() {
+            let bounds =
+                mounted_node_interaction_bounds(instance, mounted, Some(&geometry), transform);
+            if canvas_rect_contains(bounds, point) {
+                return Some(true);
+            }
+
+            let node = graph.graph().node(&instance.node())?;
+            if node.ports.iter().any(|port| {
+                geometry
+                    .port(*port)
+                    .and_then(|geometry| geometry.hit_bounds())
+                    .is_some_and(|bounds| canvas_rect_contains(bounds, point))
+            }) {
+                return Some(true);
+            }
+        }
+
+        Some(false)
+    }
+
+    pub(super) fn finish_blank_canvas_context_query(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.pending_blank_canvas_context.is_none()
+            || self.interaction_owner.has_pending_queries()
+            || self.interaction_owner.query_resolution_active()
+        {
+            return;
+        }
+        let presentation = self.interaction_owner.presentation();
+        if presentation.phase() == CanvasInteractionPhase::Armed {
+            return;
+        }
+        let pending = self.pending_blank_canvas_context.take();
+        if presentation.phase() != CanvasInteractionPhase::Idle
+            || presentation.terminal().is_some()
+            || presentation.hovered_edge().is_some()
+        {
+            return;
+        }
+        let Some(PendingBlankCanvasContext { handler, request }) = pending else {
+            return;
+        };
+        window.defer(cx, move |window, cx| handler(request, window, cx));
+    }
+
     pub(super) fn handle_scene_pointer_move(
         &mut self,
         event: &MouseMoveEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.pending_blank_canvas_context = None;
         if self.interaction_owner.presentation().phase() != CanvasInteractionPhase::Idle {
             return;
         }
-        let Some(position) = self.interaction_position(event.position) else {
+        let Some(sample) = self.viewport_pointer_sample(event.position) else {
+            return;
+        };
+        let Some(transform) = self
+            .scene_transform
+            .or_else(|| self.view.viewport_transform().ok())
+        else {
             return;
         };
         let mut hovered_node = None;
@@ -40,8 +183,9 @@ impl OpenGpuiSceneHost {
         let graph = self.view.graph_snapshot().ok();
         let geometry = self.view.geometry_snapshot().ok();
         for (instance, mounted) in self.mounts.active_in_order() {
-            let bounds = mounted.bounds;
-            let point = position.canvas();
+            let bounds =
+                mounted_node_interaction_bounds(instance, mounted, geometry.as_ref(), transform);
+            let point = sample_canvas_point(sample);
             if canvas_rect_contains(bounds, point) {
                 hovered_node = Some(instance.node());
             }
@@ -55,7 +199,8 @@ impl OpenGpuiSceneHost {
                 if geometry
                     .as_ref()
                     .and_then(|geometry| geometry.port(*port))
-                    .is_some_and(|geometry| canvas_rect_contains(geometry.hit_bounds(), point))
+                    .and_then(|geometry| geometry.hit_bounds())
+                    .is_some_and(|bounds| canvas_rect_contains(bounds, point))
                 {
                     hovered_node = Some(instance.node());
                     hovered_port = Some(*port);
@@ -70,7 +215,7 @@ impl OpenGpuiSceneHost {
         let result = if hovered_node.is_some() {
             self.interaction_owner.clear_edge_hover()
         } else {
-            self.interaction_owner.request_edge_pick(position)
+            self.interaction_owner.request_edge_pick(sample)
         };
         self.apply_scene_interaction_result(result, window, cx);
     }
@@ -80,6 +225,7 @@ impl OpenGpuiSceneHost {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.pending_blank_canvas_context = None;
         let had_hovered_node = self.hovered_node.take().is_some();
         let had_hovered_port = self.hovered_port.take().is_some();
         if had_hovered_node || had_hovered_port {
@@ -119,6 +265,7 @@ impl OpenGpuiSceneHost {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.pending_blank_canvas_context = None;
         if self.interaction_owner.terminal() {
             return;
         }
@@ -152,16 +299,44 @@ impl OpenGpuiSceneHost {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let Some(position) = self.interaction_position(event.position()) else {
+        if self
+            .interaction_owner
+            .keyboard_connection_source()
+            .is_some()
+        {
+            let cancelled = self.interaction_owner.cancel();
+            self.discard_pending_interaction_submission();
+            if !self.apply_scene_interaction_result(cancelled, window, cx) {
+                return false;
+            }
+        }
+        let Some(sample) = self.viewport_pointer_sample(event.position()) else {
             return false;
         };
+        if let OpenGpuiSceneGestureKind::EdgeReconnect(edge, endpoint) = event.kind() {
+            if self.interaction_owner.connection_identity().is_some() {
+                return true;
+            }
+            let Some(plan) = self.edge_reconnect_press_target(*edge, *endpoint) else {
+                return false;
+            };
+            let (start, admission) = plan.into_parts();
+            return match self
+                .interaction_owner
+                .press_connection(start, sample, admission)
+            {
+                Ok(Some(update)) => {
+                    self.apply_canvas_interaction_update(update, window, cx);
+                    true
+                }
+                Ok(None) => true,
+                Err(error) => self.apply_scene_interaction_result(Err(error), window, cx),
+            };
+        }
         let Some(target) = self.scene_press_target(event) else {
             return false;
         };
-        let result = self.interaction_owner.press(target, position);
-        if result.is_err() && matches!(event.kind(), OpenGpuiSceneGestureKind::EdgeReconnect(..)) {
-            self.interaction_owner.clear_connection();
-        }
+        let result = self.interaction_owner.press(target, sample);
         self.apply_scene_interaction_result(result, window, cx)
     }
 
@@ -177,10 +352,10 @@ impl OpenGpuiSceneHost {
                 .cancel_scene_deferred(OpenGpuiSceneGestureCancelReason::OwnerRetired);
             return;
         }
-        let Some(position) = self.interaction_position(event.position()) else {
+        let Some(sample) = self.viewport_pointer_sample(event.position()) else {
             return;
         };
-        let result = self.interaction_owner.move_to(position);
+        let result = self.interaction_owner.move_to(sample);
         if !self.apply_scene_interaction_result(result, window, cx) {
             self.cancel_scene_gesture(window, cx);
             self.interaction_owner
@@ -198,19 +373,12 @@ impl OpenGpuiSceneHost {
             self.cancel_scene_gesture(window, cx);
             return;
         }
-        let Some(position) = self.interaction_position(event.position()) else {
+        let Some(sample) = self.viewport_pointer_sample(event.position()) else {
             self.cancel_scene_gesture(window, cx);
             return;
         };
 
-        // The final native pointer position may arrive only with mouse-up. Feed it through the
-        // move transition before release so node delta, marquee bounds, and pan stay continuous.
-        let moved = self.interaction_owner.move_to(position);
-        if !self.apply_scene_interaction_result(moved, window, cx) {
-            self.cancel_scene_gesture(window, cx);
-            return;
-        }
-        let released = self.interaction_owner.release(position);
+        let released = self.interaction_owner.release(sample);
         if !self.apply_scene_interaction_result(released, window, cx) {
             self.cancel_scene_gesture(window, cx);
         }
@@ -219,7 +387,7 @@ impl OpenGpuiSceneHost {
     fn cancel_scene_gesture(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let update = self.interaction_owner.cancel();
         self.discard_pending_interaction_submission();
-        self.apply_canvas_interaction_update(update, window, cx);
+        self.apply_scene_interaction_result(update, window, cx);
     }
 
     fn cancel_scene_gesture_for_reason(
@@ -234,27 +402,28 @@ impl OpenGpuiSceneHost {
                 OpenGpuiSceneGestureCancelReason::OwnerRetired,
                 OpenGpuiSceneGestureKind::Node(instance),
             ) if self.scene_node_owner_is_current(instance) => (
-                self.interaction_owner
-                    .owner_retired(InteractionOwner::Node(instance.node())),
+                Ok(self
+                    .interaction_owner
+                    .owner_retired(InteractionOwner::Node(instance.lifetime()))),
                 true,
             ),
             (OpenGpuiSceneGestureCancelReason::OwnerRetired, _) => {
-                (CanvasInteractionUpdate::default(), false)
+                (Ok(CanvasInteractionUpdate::default()), false)
             }
             (OpenGpuiSceneGestureCancelReason::HostClosed, _) => {
-                (self.interaction_owner.close_semantic(), true)
+                (Ok(self.interaction_owner.close_semantic()), true)
             }
             (
                 OpenGpuiSceneGestureCancelReason::InteractionUnavailable
                 | OpenGpuiSceneGestureCancelReason::ProtectedCapacityExceeded,
                 _,
-            ) => (CanvasInteractionUpdate::default(), false),
+            ) => (Ok(CanvasInteractionUpdate::default()), false),
             _ => (self.interaction_owner.cancel(), true),
         };
         if settle_pending {
             self.discard_pending_interaction_submission();
         }
-        self.apply_canvas_interaction_update(update, window, cx);
+        self.apply_scene_interaction_result(update, window, cx);
     }
 
     fn apply_scene_interaction_result(
@@ -280,24 +449,22 @@ impl OpenGpuiSceneHost {
         &mut self,
         event: &OpenGpuiSceneGestureEvent,
     ) -> Option<CanvasPressTarget> {
-        let selection_mode = scene_selection_mode(event);
+        let selection_mode = self
+            .navigation
+            .input_bindings()
+            .selection()
+            .selection_mode(event.modifiers());
         match event.kind() {
             OpenGpuiSceneGestureKind::Node(instance) => self
                 .node_drag_start(instance, selection_mode)
                 .map(CanvasPressTarget::NodeDrag),
-            OpenGpuiSceneGestureKind::EdgeReconnect(edge, endpoint) => {
-                self.edge_reconnect_press_target(*edge, *endpoint)
-            }
+            OpenGpuiSceneGestureKind::EdgeReconnect(..) => None,
             OpenGpuiSceneGestureKind::Pan => Some(CanvasPressTarget::Pan),
             OpenGpuiSceneGestureKind::Selection => {
-                let selection = self.view.selection().ok()?;
+                let baseline = self.view.selection_baseline().ok()?;
                 Some(CanvasPressTarget::Canvas(CanvasPressFallback::Marquee {
                     selection_mode,
-                    baseline: SelectionBaseline::new(
-                        selection.nodes().iter().copied(),
-                        selection.edges().iter().copied(),
-                        selection.groups().iter().copied(),
-                    ),
+                    baseline,
                 }))
             }
         }
@@ -312,9 +479,8 @@ impl OpenGpuiSceneHost {
             return None;
         }
 
-        let clicked = instance.node();
         self.view
-            .node_drag_start(clicked, selection_mode)
+            .node_drag_start(instance.lifetime(), selection_mode)
             .ok()
             .flatten()
     }
@@ -337,8 +503,8 @@ impl OpenGpuiSceneHost {
                 .get(instance)
                 .is_some_and(|mounted| mounted.mount.is_live())
             && matches!(
-                self.view.node_incarnation(instance.node()),
-                Ok(Some(current)) if current == instance.incarnation()
+                self.view.node_lifetime_key(instance.node()),
+                Ok(Some(current)) if current == instance.lifetime()
             )
     }
 
@@ -358,7 +524,7 @@ impl OpenGpuiSceneHost {
             x: delta.x.as_f32(),
             y: delta.y.as_f32(),
         };
-        let next = if self.navigation.profile().wheel_pans()
+        let next = if self.navigation.input_bindings().wheel_pans()
             || event.modifiers.shift
             || delta.x.abs() > delta.y.abs()
         {
@@ -377,7 +543,7 @@ impl OpenGpuiSceneHost {
         let Some(next) = next else {
             return false;
         };
-        if self.view.set_viewport(next.pan, next.zoom).is_err() {
+        if self.view.set_viewport(next).is_err() {
             return false;
         }
         cx.notify();
@@ -406,7 +572,7 @@ impl OpenGpuiSceneHost {
         ) else {
             return false;
         };
-        if self.view.set_viewport(next.pan, next.zoom).is_err() {
+        if self.view.set_viewport(next).is_err() {
             return false;
         }
         cx.notify();
@@ -426,21 +592,17 @@ impl OpenGpuiSceneHost {
     }
 }
 
+fn sample_canvas_point(sample: ViewportPointerSample) -> CanvasPoint {
+    let raw = sample.raw();
+    sample
+        .snapshot()
+        .transform()
+        .canvas_point_at_screen(CanvasPoint { x: raw.x, y: raw.y })
+}
+
 fn canvas_rect_contains(bounds: CanvasRect, point: CanvasPoint) -> bool {
     point.x >= bounds.origin.x
         && point.y >= bounds.origin.y
         && point.x <= bounds.origin.x + bounds.size.width
         && point.y <= bounds.origin.y + bounds.size.height
-}
-
-fn scene_selection_mode(event: &OpenGpuiSceneGestureEvent) -> SelectionMode {
-    selection_mode_for_modifiers(event.modifiers())
-}
-
-pub(super) fn selection_mode_for_modifiers(modifiers: Modifiers) -> SelectionMode {
-    if modifiers.shift || modifiers.secondary() {
-        SelectionMode::Add
-    } else {
-        SelectionMode::Replace
-    }
 }

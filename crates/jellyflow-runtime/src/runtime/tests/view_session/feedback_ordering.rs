@@ -5,8 +5,8 @@ use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize, NodeId};
 
 use crate::profile::ApplyPipelineError;
 use crate::runtime::adapter_protocol::{
-    AdapterFrame, FeedbackCollectorError, FeedbackOperation, FeedbackOperationReceipt,
-    FrameRequest, LayoutNodeStatus, NodeLayout, RendererStamp, ViewPoint, ViewRect, ViewSize,
+    AdapterFrame, FeedbackCollectorError, FeedbackOperationReceipt, FrameRequest, LayoutNodeStatus,
+    NodeLayout, RendererStamp, ViewPoint, ViewRect, ViewSize,
 };
 use crate::runtime::commands::GraphCommand;
 use crate::runtime::graph_runtime::{GraphRuntime, GraphRuntimeEvent, RuntimePatch};
@@ -127,7 +127,7 @@ fn feedback_body_panic_wins_after_both_subscription_layers_finish() {
     let collector = frame.collector();
     collector
         .command(GraphCommand::set_node_data(
-            0,
+            frame.graph_version(),
             nodes[0],
             serde_json::json!({ "value": 1 }),
         ))
@@ -197,10 +197,9 @@ fn feedback_error_still_restores_the_first_drain_panic_after_both_layers_finish(
 
     let frame = one_node_frame(&session);
     let collector = frame.collector();
-    collector.selection([nodes[0]], [], []).unwrap();
     collector
         .command(GraphCommand::set_node_data(
-            0,
+            frame.graph_version(),
             nodes[0],
             serde_json::json!({ "value": 1 }),
         ))
@@ -247,10 +246,9 @@ fn cloned_collectors_share_order_and_reject_late_writes_after_finish() {
         .unwrap();
     let host = frame.collector();
     let prepaint = host.clone();
-    host.selection([nodes[0]], [], []).unwrap();
     prepaint.layout(layout_for(&frame)).unwrap();
     host.command(GraphCommand::set_node_data(
-        0,
+        frame.graph_version(),
         nodes[0],
         serde_json::json!({ "source": "retained-callback" }),
     ))
@@ -270,7 +268,6 @@ fn cloned_collectors_share_order_and_reject_late_writes_after_finish() {
     assert!(matches!(
         receipt.operations(),
         [
-            FeedbackOperationReceipt::Selection { .. },
             FeedbackOperationReceipt::Layout {
                 status: LayoutNodeStatus::Stale,
                 ..
@@ -278,71 +275,6 @@ fn cloned_collectors_share_order_and_reject_late_writes_after_finish() {
             FeedbackOperationReceipt::Command { .. }
         ]
     ));
-}
-
-#[test]
-fn invalid_viewports_are_rejected_before_the_collector_appends_them() {
-    let (graph, nodes) = graph_with_nodes(1);
-    let runtime = GraphRuntime::builder(Default::default())
-        .build(graph)
-        .unwrap();
-    let session = runtime.attach_view(ViewSessionOptions::default()).unwrap();
-    let invalid_viewports = [
-        ("zero zoom", CanvasPoint::default(), 0.0),
-        ("negative zoom", CanvasPoint::default(), -1.0),
-        ("NaN zoom", CanvasPoint::default(), f32::NAN),
-        ("infinite zoom", CanvasPoint::default(), f32::INFINITY),
-        (
-            "NaN pan",
-            CanvasPoint {
-                x: f32::NAN,
-                y: 0.0,
-            },
-            1.0,
-        ),
-        (
-            "infinite pan",
-            CanvasPoint {
-                x: 0.0,
-                y: f32::NEG_INFINITY,
-            },
-            1.0,
-        ),
-    ];
-
-    for (case, pan, zoom) in invalid_viewports {
-        let frame = one_node_frame(&session);
-        let collector = frame.collector();
-        collector.selection([nodes[0]], [], []).unwrap();
-
-        assert_eq!(
-            collector.viewport(pan, zoom),
-            Err(FeedbackCollectorError::InvalidViewport),
-            "{case}"
-        );
-
-        let feedback = collector.finish().unwrap();
-        assert!(
-            matches!(
-                feedback.operations.as_slice(),
-                [FeedbackOperation::Selection { nodes: selected, edges, groups }]
-                    if selected == &[nodes[0]] && edges.is_empty() && groups.is_empty()
-            ),
-            "{case} appended an invalid viewport operation"
-        );
-
-        let fresh_frame = one_node_frame(&session);
-        let fresh_collector = fresh_frame.collector();
-        assert_eq!(
-            fresh_collector.viewport(pan, zoom),
-            Err(FeedbackCollectorError::InvalidViewport),
-            "{case}"
-        );
-        assert!(
-            fresh_collector.finish().unwrap().operations.is_empty(),
-            "{case} appended an operation to a fresh collector"
-        );
-    }
 }
 
 #[test]
@@ -368,10 +300,9 @@ fn feedback_receipts_preserve_host_order_and_applied_commands_stale_layout() {
         ))
         .unwrap();
     let collector = frame.collector();
-    collector.selection([nodes[0]], [], []).unwrap();
     collector
         .command(GraphCommand::set_node_data(
-            0,
+            frame.graph_version(),
             nodes[0],
             serde_json::json!({ "expanded": true }),
         ))
@@ -383,23 +314,15 @@ fn feedback_receipts_preserve_host_order_and_applied_commands_stale_layout() {
         .unwrap();
     assert!(matches!(
         &receipt.operations()[0],
-        FeedbackOperationReceipt::Selection { .. }
-    ));
-    assert!(matches!(
-        &receipt.operations()[1],
         FeedbackOperationReceipt::Command { .. }
     ));
     assert!(matches!(
-        &receipt.operations()[2],
+        &receipt.operations()[1],
         FeedbackOperationReceipt::Layout {
             status: LayoutNodeStatus::Stale,
             ..
         }
     ));
-    assert_eq!(
-        session.export_seed().unwrap().selection().nodes(),
-        [nodes[0]]
-    );
     assert!(
         session
             .geometry_snapshot()
@@ -407,210 +330,6 @@ fn feedback_receipts_preserve_host_order_and_applied_commands_stale_layout() {
             .node(nodes[0])
             .is_none()
     );
-}
-
-#[test]
-fn selection_feedback_does_not_stale_layout_from_the_same_frame() {
-    let (graph, nodes) = graph_with_nodes(1);
-    let runtime = GraphRuntime::builder(Default::default())
-        .build(graph)
-        .unwrap();
-    let session = runtime.attach_view(ViewSessionOptions::default()).unwrap();
-    let frame = one_node_frame(&session);
-    let collector = frame.collector();
-    collector.selection([nodes[0]], [], []).unwrap();
-    collector.layout(layout_for(&frame)).unwrap();
-
-    let receipt = session
-        .submit_feedback(collector.finish().unwrap())
-        .unwrap();
-
-    assert!(matches!(
-        receipt.operations(),
-        [
-            FeedbackOperationReceipt::Selection { .. },
-            FeedbackOperationReceipt::Layout {
-                status: LayoutNodeStatus::Published,
-                ..
-            }
-        ]
-    ));
-    assert_eq!(receipt.publication().unwrap().published_nodes(), [nodes[0]]);
-    assert!(!receipt.request_next_frame());
-    assert_eq!(runtime.snapshot().unwrap().revision(), 0);
-}
-
-#[test]
-fn view_feedback_receipts_report_the_normalized_state_that_was_applied() {
-    let (graph, nodes) = graph_with_nodes(1);
-    let runtime = GraphRuntime::builder(Default::default())
-        .build(graph)
-        .unwrap();
-    let session = runtime.attach_view(ViewSessionOptions::default()).unwrap();
-    let frame = one_node_frame(&session);
-    let collector = frame.collector();
-    collector
-        .selection([nodes[0], NodeId::from_u128(9_999), nodes[0]], [], [])
-        .unwrap();
-    collector
-        .viewport(CanvasPoint { x: 24.0, y: 12.0 }, 1.25)
-        .unwrap();
-
-    let receipt = session
-        .submit_feedback(collector.finish().unwrap())
-        .unwrap();
-
-    let FeedbackOperationReceipt::Selection { selection } = &receipt.operations()[0] else {
-        panic!("expected selection receipt");
-    };
-    assert_eq!(selection.nodes(), [nodes[0]]);
-    let FeedbackOperationReceipt::Viewport { transform } = &receipt.operations()[1] else {
-        panic!("expected viewport receipt");
-    };
-    assert_eq!(*transform, session.viewport_transform().unwrap());
-    assert_eq!(transform.pan, CanvasPoint { x: 24.0, y: 12.0 });
-    assert_eq!(transform.zoom, 1.25);
-}
-
-#[test]
-fn selection_callback_close_waits_for_the_accepted_feedback_log() {
-    let (graph, nodes) = graph_with_nodes(1);
-    let runtime = GraphRuntime::builder(Default::default())
-        .build(graph)
-        .unwrap();
-    let session = Rc::new(runtime.attach_view(ViewSessionOptions::default()).unwrap());
-    let events = Rc::new(RefCell::new(Vec::new()));
-    let callback_events = events.clone();
-    let callback_session = session.clone();
-    let callback_revision = Rc::new(Cell::new(None));
-    let observed_revision = callback_revision.clone();
-    session
-        .subscribe(move |event| match event {
-            ViewSessionEvent::SelectionChanged { .. } => {
-                callback_events.borrow_mut().push("selection");
-                observed_revision.set(Some(
-                    callback_session
-                        .graph_snapshot()
-                        .expect("accepted feedback is complete before callbacks")
-                        .revision(),
-                ));
-                callback_session
-                    .close()
-                    .expect("selection callback closes view");
-            }
-            ViewSessionEvent::Closed { .. } => callback_events.borrow_mut().push("closed"),
-            ViewSessionEvent::ViewportChanged { .. }
-            | ViewSessionEvent::RuntimePatched { .. }
-            | ViewSessionEvent::LayoutPublished { .. } => {}
-        })
-        .unwrap();
-    let frame = one_node_frame(&session);
-    let collector = frame.collector();
-    collector.selection([nodes[0]], [], []).unwrap();
-    collector
-        .command(GraphCommand::set_node_data(
-            0,
-            nodes[0],
-            serde_json::json!({ "step": "after-selection" }),
-        ))
-        .unwrap();
-    collector.layout(layout_for(&frame)).unwrap();
-
-    let receipt = session
-        .submit_feedback(collector.finish().unwrap())
-        .unwrap();
-
-    assert!(matches!(
-        receipt.operations(),
-        [
-            FeedbackOperationReceipt::Selection { .. },
-            FeedbackOperationReceipt::Command { .. },
-            FeedbackOperationReceipt::Layout {
-                status: LayoutNodeStatus::Stale,
-                ..
-            }
-        ]
-    ));
-    assert!(
-        receipt.operations()[1]
-            .command_outcome()
-            .unwrap()
-            .as_ref()
-            .unwrap()
-            .applied()
-            .is_some()
-    );
-    assert_eq!(callback_revision.get(), Some(1));
-    assert_eq!(events.borrow().as_slice(), &["selection", "closed"]);
-    assert_eq!(session.close_reason(), Some(ViewCloseReason::HostClosed));
-    assert_eq!(runtime.snapshot().unwrap().revision(), 1);
-}
-
-#[test]
-fn viewport_callback_close_preserves_queued_feedback_event_order() {
-    let (graph, nodes) = graph_with_nodes(1);
-    let runtime = GraphRuntime::builder(Default::default())
-        .build(graph)
-        .unwrap();
-    let session = Rc::new(runtime.attach_view(ViewSessionOptions::default()).unwrap());
-    let events = Rc::new(RefCell::new(Vec::new()));
-    let callback_events = events.clone();
-    let callback_session = session.clone();
-    let callback_revision = Rc::new(Cell::new(None));
-    let observed_revision = callback_revision.clone();
-    session
-        .subscribe(move |event| match event {
-            ViewSessionEvent::SelectionChanged { .. } => {
-                callback_events.borrow_mut().push("selection");
-            }
-            ViewSessionEvent::ViewportChanged { .. } => {
-                callback_events.borrow_mut().push("viewport");
-                observed_revision.set(Some(
-                    callback_session
-                        .graph_snapshot()
-                        .expect("accepted feedback is complete before callbacks")
-                        .revision(),
-                ));
-                callback_session
-                    .close()
-                    .expect("viewport callback closes view");
-            }
-            ViewSessionEvent::Closed { .. } => callback_events.borrow_mut().push("closed"),
-            ViewSessionEvent::RuntimePatched { .. } | ViewSessionEvent::LayoutPublished { .. } => {}
-        })
-        .unwrap();
-    let frame = one_node_frame(&session);
-    let collector = frame.collector();
-    collector.selection([nodes[0]], [], []).unwrap();
-    collector
-        .viewport(CanvasPoint { x: 8.0, y: 12.0 }, 1.5)
-        .unwrap();
-    collector.layout(layout_for(&frame)).unwrap();
-
-    let receipt = session
-        .submit_feedback(collector.finish().unwrap())
-        .unwrap();
-
-    assert!(matches!(
-        receipt.operations(),
-        [
-            FeedbackOperationReceipt::Selection { .. },
-            FeedbackOperationReceipt::Viewport { .. },
-            FeedbackOperationReceipt::Layout {
-                status: LayoutNodeStatus::Stale,
-                ..
-            }
-        ]
-    ));
-    assert!(receipt.publication().is_none());
-    assert!(receipt.request_next_frame());
-    assert_eq!(callback_revision.get(), Some(0));
-    assert_eq!(
-        events.borrow().as_slice(),
-        &["selection", "viewport", "closed"]
-    );
-    assert_eq!(session.close_reason(), Some(ViewCloseReason::HostClosed));
-    assert_eq!(runtime.snapshot().unwrap().revision(), 0);
 }
 
 #[test]
@@ -624,7 +343,7 @@ fn rejected_command_feedback_does_not_stale_layout_from_the_same_frame() {
     let collector = frame.collector();
     collector
         .command(GraphCommand::set_node_data(
-            0,
+            frame.graph_version(),
             NodeId::from_u128(9_999),
             serde_json::json!({ "must_not_apply": true }),
         ))
@@ -657,12 +376,22 @@ fn rejected_command_feedback_does_not_stale_layout_from_the_same_frame() {
 }
 
 #[test]
-fn selection_viewport_rejected_command_and_layout_keep_exact_host_order() {
+fn conflicted_command_and_layout_keep_exact_host_order() {
     let (graph, nodes) = graph_with_nodes(1);
     let runtime = GraphRuntime::builder(Default::default())
         .build(graph)
         .unwrap();
     let session = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    let stale_version = runtime.snapshot().unwrap().version();
+    runtime
+        .execute(GraphCommand::set_node_data(
+            stale_version,
+            nodes[0],
+            serde_json::json!({ "admitted": true }),
+        ))
+        .unwrap()
+        .applied()
+        .unwrap();
     let frame = session
         .frame(FrameRequest::new(
             CanvasRect {
@@ -679,13 +408,9 @@ fn selection_viewport_rejected_command_and_layout_keep_exact_host_order() {
         ))
         .unwrap();
     let collector = frame.collector();
-    collector.selection([nodes[0]], [], []).unwrap();
-    collector
-        .viewport(CanvasPoint { x: 8.0, y: 12.0 }, 1.5)
-        .unwrap();
     collector
         .command(GraphCommand::set_node_data(
-            99,
+            stale_version,
             nodes[0],
             serde_json::json!({ "must_not_apply": true }),
         ))
@@ -699,17 +424,15 @@ fn selection_viewport_rejected_command_and_layout_keep_exact_host_order() {
     assert!(matches!(
         receipt.operations(),
         [
-            FeedbackOperationReceipt::Selection { .. },
-            FeedbackOperationReceipt::Viewport { .. },
             FeedbackOperationReceipt::Command { .. },
             FeedbackOperationReceipt::Layout {
-                status: LayoutNodeStatus::Stale,
+                status: LayoutNodeStatus::Published,
                 ..
             }
         ]
     ));
     assert!(
-        receipt.operations()[2]
+        receipt.operations()[0]
             .command_outcome()
             .unwrap()
             .as_ref()
@@ -717,15 +440,13 @@ fn selection_viewport_rejected_command_and_layout_keep_exact_host_order() {
             .conflict()
             .is_some()
     );
-    assert_eq!(runtime.snapshot().unwrap().revision(), 0);
-    let seed = session.export_seed().unwrap();
-    assert_eq!(seed.selection().nodes(), [nodes[0]]);
-    assert_eq!(seed.viewport().pan(), CanvasPoint { x: 8.0, y: 12.0 });
-    assert_eq!(seed.viewport().zoom(), 1.5);
+    assert_eq!(runtime.snapshot().unwrap().revision(), 1);
+    assert_eq!(receipt.publication().unwrap().published_nodes(), [nodes[0]]);
+    assert!(!receipt.request_next_frame());
 }
 
 #[test]
-fn feedback_notifications_observe_only_the_completed_command_log() {
+fn feedback_notifications_observe_completed_command_log_before_conflicted_followup() {
     let (graph, nodes) = graph_with_nodes(2);
     let runtime = GraphRuntime::builder(Default::default())
         .build(graph)
@@ -764,14 +485,14 @@ fn feedback_notifications_observe_only_the_completed_command_log() {
     let collector = frame.collector();
     collector
         .command(GraphCommand::set_node_data(
-            0,
+            frame.graph_version(),
             nodes[0],
             serde_json::json!({ "step": 1 }),
         ))
         .unwrap();
     collector
         .command(GraphCommand::set_node_data(
-            1,
+            frame.graph_version(),
             nodes[1],
             serde_json::json!({ "step": 2 }),
         ))
@@ -782,12 +503,16 @@ fn feedback_notifications_observe_only_the_completed_command_log() {
         .unwrap();
 
     assert_eq!(receipt.operations().len(), 2);
-    assert!(receipt.operations().iter().all(|operation| matches!(
-        operation,
-        FeedbackOperationReceipt::Command {
-            outcome,
-        } if matches!(outcome.as_ref(), Ok(outcome) if outcome.applied().is_some())
-    )));
-    assert_eq!(runtime.snapshot().unwrap().revision(), 2);
-    assert_eq!(observations.borrow().as_slice(), &[(1, 2), (2, 2)]);
+    assert!(matches!(
+        receipt.operations()[0],
+        FeedbackOperationReceipt::Command { ref outcome }
+            if matches!(outcome.as_ref(), Ok(outcome) if outcome.applied().is_some())
+    ));
+    assert!(matches!(
+        receipt.operations()[1],
+        FeedbackOperationReceipt::Command { ref outcome }
+            if matches!(outcome.as_ref(), Ok(outcome) if outcome.conflict().is_some())
+    ));
+    assert_eq!(runtime.snapshot().unwrap().revision(), 1);
+    assert_eq!(observations.borrow().as_slice(), &[(1, 1)]);
 }

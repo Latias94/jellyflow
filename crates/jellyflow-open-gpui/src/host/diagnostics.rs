@@ -1,6 +1,7 @@
 use jellyflow_core::{NodeId, PortDirection};
 use jellyflow_runtime::{
-    FrameMaterializationOverflow, FrameNode, LayoutNodeStatus, NodeInstanceKey,
+    view::FrameMaterializationOverflow, view::FrameNode, view::LayoutNodeStatus,
+    view::NodeInstanceKey,
 };
 use open_gpui::{
     AnyElement, AnyView, AppContext, Context, Entity, InteractiveElement, IntoElement, MouseButton,
@@ -140,6 +141,22 @@ pub struct OpenGpuiSceneHostStats {
     pub(super) binding_reconciliation_visits: u64,
     pub(super) binding_updates: u64,
     pub(super) binding_notifications: u64,
+    pub(super) binding_presentation_queries: u64,
+    pub(super) binding_presentation_materializations: u64,
+    pub(super) node_drag_offset_map_builds: u64,
+    pub(super) interaction_tick_callback_registrations: u64,
+    pub(super) interaction_tick_callback_entries: u64,
+    pub(super) interaction_tick_frame_requests: u64,
+    pub(super) interaction_callback_epoch: u64,
+    pub(super) interaction_pending_queries: usize,
+    pub(super) interaction_submission_pending: bool,
+    pub(super) interaction_ready_prefixes: usize,
+    pub(super) interaction_tick_scheduled: bool,
+    pub(super) interaction_tick_frame_requested: bool,
+    pub(super) interaction_query_frame_scheduled: bool,
+    pub(super) interaction_query_resolution_active: bool,
+    pub(super) interaction_native_tick_wake_active: bool,
+    pub(super) interaction_native_query_wake_active: bool,
     pub(super) protected_instances: usize,
     pub(super) protected_leases: usize,
     pub(super) protected_high_water: usize,
@@ -163,14 +180,30 @@ pub struct OpenGpuiSceneHostStats {
     pub(super) edge_path_cache_hits: u64,
     pub(super) edge_path_cache_misses: u64,
     pub(super) edge_path_cache_resident: usize,
+    pub(super) edge_path_cache_vertices: usize,
+    pub(super) edge_path_cache_estimated_bytes: usize,
+    pub(super) edge_path_cache_budget_evictions: u64,
+    pub(super) edge_path_cache_budget_rejections: u64,
+    pub(super) edge_paint_plan_cache_resident: usize,
+    pub(super) edge_marker_plan_cache_resident: usize,
+    pub(super) edge_plan_cache_generations: usize,
+    pub(super) edge_plan_cache_vertices: usize,
+    pub(super) edge_plan_cache_estimated_bytes: usize,
+    pub(super) edge_plan_cache_budget_rejections: u64,
+    pub(super) edge_plan_incomplete_builds: u64,
+    pub(super) edge_plan_rejected_items: u64,
+    pub(super) edge_plan_build_peak_vertices: usize,
+    pub(super) edge_plan_build_peak_estimated_bytes: usize,
+    pub(super) edge_plan_live_vertices: usize,
+    pub(super) edge_plan_live_estimated_bytes: usize,
+    pub(super) edge_plan_live_peak_vertices: usize,
+    pub(super) edge_plan_live_peak_estimated_bytes: usize,
     pub(super) edge_painter_fallbacks: u64,
     pub(super) endpoint_geometry_fallbacks: u64,
     pub(super) edge_paint_preparations: u64,
     pub(super) edge_paint_batches: u64,
     pub(super) edge_paths_painted: u64,
     pub(super) edge_paint_plan_reuses: u64,
-    pub(super) edge_paint_item_reuses: u64,
-    pub(super) edge_paint_item_builds: u64,
     pub(super) edge_native_paint_calls: u64,
     pub(super) edge_native_edges_painted: u64,
     pub(super) edge_marker_preparations: u64,
@@ -252,6 +285,96 @@ impl OpenGpuiSceneHostStats {
     #[must_use]
     pub fn binding_notifications(self) -> u64 {
         self.binding_notifications
+    }
+
+    /// Number of coherent runtime port-summary batches requested for native presentation.
+    #[must_use]
+    pub fn binding_presentation_queries(self) -> u64 {
+        self.binding_presentation_queries
+    }
+
+    /// Number of node presentation snapshots materialized after input-signature comparison.
+    #[must_use]
+    pub fn binding_presentation_materializations(self) -> u64 {
+        self.binding_presentation_materializations
+    }
+
+    /// Number of per-frame multi-node drag offset maps constructed by the host.
+    #[must_use]
+    pub fn node_drag_offset_map_builds(self) -> u64 {
+        self.node_drag_offset_map_builds
+    }
+
+    /// Number of continuous-interaction callbacks registered with the native frame scheduler.
+    #[must_use]
+    pub fn interaction_tick_callback_registrations(self) -> u64 {
+        self.interaction_tick_callback_registrations
+    }
+
+    /// Number of registered continuous-interaction callbacks that entered the native frame loop.
+    #[must_use]
+    pub fn interaction_tick_callback_entries(self) -> u64 {
+        self.interaction_tick_callback_entries
+    }
+
+    /// Number of deduplicated Open GPUI animation-frame requests made for continuous interactions.
+    #[must_use]
+    pub fn interaction_tick_frame_requests(self) -> u64 {
+        self.interaction_tick_frame_requests
+    }
+
+    /// Current semantic callback epoch used to invalidate stale native-frame work.
+    #[must_use]
+    pub fn interaction_callback_epoch(self) -> u64 {
+        self.interaction_callback_epoch
+    }
+
+    #[must_use]
+    pub fn interaction_pending_queries(self) -> usize {
+        self.interaction_pending_queries
+    }
+
+    #[must_use]
+    pub fn interaction_submission_pending(self) -> bool {
+        self.interaction_submission_pending
+    }
+
+    #[must_use]
+    pub fn interaction_ready_prefixes(self) -> usize {
+        self.interaction_ready_prefixes
+    }
+
+    /// Whether a continuous-interaction callback token remains scheduled.
+    #[must_use]
+    pub fn interaction_tick_scheduled(self) -> bool {
+        self.interaction_tick_scheduled
+    }
+
+    /// Whether the scheduled tick still owns an animation-frame request token.
+    #[must_use]
+    pub fn interaction_tick_frame_requested(self) -> bool {
+        self.interaction_tick_frame_requested
+    }
+
+    /// Whether a query callback token remains scheduled for a native frame.
+    #[must_use]
+    pub fn interaction_query_frame_scheduled(self) -> bool {
+        self.interaction_query_frame_scheduled
+    }
+
+    #[must_use]
+    pub fn interaction_query_resolution_active(self) -> bool {
+        self.interaction_query_resolution_active
+    }
+
+    #[must_use]
+    pub fn interaction_native_tick_wake_active(self) -> bool {
+        self.interaction_native_tick_wake_active
+    }
+
+    #[must_use]
+    pub fn interaction_native_query_wake_active(self) -> bool {
+        self.interaction_native_query_wake_active
     }
 
     #[must_use]
@@ -373,6 +496,109 @@ impl OpenGpuiSceneHostStats {
         self.edge_path_cache_resident
     }
 
+    /// Logical vertices held by the shared edge-local path cache.
+    #[must_use]
+    pub fn edge_path_cache_vertices(self) -> usize {
+        self.edge_path_cache_vertices
+    }
+
+    /// Deterministic retained-byte estimate for shared edge-local paths and their indices.
+    #[must_use]
+    pub fn edge_path_cache_estimated_bytes(self) -> usize {
+        self.edge_path_cache_estimated_bytes
+    }
+
+    #[must_use]
+    pub fn edge_path_cache_budget_evictions(self) -> u64 {
+        self.edge_path_cache_budget_evictions
+    }
+
+    #[must_use]
+    pub fn edge_path_cache_budget_rejections(self) -> u64 {
+        self.edge_path_cache_budget_rejections
+    }
+
+    #[must_use]
+    pub fn edge_paint_plan_cache_resident(self) -> usize {
+        self.edge_paint_plan_cache_resident
+    }
+
+    #[must_use]
+    pub fn edge_marker_plan_cache_resident(self) -> usize {
+        self.edge_marker_plan_cache_resident
+    }
+
+    /// Distinct transform/plan generations retained across path and marker plans.
+    #[must_use]
+    pub fn edge_plan_cache_generations(self) -> usize {
+        self.edge_plan_cache_generations
+    }
+
+    #[must_use]
+    pub fn edge_plan_cache_vertices(self) -> usize {
+        self.edge_plan_cache_vertices
+    }
+
+    #[must_use]
+    pub fn edge_plan_cache_estimated_bytes(self) -> usize {
+        self.edge_plan_cache_estimated_bytes
+    }
+
+    #[must_use]
+    pub fn edge_plan_cache_budget_rejections(self) -> u64 {
+        self.edge_plan_cache_budget_rejections
+    }
+
+    /// Number of paint or marker plans explicitly truncated while they were being built.
+    #[must_use]
+    pub fn edge_plan_incomplete_builds(self) -> u64 {
+        self.edge_plan_incomplete_builds
+    }
+
+    /// Number of edge or marker items rejected from incomplete native paint plans.
+    #[must_use]
+    pub fn edge_plan_rejected_items(self) -> u64 {
+        self.edge_plan_rejected_items
+    }
+
+    /// Maximum logical vertex count reached by any single current-plan build.
+    #[must_use]
+    pub fn edge_plan_build_peak_vertices(self) -> usize {
+        self.edge_plan_build_peak_vertices
+    }
+
+    /// Maximum deterministic byte estimate reached by any single current-plan build.
+    #[must_use]
+    pub fn edge_plan_build_peak_estimated_bytes(self) -> usize {
+        self.edge_plan_build_peak_estimated_bytes
+    }
+
+    /// Conservative simultaneous vertex ownership for retained native paint plans.
+    ///
+    /// This includes the cached plan plus the copies Open GPUI may keep or create while painting.
+    #[must_use]
+    pub fn edge_plan_live_vertices(self) -> usize {
+        self.edge_plan_live_vertices
+    }
+
+    /// Conservative simultaneous byte ownership for retained native paint plans.
+    #[must_use]
+    pub fn edge_plan_live_estimated_bytes(self) -> usize {
+        self.edge_plan_live_estimated_bytes
+    }
+
+    /// Highest conservative simultaneous native-path vertex ownership observed while building.
+    #[must_use]
+    pub fn edge_plan_live_peak_vertices(self) -> usize {
+        self.edge_plan_live_peak_vertices
+    }
+
+    /// Highest conservative simultaneous native-path byte ownership observed while building.
+    #[must_use]
+    pub fn edge_plan_live_peak_estimated_bytes(self) -> usize {
+        self.edge_plan_live_peak_estimated_bytes
+    }
+
     #[must_use]
     pub fn edge_painter_fallbacks(self) -> u64 {
         self.edge_painter_fallbacks
@@ -403,18 +629,6 @@ impl OpenGpuiSceneHostStats {
     #[must_use]
     pub fn edge_paint_plan_reuses(self) -> u64 {
         self.edge_paint_plan_reuses
-    }
-
-    /// Number of unchanged route-local native paint items reused while rebuilding a batch plan.
-    #[must_use]
-    pub fn edge_paint_item_reuses(self) -> u64 {
-        self.edge_paint_item_reuses
-    }
-
-    /// Number of route-local native paint items prepared after a cache miss.
-    #[must_use]
-    pub fn edge_paint_item_builds(self) -> u64 {
-        self.edge_paint_item_builds
     }
 
     /// Number of native Open GPUI path primitives submitted by edge batch paint closures.
@@ -579,6 +793,7 @@ impl OpenGpuiSceneHost {
     pub fn stats(&self) -> OpenGpuiSceneHostStats {
         let activity = self.activity_coordinator.stats();
         let mounts = self.mounts.snapshot();
+        let interaction_ticks = self.interaction_owner.tick_diagnostics();
         let path_cache = self
             .edge_paths
             .try_borrow()
@@ -603,15 +818,48 @@ impl OpenGpuiSceneHost {
             eligible_lru_entries: mounts.eligible_lru_entries,
             strong_instances: mounts.strong_instances,
             strong_instance_high_water: mounts.strong_instance_high_water,
-            edge_path_cache_hits: path_cache.0,
-            edge_path_cache_misses: path_cache.1,
-            edge_path_cache_resident: path_cache.2,
+            interaction_tick_callback_registrations: interaction_ticks.callback_registrations,
+            interaction_tick_callback_entries: interaction_ticks.callback_entries,
+            interaction_tick_frame_requests: interaction_ticks.frame_requests,
+            interaction_callback_epoch: interaction_ticks.callback_epoch,
+            interaction_pending_queries: interaction_ticks.pending_queries,
+            interaction_submission_pending: interaction_ticks.pending_submission,
+            interaction_ready_prefixes: interaction_ticks.ready_prefixes,
+            interaction_tick_scheduled: interaction_ticks.tick_scheduled,
+            interaction_tick_frame_requested: interaction_ticks.tick_frame_requested,
+            interaction_query_frame_scheduled: interaction_ticks.query_frame_scheduled,
+            interaction_query_resolution_active: interaction_ticks.query_resolution_active,
+            interaction_native_tick_wake_active: interaction_ticks.native_tick_wake_active,
+            interaction_native_query_wake_active: interaction_ticks.native_query_wake_active,
+            edge_path_cache_hits: path_cache.path_hits,
+            edge_path_cache_misses: path_cache.path_misses,
+            edge_path_cache_resident: path_cache.resident_paths,
+            edge_path_cache_vertices: path_cache.path_footprint.vertices,
+            edge_path_cache_estimated_bytes: path_cache.path_footprint.estimated_bytes,
+            edge_path_cache_budget_evictions: path_cache.path_budget_evictions,
+            edge_path_cache_budget_rejections: path_cache.path_budget_rejections,
+            edge_paint_plan_cache_resident: path_cache.resident_paint_plans,
+            edge_marker_plan_cache_resident: path_cache.resident_marker_plans,
+            edge_plan_cache_generations: path_cache.plan_generations,
+            edge_plan_cache_vertices: path_cache.plan_footprint.vertices,
+            edge_plan_cache_estimated_bytes: path_cache.plan_footprint.estimated_bytes,
+            edge_plan_cache_budget_rejections: path_cache.plan_budget_rejections,
+            edge_plan_incomplete_builds: path_cache.plan_incomplete_builds,
+            edge_plan_rejected_items: path_cache.plan_rejected_items,
+            edge_plan_build_peak_vertices: path_cache.plan_build_peak_footprint.vertices,
+            edge_plan_build_peak_estimated_bytes: path_cache
+                .plan_build_peak_footprint
+                .estimated_bytes,
+            edge_plan_live_vertices: path_cache.plan_live_footprint.vertices,
+            edge_plan_live_estimated_bytes: path_cache.plan_live_footprint.estimated_bytes,
+            edge_plan_live_peak_vertices: path_cache.plan_live_peak_footprint.vertices,
+            edge_plan_live_peak_estimated_bytes: path_cache
+                .plan_live_peak_footprint
+                .estimated_bytes,
             edge_paint_preparations: paint_usage.paint_preparations,
             edge_paint_batches: paint_usage.paint_batches,
             edge_paths_painted: paint_usage.painted_paths,
             edge_paint_plan_reuses: paint_usage.paint_plan_reuses,
-            edge_paint_item_reuses: paint_usage.paint_item_reuses,
-            edge_paint_item_builds: paint_usage.paint_item_builds,
             edge_native_paint_calls: paint_usage.native_paint_calls,
             edge_native_edges_painted: paint_usage.native_edges_painted,
             edge_marker_preparations: paint_usage.marker_preparations,

@@ -1,8 +1,9 @@
 use std::rc::Rc;
 
 use jellyflow_core::{CanvasPoint, CanvasRect, CanvasSize};
-use jellyflow_open_gpui::OpenGpuiSceneHost;
-use jellyflow_runtime::{GraphRuntime, ViewSessionOptions};
+use jellyflow_open_gpui::host::OpenGpuiSceneHost;
+use jellyflow_runtime::graph::GraphRuntime;
+use jellyflow_runtime::view::ViewSessionOptions;
 use open_gpui::AppContext;
 use open_gpui_canvas_jellyflow::model_options::{
     WorkflowModelOption, WorkflowModelOptionsCompleteness, WorkflowModelOptionsFailure,

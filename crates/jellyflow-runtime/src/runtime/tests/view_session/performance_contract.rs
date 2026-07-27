@@ -21,13 +21,198 @@ use crate::runtime::commands::{
     GraphCommand, IncidentEdgePolicy, SymbolEdit, TopologyEdit, TopologyPort,
 };
 use crate::runtime::geometry::HandlePosition;
-use crate::runtime::graph_runtime::GraphRuntime;
-use crate::runtime::view_session::{ViewSessionEvent, ViewSessionOptions};
+use crate::runtime::graph_runtime::{
+    GraphRuntime, edge_incarnation_entry_clone_count_for_test,
+    port_incarnation_entry_clone_count_for_test, reset_edge_incarnation_entry_clone_count_for_test,
+    reset_port_incarnation_entry_clone_count_for_test,
+};
+use crate::runtime::interaction::{
+    CanvasInteractionConfig, CanvasInteractionPhase, CanvasInteractionQueryKind,
+    CanvasInteractionSession, CanvasPressTarget, SelectionMode,
+};
+use crate::runtime::view_session::{
+    NodeIntersectionCursorStaleReason, NodeIntersectionQuery, NodeIntersectionQueryError,
+    NodeIntersectionQueryOutcome, ViewSessionEvent, ViewSessionOptions,
+};
 
 use super::fixtures::{
-    graph_with_nodes, graph_with_routed_edge, node, publish_graph_layouts, publish_node_layouts,
-    view_options,
+    complete_nodes_intersecting, graph_with_nodes, graph_with_routed_edge, node,
+    publish_graph_layouts, publish_node_layouts, view_options,
 };
+
+#[test]
+fn node_intersection_query_never_publishes_a_partial_result() {
+    let (graph, nodes) = graph_with_nodes(4);
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .unwrap();
+    let session = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    publish_graph_layouts(&session);
+    let bounds = CanvasRect {
+        origin: CanvasPoint { x: -1.0, y: -1.0 },
+        size: CanvasSize {
+            width: 260.0,
+            height: 120.0,
+        },
+    };
+
+    let cursor = match session
+        .nodes_intersecting(NodeIntersectionQuery::new(bounds, 1))
+        .unwrap()
+    {
+        NodeIntersectionQueryOutcome::Incomplete { cursor, work } => {
+            assert_eq!(work.entries_examined, 1);
+            cursor
+        }
+        other => panic!("a one-entry page must not expose partial membership: {other:?}"),
+    };
+
+    match session
+        .nodes_intersecting(NodeIntersectionQuery::resume(cursor, 64))
+        .unwrap()
+    {
+        NodeIntersectionQueryOutcome::Complete {
+            nodes: intersecting,
+            work,
+        } => {
+            assert_eq!(intersecting, nodes);
+            assert!(work.entries_examined >= 3);
+        }
+        other => panic!("the resumed query must publish one complete membership: {other:?}"),
+    }
+}
+
+#[test]
+fn marquee_interaction_publishes_only_after_all_query_pages_complete() {
+    let (graph, nodes) = graph_with_nodes(4);
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .unwrap();
+    let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    publish_graph_layouts(&view);
+    let mut interaction = CanvasInteractionSession::attach(
+        &view,
+        CanvasInteractionConfig {
+            query_entry_budget: 1,
+            ..CanvasInteractionConfig::default()
+        },
+    )
+    .unwrap();
+    let start = view
+        .viewport_pointer_sample(ViewPoint::new(-10.0, -10.0))
+        .unwrap();
+    let end = view
+        .viewport_pointer_sample(ViewPoint::new(260.0, 120.0))
+        .unwrap();
+    let baseline = view.selection_baseline().unwrap();
+    interaction
+        .press(
+            CanvasPressTarget::Marquee {
+                selection_mode: SelectionMode::Replace,
+                baseline,
+            },
+            start,
+        )
+        .unwrap();
+
+    let mut update = interaction.move_to(end).unwrap();
+    let mut pages = 0_u64;
+    loop {
+        let dispatch = update.into_dispatch();
+        assert!(dispatch.effects.is_empty());
+        let mut queries = dispatch.queries.into_iter();
+        let Some(query) = queries.next() else {
+            panic!("an incomplete marquee owns exactly one query page");
+        };
+        assert!(matches!(
+            query.kind_for_test(),
+            CanvasInteractionQueryKind::NodeIntersection { .. }
+        ));
+        assert!(queries.next().is_none());
+        pages += 1;
+        update = interaction.resolve_query(query).unwrap();
+        let incomplete = !update.queries().is_empty();
+        if incomplete {
+            assert!(update.effects().is_empty());
+            assert_eq!(
+                interaction.presentation().phase(),
+                CanvasInteractionPhase::Marquee
+            );
+            continue;
+        }
+        assert!(update.effects().is_empty());
+        let selected = view.selection().unwrap();
+        assert!(selected.nodes().iter().copied().eq(nodes.iter().copied()));
+        break;
+    }
+    assert!(pages > 1);
+}
+
+#[test]
+fn node_intersection_cursor_cannot_cross_view_boundaries() {
+    let (graph, _) = graph_with_nodes(2);
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .unwrap();
+    let first = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    let second = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    publish_graph_layouts(&first);
+    publish_graph_layouts(&second);
+    let bounds = CanvasRect {
+        origin: CanvasPoint { x: -1.0, y: -1.0 },
+        size: CanvasSize {
+            width: 260.0,
+            height: 120.0,
+        },
+    };
+    let cursor = match first
+        .nodes_intersecting(NodeIntersectionQuery::new(bounds, 1))
+        .unwrap()
+    {
+        NodeIntersectionQueryOutcome::Incomplete { cursor, .. } => cursor,
+        other => panic!("one entry must leave a resumable cursor: {other:?}"),
+    };
+
+    assert!(matches!(
+        second.nodes_intersecting(NodeIntersectionQuery::resume(cursor, 16)),
+        Err(NodeIntersectionQueryError::StaleCursor(
+            NodeIntersectionCursorStaleReason::ForeignView
+        ))
+    ));
+}
+
+#[test]
+fn degenerate_node_intersection_bounds_complete_with_empty_membership() {
+    let (graph, _) = graph_with_nodes(1);
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .unwrap();
+    let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    publish_graph_layouts(&view);
+
+    for size in [
+        CanvasSize {
+            width: 0.0,
+            height: 20.0,
+        },
+        CanvasSize {
+            width: 20.0,
+            height: 0.0,
+        },
+    ] {
+        assert!(matches!(
+            view.nodes_intersecting(NodeIntersectionQuery::new(
+                CanvasRect {
+                    origin: CanvasPoint::default(),
+                    size,
+                },
+                1,
+            )),
+            Ok(NodeIntersectionQueryOutcome::Complete { nodes, work })
+                if nodes.is_empty() && work == Default::default()
+        ));
+    }
+}
 
 #[test]
 fn opt_in_incident_routing_dependencies_materialize_the_other_edge_endpoint() {
@@ -386,7 +571,7 @@ fn topology_changes_version_only_affected_incident_snapshots() {
 
     runtime
         .execute(GraphCommand::set_node_data(
-            0,
+            runtime.snapshot().unwrap().version(),
             ids.source,
             serde_json::json!({ "value": 1 }),
         ))
@@ -404,7 +589,7 @@ fn topology_changes_version_only_affected_incident_snapshots() {
 
     runtime
         .execute(GraphCommand::reconnect(
-            1,
+            runtime.snapshot().unwrap().version(),
             ids.edge,
             EdgeEndpoint::From,
             ids.alternate_source_port,
@@ -433,7 +618,10 @@ fn topology_changes_version_only_affected_incident_snapshots() {
     );
 
     runtime
-        .execute(GraphCommand::disconnect(2, ids.edge))
+        .execute(GraphCommand::disconnect(
+            runtime.snapshot().unwrap().version(),
+            ids.edge,
+        ))
         .unwrap()
         .applied()
         .expect("disconnect applies");
@@ -464,7 +652,7 @@ fn topology_changes_version_only_affected_incident_snapshots() {
 
     runtime
         .execute(GraphCommand::connect(
-            3,
+            runtime.snapshot().unwrap().version(),
             ids.edge,
             ids.source_port,
             ids.target_port,
@@ -494,7 +682,7 @@ fn topology_changes_version_only_affected_incident_snapshots() {
     let replacement_port = PortId::from_u128(14);
     runtime
         .execute(GraphCommand::topology(
-            4,
+            runtime.snapshot().unwrap().version(),
             TopologyEdit::new().replace_node_ports(
                 ids.source,
                 [TopologyPort::new(
@@ -668,7 +856,7 @@ fn frame_binding_revisions_advance_only_for_affected_nodes() {
 
     runtime
         .execute(GraphCommand::set_node_data(
-            0,
+            runtime.snapshot().unwrap().version(),
             changed,
             serde_json::json!({ "value": 42 }),
         ))
@@ -785,7 +973,7 @@ fn symbol_changes_advance_only_referrer_bindings_and_notifications() {
 
     runtime
         .execute(GraphCommand::symbols(
-            0,
+            runtime.snapshot().unwrap().version(),
             SymbolEdit::new().update(symbol_id, changed),
         ))
         .unwrap()
@@ -823,7 +1011,7 @@ fn replacement_binding_revision_belongs_to_the_new_node_incarnation() {
         .build(graph)
         .unwrap();
     let session = runtime.attach_view(ViewSessionOptions::default()).unwrap();
-    let old_incarnation = runtime.node_incarnation(nodes[0]).unwrap().unwrap();
+    let old_lifetime = runtime.node_lifetime_key(nodes[0]).unwrap().unwrap();
     let mut replacement = runtime
         .snapshot()
         .unwrap()
@@ -835,7 +1023,7 @@ fn replacement_binding_revision_belongs_to_the_new_node_incarnation() {
 
     runtime
         .execute(GraphCommand::topology(
-            0,
+            runtime.snapshot().unwrap().version(),
             TopologyEdit::new().remove_node(nodes[0], IncidentEdgePolicy::Reject),
         ))
         .unwrap()
@@ -843,7 +1031,7 @@ fn replacement_binding_revision_belongs_to_the_new_node_incarnation() {
         .unwrap();
     runtime
         .execute(GraphCommand::topology(
-            1,
+            runtime.snapshot().unwrap().version(),
             TopologyEdit::new().add_node(nodes[0], replacement, []),
         ))
         .unwrap()
@@ -867,7 +1055,7 @@ fn replacement_binding_revision_belongs_to_the_new_node_incarnation() {
         .unwrap();
 
     assert_eq!(frame.nodes()[0].binding_revision(), 2);
-    assert!(frame.nodes()[0].incarnation() > old_incarnation);
+    assert_ne!(frame.nodes()[0].instance().lifetime(), old_lifetime);
 }
 
 #[test]
@@ -877,7 +1065,7 @@ fn document_reset_binding_revision_belongs_to_the_reused_node_id() {
         .build(graph)
         .unwrap();
     let session = runtime.attach_view(ViewSessionOptions::default()).unwrap();
-    let old_incarnation = runtime.node_incarnation(nodes[0]).unwrap().unwrap();
+    let old_lifetime = runtime.node_lifetime_key(nodes[0]).unwrap().unwrap();
     let (replacement, replacement_nodes) = graph_with_nodes(1);
     assert_eq!(replacement_nodes, nodes);
     let replacement = runtime.catalog().canonicalize_graph(&replacement).unwrap();
@@ -901,7 +1089,7 @@ fn document_reset_binding_revision_belongs_to_the_reused_node_id() {
         .unwrap();
 
     assert_eq!(frame.nodes()[0].binding_revision(), 1);
-    assert!(frame.nodes()[0].incarnation() > old_incarnation);
+    assert_ne!(frame.nodes()[0].instance().lifetime(), old_lifetime);
 }
 
 fn chain_node(index: usize) -> NodeId {
@@ -1052,15 +1240,16 @@ fn equal_layout_feedback_does_not_churn_layout_revision_or_spatial_work() {
     assert_eq!(first.publication().unwrap().layout_revision(), 1);
     assert_eq!(first.publication().unwrap().spatial_updates(), 1);
     assert_eq!(
-        session
-            .nodes_intersecting(CanvasRect {
+        complete_nodes_intersecting(
+            &session,
+            CanvasRect {
                 origin: CanvasPoint { x: -1.0, y: -1.0 },
                 size: CanvasSize {
                     width: 2.0,
                     height: 2.0,
                 },
-            })
-            .unwrap(),
+            },
+        ),
         vec![nodes[0]]
     );
     for _ in 0..120 {
@@ -1273,6 +1462,226 @@ fn frame_order_ranks_only_admitted_candidates_with_a_large_selection() {
 }
 
 #[test]
+fn ten_thousand_selected_edges_do_not_rebuild_membership_on_geometry_hot_paths() {
+    const EDGE_COUNT: usize = 10_000;
+    let (graph, hub) = graph_with_star(EDGE_COUNT + 1);
+    let graph_id = graph.graph_id();
+    let selected_edges = graph.edges().keys().copied().collect::<Vec<_>>();
+    assert_eq!(selected_edges.len(), EDGE_COUNT);
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .unwrap();
+    let session = runtime
+        .attach_view(view_options(ViewSessionSeed::new(graph_id).with_selection(
+            ViewSelectionSeed::new(vec![], selected_edges.clone(), vec![]),
+        )))
+        .unwrap();
+    let request = || {
+        FrameRequest::new(
+            CanvasRect {
+                origin: CanvasPoint::default(),
+                size: CanvasSize {
+                    width: 200.0,
+                    height: 120.0,
+                },
+            },
+            RendererStamp::new("star.node", 1),
+        )
+    };
+    let before = session.stats().unwrap();
+
+    let frame = session.frame(request()).unwrap();
+    let hub_frame = frame
+        .nodes()
+        .iter()
+        .find(|node| node.id() == hub)
+        .expect("hub is visible");
+    let hub_instance = hub_frame.instance().clone();
+    let collector = frame.collector();
+    collector.layout(chain_layout(hub_frame, 0.0)).unwrap();
+    session
+        .submit_feedback(collector.finish().unwrap())
+        .unwrap();
+
+    session
+        .execute(GraphCommand::set_node_data(
+            session.graph_snapshot().unwrap().version(),
+            NodeId::from_u128((EDGE_COUNT + 1) as u128),
+            serde_json::json!({ "value": 1 }),
+        ))
+        .unwrap()
+        .applied()
+        .expect("unrelated payload patch applies");
+    assert!(session.invalidate_node_layout(&hub_instance).unwrap());
+    let _ = session.frame(request()).unwrap();
+
+    let after = session.stats().unwrap();
+    assert_eq!(
+        after.edge_selection_membership_rebuilds - before.edge_selection_membership_rebuilds,
+        0,
+        "frame, layout publication, patch, and invalidation must borrow the authoritative non-Clone membership",
+    );
+    assert_eq!(
+        after.edge_selection_membership_entries_rebuilt
+            - before.edge_selection_membership_entries_rebuilt,
+        0,
+        "geometry hot paths must not copy work proportional to the complete edge selection",
+    );
+    assert_eq!(
+        session.export_seed().unwrap().selection().edges(),
+        selected_edges,
+        "geometry work must preserve authoritative selection order",
+    );
+}
+
+#[test]
+fn one_edge_remove_and_restore_in_ten_thousand_edges_has_bounded_identity_copy_work() {
+    const EDGE_COUNT: usize = 10_000;
+    const MAX_IDENTITY_ENTRY_CLONES: u64 = 64;
+    let (graph, _) = graph_with_star(EDGE_COUNT + 1);
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .unwrap();
+    let session = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    let before = session.graph_snapshot().unwrap();
+    let edges = before.graph().edges().keys().copied().collect::<Vec<_>>();
+    assert_eq!(edges.len(), EDGE_COUNT);
+    let removed = edges[EDGE_COUNT / 2];
+    let removed_incarnation = before.edge_incarnation(removed).unwrap();
+
+    reset_edge_incarnation_entry_clone_count_for_test();
+    session
+        .execute(GraphCommand::disconnect(before.version(), removed))
+        .unwrap()
+        .applied()
+        .expect("disconnect applies");
+    let identity_entry_clones = edge_incarnation_entry_clone_count_for_test();
+    let after = session.graph_snapshot().unwrap();
+
+    assert!(
+        identity_entry_clones <= MAX_IDENTITY_ENTRY_CLONES,
+        "one edge removal must copy bounded tree-path work, not all {EDGE_COUNT} identities; copied {identity_entry_clones}",
+    );
+    assert_eq!(
+        before.edge_incarnation(removed),
+        Some(removed_incarnation),
+        "the retained snapshot must preserve the removed edge identity",
+    );
+    assert_eq!(after.edge_incarnation(removed), None);
+
+    reset_edge_incarnation_entry_clone_count_for_test();
+    session
+        .execute(GraphCommand::undo(after.version()))
+        .unwrap()
+        .applied()
+        .expect("undo restores the edge");
+    let restore_identity_entry_clones = edge_incarnation_entry_clone_count_for_test();
+    let restored = session.graph_snapshot().unwrap();
+    assert!(
+        restore_identity_entry_clones <= MAX_IDENTITY_ENTRY_CLONES,
+        "one edge restoration must copy bounded tree-path work, not all {EDGE_COUNT} identities; copied {restore_identity_entry_clones}",
+    );
+    let restored_incarnation = restored
+        .edge_incarnation(removed)
+        .expect("undo restores the removed edge identity");
+    assert_ne!(
+        restored_incarnation, removed_incarnation,
+        "restoring an edge ID must allocate a new lifetime identity",
+    );
+
+    for edge in edges.iter().copied().filter(|edge| *edge != removed) {
+        assert_eq!(
+            after.edge_incarnation(edge),
+            before.edge_incarnation(edge),
+            "unchanged edges must retain their lifetime identity",
+        );
+        assert_eq!(
+            restored.edge_incarnation(edge),
+            before.edge_incarnation(edge),
+            "restoring one edge must not replace unrelated edge identities",
+        );
+    }
+}
+
+#[test]
+fn one_port_remove_and_restore_in_ten_thousand_ports_has_bounded_identity_copy_work() {
+    const PORT_COUNT: usize = 10_000;
+    const MAX_IDENTITY_ENTRY_CLONES: u64 = 64;
+    let node_id = NodeId::from_u128(0x20b_000);
+    let ports = (0..PORT_COUNT)
+        .map(|index| PortId::from_u128(0x20c_000 + index as u128))
+        .collect::<Vec<_>>();
+    let mut node_record = node("ports.node", 0.0);
+    node_record.ports = ports.clone();
+    let mut builder = GraphBuilder::new(GraphId::from_u128(0x20b));
+    builder.insert_node(node_id, node_record);
+    for (index, port_id) in ports.iter().copied().enumerate() {
+        let mut record = chain_port_record(node_id, PortDirection::Out);
+        record.key = PortKey::new(format!("out-{index}"));
+        builder.insert_port(port_id, record);
+    }
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(builder.build().unwrap())
+        .unwrap();
+    let before = runtime.snapshot().unwrap();
+    let removed = ports[PORT_COUNT / 2];
+    let removed_incarnation = before.port_incarnation(removed).unwrap();
+    let desired = ports
+        .iter()
+        .copied()
+        .filter(|port| *port != removed)
+        .map(|port| {
+            TopologyPort::new(
+                port,
+                before.graph().port(&port).expect("port exists").clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    reset_port_incarnation_entry_clone_count_for_test();
+    runtime
+        .execute(GraphCommand::topology(
+            before.version(),
+            TopologyEdit::new().replace_node_ports(node_id, desired, IncidentEdgePolicy::Reject),
+        ))
+        .unwrap()
+        .applied()
+        .expect("port removal applies");
+    let identity_entry_clones = port_incarnation_entry_clone_count_for_test();
+    let after = runtime.snapshot().unwrap();
+    assert!(
+        identity_entry_clones <= MAX_IDENTITY_ENTRY_CLONES,
+        "one port removal must copy bounded tree-path work, not all {PORT_COUNT} identities; copied {identity_entry_clones}",
+    );
+    assert_eq!(before.port_incarnation(removed), Some(removed_incarnation));
+    assert_eq!(after.port_incarnation(removed), None);
+
+    reset_port_incarnation_entry_clone_count_for_test();
+    runtime
+        .execute(GraphCommand::undo(after.version()))
+        .unwrap()
+        .applied()
+        .expect("undo restores the port");
+    let restore_identity_entry_clones = port_incarnation_entry_clone_count_for_test();
+    let restored = runtime.snapshot().unwrap();
+    assert!(
+        restore_identity_entry_clones <= MAX_IDENTITY_ENTRY_CLONES,
+        "one port restoration must copy bounded tree-path work, not all {PORT_COUNT} identities; copied {restore_identity_entry_clones}",
+    );
+    let restored_incarnation = restored
+        .port_incarnation(removed)
+        .expect("undo restores the port identity");
+    assert_ne!(restored_incarnation, removed_incarnation);
+    for port in ports.iter().copied().filter(|port| *port != removed) {
+        assert_eq!(after.port_incarnation(port), before.port_incarnation(port));
+        assert_eq!(
+            restored.port_incarnation(port),
+            before.port_incarnation(port)
+        );
+    }
+}
+
+#[test]
 fn admission_query_stats_count_index_entries_before_node_deduplication() {
     let node_id = NodeId::from_u128(1);
     let mut large_node = node("test.node", 0.0);
@@ -1443,7 +1852,7 @@ fn admission_index_applies_graph_patches_without_a_full_rebuild() {
 
     session
         .execute(GraphCommand::set_node_position(
-            0,
+            session.graph_snapshot().unwrap().version(),
             nodes[0],
             CanvasPoint {
                 x: 500_000.0,
@@ -1484,7 +1893,7 @@ fn one_node_change_structurally_shares_ten_thousand_node_geometry_snapshots() {
 
     session
         .execute(GraphCommand::set_node_position(
-            0,
+            session.graph_snapshot().unwrap().version(),
             changed,
             CanvasPoint {
                 x: previous_position.x + 17.0,

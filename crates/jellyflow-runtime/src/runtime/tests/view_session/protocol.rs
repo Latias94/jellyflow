@@ -13,9 +13,11 @@ use crate::runtime::adapter_protocol::{
 };
 use crate::runtime::commands::{GraphCommand, IncidentEdgePolicy, TopologyEdit};
 use crate::runtime::graph_runtime::GraphRuntime;
+use crate::runtime::tests::fixtures::set_selection_by_id;
 use crate::runtime::view_session::{ViewSessionError, ViewSessionOptions};
+use crate::runtime::viewport::ViewportTransform;
 
-use super::fixtures::{graph_with_nodes, node, view_options};
+use super::fixtures::{complete_nodes_intersecting, graph_with_nodes, node, view_options};
 
 fn viewport() -> CanvasRect {
     CanvasRect {
@@ -56,14 +58,16 @@ fn layout_for(frame: &AdapterFrame) -> NodeLayout {
 }
 
 #[test]
-fn frame_exposes_the_viewport_transform_bound_to_its_feedback_token() {
+fn frame_exposes_the_exact_viewport_snapshot_bound_to_its_feedback_token() {
     let (graph, _) = graph_with_nodes(1);
     let runtime = GraphRuntime::builder(Default::default())
         .build(graph)
         .unwrap();
     let session = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     let pan = CanvasPoint { x: 12.0, y: -8.0 };
-    session.set_viewport(pan, 1.75).unwrap();
+    let expected = session
+        .set_viewport(ViewportTransform::new(pan, 1.75).unwrap())
+        .unwrap();
 
     let frame = session
         .frame(FrameRequest::new(
@@ -72,9 +76,14 @@ fn frame_exposes_the_viewport_transform_bound_to_its_feedback_token() {
         ))
         .unwrap();
 
-    assert_eq!(frame.transform().pan, pan);
-    assert_eq!(frame.transform().zoom, 1.75);
-    assert_eq!(session.viewport_transform().unwrap(), frame.transform());
+    assert_eq!(frame.viewport_snapshot(), expected);
+    assert_eq!(frame.transform(), expected.transform());
+
+    let current = session
+        .set_viewport(ViewportTransform::new(CanvasPoint { x: -3.0, y: 5.0 }, 0.75).unwrap())
+        .unwrap();
+    assert_ne!(current.revision(), frame.viewport_snapshot().revision());
+    assert_eq!(frame.viewport_snapshot(), expected);
 }
 
 #[test]
@@ -94,7 +103,7 @@ fn foreign_and_replayed_feedback_have_zero_side_effects() {
     let collector = frame.collector();
     collector
         .command(GraphCommand::set_node_data(
-            0,
+            frame.graph_version(),
             nodes[0],
             serde_json::json!({ "value": 1 }),
         ))
@@ -155,7 +164,7 @@ fn cross_runtime_feedback_is_rejected_before_consuming_the_local_frame() {
     let first_collector = first_frame.collector();
     first_collector
         .command(GraphCommand::set_node_data(
-            0,
+            first_frame.graph_version(),
             nodes[0],
             serde_json::json!({ "foreign": true }),
         ))
@@ -287,7 +296,7 @@ fn closed_session_rejects_originating_feedback_with_zero_side_effects() {
     let collector = frame.collector();
     collector
         .command(GraphCommand::set_node_data(
-            0,
+            frame.graph_version(),
             nodes[0],
             serde_json::json!({ "value": 1 }),
         ))
@@ -350,7 +359,7 @@ fn superseded_and_future_frames_are_rejected_before_commands_execute() {
         .unwrap();
     let old = old_frame.collector();
     old.command(GraphCommand::set_node_data(
-        0,
+        old_frame.graph_version(),
         nodes[0],
         serde_json::json!({ "source": "old" }),
     ))
@@ -442,15 +451,20 @@ fn delete_then_undo_assigns_a_new_incarnation_and_never_revives_old_targets() {
             RendererStamp::new("test.node", 1),
         ))
         .unwrap();
-    let old_incarnation = initial.nodes()[0].incarnation();
+    let old_lifetime = initial.nodes()[0].instance().lifetime();
     let old_layout = layout_for(&initial);
-    session
+    let removed_version = session
         .execute(GraphCommand::topology(
-            0,
+            initial.graph_version(),
             TopologyEdit::new().remove_node(nodes[0], IncidentEdgePolicy::Reject),
         ))
+        .unwrap()
+        .applied()
+        .expect("remove applies")
+        .version();
+    session
+        .execute(GraphCommand::undo(removed_version))
         .unwrap();
-    session.execute(GraphCommand::undo(1)).unwrap();
 
     let restored = session
         .frame(FrameRequest::new(
@@ -458,7 +472,7 @@ fn delete_then_undo_assigns_a_new_incarnation_and_never_revives_old_targets() {
             RendererStamp::new("test.node", 1),
         ))
         .unwrap();
-    assert!(restored.nodes()[0].incarnation() > old_incarnation);
+    assert_ne!(restored.nodes()[0].instance().lifetime(), old_lifetime);
     let collector = restored.collector();
     collector.layout(old_layout).unwrap();
 
@@ -582,14 +596,14 @@ fn commands_own_graph_freshness_while_transform_and_environment_precede_executio
     let stale_graph = frame.collector();
     stale_graph
         .command(GraphCommand::set_node_data(
-            1,
+            frame.graph_version(),
             nodes[0],
             serde_json::json!({ "should_not_apply": true }),
         ))
         .unwrap();
     runtime
         .execute(GraphCommand::set_node_data(
-            0,
+            frame.graph_version(),
             nodes[0],
             serde_json::json!({ "revision": 1 }),
         ))
@@ -599,11 +613,11 @@ fn commands_own_graph_freshness_while_transform_and_environment_precede_executio
         .unwrap();
     assert!(matches!(
         receipt.operations()[0].command_outcome(),
-        Some(Ok(crate::runtime::commands::GraphCommandOutcome::Applied(
+        Some(Ok(crate::runtime::commands::GraphCommandOutcome::Conflict(
             _
         )))
     ));
-    assert_eq!(runtime.snapshot().unwrap().revision(), 2);
+    assert_eq!(runtime.snapshot().unwrap().revision(), 1);
 
     let frame = session
         .frame(FrameRequest::new(
@@ -614,13 +628,13 @@ fn commands_own_graph_freshness_while_transform_and_environment_precede_executio
     let stale_transform = frame.collector();
     stale_transform
         .command(GraphCommand::set_node_data(
-            2,
+            frame.graph_version(),
             nodes[0],
             serde_json::json!({ "should_not_apply": true }),
         ))
         .unwrap();
     session
-        .set_viewport(CanvasPoint { x: 10.0, y: 20.0 }, 1.25)
+        .set_viewport(ViewportTransform::new(CanvasPoint { x: 10.0, y: 20.0 }, 1.25).unwrap())
         .unwrap();
     let error = session
         .submit_feedback(stale_transform.finish().unwrap())
@@ -632,7 +646,7 @@ fn commands_own_graph_freshness_while_transform_and_environment_precede_executio
             ..
         }
     ));
-    assert_eq!(runtime.snapshot().unwrap().revision(), 2);
+    assert_eq!(runtime.snapshot().unwrap().revision(), 1);
 
     let frame = session
         .frame(FrameRequest::new(
@@ -643,7 +657,7 @@ fn commands_own_graph_freshness_while_transform_and_environment_precede_executio
     let stale_environment = frame.collector();
     stale_environment
         .command(GraphCommand::set_node_data(
-            2,
+            frame.graph_version(),
             nodes[0],
             serde_json::json!({ "should_not_apply": true }),
         ))
@@ -663,7 +677,7 @@ fn commands_own_graph_freshness_while_transform_and_environment_precede_executio
             ..
         }
     ));
-    assert_eq!(runtime.snapshot().unwrap().revision(), 2);
+    assert_eq!(runtime.snapshot().unwrap().revision(), 1);
 }
 
 #[test]
@@ -692,7 +706,7 @@ fn document_replacement_retires_frames_targets_and_geometry() {
             .is_some()
     );
     assert_eq!(
-        session.nodes_intersecting(measured_rect()).unwrap(),
+        complete_nodes_intersecting(&session, measured_rect()),
         vec![nodes[0]]
     );
     let geometry_revision_before_reset = session.geometry_snapshot().unwrap().layout_revision();
@@ -707,7 +721,7 @@ fn document_replacement_retires_frames_targets_and_geometry() {
     let retired_collector = retired.collector();
     retired_collector
         .command(GraphCommand::set_node_data(
-            1,
+            retired.graph_version(),
             nodes[0],
             serde_json::json!({ "must_not_apply": true }),
         ))
@@ -725,12 +739,7 @@ fn document_replacement_retires_frames_targets_and_geometry() {
         geometry_revision_before_reset + 1
     );
     assert!(reset_geometry.node(nodes[0]).is_none());
-    assert!(
-        session
-            .nodes_intersecting(measured_rect())
-            .unwrap()
-            .is_empty()
-    );
+    assert!(complete_nodes_intersecting(&session, measured_rect()).is_empty());
 
     let error = session
         .submit_feedback(retired_collector.finish().unwrap())
@@ -885,9 +894,7 @@ fn frame_nodes_follow_unified_back_to_front_order_after_admission() {
         "required nodes retain explicit rank, culled nodes stay absent, and selected nodes paint last",
     );
 
-    session
-        .set_selection(vec![ids[4]], Vec::new(), Vec::new())
-        .unwrap();
+    set_selection_by_id(&session, [ids[4]], [], Vec::new()).unwrap();
     let reselection = session
         .frame(
             FrameRequest::new(
@@ -950,9 +957,7 @@ fn selection_is_a_frame_local_fact_that_does_not_wake_node_bindings() {
     let unselected_binding_revision = initial_unselected.binding_revision();
     let before_selection = session.stats().unwrap();
 
-    session
-        .set_selection(vec![selected], Vec::new(), Vec::new())
-        .unwrap();
+    set_selection_by_id(&session, [selected], [], Vec::new()).unwrap();
     let selected_frame = session.frame(request()).unwrap();
     let selected_record = selected_frame
         .nodes()
@@ -982,9 +987,7 @@ fn selection_is_a_frame_local_fact_that_does_not_wake_node_bindings() {
         before_selection.node_binding_notifications,
     );
 
-    session
-        .set_selection(Vec::new(), Vec::new(), Vec::new())
-        .unwrap();
+    set_selection_by_id(&session, [], [], Vec::new()).unwrap();
     let cleared_frame = session.frame(request()).unwrap();
     let cleared_record = cleared_frame
         .nodes()
@@ -1024,18 +1027,27 @@ fn frame_order_rank_survives_hard_retirement_and_rebuilds_on_document_reset() {
         vec![nodes[2], nodes[0], nodes[1]]
     );
 
-    session
+    let initial_version = session
+        .graph_snapshot()
+        .expect("initial snapshot")
+        .version();
+    let removed_version = session
         .execute(GraphCommand::topology(
-            0,
+            initial_version,
             TopologyEdit::new().remove_node(nodes[2], IncidentEdgePolicy::Reject),
         ))
-        .unwrap();
+        .unwrap()
+        .applied()
+        .expect("remove applies")
+        .version();
     assert_eq!(
         ids(&session.frame(request()).unwrap()),
         vec![nodes[0], nodes[1]]
     );
 
-    session.execute(GraphCommand::undo(1)).unwrap();
+    session
+        .execute(GraphCommand::undo(removed_version))
+        .unwrap();
     assert_eq!(
         ids(&session.frame(request()).unwrap()),
         vec![nodes[2], nodes[0], nodes[1]]

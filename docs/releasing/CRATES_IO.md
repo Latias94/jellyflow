@@ -16,8 +16,9 @@ the other or on the optional layout package. Publish and dry-run checks use the 
 
 Run these before any publish attempt:
 
-```text
-cargo fmt --all --check
+```sh
+set -euo pipefail
+cargo fmt --all -- --check
 cargo check --workspace --locked
 cargo nextest run --workspace --locked
 cargo test --workspace --doc --locked
@@ -32,21 +33,29 @@ cargo nextest run --manifest-path examples/canvas-jellyflow/Cargo.toml -p open-g
 cargo test --manifest-path examples/canvas-jellyflow/Cargo.toml --workspace --doc --locked
 cargo clippy --manifest-path examples/canvas-jellyflow/Cargo.toml --workspace --all-targets --locked -- -D warnings
 cargo build --manifest-path examples/canvas-jellyflow/Cargo.toml -p open-gpui-canvas-jellyflow --locked --features real-window-smoke
-# Run Shader and Workflow smoke at JELLYFLOW_SMOKE_ZOOM=0.5, 1, and 2 as documented in
-# docs/testing/node-ui-authoring-regression.md, with JELLYFLOW_SMOKE_CAPTURE_DIR set.
+capture_output="$(mktemp)"
+trap 'rm -f "$capture_output"' EXIT
+python3 tools/run_real_window_smoke_matrix.py \
+  --binary examples/canvas-jellyflow/target/debug/open-gpui-canvas-jellyflow \
+  --capture-root target/real-window-smoke \
+  --timeout-seconds 60 \
+  --capture-dir-output "$capture_output"
+python3 tools/check_real_window_smoke_evidence.py --capture-dir-from-output "$capture_output"
 git diff --check
 ```
 
 The CI workflow runs common gates on pull requests and pushes. The reusable
-release preflight workflow additionally verifies versions, runs the six-process Open GPUI
-real-window matrix, and writes package lists plus 54 interaction-state screenshots as artifacts for
-release review. The package-derived consumer smoke
-assembles all five `.crate` archives, serves them from a temporary sparse
-registry, and compiles a locked external consumer. Its dependency declarations
-contain versions and a registry name, never workspace or path dependencies.
-The production Open GPUI dependency disables default features and does not
-enable `test-support`; the additional source smoke owns framework test-support
-interaction coverage.
+release preflight workflow additionally verifies versions, runs eight Open GPUI interaction
+processes plus one semantic-LOD process, and writes package lists plus 75 state screenshots and a
+sorted screenshot manifest as artifacts for release review. The packaged-consumer smoke assembles
+all five `.crate` archives once, serves them from a temporary sparse registry, then compiles three
+locked consumers for the headless, egui, and Open GPUI boundaries. Each consumer
+declares only the package roots its source uses. Exact `cargo tree` assertions
+reject layout or cross-framework leakage, while the three closure sets together
+must cover all five candidate archives at their expected versions and checksums.
+The production Open GPUI dependency disables default features and does not enable
+`test-support`; the additional source smoke owns framework test-support interaction
+coverage.
 
 The crates publishing workflow exists only on the default branch and accepts a
 fixed `release-crates` repository-dispatch event. Its `release_tag` payload is
@@ -119,9 +128,10 @@ packaging and publishing. For a first release or same-version multi-crate
 release, dry-runs for crates that depend on unpublished workspace crates may
 fail because those dependency versions are not available on crates.io yet. Treat
 that as an expected dependency-order blocker only after confirming no unrelated
-metadata or packaging error appears earlier in the output. The package-derived
-external consumer remains the local proof that the complete candidate archive
-set compiles before those versions are visible on crates.io.
+metadata or packaging error appears earlier in the output. The isolated
+packaged consumers remain the local proof that the complete candidate
+archive set compiles without hidden cross-adapter dependencies before those
+versions are visible on crates.io.
 
 ## Publish Order
 
@@ -140,9 +150,11 @@ Actual crates.io publishing and GitHub Release creation are handled by
 version to become visible before publishing the next dependent crate, then
 creates or updates the GitHub Release from the same guarded tag and commit.
 
-Before creating the tag, update `workspace.package.version`, every internal
+Before creating the tag, promote the release notes from `Unreleased` into one non-empty exact
+`## [<version>]` changelog section. Then update `workspace.package.version`, every internal
 workspace dependency constraint, and the nested Open GPUI product package
-version. Refresh the root and `examples/canvas-jellyflow` lockfiles, then run:
+version. Refresh the root and `examples/canvas-jellyflow` lockfiles, then run. The version check
+rejects a missing or empty exact changelog section:
 
 ```text
 python3 scripts/release-version.py check --version <version>

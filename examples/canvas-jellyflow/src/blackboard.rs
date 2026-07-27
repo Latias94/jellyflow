@@ -1,24 +1,27 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::future::poll_fn;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::rc::Rc;
 use std::task::{Poll, Waker};
 
 use jellyflow_core::{Symbol, SymbolId};
-use jellyflow_open_gpui::{
-    RetainedFieldAttempt, RetainedFieldAttemptState, RetainedFieldConflictChoice,
-    RetainedFieldIntent, RetainedFieldPhase, RetainedFieldResolution, RevisionedField,
+use jellyflow_open_gpui::retained_field::{
+    ApplicationRetainedField, ApplicationRetainedFieldDispatchReceipt,
+    ApplicationRetainedFieldResolution, RetainedFieldConflictChoice, RetainedFieldPhase,
 };
-use jellyflow_runtime::{
-    GraphCommand, GraphCommandOutcome, GraphRuntime, GraphRuntimeEvent, GraphSnapshot,
-    RuntimeFactKey, RuntimePatchKind, SymbolEdit,
+use jellyflow_runtime::commands::{GraphCommand, GraphCommandOutcome, SymbolEdit};
+use jellyflow_runtime::graph::{
+    FactChange, GraphRuntime, GraphRuntimeEvent, GraphSnapshot, RuntimeFactKey, RuntimePatchKind,
 };
 use open_gpui::{
     Context, InteractiveElement, ParentElement, Render, StatefulInteractiveElement, Styled, Task,
-    Window, div, px, rgb,
+    Window, div, px,
 };
 use open_gpui_ui_components::prelude::Sizable;
 use open_gpui_ui_components::{Button, ButtonVariant, TextInput};
+
+use crate::product_theme::NativeProductTheme;
 
 pub const NATIVE_BLACKBOARD_WIDTH: f32 = 280.0;
 const NATIVE_BLACKBOARD_LOADING_SELECTOR: &str = "jellyflow-native-blackboard-loading";
@@ -85,6 +88,46 @@ pub enum BlackboardSourceSnapshot {
     Ready(GraphSnapshot),
 }
 
+/// Lifecycle evidence delivered with one Blackboard source invalidation.
+///
+/// A source must retain removals until delivery even when a later snapshot contains the same
+/// domain ID again. Snapshot equality alone cannot distinguish an update from identity reuse.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct BlackboardSourceInvalidation {
+    reset_lifetimes: bool,
+    retired_symbols: BTreeSet<SymbolId>,
+}
+
+impl BlackboardSourceInvalidation {
+    #[must_use]
+    pub fn refresh() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn reset_lifetimes() -> Self {
+        Self {
+            reset_lifetimes: true,
+            retired_symbols: BTreeSet::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn retire_symbols(symbols: impl IntoIterator<Item = SymbolId>) -> Self {
+        Self {
+            reset_lifetimes: false,
+            retired_symbols: symbols.into_iter().collect(),
+        }
+    }
+
+    fn merge(&mut self, newer: Self) {
+        self.reset_lifetimes |= newer.reset_lifetimes;
+        self.retired_symbols.extend(newer.retired_symbols);
+    }
+}
+
+pub type BlackboardSourceCallback = Rc<dyn Fn(BlackboardSourceInvalidation)>;
+
 /// Cancels one source observation when dropped.
 pub struct BlackboardSourceSubscription {
     cancel: Option<Box<dyn FnOnce()>>,
@@ -97,13 +140,20 @@ impl BlackboardSourceSubscription {
             cancel: Some(Box::new(cancel)),
         }
     }
+
+    fn cancel(&mut self) -> Result<(), BlackboardSourceError> {
+        let Some(cancel) = self.cancel.take() else {
+            return Ok(());
+        };
+        catch_unwind(AssertUnwindSafe(cancel)).map_err(|_| {
+            BlackboardSourceError::new("blackboard source subscription cancellation panicked")
+        })
+    }
 }
 
 impl Drop for BlackboardSourceSubscription {
     fn drop(&mut self) {
-        if let Some(cancel) = self.cancel.take() {
-            cancel();
-        }
+        let _ = self.cancel();
     }
 }
 
@@ -111,7 +161,7 @@ impl Drop for BlackboardSourceSubscription {
 pub trait BlackboardSource {
     fn subscribe(
         &self,
-        callback: Rc<dyn Fn()>,
+        callback: BlackboardSourceCallback,
     ) -> Result<BlackboardSourceSubscription, BlackboardSourceError>;
 
     fn snapshot(&self) -> Result<BlackboardSourceSnapshot, BlackboardSourceError>;
@@ -135,13 +185,13 @@ impl GraphRuntimeBlackboardSource {
 impl BlackboardSource for GraphRuntimeBlackboardSource {
     fn subscribe(
         &self,
-        callback: Rc<dyn Fn()>,
+        callback: BlackboardSourceCallback,
     ) -> Result<BlackboardSourceSubscription, BlackboardSourceError> {
         let token = self
             .runtime
             .subscribe(move |event| {
-                if runtime_event_affects_symbols(&event) {
-                    callback();
+                if let Some(invalidation) = runtime_blackboard_invalidation(&event) {
+                    callback(invalidation);
                 }
             })
             .map_err(|error| BlackboardSourceError::new(error.to_string()))?;
@@ -189,16 +239,28 @@ enum BlackboardPlanError {
     Draft(String),
 }
 
-fn runtime_event_affects_symbols(event: &GraphRuntimeEvent) -> bool {
+fn runtime_blackboard_invalidation(
+    event: &GraphRuntimeEvent,
+) -> Option<BlackboardSourceInvalidation> {
     match event {
-        GraphRuntimeEvent::Patched { patch } => {
-            patch.kind() == RuntimePatchKind::DocumentReset
-                || patch
-                    .facts()
-                    .iter()
-                    .any(|fact| matches!(fact.key(), RuntimeFactKey::Symbol(_)))
-        }
-        GraphRuntimeEvent::HistoryChanged { .. } => false,
+        GraphRuntimeEvent::Patched { patch } => match patch.kind() {
+            RuntimePatchKind::DocumentReset => {
+                Some(BlackboardSourceInvalidation::reset_lifetimes())
+            }
+            RuntimePatchKind::Incremental => {
+                let mut affects_symbols = false;
+                let retired_symbols = patch.facts().iter().filter_map(|fact| {
+                    let RuntimeFactKey::Symbol(symbol) = fact.key() else {
+                        return None;
+                    };
+                    affects_symbols = true;
+                    (fact.change() == FactChange::Removed).then_some(symbol)
+                });
+                let invalidation = BlackboardSourceInvalidation::retire_symbols(retired_symbols);
+                affects_symbols.then_some(invalidation)
+            }
+        },
+        GraphRuntimeEvent::HistoryChanged { .. } => None,
     }
 }
 
@@ -208,21 +270,32 @@ fn runtime_event_affects_symbols(event: &GraphRuntimeEvent) -> bool {
 /// panel from the same application-owned source contract and revision-checked commands.
 pub struct NativeBlackboard {
     source: Rc<dyn BlackboardSource>,
+    product_theme: NativeProductTheme,
     resource: BlackboardResourceState,
     source_subscription: Option<BlackboardSourceSubscription>,
     source_signal: BlackboardSourceSignal,
     source_task: Option<Task<()>>,
     source_attempt: u64,
     active_attempt: Option<u64>,
-    drafts: BTreeMap<SymbolId, RevisionedField<String>>,
+    drafts: BTreeMap<SymbolId, ApplicationRetainedField<String>>,
     draft_diagnostic: Option<String>,
 }
 
 impl NativeBlackboard {
     #[must_use]
     pub fn new(source: Rc<dyn BlackboardSource>) -> Self {
+        Self::new_with_theme(source, NativeProductTheme::workflow_dify())
+    }
+
+    /// Creates a Blackboard using the same product tokens as its graph surface.
+    #[must_use]
+    pub fn new_with_theme(
+        source: Rc<dyn BlackboardSource>,
+        product_theme: NativeProductTheme,
+    ) -> Self {
         Self {
             source,
+            product_theme,
             resource: BlackboardResourceState::Loading,
             source_subscription: None,
             source_signal: BlackboardSourceSignal::default(),
@@ -253,11 +326,12 @@ impl NativeBlackboard {
         let signal = self.source_signal.clone();
         let task = cx.spawn(async move |panel, cx| {
             loop {
-                let attempt = signal.wait().await;
+                let pending = signal.wait().await;
                 if panel
                     .update(cx, |panel, cx| {
-                        if panel.active_attempt == Some(attempt) {
-                            panel.refresh_source(attempt);
+                        if panel.active_attempt == Some(pending.attempt) {
+                            panel.apply_source_invalidation(pending.invalidation);
+                            panel.refresh_source(pending.attempt);
                             cx.notify();
                         }
                     })
@@ -286,8 +360,9 @@ impl NativeBlackboard {
         self.source_attempt = attempt;
         self.active_attempt = Some(attempt);
         let signal = self.source_signal.clone();
-        let callback: Rc<dyn Fn()> = Rc::new(move || signal.publish(attempt));
-        match self.source.subscribe(callback) {
+        let callback: BlackboardSourceCallback =
+            Rc::new(move |invalidation| signal.publish(attempt, invalidation));
+        match self.subscribe_source(callback) {
             Ok(subscription) => {
                 self.source_subscription = Some(subscription);
                 self.refresh_source(attempt);
@@ -300,7 +375,7 @@ impl NativeBlackboard {
         if self.active_attempt != Some(attempt) {
             return;
         }
-        match self.source.snapshot() {
+        match self.snapshot_source() {
             Ok(BlackboardSourceSnapshot::Loading) => {
                 self.resource = BlackboardResourceState::Loading;
             }
@@ -310,14 +385,24 @@ impl NativeBlackboard {
     }
 
     fn publish_snapshot(&mut self, snapshot: GraphSnapshot) {
+        let mut authority_error = None;
         self.drafts.retain(|id, field| {
             let Some(symbol) = snapshot.graph().symbol(id) else {
                 return false;
             };
-            field.observe(snapshot.revision(), symbol.name.clone());
-            field.phase() != RetainedFieldPhase::Clean
-                || !matches!(field.attempt_state(), RetainedFieldAttemptState::Idle)
+            match field.observe(snapshot.version(), symbol.name.clone()) {
+                Ok(_) => field.is_active(),
+                Err(error) => {
+                    authority_error = Some(format!(
+                        "blackboard rejected foreign authoritative snapshot: {error}"
+                    ));
+                    true
+                }
+            }
         });
+        if let Some(error) = authority_error {
+            self.draft_diagnostic = Some(error);
+        }
         self.resource = if snapshot.graph().symbols().is_empty() {
             BlackboardResourceState::Empty
         } else {
@@ -325,9 +410,27 @@ impl NativeBlackboard {
         };
     }
 
+    fn apply_source_invalidation(&mut self, invalidation: BlackboardSourceInvalidation) {
+        if invalidation.reset_lifetimes {
+            self.drafts.clear();
+        } else {
+            for symbol in invalidation.retired_symbols {
+                self.drafts.remove(&symbol);
+            }
+        }
+    }
+
     fn fail_source(&mut self, error: BlackboardSourceError) {
-        self.source_subscription.take();
         self.active_attempt = None;
+        let cancellation_error = self
+            .source_subscription
+            .take()
+            .and_then(|mut subscription| subscription.cancel().err());
+        let error = if let Some(cancellation_error) = cancellation_error {
+            BlackboardSourceError::new(format!("{error}; {cancellation_error}"))
+        } else {
+            error
+        };
         self.resource = BlackboardResourceState::Failed(error);
     }
 
@@ -340,7 +443,7 @@ impl NativeBlackboard {
     }
 
     fn load_latest_snapshot(&mut self) -> Option<GraphSnapshot> {
-        match self.source.snapshot() {
+        match self.snapshot_source() {
             Ok(BlackboardSourceSnapshot::Loading) => {
                 self.resource = BlackboardResourceState::Loading;
                 None
@@ -361,11 +464,22 @@ impl NativeBlackboard {
             BlackboardResourceState::Ready(snapshot) => match snapshot.graph().symbol(&symbol) {
                 Some(authoritative) => {
                     let field = self.drafts.entry(symbol).or_insert_with(|| {
-                        RevisionedField::new(snapshot.revision(), authoritative.name.clone())
+                        ApplicationRetainedField::new(
+                            snapshot.version(),
+                            authoritative.name.clone(),
+                        )
                     });
-                    field.observe(snapshot.revision(), authoritative.name.clone());
-                    field.edit(value);
-                    self.draft_diagnostic = None;
+                    match field.observe(snapshot.version(), authoritative.name.clone()) {
+                        Ok(_) => {
+                            field.edit(value);
+                            self.draft_diagnostic = None;
+                        }
+                        Err(error) => {
+                            self.draft_diagnostic = Some(format!(
+                                "blackboard rejected foreign authoritative snapshot: {error}"
+                            ));
+                        }
+                    }
                 }
                 None => {
                     self.drafts.remove(&symbol);
@@ -382,16 +496,9 @@ impl NativeBlackboard {
     fn apply_name(&mut self, symbol: SymbolId, cx: &mut Context<Self>) {
         let planned = self.plan_name_submission(symbol);
         match planned {
-            Ok((intent, updated)) => {
-                let attempt = intent.attempt();
-                let outcome = self.source.execute(
-                    GraphCommand::symbols(
-                        intent.expected_revision(),
-                        SymbolEdit::new().update(symbol, updated),
-                    )
-                    .with_label("edit native blackboard symbol"),
-                );
-                self.handle_submission_outcome(symbol, attempt, outcome);
+            Ok((receipt, command)) => {
+                let outcome = self.execute_source(command);
+                self.handle_submission_outcome(symbol, receipt, outcome);
             }
             Err(BlackboardPlanError::Resource) => {}
             Err(BlackboardPlanError::Draft(message)) => {
@@ -404,7 +511,7 @@ impl NativeBlackboard {
     fn plan_name_submission(
         &mut self,
         symbol: SymbolId,
-    ) -> Result<(RetainedFieldIntent<String>, Symbol), BlackboardPlanError> {
+    ) -> Result<(ApplicationRetainedFieldDispatchReceipt, GraphCommand), BlackboardPlanError> {
         let snapshot = self
             .load_latest_snapshot()
             .ok_or(BlackboardPlanError::Resource)?;
@@ -416,7 +523,13 @@ impl NativeBlackboard {
         let field = self.drafts.get_mut(&symbol).ok_or_else(|| {
             BlackboardPlanError::Draft("symbol has no pending blackboard edit".to_owned())
         })?;
-        field.observe(snapshot.revision(), current.name.clone());
+        field
+            .observe(snapshot.version(), current.name.clone())
+            .map_err(|error| {
+                BlackboardPlanError::Draft(format!(
+                    "blackboard authoritative snapshot rejected: {error}"
+                ))
+            })?;
         let name = field.local().trim().to_owned();
         if name.is_empty() {
             return Err(BlackboardPlanError::Draft(
@@ -427,9 +540,9 @@ impl NativeBlackboard {
         let intent = if field.conflict().is_some() {
             match field.resolve(
                 RetainedFieldConflictChoice::ReapplyLocal,
-                snapshot.revision(),
+                snapshot.version(),
             ) {
-                Ok(RetainedFieldResolution::Reapply(intent)) => intent,
+                Ok(ApplicationRetainedFieldResolution::Reapply(intent)) => intent,
                 Ok(other) => {
                     return Err(BlackboardPlanError::Draft(format!(
                         "blackboard reapply did not produce an intent: {other:?}"
@@ -442,7 +555,7 @@ impl NativeBlackboard {
                 }
             }
         } else {
-            field.plan(snapshot.revision()).map_err(|error| {
+            field.plan(snapshot.version()).map_err(|error| {
                 BlackboardPlanError::Draft(format!("blackboard apply rejected: {error}"))
             })?
         };
@@ -450,21 +563,38 @@ impl NativeBlackboard {
             name: intent.value().clone(),
             ..current
         };
-        Ok((intent, updated))
+        let command = GraphCommand::symbols(
+            intent.expected_version(),
+            SymbolEdit::new().update(symbol, updated),
+        )
+        .with_label("edit native blackboard symbol");
+        let receipt = match intent.bind_command(&command) {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                let rollback = field.not_dispatched(intent.attempt());
+                let suffix = rollback.err().map_or_else(String::new, |rollback| {
+                    format!("; rollback failed: {rollback}")
+                });
+                return Err(BlackboardPlanError::Draft(format!(
+                    "blackboard command binding rejected: {error}{suffix}"
+                )));
+            }
+        };
+        Ok((receipt, command))
     }
 
     fn handle_submission_outcome(
         &mut self,
         symbol: SymbolId,
-        attempt: RetainedFieldAttempt,
+        receipt: ApplicationRetainedFieldDispatchReceipt,
         outcome: Result<GraphCommandOutcome, BlackboardCommandError>,
     ) {
         match outcome {
-            Ok(outcome) => self.settle_submission(symbol, attempt, outcome),
+            Ok(outcome) => self.settle_submission(symbol, receipt, outcome),
             Err(error) => {
                 let result = self.drafts.get_mut(&symbol).map(|field| {
                     field.mark_uncertain(
-                        attempt,
+                        receipt,
                         format!(
                             "symbol command outcome is uncertain: {error}; wait for an authoritative refresh"
                         ),
@@ -482,18 +612,24 @@ impl NativeBlackboard {
     fn settle_submission(
         &mut self,
         symbol: SymbolId,
-        attempt: RetainedFieldAttempt,
+        receipt: ApplicationRetainedFieldDispatchReceipt,
         outcome: GraphCommandOutcome,
     ) {
         let Some(field) = self.drafts.get_mut(&symbol) else {
             return;
         };
-        field.settle_ticket(attempt, Ok(outcome));
+        if let Err(error) = field.settle_command(receipt, outcome) {
+            self.draft_diagnostic = Some(format!(
+                "blackboard rejected an unbound command outcome: {error}"
+            ));
+            return;
+        }
         self.load_latest_snapshot();
-        if self.drafts.get(&symbol).is_some_and(|field| {
-            field.phase() == RetainedFieldPhase::Clean
-                && matches!(field.attempt_state(), RetainedFieldAttemptState::Idle)
-        }) {
+        if self
+            .drafts
+            .get(&symbol)
+            .is_some_and(|field| !field.is_active())
+        {
             self.drafts.remove(&symbol);
         }
         self.draft_diagnostic = None;
@@ -513,12 +649,16 @@ impl NativeBlackboard {
                     .drafts
                     .get_mut(&symbol)
                     .ok_or_else(|| "symbol has no pending blackboard edit".to_owned())?;
-                field.observe(snapshot.revision(), current.name.clone());
+                field
+                    .observe(snapshot.version(), current.name.clone())
+                    .map_err(|error| {
+                        format!("blackboard authoritative snapshot rejected: {error}")
+                    })?;
                 match field.resolve(
                     RetainedFieldConflictChoice::AcceptRemote,
-                    snapshot.revision(),
+                    snapshot.version(),
                 ) {
-                    Ok(RetainedFieldResolution::AcceptedRemote { .. }) => Ok(()),
+                    Ok(ApplicationRetainedFieldResolution::AcceptedRemote { .. }) => Ok(()),
                     Ok(other) => Err(format!(
                         "blackboard accept-remote did not accept remote: {other:?}"
                     )),
@@ -534,6 +674,36 @@ impl NativeBlackboard {
         }
         cx.notify();
     }
+
+    fn subscribe_source(
+        &self,
+        callback: BlackboardSourceCallback,
+    ) -> Result<BlackboardSourceSubscription, BlackboardSourceError> {
+        catch_unwind(AssertUnwindSafe(|| self.source.subscribe(callback))).unwrap_or_else(|_| {
+            Err(BlackboardSourceError::new(
+                "blackboard source subscription panicked",
+            ))
+        })
+    }
+
+    fn snapshot_source(&self) -> Result<BlackboardSourceSnapshot, BlackboardSourceError> {
+        catch_unwind(AssertUnwindSafe(|| self.source.snapshot())).unwrap_or_else(|_| {
+            Err(BlackboardSourceError::new(
+                "blackboard source snapshot panicked",
+            ))
+        })
+    }
+
+    fn execute_source(
+        &self,
+        command: GraphCommand,
+    ) -> Result<GraphCommandOutcome, BlackboardCommandError> {
+        catch_unwind(AssertUnwindSafe(|| self.source.execute(command))).unwrap_or_else(|_| {
+            Err(BlackboardCommandError::new(
+                "blackboard source command panicked",
+            ))
+        })
+    }
 }
 
 impl Render for NativeBlackboard {
@@ -542,6 +712,7 @@ impl Render for NativeBlackboard {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl open_gpui::IntoElement {
+        let theme = self.product_theme;
         self.ensure_source_attempt(cx);
         let snapshot = match &self.resource {
             BlackboardResourceState::Ready(snapshot) => Some(snapshot.clone()),
@@ -561,17 +732,16 @@ impl Render for NativeBlackboard {
                 let phase = self
                     .drafts
                     .get(&id)
-                    .map_or(RetainedFieldPhase::Clean, RevisionedField::phase);
+                    .map_or(RetainedFieldPhase::Clean, ApplicationRetainedField::phase);
                 let dirty = phase != RetainedFieldPhase::Clean;
                 let conflicted = matches!(phase, RetainedFieldPhase::Conflict);
                 let can_submit = self.drafts.get(&id).is_some_and(|field| {
-                    matches!(field.attempt_state(), RetainedFieldAttemptState::Idle)
-                        && (field.can_submit() || conflicted)
+                    !field.attempt_state().blocks_submission() && (field.can_submit() || conflicted)
                 });
                 let field_notice = self
                     .drafts
                     .get(&id)
-                    .and_then(RevisionedField::notice)
+                    .and_then(ApplicationRetainedField::notice)
                     .map(str::to_owned);
                 let input_panel = cx.weak_entity();
                 let apply_panel = cx.weak_entity();
@@ -583,28 +753,28 @@ impl Render for NativeBlackboard {
                     .unwrap_or_else(|| "Any".to_owned());
                 symbols.push(
                     div()
-                        .p(px(10.0))
+                        .p(px(theme.spacing.lg))
                         .flex()
                         .flex_col()
-                        .gap(px(8.0))
-                        .rounded(px(4.0))
+                        .gap(px(theme.spacing.md))
+                        .rounded(px(theme.radius.control))
                         .border_1()
-                        .border_color(rgb(0x343d48))
-                        .bg(rgb(0x20262d))
+                        .border_color(theme.border.normal)
+                        .bg(theme.surface.raised)
                         .child(
                             div()
                                 .flex()
                                 .items_center()
                                 .justify_between()
                                 .text_xs()
-                                .text_color(rgb(0xaab4c0))
+                                .text_color(theme.text.secondary)
                                 .child(type_label.to_ascii_uppercase())
                                 .children(dirty.then(|| {
                                     div()
                                         .text_color(if conflicted {
-                                            rgb(0xffb28a)
+                                            theme.status.conflict.text
                                         } else {
-                                            rgb(0x7ab8ff)
+                                            theme.status.info.text
                                         })
                                         .child(if conflicted { "Conflict" } else { "Edited" })
                                 })),
@@ -688,7 +858,10 @@ impl Render for NativeBlackboard {
                                 )
                         }))
                         .children(field_notice.map(|message| {
-                            div().text_xs().text_color(rgb(0xff8b84)).child(message)
+                            div()
+                                .text_xs()
+                                .text_color(theme.status.danger.text)
+                                .child(message)
                         })),
                 );
             }
@@ -699,14 +872,14 @@ impl Render for NativeBlackboard {
                 div()
                     .debug_selector(|| NATIVE_BLACKBOARD_LOADING_SELECTOR.to_owned())
                     .text_sm()
-                    .text_color(rgb(0x929aa7))
+                    .text_color(theme.text.muted)
                     .child("Loading symbols..."),
             ),
             BlackboardResourceState::Empty => Some(
                 div()
                     .debug_selector(|| NATIVE_BLACKBOARD_EMPTY_SELECTOR.to_owned())
                     .text_sm()
-                    .text_color(rgb(0x929aa7))
+                    .text_color(theme.text.muted)
                     .child("No symbols"),
             ),
             BlackboardResourceState::Failed(error) => {
@@ -717,9 +890,9 @@ impl Render for NativeBlackboard {
                         .debug_selector(|| NATIVE_BLACKBOARD_FAILED_SELECTOR.to_owned())
                         .flex()
                         .flex_col()
-                        .gap(px(8.0))
+                        .gap(px(theme.spacing.md))
                         .text_sm()
-                        .text_color(rgb(0xe58b7b))
+                        .text_color(theme.status.danger.text)
                         .child(message)
                         .child(
                             div()
@@ -749,9 +922,9 @@ impl Render for NativeBlackboard {
             .flex()
             .flex_col()
             .border_l_1()
-            .border_color(rgb(0x2d3540))
-            .bg(rgb(0x171b20))
-            .text_color(rgb(0xf4f7fb))
+            .border_color(theme.border.normal)
+            .bg(theme.surface.panel)
+            .text_color(theme.text.primary)
             .child(
                 div()
                     .h(px(48.0))
@@ -760,12 +933,12 @@ impl Render for NativeBlackboard {
                     .items_center()
                     .justify_between()
                     .border_b_1()
-                    .border_color(rgb(0x2d3540))
+                    .border_color(theme.border.normal)
                     .child(div().text_base().child("Blackboard"))
                     .child(
                         div()
                             .text_xs()
-                            .text_color(rgb(0x84909d))
+                            .text_color(theme.text.muted)
                             .child(format!("{symbol_count} PARAM")),
                     ),
             )
@@ -783,33 +956,52 @@ impl Render for NativeBlackboard {
                     .scrollbar_width(px(7.0))
                     .children(resource_notice)
                     .children(symbols)
-                    .children(
-                        self.draft_diagnostic.clone().map(|message| {
-                            div().text_xs().text_color(rgb(0xff8b84)).child(message)
-                        }),
-                    ),
+                    .children(self.draft_diagnostic.clone().map(|message| {
+                        div()
+                            .text_xs()
+                            .text_color(theme.status.danger.text)
+                            .child(message)
+                    })),
             )
     }
 }
 
 #[derive(Clone, Default)]
 struct BlackboardSourceSignal {
-    pending: Rc<std::cell::Cell<Option<u64>>>,
+    pending: Rc<std::cell::RefCell<Option<BlackboardPendingSignal>>>,
     waker: Rc<std::cell::RefCell<Option<Waker>>>,
 }
 
+struct BlackboardPendingSignal {
+    attempt: u64,
+    invalidation: BlackboardSourceInvalidation,
+}
+
 impl BlackboardSourceSignal {
-    fn publish(&self, attempt: u64) {
-        self.pending.set(Some(attempt));
+    fn publish(&self, attempt: u64, invalidation: BlackboardSourceInvalidation) {
+        let mut pending = self.pending.borrow_mut();
+        match pending.as_mut() {
+            Some(current) if current.attempt > attempt => return,
+            Some(current) if current.attempt == attempt => {
+                current.invalidation.merge(invalidation);
+            }
+            _ => {
+                *pending = Some(BlackboardPendingSignal {
+                    attempt,
+                    invalidation,
+                });
+            }
+        }
+        drop(pending);
         if let Some(waker) = self.waker.borrow_mut().take() {
             waker.wake();
         }
     }
 
-    async fn wait(&self) -> u64 {
+    async fn wait(&self) -> BlackboardPendingSignal {
         poll_fn(|context| {
-            if let Some(attempt) = self.pending.take() {
-                Poll::Ready(attempt)
+            if let Some(pending) = self.pending.borrow_mut().take() {
+                Poll::Ready(pending)
             } else {
                 *self.waker.borrow_mut() = Some(context.waker().clone());
                 Poll::Pending

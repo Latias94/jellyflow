@@ -5,7 +5,9 @@ use jellyflow_core::core::{
     BindingId, CanvasPoint, EdgeId, Graph, GraphId, GroupId, NodeId, PortId, StickyNoteId, SymbolId,
 };
 
-use super::{DocumentEpoch, GraphRevision, GraphSnapshot, NodeIncarnation};
+use super::{
+    DocumentEpoch, GraphRevision, GraphSnapshot, GraphVersion, NodeIncarnation, NodeLifetimeKey,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimePatchKind {
@@ -245,8 +247,16 @@ impl RuntimePatch {
         self.0.from_revision
     }
 
+    pub fn from_version(&self) -> GraphVersion {
+        GraphVersion::new(self.0.snapshot.provenance(), self.0.from_revision)
+    }
+
     pub fn to_revision(&self) -> GraphRevision {
         self.0.to_revision
+    }
+
+    pub fn to_version(&self) -> GraphVersion {
+        self.0.snapshot.version()
     }
 
     pub fn document_epoch(&self) -> DocumentEpoch {
@@ -278,22 +288,30 @@ impl RuntimePatch {
         Arc::ptr_eq(&self.0, &other.0)
     }
 
-    /// Returns the new incarnation when this patch retired or replaced one node identity.
+    /// Returns the new exact lifetime when this patch retired or replaced one node identity.
     ///
     /// `None` means the patch did not change that node's identity. `Some(None)` means the node was
-    /// retired, while `Some(Some(_))` identifies its new incarnation.
-    pub fn node_incarnation_change(&self, node: NodeId) -> Option<Option<NodeIncarnation>> {
-        self.0.incarnations.get(&node).copied()
+    /// retired, while `Some(Some(_))` identifies its replacement lifetime.
+    pub fn node_lifetime_change(&self, node: NodeId) -> Option<Option<NodeLifetimeKey>> {
+        self.0.incarnations.get(&node).map(|incarnation| {
+            incarnation.map(|incarnation| {
+                NodeLifetimeKey::new(self.0.snapshot.provenance(), node, incarnation)
+            })
+        })
     }
 
     /// Iterates only node identities retired or replaced by this patch.
-    pub fn node_incarnation_changes(
+    pub fn node_lifetime_changes(
         &self,
-    ) -> impl Iterator<Item = (NodeId, Option<NodeIncarnation>)> + '_ {
-        self.0
-            .incarnations
-            .iter()
-            .map(|(node, incarnation)| (*node, *incarnation))
+    ) -> impl Iterator<Item = (NodeId, Option<NodeLifetimeKey>)> + '_ {
+        self.0.incarnations.iter().map(|(node, incarnation)| {
+            (
+                *node,
+                incarnation.map(|incarnation| {
+                    NodeLifetimeKey::new(self.0.snapshot.provenance(), *node, incarnation)
+                }),
+            )
+        })
     }
 
     pub(crate) fn impact(&self) -> &SessionImpact {

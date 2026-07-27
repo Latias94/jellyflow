@@ -4,17 +4,24 @@ use std::rc::Rc;
 use egui::{Id, Pos2, Rect, Sense, TextEdit, Ui, UiBuilder, Vec2, accesskit::Role};
 use egui_kittest::{Harness, kittest::Queryable as _};
 use jellyflow_core::{
-    CanvasPoint, CanvasRect, CanvasSize, GraphBuilder, GraphId, Node, NodeId, NodeKindKey, Port,
-    PortCapacity, PortDirection, PortId, PortKey, PortKind,
+    CanvasPoint, CanvasRect, CanvasSize, EdgeId, GraphBuilder, GraphId, Node,
+    NodeGraphConnectionMode, NodeId, NodeKindKey, Port, PortCapacity, PortDirection, PortId,
+    PortKey, PortKind,
 };
 use jellyflow_egui::{EguiNativeFrameError, EguiNativeFrameHost, EguiNativeFrameOutcome};
-use jellyflow_runtime::runtime::geometry::HandlePosition;
-use jellyflow_runtime::{
-    FeedbackOperationReceipt, FeedbackSubmissionError, FrameRequest, GraphCommand, GraphRevision,
-    GraphRuntime, HistoryState, IncidentEdgePolicy, LayoutNodeStatus, PublishedPortOutcome,
-    RendererStamp, TopologyEdit, TopologyPort, ViewCloseReason, ViewSessionError, ViewSessionEvent,
-    ViewSessionOptions,
+use jellyflow_runtime::commands::{GraphCommand, IncidentEdgePolicy, TopologyEdit, TopologyPort};
+use jellyflow_runtime::geometry::{HandlePosition, ViewPoint};
+use jellyflow_runtime::graph::{GraphRevision, GraphRuntime, HistoryState};
+use jellyflow_runtime::interaction::{
+    ConnectionGestureBinding, ConnectionInteractionStart, ConnectionProbe,
 };
+use jellyflow_runtime::view::{
+    ConnectionProbeQuery, ConnectionProbeQueryOutcome, ConnectionProbeTargeting,
+    FeedbackOperationReceipt, FeedbackSubmissionError, FrameRequest, LayoutNodeStatus,
+    PublishedPortOutcome, RendererStamp, ViewCloseReason, ViewSession, ViewSessionError,
+    ViewSessionEvent, ViewSessionOptions,
+};
+use jellyflow_runtime::viewport::ViewportTransform;
 
 const RENDERER_KEY: &str = "test.egui.native-frame";
 
@@ -118,9 +125,242 @@ fn complete_real_response_layout_is_accepted() {
     assert!(node.is_fresh());
     assert_eq!(port.outward(), HandlePosition::Right);
     assert_eq!(port.route_anchor().x, port.visual_bounds().origin.x + 16.0);
-    assert_eq!(port.hit_bounds().size.width, 24.0);
-    assert_eq!(port.hit_bounds().size.height, 24.0);
-    assert_ne!(port.hit_bounds(), port.visual_bounds());
+    let hit_bounds = port.hit_bounds().expect("rendered port is interactive");
+    assert_eq!(hit_bounds.size.width, 24.0);
+    assert_eq!(hit_bounds.size.height, 24.0);
+    assert_ne!(hit_bounds, port.visual_bounds());
+}
+
+#[derive(Clone, Copy)]
+enum PortClip {
+    Partial,
+    Full,
+    Visible,
+}
+
+struct ClippedPortState {
+    _runtime: GraphRuntime,
+    host: EguiNativeFrameHost,
+    source_port: PortId,
+    target_node: NodeId,
+    target_port: PortId,
+    clip: PortClip,
+    scene_origin: Pos2,
+    declared_hit: Option<Rect>,
+    effective_hit: Option<Rect>,
+}
+
+impl ClippedPortState {
+    fn new() -> Self {
+        let source_node = NodeId::from_u128(0xc1);
+        let source_port = PortId::from_u128(0xc11);
+        let target_node = NodeId::from_u128(0xc2);
+        let target_port = PortId::from_u128(0xc21);
+        let mut target = test_node(vec![target_port]);
+        target.pos = CanvasPoint { x: 280.0, y: 0.0 };
+        let mut builder = GraphBuilder::new(GraphId::from_u128(0xc0));
+        builder.insert_node(source_node, test_node(vec![source_port]));
+        builder.insert_port(source_port, output_port(source_node, "source"));
+        builder.insert_node(target_node, target);
+        builder.insert_port(target_port, input_port(target_node, "target"));
+        let runtime = GraphRuntime::builder(Default::default())
+            .build(builder.build().expect("clipped port graph"))
+            .expect("clipped port runtime");
+        let view = runtime
+            .attach_view(ViewSessionOptions::default())
+            .expect("clipped port view");
+        Self {
+            _runtime: runtime,
+            host: EguiNativeFrameHost::new(view),
+            source_port,
+            target_node,
+            target_port,
+            clip: PortClip::Partial,
+            scene_origin: Pos2::ZERO,
+            declared_hit: None,
+            effective_hit: None,
+        }
+    }
+}
+
+fn render_clipped_port(ui: &mut Ui, state: &mut ClippedPortState) {
+    state.scene_origin = ui.max_rect().min;
+    let target_node = state.target_node;
+    let target_port = state.target_port;
+    let clip = state.clip;
+    let declared_hit = &mut state.declared_hit;
+    let effective_hit = &mut state.effective_hit;
+    state
+        .host
+        .show(ui, frame_request(), |ui, native| {
+            let root = ui.group(|ui| {
+                ui.label("Clipped port");
+                let (visual_rect, visual) =
+                    ui.allocate_exact_size(Vec2::splat(16.0), Sense::hover());
+                let hit_rect = visual_rect.expand(8.0);
+                let previous_clip = ui.clip_rect();
+                let hit_clip = if native.frame_node().id() == target_node {
+                    match clip {
+                        PortClip::Partial => Rect::from_min_max(
+                            hit_rect.min,
+                            Pos2::new(hit_rect.center().x, hit_rect.max.y),
+                        ),
+                        PortClip::Full => {
+                            Rect::from_min_size(hit_rect.max + Vec2::splat(8.0), Vec2::splat(4.0))
+                        }
+                        PortClip::Visible => previous_clip,
+                    }
+                } else {
+                    previous_clip
+                };
+                ui.set_clip_rect(hit_clip);
+                let hit = ui.interact(
+                    hit_rect,
+                    native.id(("clipped-port-hit", native.frame_node().id())),
+                    Sense::drag(),
+                );
+                ui.set_clip_rect(previous_clip);
+
+                let (port, outward) = if native.frame_node().id() == target_node {
+                    *declared_hit = Some(hit.rect);
+                    *effective_hit = Some(hit.interact_rect);
+                    (target_port, HandlePosition::Left)
+                } else {
+                    (state.source_port, HandlePosition::Right)
+                };
+                native
+                    .measure_port_with_hit(port, &visual, &hit, outward)
+                    .expect("clipped port is measurable");
+            });
+            root.response
+        })
+        .expect("clipped port frame submits");
+}
+
+#[test]
+fn native_clip_controls_effective_port_hit_without_withdrawing_route_geometry() {
+    let mut harness = Harness::builder()
+        .with_size(Vec2::new(720.0, 360.0))
+        .build_ui_state(render_clipped_port, ClippedPortState::new());
+
+    let state = harness.state();
+    let declared = state.declared_hit.expect("declared target hit");
+    let effective = state.effective_hit.expect("effective target hit");
+    assert!(effective.is_positive());
+    assert_ne!(effective, declared);
+    let partial_geometry = state
+        .host
+        .view()
+        .geometry_snapshot()
+        .expect("partial geometry");
+    let partial_port = partial_geometry
+        .port(state.target_port)
+        .expect("partially clipped target keeps route geometry");
+    let expected_partial = screen_rect_to_canvas(effective, state.scene_origin);
+    assert_eq!(partial_port.hit_bounds(), Some(expected_partial));
+    let route_anchor = partial_port.route_anchor();
+    let clipped_pointer =
+        ViewPoint::new(declared.max.x - state.scene_origin.x - 1.0, route_anchor.y);
+    assert!(matches!(
+        state
+            .host
+            .view()
+            .connection_probe(ConnectionProbeQuery::new(
+                connection_binding(
+                    state.host.view(),
+                    state.source_port,
+                    EdgeId::from_u128(0xc001),
+                ),
+                clipped_pointer,
+                ConnectionProbeTargeting::new(1.0, 1.0).expect("valid target radius"),
+                64,
+            ))
+            .expect("partial clip probe"),
+        ConnectionProbeQueryOutcome::Complete {
+            probe: ConnectionProbe::None,
+            ..
+        }
+    ));
+
+    harness.state_mut().clip = PortClip::Full;
+    harness.step();
+    let state = harness.state();
+    assert!(
+        !state
+            .effective_hit
+            .expect("fully clipped response")
+            .is_positive()
+    );
+    let clipped_geometry = state
+        .host
+        .view()
+        .geometry_snapshot()
+        .expect("clipped geometry");
+    let clipped_port = clipped_geometry
+        .port(state.target_port)
+        .expect("fully clipped target keeps route geometry");
+    assert_eq!(clipped_port.hit_bounds(), None);
+    assert_eq!(clipped_port.route_anchor(), route_anchor);
+    assert!(matches!(
+        state
+            .host
+            .view()
+            .connection_probe(ConnectionProbeQuery::new(
+                connection_binding(
+                    state.host.view(),
+                    state.source_port,
+                    EdgeId::from_u128(0xc002),
+                ),
+                ViewPoint::new(route_anchor.x, route_anchor.y),
+                ConnectionProbeTargeting::new(12.0, 12.0).expect("valid target radius"),
+                64,
+            ))
+            .expect("full clip probe"),
+        ConnectionProbeQueryOutcome::Complete {
+            probe: ConnectionProbe::None,
+            ..
+        }
+    ));
+
+    harness.state_mut().clip = PortClip::Visible;
+    harness.step();
+    let state = harness.state();
+    let restored_geometry = state
+        .host
+        .view()
+        .geometry_snapshot()
+        .expect("restored geometry");
+    let restored_port = restored_geometry
+        .port(state.target_port)
+        .expect("restored target geometry");
+    assert_eq!(
+        restored_port.hit_bounds(),
+        Some(screen_rect_to_canvas(
+            state.declared_hit.expect("restored declared hit"),
+            state.scene_origin,
+        ))
+    );
+    assert_eq!(restored_port.route_anchor(), route_anchor);
+    assert!(matches!(
+        state
+            .host
+            .view()
+            .connection_probe(ConnectionProbeQuery::new(
+                connection_binding(
+                    state.host.view(),
+                    state.source_port,
+                    EdgeId::from_u128(0xc003),
+                ),
+                ViewPoint::new(route_anchor.x, route_anchor.y),
+                ConnectionProbeTargeting::new(12.0, 12.0).expect("valid target radius"),
+                64,
+            ))
+            .expect("restored probe"),
+        ConnectionProbeQueryOutcome::Complete {
+            probe: ConnectionProbe::Valid { target, .. },
+            ..
+        } if target.port() == state.target_port
+    ));
 }
 
 struct ExplicitPortOutcomesState {
@@ -230,8 +470,10 @@ impl TransformRoundTripState {
         let view = runtime
             .attach_view(ViewSessionOptions::default())
             .expect("transform view");
-        view.set_viewport(CanvasPoint { x: 10.0, y: -5.0 }, 2.0)
-            .expect("set transform");
+        view.set_viewport(
+            ViewportTransform::new(CanvasPoint { x: 10.0, y: -5.0 }, 2.0).expect("valid transform"),
+        )
+        .expect("set transform");
         Self {
             _runtime: runtime,
             host: EguiNativeFrameHost::new(view),
@@ -350,7 +592,7 @@ fn render_ordered_commands(ui: &mut Ui, state: &mut OrderedCommandsState) {
                 let offset = command_offset.get();
                 native
                     .command(GraphCommand::set_node_data(
-                        native.graph_revision() + offset,
+                        native.graph_version(),
                         native.frame_node().id(),
                         serde_json::json!({ "order": offset + 1 }),
                     ))
@@ -377,7 +619,7 @@ fn render_ordered_commands(ui: &mut Ui, state: &mut OrderedCommandsState) {
 }
 
 #[test]
-fn two_node_commands_keep_callback_order_before_all_layouts() {
+fn same_frame_node_commands_preserve_callback_order_and_reject_a_stale_followup() {
     let mut harness = Harness::builder()
         .with_size(Vec2::new(720.0, 360.0))
         .build_ui_state(render_ordered_commands, OrderedCommandsState::new());
@@ -391,39 +633,51 @@ fn two_node_commands_keep_callback_order_before_all_layouts() {
         .expect("ordered outcome")
         .receipt()
         .operations();
-    assert!(matches!(
-        operations,
-        [
-            FeedbackOperationReceipt::Command { .. },
-            FeedbackOperationReceipt::Command { .. },
-            FeedbackOperationReceipt::Layout {
-                status: LayoutNodeStatus::Stale,
-                ..
-            },
-            FeedbackOperationReceipt::Layout {
-                status: LayoutNodeStatus::Stale,
-                ..
-            },
-        ]
-    ));
-    assert!(operations[..2].iter().all(|operation| {
-        operation
+    assert!(
+        matches!(
+            operations,
+            [
+                FeedbackOperationReceipt::Command { .. },
+                FeedbackOperationReceipt::Command { .. },
+                FeedbackOperationReceipt::Layout {
+                    status: LayoutNodeStatus::Stale,
+                    ..
+                },
+                FeedbackOperationReceipt::Layout {
+                    status: LayoutNodeStatus::Unchanged,
+                    ..
+                },
+            ]
+        ),
+        "unexpected ordered feedback operations: {operations:#?}"
+    );
+    assert!(
+        operations[0]
             .command_outcome()
-            .expect("command receipt")
+            .expect("first command receipt")
             .as_ref()
-            .expect("command executes")
+            .expect("first command executes")
             .applied()
             .is_some()
-    }));
+    );
+    assert!(
+        operations[1]
+            .command_outcome()
+            .expect("second command receipt")
+            .as_ref()
+            .expect("second command executes")
+            .conflict()
+            .is_some()
+    );
     let graph = state.host.view().graph_snapshot().expect("ordered graph");
-    assert_eq!(graph.revision(), 2);
+    assert_eq!(graph.revision(), 1);
     let ordered_values = graph
         .graph()
         .nodes()
         .values()
         .map(|node| node.data["order"].as_u64().expect("order value"))
         .collect::<Vec<_>>();
-    assert_eq!(ordered_values, vec![1, 2]);
+    assert_eq!(ordered_values, vec![1, 0]);
 }
 
 struct MultiViewState {
@@ -760,7 +1014,10 @@ fn runtime_patch_retires_deleted_egui_state_without_another_frame() {
 
     host.view()
         .execute(GraphCommand::topology(
-            0,
+            host.view()
+                .graph_snapshot()
+                .expect("graph before delete")
+                .version(),
             TopologyEdit::new().remove_node(node, IncidentEdgePolicy::Reject),
         ))
         .expect("delete executes")
@@ -840,7 +1097,7 @@ fn render_delete_during_render(ui: &mut Ui, state: &mut DeleteDuringRenderState)
             if !*deleted {
                 host.view()
                     .execute(GraphCommand::topology(
-                        native.graph_revision(),
+                        native.graph_version(),
                         TopologyEdit::new().remove_node(*node, IncidentEdgePolicy::Reject),
                     ))
                     .expect("delete executes during render")
@@ -992,7 +1249,7 @@ fn render_close_during_render(ui: &mut Ui, state: &mut CloseDuringRenderState) {
                 .expect("real frame port is measurable");
             native
                 .command(GraphCommand::set_node_data(
-                    native.graph_revision(),
+                    native.graph_version(),
                     *node,
                     serde_json::json!({ "should_not_apply": true }),
                 ))
@@ -1122,7 +1379,7 @@ fn render_dynamic_port(ui: &mut Ui, state: &mut DynamicPortState) {
                     let graph = native.frame_node().graph_snapshot().graph();
                     let base = graph.port(base_port).expect("base frame port").clone();
                     let command = GraphCommand::topology(
-                        native.graph_revision(),
+                        native.graph_version(),
                         TopologyEdit::new().replace_node_ports(
                             *node,
                             [
@@ -1465,7 +1722,7 @@ fn hard_retirement_clears_exact_egui_state_across_replacement_readd_and_close() 
         .view()
         .graph_snapshot()
         .expect("graph before delete")
-        .revision();
+        .version();
     let node = harness.state().node;
     harness
         .state()
@@ -1497,7 +1754,7 @@ fn hard_retirement_clears_exact_egui_state_across_replacement_readd_and_close() 
         .view()
         .graph_snapshot()
         .expect("graph before re-add")
-        .revision();
+        .version();
     let port = harness.state().port;
     harness
         .state()
@@ -1543,6 +1800,18 @@ fn frame_request_with_renderer(renderer_incarnation: u64) -> FrameRequest {
         },
         RendererStamp::new(RENDERER_KEY, renderer_incarnation),
     )
+}
+
+fn connection_binding(view: &ViewSession, port: PortId, edge: EdgeId) -> ConnectionGestureBinding {
+    let port = view
+        .port_instance_key(port)
+        .expect("connection port identity query")
+        .expect("source port is current");
+    let drag = view
+        .port_connection_drag_intent(port)
+        .expect("source port can begin a connection");
+    ConnectionInteractionStart::binding_from_port_drag(drag, edge, NodeGraphConnectionMode::Strict)
+        .expect("source port admits a strict connection")
 }
 
 fn graph_with_ports(
@@ -1595,6 +1864,34 @@ fn output_port(node: NodeId, key: &str) -> Port {
         connectable_end: None,
         ty: None,
         data: serde_json::Value::Null,
+    }
+}
+
+fn input_port(node: NodeId, key: &str) -> Port {
+    Port {
+        node,
+        key: PortKey::new(key),
+        dir: PortDirection::In,
+        kind: PortKind::Data,
+        capacity: PortCapacity::Single,
+        connectable: None,
+        connectable_start: None,
+        connectable_end: None,
+        ty: None,
+        data: serde_json::Value::Null,
+    }
+}
+
+fn screen_rect_to_canvas(rect: Rect, scene_origin: Pos2) -> CanvasRect {
+    CanvasRect {
+        origin: CanvasPoint {
+            x: rect.min.x - scene_origin.x,
+            y: rect.min.y - scene_origin.y,
+        },
+        size: CanvasSize {
+            width: rect.width(),
+            height: rect.height(),
+        },
     }
 }
 

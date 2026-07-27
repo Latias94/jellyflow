@@ -16,7 +16,7 @@ geometry through `OpenGpuiPortHandle`; no cross-framework node UI DSL or descrip
 is involved.
 
 The window also mounts an application-owned native blackboard beside the graph. It reads graph
-symbols directly from `GraphRuntime` snapshots and submits revision-checked `SymbolEdit` commands;
+symbols directly from `GraphRuntime` snapshots and submits version-checked `SymbolEdit` commands;
 the adapter does not define a portable blackboard widget or descriptor.
 
 Workflow and shader fields share application-owned `RetainedFieldStore<T>` handles. Each native
@@ -38,11 +38,12 @@ feedback after the next successful commit; create-from-wire search keeps its own
 Run it from the Jellyflow root:
 
 ```sh
-cargo run --manifest-path examples/canvas-jellyflow/Cargo.toml -p open-gpui-canvas-jellyflow
+cargo run --manifest-path examples/canvas-jellyflow/Cargo.toml \
+  -p open-gpui-canvas-jellyflow --locked
 
 # Dify-style workflow nodes
 cargo run --manifest-path examples/canvas-jellyflow/Cargo.toml \
-  -p open-gpui-canvas-jellyflow -- --workflow
+  -p open-gpui-canvas-jellyflow --locked -- --workflow
 ```
 
 Run both real-window smoke modes on a machine with a native window server:
@@ -54,19 +55,34 @@ cargo run --manifest-path examples/canvas-jellyflow/Cargo.toml \
   -p open-gpui-canvas-jellyflow --locked --features real-window-smoke -- --workflow --smoke
 ```
 
-Smoke mode opens the same production window and waits for the first complete product frame. A pass
-requires a positive measured graph surface, every fixture node mounted and active, complete native
-layout feedback, zero feedback or measurement failures, a non-blank native framebuffer capture, a
-middle-button pan dispatched through the production window event path, and an observed viewport
-change. It emits one `JELLYFLOW_REAL_WINDOW_SMOKE` marker with paint and input evidence and exits
-automatically. Failure, an early application close, or the 15-second in-process timeout exits
-non-zero. The non-default `real-window-smoke` feature only enables Open GPUI's framebuffer readback
-support for this gate; normal product builds do not enable test support.
+Smoke mode drives the production window through the bounded Shader and Workflow interaction matrix.
+A pass requires retained lifecycle invariants, complete current-graph geometry, non-blank native
+paint, fixed-zoom node and connection auto-pan, focus traversal, edge deletion and reconnect,
+create-from-wire search, fitted selection chrome, and the directed semantic-LOD continuity probe.
+The process emits one `JELLYFLOW_REAL_WINDOW_SMOKE` marker and exits automatically; any failed
+invariant, early close, or timeout exits non-zero. See the
+[node UI authoring regression contract](../../docs/testing/node-ui-authoring-regression.md) for the
+authoritative scenarios, window and zoom matrix, screenshot checkpoints, and required commands.
+The non-default `real-window-smoke` feature only enables framebuffer readback for this gate; normal
+product builds do not enable test support.
+
+The production frame-clock witness is a smaller, non-visual gate for native node-drag auto-pan. It
+builds without `real-window-smoke`, holds a real node drag in the viewport edge band, requires at
+least three monotonically moving viewport samples entered through `Window::on_next_frame`, and exits
+automatically:
+
+```sh
+cargo build --manifest-path examples/canvas-jellyflow/Cargo.toml \
+  -p open-gpui-canvas-jellyflow --locked --no-default-features \
+  --bin open-gpui-native-frame-clock-witness
+python3 tools/check_open_gpui_native_frame_clock.py --require-native
+```
 
 Run the focused tests:
 
 ```sh
-cargo nextest run --manifest-path examples/canvas-jellyflow/Cargo.toml -p open-gpui-canvas-jellyflow --no-fail-fast
+cargo nextest run --manifest-path examples/canvas-jellyflow/Cargo.toml \
+  -p open-gpui-canvas-jellyflow --locked --no-fail-fast
 ```
 
 The hard adapter contracts remain in `jellyflow-open-gpui`. This example owns

@@ -5,10 +5,11 @@ use jellyflow_core::{
     NodeId, NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKey, PortKind,
 };
 use jellyflow_open_gpui::authoring::OpenGpuiNodeBinding;
-use jellyflow_open_gpui::{OpenGpuiNodeRegistry, OpenGpuiSceneHost};
+use jellyflow_open_gpui::host::OpenGpuiSceneHost;
+use jellyflow_open_gpui::registry::OpenGpuiNodeRegistry;
 use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec};
 use jellyflow_runtime::{
-    DEFAULT_FRAME_ROUTING_DEPENDENCY_BUDGET, GraphRuntime, ViewSessionOptions,
+    graph::GraphRuntime, view::DEFAULT_FRAME_ROUTING_DEPENDENCY_BUDGET, view::ViewSessionOptions,
 };
 use open_gpui::{AppContext, Context, Entity, ParentElement, Render, Window, div};
 

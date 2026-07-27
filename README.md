@@ -12,7 +12,7 @@ Jellyflow separates an authoritative graph runtime from framework-owned componen
 GraphRuntime -> ViewSession -> native adapter
 ```
 
-The runtime owns graph documents, revisioned commands, connection policy, history, frame facts,
+The runtime owns graph documents, version-checked commands, connection policy, history, frame facts,
 and view-isolated geometry. Adapters render ordinary native components, report complete node and
 real-port bounds, and keep focus, IME, scrolling, popovers, themes, and local component state in
 their UI framework.
@@ -26,7 +26,7 @@ witness. Jellyflow does not define a portable widget tree or cross-framework nod
 | --- | --- |
 | `jellyflow-core` | Portable graph facts, stable IDs, validation, type descriptors, and mutation footprints. |
 | `jellyflow-layout` | Optional headless layout engines and custom layout registration. |
-| `jellyflow-runtime` | `GraphRuntime`, `ViewSession`, revisioned commands, private mutation/history kernel, semantic catalog, persistence, frames, and geometry. |
+| `jellyflow-runtime` | `GraphRuntime`, `ViewSession`, version-checked commands, private mutation/history kernel, semantic catalog, persistence, frames, and geometry. |
 | `jellyflow-open-gpui` | Retained Open GPUI registry, scene host, binding, measurement, input, activity, and draft lifecycle. |
 | `jellyflow-egui` | Immediate-mode frame/feedback adapter and conformance witness. |
 
@@ -34,8 +34,9 @@ witness. Jellyflow does not define a portable widget tree or cross-framework nod
 
 ```rust
 use jellyflow_core::{Graph, GraphId};
+use jellyflow_runtime::graph::GraphRuntime;
 use jellyflow_runtime::schema::NodeCatalog;
-use jellyflow_runtime::{GraphRuntime, ViewSessionOptions};
+use jellyflow_runtime::view::ViewSessionOptions;
 
 let runtime = GraphRuntime::builder(NodeCatalog::new()).build(Graph::new(GraphId::new()))?;
 let view = runtime.attach_view(ViewSessionOptions::default())?;
@@ -45,16 +46,17 @@ assert_eq!(snapshot.revision(), 0);
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-Graph writes are revision checked. A stale command returns the current owned snapshot and affected
-footprint; Jellyflow never silently retries or merges application intent.
+Graph writes are checked against an opaque graph version. A stale command returns the current owned
+snapshot and affected footprint; Jellyflow never silently retries or merges application intent.
 
 ```rust
 # use jellyflow_core::{Graph, GraphId};
+# use jellyflow_runtime::commands::{GraphCommand, GraphCommandOutcome, TopologyEdit};
+# use jellyflow_runtime::graph::GraphRuntime;
 # use jellyflow_runtime::schema::NodeCatalog;
-# use jellyflow_runtime::{GraphCommand, GraphCommandOutcome, GraphRuntime, TopologyEdit};
 # let runtime = GraphRuntime::builder(NodeCatalog::new()).build(Graph::new(GraphId::new()))?;
 let outcome = runtime.execute(GraphCommand::topology(
-    runtime.snapshot()?.revision(),
+    runtime.snapshot()?.version(),
     TopologyEdit::new(),
 ))?;
 
@@ -66,13 +68,16 @@ After an adapter resolves drag, resize, or layout interaction policy, commit the
 geometry atomically with one batch command:
 
 ```rust
-# use jellyflow_core::{CanvasPoint, CanvasSize, NodeId};
-# use jellyflow_runtime::{GraphCommand, NodeGeometryEdit};
-# let revision = 0;
+# use jellyflow_core::{CanvasPoint, CanvasSize, Graph, GraphId, NodeId};
+# use jellyflow_runtime::commands::{GraphCommand, NodeGeometryEdit};
+# use jellyflow_runtime::graph::GraphRuntime;
+# use jellyflow_runtime::schema::NodeCatalog;
+# let runtime = GraphRuntime::builder(NodeCatalog::new()).build(Graph::new(GraphId::new()))?;
+# let version = runtime.snapshot()?.version();
 # let first = NodeId::new();
 # let second = NodeId::new();
 let command = GraphCommand::set_node_geometry(
-    revision,
+    version,
     [
         NodeGeometryEdit::new(first)
             .with_position(CanvasPoint { x: 40.0, y: 80.0 }),
@@ -105,7 +110,7 @@ keeps arbitrary controls at native metrics, switches to canonical overview with 
 uses a graph-inert interaction island for active focus, IME, or overlays. Continuous scaling is an
 explicit component-managed responsibility. Document size remains the default; Dify-style growing
 nodes opt into `ContentHeight`, wrap one 1:1 root with `binding.measure_content`, and converge through
-revisioned geometry commands rather than render-time mutation.
+version-checked geometry commands rather than render-time mutation.
 
 See:
 
@@ -145,8 +150,8 @@ Each native canvas attaches an independent `ViewSession` to a shared `GraphRunti
 5. Finish once and submit through the originating view.
 
 Feedback tokens are one-shot and replay protected. View closure is terminal. Renderer replacement,
-node reincarnation, document replacement, and environment changes invalidate stale work without
-reviving retired hit targets.
+node lifetime replacement, document replacement, and environment changes invalidate stale work
+without reviving retired hit targets.
 
 Connection UI should use `ViewSession::evaluate_connection`, `port_connection_facts`, and
 `create_from_wire_candidates`. The runtime remains authoritative for direction, type, capacity,
@@ -155,9 +160,10 @@ replacement, reconnect, cycle policy, and structured rejection diagnostics.
 ## Layout
 
 `jellyflow-layout` provides layered DAG, tidy-tree, radial mind-map, and freeform mind-map engines.
-Engines return `LayoutResult`; applications turn its node positions into a revisioned
+Engines return `LayoutResult`; applications turn its node positions into a version-checked
 `GraphCommand::set_node_geometry` commit. Framework measurements may be supplied through
-`LayoutContext` without entering the graph document.
+`LayoutContext` without entering the graph document. The resulting command uses the opaque graph
+version from the snapshot against which the layout was planned.
 
 ## Persistence
 
@@ -170,8 +176,8 @@ file loader returns a `CanonicalGraph`, which is the persisted-document input to
 
 ```rust
 use jellyflow_runtime::io::GraphFile;
+use jellyflow_runtime::graph::GraphRuntime;
 use jellyflow_runtime::schema::NodeCatalog;
-use jellyflow_runtime::GraphRuntime;
 
 let catalog = NodeCatalog::new(); // Register application kinds and migrators here.
 let document = GraphFile::load_canonical_json("workflow.jellyflow.json", &catalog)?;
@@ -187,7 +193,7 @@ runtime.replace_document(replacement)?;
 programmatically. It runs whole-graph canonicalization before publication and retains that exact
 catalog snapshot for every attached view and adapter. Whole-document replacement accepts only a
 `CanonicalGraph` produced from the same catalog provenance, then atomically advances the revision
-and document epoch, clears history, retires prior node incarnations, and resets every attached
+and document epoch, clears history, retires prior node lifetimes, and resets every attached
 view. Finalize catalog registration before publishing the runtime and use `runtime.catalog()` for
 later loads; an independently rebuilt or subsequently modified catalog is intentionally rejected.
 The supported persisted-file API likewise does not return a raw `Graph` without catalog migration.
@@ -201,7 +207,7 @@ unknown node kinds remain round-trippable.
 ## Development
 
 ```sh
-cargo fmt --all --check
+cargo fmt --all -- --check
 cargo check --workspace --locked
 cargo nextest run --workspace --locked --cargo-quiet
 cargo test --workspace --doc --locked

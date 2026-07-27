@@ -15,7 +15,7 @@ portable widget tree or a cross-framework node UI DSL.
 - `OpenGpuiNodeBinding::authoring` opens one owned, immutable
   `authoring::OpenGpuiNodeAuthoring` for the current graph revision. Its ordered ports pair graph
   facts, constant-work connection summaries, and an `authoring::OpenGpuiPortHandle` from that same revision. Consuming the view
-  with `enqueue(command, cx)` validates the mount, incarnation, and exact command revision before
+  with `enqueue(command, cx)` validates the mount, incarnation, and exact command version before
   the command can enter the host's ordered journal. The ticket resolves from real frame feedback;
   graph mutation is never synchronous and stale commands are never silently retried.
 - `authoring::OpenGpuiPortHandle` measures a native element after layout and can add pointer, keyboard, and
@@ -24,7 +24,7 @@ portable widget tree or a cross-framework node UI DSL.
   `OpenGpuiOverlayInteractionBoundary` owns popup hit-testing outside node bounds. Focus, IME,
   popup state, and application services remain in the node component.
 - The scene host's internal connection coordinator manages generation-bound drag, search,
-  reconnect, cancellation, freshness checks, and revisioned command creation. The host performs
+  reconnect, cancellation, freshness checks, and version-checked command creation. The host performs
   the graph query and dispatches the returned command.
 - Retained-field and activity owners model dirty composition, conflict resolution, focus/capture
   leases, culling, and terminal retirement without persisting framework state in the graph.
@@ -80,7 +80,7 @@ let port = authoring
     .facts()
     .clone();
 let command = GraphCommand::topology(
-    authoring.revision(),
+    authoring.version(),
     TopologyEdit::new().replace_node_ports(
         authoring.node_id(),
         [TopologyPort::new(self.output_port, port)],
@@ -91,13 +91,20 @@ let ticket = authoring.enqueue(command, cx)?;
 ```
 
 Opening a later authoring view does not update an older one. Enqueue rejects a retired mount, a
-reincarnated node, a terminally closed view, a mismatched command revision, or a graph revision that
+reincarnated node, a terminally closed view, a mismatched command version, or a graph revision that
 changed before journal admission. Queueing two commands from the same committed revision is allowed;
 normal runtime ordering may apply the first and return a conflict for the second.
 
 The binding remains the lifecycle boundary. Keep an `activity::OpenGpuiActivityLease` while the
-component owns focus, IME composition, a popup, an async task, or another retained resource. Wrap a
-popup rendered outside node bounds with `binding.overlay_boundary()`. After application state
+component owns focus, IME composition, a popup, an async task, or another retained resource. A
+component that captures the native pointer must use
+`binding.activity().capture_pointer(hitbox, window)` and keep the returned exact-capture lease until
+it finishes. Open GPUI assigns a replacement `HitboxId` during prepaint, so an active component must
+call `lease.rebind(replacement_hitbox, window)` before registering the replacement listeners. A
+`false` result means capture ownership was lost and the component must stop without reclaiming it.
+Normal completion must call `lease.release(window)`; terminal host cleanup remains the fallback and
+releases only the registered hitbox.
+Wrap a popup rendered outside node bounds with `binding.overlay_boundary()`. After application state
 changes intrinsic content geometry, update the binding entity and call
 `binding.invalidate_layout(cx)` from that binding context. The request is mount-scoped and cannot
 invalidate a replacement incarnation:
@@ -112,10 +119,32 @@ The default `SemanticLod` policy uses hysteresis: detail enters overview at zoom
 returns to detail at zoom 1.0. Detail stays at native logical-pixel metrics because Open GPUI 0.2
 cannot transform an arbitrary retained subtree coherently across layout, paint, hitboxes, focus,
 IME, and overlays. Overview owns canonical projected node and port geometry outside the detail
-band. A focused, composing, or overlay-owning node may also render a fixed-pixel interaction island;
-that island cannot publish graph geometry, arm node or connection gestures, or expose semantic graph
-ports. Pointer capture, graph interaction, and draft leases protect retention but do not create an
-interaction island.
+band. A focused, composing, pointer-capturing, or overlay-owning node may also render a fixed-pixel
+interaction island; that island cannot publish graph geometry, arm node or connection gestures, or
+expose semantic graph ports. Graph-interaction and draft leases protect retention without creating
+an interaction island.
+
+An application can replace the generic semantic-LOD overview with one ordinary Open GPUI entity for
+a renderer key. The detail and overview entities share the same binding, node instance, mount
+lifetime, host selection chrome, and real-port capabilities. This remains an adapter-local native
+factory, not a renderer-neutral UI description:
+
+```rust,ignore
+registry.register_with_overview(
+    "shader.multiply",
+    |binding, _window, cx| cx.new(|_| MultiplyNode::new(binding)),
+    |mount, _window, cx| cx.new(|_| MultiplyOverview::new(mount)),
+);
+```
+
+An overview component requests `mount.port_handle(port_id, cx)` during each render and wraps its
+native marker with `measure` or `interactive`. That handle shares the underlying semantic capability
+with detail while publishing overview geometry; requesting it again observes dynamic port topology
+and presentation changes. The factory may return either `Entity<V: Render>` or `AnyView`. It is
+created at most once per retained mount, survives zoom transitions and parking, and is released with
+that mount. If no overview factory is registered, or if the factory returns an error or panics while
+mounting, the existing generic overview is used. A healthy detail entity is never replaced by an
+overview failure. `ComponentManaged` registrations do not create an unused overview entity.
 
 `ComponentManaged` keeps the registered renderer in detail and gives it full responsibility for
 continuous native metrics. The component can read
@@ -136,7 +165,7 @@ registry.register_with_policy("workflow.condition", policy, |binding, _window, c
 ```
 
 The component wraps one naturally sized native root with `binding.measure_content(content)`. Two
-stable 1:1 samples are required before the host queues a revision-checked geometry command. One
+stable 1:1 samples are required before the host queues a version-checked geometry command. One
 command may be pending, newer targets coalesce, and bounded cycle detection freezes a non-convergent
 epoch. Call `binding.invalidate_layout(cx)` when product state changes intrinsic layout; environment
 changes start a separate convergence epoch. No graph mutation occurs during render or prepaint.
@@ -149,8 +178,10 @@ invalid entries while the remaining registry still seals. Missing renderers, iso
 and factories that fail while mounting produce an adapter-local diagnostic fallback while the
 runtime's opaque node data and real ports remain intact. A retained instance is identified by view,
 node, renderer, and incarnation. Normal culling may park an eligible instance; renderer replacement,
-node retirement, document replacement, and terminal view closure revoke leases, focus, capture,
-overlays, subscriptions, and geometry.
+node retirement, document replacement, and terminal view closure revoke leases, focus, registered
+exact capture, overlays, subscriptions, and geometry. The first render also installs a window-scoped
+lifecycle bridge, so terminal cleanup does not depend on another render or on releasing the final
+`Entity` handle after the host is removed from its parent tree.
 
 The adapter keeps a bounded cache (256 eligible parked entries and 64 protected activity owners by
 default). Focused, composing, captured, overlay, and dirty retained-field nodes are protected or

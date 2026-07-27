@@ -5,11 +5,12 @@ use jellyflow_core::{
     Port, PortCapacity, PortDirection, PortId, PortKey, PortKind,
 };
 use jellyflow_egui::{EguiNativeFrameHost, EguiNativeFrameOutcome};
-use jellyflow_runtime::runtime::geometry::HandlePosition;
-use jellyflow_runtime::{
-    AdapterEnvironment, FeedbackOperationReceipt, FrameBoundsSource, FrameRequest, GraphCommand,
-    GraphRuntime, GraphSnapshot, IncidentEdgePolicy, LayoutNodeStatus, RendererStamp, TopologyEdit,
-    TopologyPort, ViewSession, ViewSessionOptions,
+use jellyflow_runtime::commands::{GraphCommand, IncidentEdgePolicy, TopologyEdit, TopologyPort};
+use jellyflow_runtime::geometry::HandlePosition;
+use jellyflow_runtime::graph::{GraphRuntime, GraphSnapshot};
+use jellyflow_runtime::view::{
+    AdapterEnvironment, FeedbackOperationReceipt, FrameBoundsSource, FrameRequest,
+    LayoutNodeStatus, RendererStamp, ViewSession, ViewSessionOptions,
 };
 
 const TRACER_RENDERER_KEY: &str = "test.adapter-conformance.native";
@@ -84,7 +85,7 @@ impl TracerFixture {
     fn add_dynamic_port_command(&self, snapshot: &GraphSnapshot) -> Option<GraphCommand> {
         let base = snapshot.graph().port(&self.ids.base_port)?.clone();
         Some(GraphCommand::topology(
-            snapshot.revision(),
+            snapshot.version(),
             TopologyEdit::new().replace_node_ports(
                 self.ids.node,
                 [
@@ -187,7 +188,7 @@ fn render_vertical_tracer(ui: &mut Ui, state: &mut VerticalTracerState) {
                 if has_dynamic {
                     if ui.button("Undo output").clicked() {
                         native
-                            .command(GraphCommand::undo(native.graph_revision()))
+                            .command(GraphCommand::undo(native.graph_version()))
                             .expect("undo command is collected");
                     }
                 } else if ui.button("Add output").clicked() {
@@ -364,9 +365,7 @@ fn normalized_operations(outcome: &EguiNativeFrameOutcome) -> Vec<NormalizedOper
             FeedbackOperationReceipt::Layout { status, .. } => {
                 Some(NormalizedOperation::Layout(*status))
             }
-            FeedbackOperationReceipt::Selection { .. }
-            | FeedbackOperationReceipt::Viewport { .. }
-            | FeedbackOperationReceipt::Command { .. } => None,
+            FeedbackOperationReceipt::Command { .. } => None,
         })
         .collect()
 }

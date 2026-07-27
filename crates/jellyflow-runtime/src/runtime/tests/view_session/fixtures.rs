@@ -1,6 +1,6 @@
 use jellyflow_core::core::{
-    CanvasPoint, CanvasSize, Edge, EdgeId, EdgeKind, Graph, GraphBuilder, GraphId, Node, NodeId,
-    NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKey, PortKind,
+    CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId, EdgeKind, Graph, GraphBuilder, GraphId,
+    Node, NodeId, NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKey, PortKind,
 };
 
 use crate::io::ViewSessionSeed;
@@ -9,7 +9,9 @@ use crate::runtime::adapter_protocol::{
     side_anchor,
 };
 use crate::runtime::geometry::HandlePosition;
-use crate::runtime::view_session::{ViewSession, ViewSessionOptions};
+use crate::runtime::view_session::{
+    NodeIntersectionQuery, NodeIntersectionQueryOutcome, ViewSession, ViewSessionOptions,
+};
 
 pub(super) fn node(kind: &str, x: f32) -> Node {
     Node {
@@ -215,4 +217,17 @@ pub(super) fn publish_node_layouts(
     session
         .submit_feedback(collector.finish().expect("fixture feedback is complete"))
         .expect("fixture feedback is accepted");
+}
+
+pub(super) fn complete_nodes_intersecting(
+    session: &ViewSession,
+    bounds: CanvasRect,
+) -> Vec<NodeId> {
+    match session
+        .nodes_intersecting(NodeIntersectionQuery::new(bounds, usize::MAX))
+        .expect("fixture node-intersection query is valid")
+    {
+        NodeIntersectionQueryOutcome::Complete { nodes, .. } => nodes,
+        other => panic!("fixture node-intersection query must complete: {other:?}"),
+    }
 }

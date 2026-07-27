@@ -22,41 +22,51 @@ impl RealWindowSmokeProbe {
             }
             ProbePhase::FitWait => {
                 if geometry_fits_surface(view, expectations, surface_size)? {
-                    self.capture_fit = Some(
-                        view.viewport_transform()
-                            .map_err(|_| "input_viewport_read_failed")?,
-                    );
-                    self.transition(ProbePhase::CaptureZoom);
+                    self.bounds_verified = self.config.surface_matches(surface_size);
+                    if !self.bounds_verified {
+                        return Err("input_window_bounds_mismatch");
+                    }
+                    self.transition(match self.config.scenario() {
+                        SmokeScenario::Interaction => ProbePhase::CaptureZoom,
+                        SmokeScenario::LodThreshold => ProbePhase::LodSet,
+                    });
                     Ok(None)
                 } else {
                     self.wait_or_timeout()
                 }
             }
             ProbePhase::CaptureZoom => {
-                let current = view
-                    .viewport_transform()
-                    .map_err(|_| "input_viewport_read_failed")?;
-                let center = CanvasPoint {
-                    x: surface_size.width * 0.5,
-                    y: surface_size.height * 0.5,
+                let geometry = view
+                    .geometry_snapshot()
+                    .map_err(|_| "geometry_snapshot_read_failed")?;
+                let bounds = expectations
+                    .node_ports
+                    .keys()
+                    .find_map(|node| {
+                        geometry
+                            .node(*node)
+                            .filter(|node| node.is_fresh())
+                            .map(|node| node.bounds())
+                    })
+                    .ok_or("input_node_fixture_incomplete")?;
+                let anchor = CanvasPoint {
+                    x: bounds.origin.x + bounds.size.width * 0.5,
+                    y: bounds.origin.y + bounds.size.height * 0.5,
                 };
-                let canvas_center = current.canvas_point_at_screen(center);
-                let zoom = self.config.zoom().value();
-                let pan = CanvasPoint {
-                    x: center.x / zoom - canvas_center.x,
-                    y: center.y / zoom - canvas_center.y,
-                };
-                view.set_viewport(pan, zoom)
-                    .map_err(|_| "input_capture_zoom_failed")?;
+                set_zoom_centered_on_canvas_point(
+                    view,
+                    surface_size,
+                    self.config.zoom().value(),
+                    anchor,
+                )?;
                 window.refresh();
                 self.transition(ProbePhase::CaptureZoomWait);
                 Ok(None)
             }
             ProbePhase::CaptureZoomWait => {
-                let current = view
-                    .viewport_transform()
-                    .map_err(|_| "input_viewport_read_failed")?;
-                if (current.zoom - self.config.zoom().value()).abs() <= f32::EPSILON {
+                if self.verify_target_zoom(view).is_ok()
+                    && self.wait_for_rendered_interaction_frame(window, cx, surface)?
+                {
                     self.transition(ProbePhase::Capture);
                     Ok(None)
                 } else {
@@ -64,65 +74,157 @@ impl RealWindowSmokeProbe {
                 }
             }
             ProbePhase::Capture => {
-                self.capture_visual(window, surface_size)?;
-                self.transition(ProbePhase::RestoreFit);
+                self.capture_visual(window, view, surface_size)?;
+                self.transition(ProbePhase::PlanInput);
                 Ok(None)
-            }
-            ProbePhase::RestoreFit => {
-                let transform = self.capture_fit.ok_or("input_capture_fit_missing")?;
-                view.set_viewport(transform.pan, transform.zoom)
-                    .map_err(|_| "input_restore_fit_failed")?;
-                window.refresh();
-                self.transition(ProbePhase::RestoreFitWait);
-                Ok(None)
-            }
-            ProbePhase::RestoreFitWait => {
-                if geometry_fits_surface(view, expectations, surface_size)? {
-                    self.transition(ProbePhase::PlanInput);
-                    Ok(None)
-                } else {
-                    self.wait_or_timeout()
-                }
             }
             ProbePhase::PlanInput => {
+                self.verify_target_zoom(view)?;
                 self.plan_input(window, view, expectations, surface_size)?;
                 self.transition(ProbePhase::NodePress);
                 Ok(None)
             }
             ProbePhase::NodePress => {
-                let point = self.node.ok_or("input_node_plan_missing")?.press;
-                self.dispatch(window, cx, mouse_down(MouseButton::Left, point));
+                let point = self
+                    .interaction()?
+                    .node
+                    .ok_or("input_node_plan_missing")?
+                    .press;
+                self.dispatch_at_target_zoom(
+                    window,
+                    cx,
+                    view,
+                    mouse_down(MouseButton::Left, point),
+                )?;
                 self.transition(ProbePhase::NodeMove);
                 Ok(None)
             }
             ProbePhase::NodeMove => {
-                let point = self.node.ok_or("input_node_plan_missing")?.release;
-                self.dispatch(window, cx, mouse_move(MouseButton::Left, point));
+                let point = self
+                    .interaction()?
+                    .node
+                    .ok_or("input_node_plan_missing")?
+                    .activation;
+                self.dispatch_at_target_zoom(
+                    window,
+                    cx,
+                    view,
+                    mouse_move(MouseButton::Left, point),
+                )?;
                 self.transition(ProbePhase::NodeWaitActive);
                 Ok(None)
             }
             ProbePhase::NodeWaitActive => {
-                let node = self.node.ok_or("input_node_plan_missing")?.node;
+                let node = self
+                    .interaction()?
+                    .node
+                    .ok_or("input_node_plan_missing")?
+                    .node;
                 let presentation = interaction_presentation(surface, cx);
                 if presentation.phase() == CanvasInteractionPhase::NodeDrag
                     && presentation
                         .node_drag()
                         .is_some_and(|drag| drag.nodes().contains(&node))
                 {
-                    self.transition(ProbePhase::NodeRelease);
+                    self.transition(ProbePhase::NodeAutoPanMove);
                     Ok(None)
                 } else {
                     self.wait_or_timeout()
                 }
             }
+            ProbePhase::NodeAutoPanMove => {
+                let point = self
+                    .interaction()?
+                    .node
+                    .ok_or("input_node_plan_missing")?
+                    .release;
+                let transform = view
+                    .viewport_transform()
+                    .map_err(|_| "input_viewport_read_failed")?;
+                let interaction = self.interaction_mut()?;
+                interaction.auto_pan_origin = Some(transform);
+                interaction.auto_pan_last = Some(transform);
+                self.dispatch_at_target_zoom(
+                    window,
+                    cx,
+                    view,
+                    mouse_move(MouseButton::Left, point),
+                )?;
+                self.transition(ProbePhase::NodeAutoPanWait);
+                Ok(None)
+            }
+            ProbePhase::NodeAutoPanWait => {
+                let _ = advance_pending_interaction_frame(surface, window, cx);
+                let current = view
+                    .viewport_transform()
+                    .map_err(|_| "input_viewport_read_failed")?;
+                let interaction = self.interaction_mut()?;
+                if interaction
+                    .auto_pan_last
+                    .is_some_and(|previous| previous.pan != current.pan)
+                {
+                    interaction.auto_pan_frames = interaction.auto_pan_frames.saturating_add(1);
+                    interaction.auto_pan_last = Some(current);
+                }
+                let auto_pan_frames = interaction.auto_pan_frames;
+                if auto_pan_frames >= SMOKE_AUTOPAN_MIN_FRAMES {
+                    self.transition(ProbePhase::NodeRelease);
+                    Ok(None)
+                } else {
+                    window.refresh();
+                    if self.wait_ticks == MAX_PHASE_WAIT_TICKS {
+                        let interaction = self.interaction()?;
+                        let pointer = interaction.node.ok_or("input_node_plan_missing")?.release;
+                        let baseline = interaction
+                            .auto_pan_origin
+                            .ok_or("input_autopan_baseline_missing")?;
+                        let presentation = interaction_presentation(surface, cx);
+                        let tick_stats = surface.read(cx).host().read(cx).stats();
+                        let drag_delta = presentation
+                            .node_drag()
+                            .map(|drag| drag.delta())
+                            .unwrap_or_default();
+                        let release_pending = presentation
+                            .node_drag()
+                            .is_some_and(|drag| drag.is_release_pending());
+                        eprintln!(
+                            "JELLYFLOW_REAL_WINDOW_SMOKE_AUTOPAN phase={:?} pointer_x={} \
+                             pointer_y={} baseline_pan_x={} baseline_pan_y={} final_pan_x={} \
+                             final_pan_y={} zoom={} drag_delta_x={} drag_delta_y={} \
+                             release_pending={} tick_registrations={} tick_entries={} \
+                             tick_frame_requests={} observed_frames={}",
+                            presentation.phase(),
+                            pointer.x,
+                            pointer.y,
+                            baseline.pan.x,
+                            baseline.pan.y,
+                            current.pan.x,
+                            current.pan.y,
+                            current.zoom,
+                            drag_delta.x,
+                            drag_delta.y,
+                            release_pending,
+                            tick_stats.interaction_tick_callback_registrations(),
+                            tick_stats.interaction_tick_callback_entries(),
+                            tick_stats.interaction_tick_frame_requests(),
+                            auto_pan_frames,
+                        );
+                    }
+                    self.wait_or_timeout()
+                }
+            }
             ProbePhase::NodeRelease => {
-                let point = self.node.ok_or("input_node_plan_missing")?.release;
-                self.dispatch(window, cx, mouse_up(MouseButton::Left, point));
+                let point = self
+                    .interaction()?
+                    .node
+                    .ok_or("input_node_plan_missing")?
+                    .release;
+                self.dispatch_at_target_zoom(window, cx, view, mouse_up(MouseButton::Left, point))?;
                 self.transition(ProbePhase::NodeWaitSettled);
                 Ok(None)
             }
             ProbePhase::NodeWaitSettled => {
-                let plan = self.node.ok_or("input_node_plan_missing")?;
+                let plan = self.interaction()?.node.ok_or("input_node_plan_missing")?;
                 let snapshot = view
                     .graph_snapshot()
                     .map_err(|_| "input_graph_snapshot_failed")?;
@@ -134,14 +236,28 @@ impl RealWindowSmokeProbe {
                     dragged_geometry_status(view, expectations, plan)?;
                 let interaction_settled = interaction_is_settled(surface, cx);
                 if moved && node_geometry_converged && routes_converged && interaction_settled {
+                    let selection = view
+                        .selection()
+                        .map_err(|_| "input_selection_read_failed")?;
+                    if !selection.nodes().contains(&plan.node) {
+                        return self.wait_with_reason("input_node_selection_missing");
+                    }
+                    if !self.interaction()?.selection_reframed {
+                        position_node_for_selection(view, plan.node, surface_size)?;
+                        self.interaction_mut()?.selection_reframed = true;
+                        window.refresh();
+                        return Ok(None);
+                    }
                     self.capture_checkpoint(
                         window,
                         view,
                         surface_size,
                         SmokeCaptureState::Selected,
                     )?;
-                    self.node_dragged = true;
-                    self.transition(ProbePhase::PanPress);
+                    let interaction = self.interaction_mut()?;
+                    interaction.node_dragged = true;
+                    interaction.tab_focus_origin = window.focused(cx);
+                    self.transition(ProbePhase::TabForward);
                     Ok(None)
                 } else {
                     let reason = if !moved {
@@ -153,7 +269,93 @@ impl RealWindowSmokeProbe {
                     } else {
                         "input_node_interaction_unsettled"
                     };
+                    if self.wait_ticks == MAX_PHASE_WAIT_TICKS {
+                        let geometry = view
+                            .geometry_snapshot()
+                            .map_err(|_| "geometry_snapshot_read_failed")?;
+                        let current_model = snapshot.graph().node(&plan.node).map(|node| node.pos);
+                        let published = geometry.node(plan.node);
+                        let published_origin = published.map(|node| node.bounds().origin);
+                        let model_delta = current_model.map(|position| CanvasPoint {
+                            x: position.x - plan.original_position.x,
+                            y: position.y - plan.original_position.y,
+                        });
+                        let geometry_delta = published_origin.map(|origin| CanvasPoint {
+                            x: origin.x - plan.original_geometry_origin.x,
+                            y: origin.y - plan.original_geometry_origin.y,
+                        });
+                        let presentation = interaction_presentation(surface, cx);
+                        let stats = surface.read(cx).host().read(cx).stats();
+                        eprintln!(
+                            "JELLYFLOW_REAL_WINDOW_SMOKE_NODE_SETTLEMENT node={} reason={reason} \
+                             original_model={:?} current_model={current_model:?} model_delta={model_delta:?} \
+                             original_geometry={:?} published_origin={published_origin:?} \
+                             geometry_delta={geometry_delta:?} geometry_fresh={:?} \
+                             layout_generation={:?} layout_revision={} graph_revision={} \
+                             interaction_phase={:?} feedback_submissions={} feedback_failures={}",
+                            plan.node.0,
+                            plan.original_position,
+                            plan.original_geometry_origin,
+                            published.map(|node| node.is_fresh()),
+                            published.map(|node| node.layout_generation()),
+                            geometry.layout_revision(),
+                            snapshot.revision(),
+                            presentation.phase(),
+                            stats.feedback_submissions(),
+                            stats.feedback_failures(),
+                        );
+                    }
                     self.wait_with_reason(reason)
+                }
+            }
+            ProbePhase::TabForward => {
+                let origin = self
+                    .interaction()?
+                    .tab_focus_origin
+                    .clone()
+                    .ok_or("input_tab_focus_origin_missing")?;
+                if !origin.is_focused(window) {
+                    return Err("input_tab_focus_origin_stale");
+                }
+                self.dispatch_at_target_zoom(window, cx, view, key_down("tab")?)?;
+                self.dispatch_at_target_zoom(window, cx, view, key_up("tab")?)?;
+                self.transition(ProbePhase::TabForwardWait);
+                Ok(None)
+            }
+            ProbePhase::TabForwardWait => {
+                let current = window.focused(cx);
+                let origin = self.interaction()?.tab_focus_origin.clone();
+                if current.is_some() && current != origin {
+                    let interaction = self.interaction_mut()?;
+                    interaction.tab_focus_forward = current;
+                    interaction.tab_focus_moved = true;
+                    self.transition(ProbePhase::TabBackward);
+                    Ok(None)
+                } else {
+                    self.wait_or_timeout()
+                }
+            }
+            ProbePhase::TabBackward => {
+                let forward = self
+                    .interaction()?
+                    .tab_focus_forward
+                    .clone()
+                    .ok_or("input_tab_focus_forward_missing")?;
+                if !forward.is_focused(window) {
+                    return Err("input_tab_focus_forward_stale");
+                }
+                self.dispatch_at_target_zoom(window, cx, view, key_down("shift-tab")?)?;
+                self.dispatch_at_target_zoom(window, cx, view, key_up("shift-tab")?)?;
+                self.transition(ProbePhase::TabBackwardWait);
+                Ok(None)
+            }
+            ProbePhase::TabBackwardWait => {
+                if window.focused(cx) == self.interaction()?.tab_focus_origin {
+                    self.interaction_mut()?.tab_focus_restored = true;
+                    self.transition(ProbePhase::PanPress);
+                    Ok(None)
+                } else {
+                    self.wait_or_timeout()
                 }
             }
             _ => unreachable!("setup and node scenario received an unrelated phase"),

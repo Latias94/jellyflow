@@ -58,7 +58,7 @@ fn one_symbol_edit_adds_updates_and_removes_with_exact_undo_redo() {
     let outcome = runtime
         .execute(
             GraphCommand::symbols(
-                0,
+                runtime.snapshot().unwrap().version(),
                 SymbolEdit::new()
                     .add(added_id, added.clone())
                     .update(updated_id, updated.clone())
@@ -121,7 +121,7 @@ fn identical_symbol_replacement_is_a_noop() {
 
     let outcome = runtime
         .execute(GraphCommand::symbols(
-            0,
+            before.version(),
             SymbolEdit::new().update(id, existing),
         ))
         .unwrap();
@@ -148,7 +148,13 @@ fn symbol_replacement_emits_only_fields_that_changed() {
     let graph = graph_with_symbols([(id, existing.clone())]);
     let mut desired = existing;
     desired.name = "after".to_owned();
-    let command = GraphCommand::symbols(0, SymbolEdit::new().update(id, desired));
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph.clone())
+        .unwrap();
+    let command = GraphCommand::symbols(
+        runtime.snapshot().unwrap().version(),
+        SymbolEdit::new().update(id, desired),
+    );
 
     let planned = plan_graph_command(
         &graph,
@@ -196,7 +202,7 @@ fn invalid_symbol_operations_reject_atomically_without_side_effects() {
     ] {
         assert_rejected_without_side_effects(
             &runtime,
-            GraphCommand::symbols(0, edit),
+            GraphCommand::symbols(runtime.snapshot().unwrap().version(), edit),
             expected_key,
         );
     }
@@ -219,7 +225,7 @@ fn atomic_symbol_edit_rejects_add_remove_identity_reuse_in_both_orders() {
     ] {
         let outcome = assert_rejected_without_side_effects(
             &runtime,
-            GraphCommand::symbols(0, edit),
+            GraphCommand::symbols(runtime.snapshot().unwrap().version(), edit),
             "symbol.lifecycle_conflict",
         );
         assert!(matches!(
@@ -254,13 +260,16 @@ fn referenced_symbol_removal_is_rejected_and_node_data_updates_refresh_the_index
 
     assert_rejected_without_side_effects(
         &runtime,
-        GraphCommand::symbols(0, SymbolEdit::new().remove(first)),
+        GraphCommand::symbols(
+            runtime.snapshot().unwrap().version(),
+            SymbolEdit::new().remove(first),
+        ),
         "symbol.referenced",
     );
 
     runtime
         .execute(GraphCommand::set_node_data(
-            0,
+            runtime.snapshot().unwrap().version(),
             node_id,
             symbol_ref_node_data(second),
         ))
@@ -268,13 +277,19 @@ fn referenced_symbol_removal_is_rejected_and_node_data_updates_refresh_the_index
         .applied()
         .expect("reference retarget applies");
     runtime
-        .execute(GraphCommand::symbols(1, SymbolEdit::new().remove(first)))
+        .execute(GraphCommand::symbols(
+            runtime.snapshot().unwrap().version(),
+            SymbolEdit::new().remove(first),
+        ))
         .unwrap()
         .applied()
         .expect("unreferenced symbol can be removed");
     assert_rejected_without_side_effects(
         &runtime,
-        GraphCommand::symbols(2, SymbolEdit::new().remove(second)),
+        GraphCommand::symbols(
+            runtime.snapshot().unwrap().version(),
+            SymbolEdit::new().remove(second),
+        ),
         "symbol.referenced",
     );
 }
@@ -301,7 +316,7 @@ fn symbol_ref_index_tracks_topology_adds_and_removals() {
 
     runtime
         .execute(GraphCommand::topology(
-            0,
+            runtime.snapshot().unwrap().version(),
             TopologyEdit::new().add_node(node_id, node, []),
         ))
         .unwrap()
@@ -309,12 +324,15 @@ fn symbol_ref_index_tracks_topology_adds_and_removals() {
         .expect("symbol ref node addition applies");
     assert_rejected_without_side_effects(
         &runtime,
-        GraphCommand::symbols(1, SymbolEdit::new().remove(symbol_id)),
+        GraphCommand::symbols(
+            runtime.snapshot().unwrap().version(),
+            SymbolEdit::new().remove(symbol_id),
+        ),
         "symbol.referenced",
     );
     runtime
         .execute(GraphCommand::topology(
-            1,
+            runtime.snapshot().unwrap().version(),
             TopologyEdit::new().remove_node(node_id, IncidentEdgePolicy::Reject),
         ))
         .unwrap()
@@ -322,7 +340,7 @@ fn symbol_ref_index_tracks_topology_adds_and_removals() {
         .expect("symbol ref node removal applies");
     runtime
         .execute(GraphCommand::symbols(
-            2,
+            runtime.snapshot().unwrap().version(),
             SymbolEdit::new().remove(symbol_id),
         ))
         .unwrap()
@@ -350,9 +368,10 @@ fn stale_symbol_command_conflict_declares_symbols_and_current_referrers() {
     let runtime = GraphRuntime::builder(Default::default())
         .build(graph)
         .unwrap();
+    let stale_version = runtime.snapshot().unwrap().version();
     runtime
         .execute(GraphCommand::set_node_position(
-            0,
+            stale_version,
             node_id,
             CanvasPoint { x: 42.0, y: 8.0 },
         ))
@@ -364,7 +383,7 @@ fn stale_symbol_command_conflict_declares_symbols_and_current_referrers() {
 
     let outcome = runtime
         .execute(GraphCommand::symbols(
-            0,
+            stale_version,
             SymbolEdit::new().remove(symbol_id),
         ))
         .unwrap();

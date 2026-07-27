@@ -1,8 +1,16 @@
-use std::{collections::BTreeMap, fmt};
+use std::{
+    collections::BTreeMap,
+    fmt,
+    panic::{AssertUnwindSafe, catch_unwind},
+};
 
+use jellyflow_core::{CanvasRect, PortId};
+use jellyflow_runtime::{graph::GraphRevision, view::FrameNode, view::NodeInstanceKey};
 use open_gpui::{AnyView, App, Entity, Render, Window};
 
 use crate::binding::OpenGpuiNodeBinding;
+use crate::panic_sink::OpenGpuiPanicAccumulator;
+use crate::port_handle::OpenGpuiPortHandle;
 use crate::scale_policy::OpenGpuiNodeScalePolicy;
 use crate::size_policy::OpenGpuiNodeSizePolicy;
 
@@ -12,6 +20,127 @@ type ErasedNodeFactory = dyn Fn(
         &mut App,
     ) -> Result<AnyView, OpenGpuiNodeMountError>
     + 'static;
+
+type ErasedOverviewFactory = dyn Fn(OpenGpuiNodeOverviewMount, &mut Window, &mut App) -> Result<AnyView, OpenGpuiNodeMountError>
+    + 'static;
+
+/// Converts an application-native retained view into the registry's erased storage.
+///
+/// Both concrete [`Entity<V>`] values and an already erased [`AnyView`] implement this trait. It is
+/// only a native type-erasure boundary; Jellyflow does not inspect or describe the component tree.
+pub trait IntoOpenGpuiNodeView {
+    /// Erases the concrete Open GPUI render type while retaining the same entity.
+    fn into_open_gpui_node_view(self) -> AnyView;
+}
+
+impl<V> IntoOpenGpuiNodeView for Entity<V>
+where
+    V: Render + 'static,
+{
+    fn into_open_gpui_node_view(self) -> AnyView {
+        AnyView::from(self)
+    }
+}
+
+impl IntoOpenGpuiNodeView for AnyView {
+    fn into_open_gpui_node_view(self) -> AnyView {
+        self
+    }
+}
+
+/// Immutable frame facts captured when one exact native node mount is created.
+///
+/// These facts are intentionally small so parked mounts cannot retain historical graph snapshots.
+/// Applications read changing node data, ports, selection, and viewport facts from the shared
+/// [`OpenGpuiNodeBinding`] instead of treating this mount-time value as refreshable state.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OpenGpuiNodeMountFacts {
+    instance: NodeInstanceKey,
+    binding_revision: GraphRevision,
+    layout_generation: u64,
+    bounds: CanvasRect,
+}
+
+impl OpenGpuiNodeMountFacts {
+    fn from_frame(frame: &FrameNode) -> Self {
+        Self {
+            instance: frame.instance().clone(),
+            binding_revision: frame.binding_revision(),
+            layout_generation: frame.layout_generation(),
+            bounds: frame.bounds(),
+        }
+    }
+
+    /// Returns the exact view, renderer, node, and node-incarnation identity of this mount.
+    #[must_use]
+    pub fn instance(&self) -> &NodeInstanceKey {
+        &self.instance
+    }
+
+    /// Returns the node-relevant graph revision captured when the mount was created.
+    #[must_use]
+    pub const fn binding_revision(&self) -> GraphRevision {
+        self.binding_revision
+    }
+
+    /// Returns the runtime layout generation captured when the mount was created.
+    #[must_use]
+    pub const fn layout_generation(&self) -> u64 {
+        self.layout_generation
+    }
+
+    /// Returns the authoritative canvas bounds captured when the mount was created.
+    #[must_use]
+    pub const fn bounds(&self) -> CanvasRect {
+        self.bounds
+    }
+}
+
+/// Native capabilities supplied to an application-owned semantic-LOD overview factory.
+///
+/// The detail and overview factories receive the same binding entity and therefore share one mount
+/// capability, [`NodeInstanceKey`], presentation snapshot, and real-port capability set. Call
+/// [`Self::port_handle`] during render instead of retaining a returned handle so dynamic topology
+/// and presentation state remain current.
+#[derive(Debug, Clone)]
+pub struct OpenGpuiNodeOverviewMount {
+    binding: Entity<OpenGpuiNodeBinding>,
+    facts: OpenGpuiNodeMountFacts,
+}
+
+impl OpenGpuiNodeOverviewMount {
+    fn new(binding: Entity<OpenGpuiNodeBinding>, frame: &FrameNode) -> Self {
+        Self {
+            binding,
+            facts: OpenGpuiNodeMountFacts::from_frame(frame),
+        }
+    }
+
+    /// Returns the same retained binding entity supplied to the detail factory.
+    #[must_use]
+    pub fn binding(&self) -> Entity<OpenGpuiNodeBinding> {
+        self.binding.clone()
+    }
+
+    /// Returns immutable facts captured for this exact native mount.
+    #[must_use]
+    pub const fn facts(&self) -> &OpenGpuiNodeMountFacts {
+        &self.facts
+    }
+
+    /// Returns the current overview-presentation handle for one real graph port.
+    ///
+    /// The handle shares its semantic identity and mount authority with the corresponding detail
+    /// handle, but publishes geometry for the overview presentation. A removed or reincarnated port
+    /// returns `None`; callers should request the handle again on each render pass.
+    #[must_use]
+    pub fn port_handle(&self, port: PortId, cx: &App) -> Option<OpenGpuiPortHandle> {
+        self.binding
+            .read(cx)
+            .cached_port_handle(port)
+            .map(OpenGpuiPortHandle::for_host_overview)
+    }
+}
 
 /// A renderer-factory failure that the host can present through its diagnostic fallback.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -130,6 +259,7 @@ enum PendingRegistration {
 
 struct OpenGpuiNodeRendererRegistration {
     factory: Box<ErasedNodeFactory>,
+    overview_factory: Option<Box<ErasedOverviewFactory>>,
     policy: OpenGpuiNodeRegistrationPolicy,
 }
 
@@ -185,8 +315,8 @@ impl OpenGpuiNodeRegistryBuilder {
     pub fn register<K, F, V>(&mut self, renderer_key: K, factory: F)
     where
         K: Into<String>,
-        F: Fn(Entity<OpenGpuiNodeBinding>, &mut Window, &mut App) -> Entity<V> + 'static,
-        V: Render + 'static,
+        F: Fn(Entity<OpenGpuiNodeBinding>, &mut Window, &mut App) -> V + 'static,
+        V: IntoOpenGpuiNodeView,
     {
         self.register_with_policy(
             renderer_key,
@@ -203,13 +333,63 @@ impl OpenGpuiNodeRegistryBuilder {
         factory: F,
     ) where
         K: Into<String>,
-        F: Fn(Entity<OpenGpuiNodeBinding>, &mut Window, &mut App) -> Entity<V> + 'static,
-        V: Render + 'static,
+        F: Fn(Entity<OpenGpuiNodeBinding>, &mut Window, &mut App) -> V + 'static,
+        V: IntoOpenGpuiNodeView,
     {
         let factory = Box::new(move |binding, window: &mut Window, cx: &mut App| {
-            Ok(AnyView::from(factory(binding, window, cx)))
+            Ok(factory(binding, window, cx).into_open_gpui_node_view())
         });
-        self.insert(renderer_key.into(), factory, policy);
+        self.insert(renderer_key.into(), factory, None, policy);
+    }
+
+    /// Registers retained detail and application-native semantic-LOD overview factories.
+    ///
+    /// Both factories share one binding and native mount lifetime. The overview replaces only the
+    /// adapter's generic overview presentation; detail rendering and all headless graph semantics
+    /// remain unchanged.
+    pub fn register_with_overview<K, F, V, O, W>(
+        &mut self,
+        renderer_key: K,
+        factory: F,
+        overview_factory: O,
+    ) where
+        K: Into<String>,
+        F: Fn(Entity<OpenGpuiNodeBinding>, &mut Window, &mut App) -> V + 'static,
+        V: IntoOpenGpuiNodeView,
+        O: Fn(OpenGpuiNodeOverviewMount, &mut Window, &mut App) -> W + 'static,
+        W: IntoOpenGpuiNodeView,
+    {
+        self.register_with_policy_and_overview(
+            renderer_key,
+            OpenGpuiNodeRegistrationPolicy::default(),
+            factory,
+            overview_factory,
+        );
+    }
+
+    /// Registers retained detail and overview factories with explicit adapter policy.
+    pub fn register_with_policy_and_overview<K, F, V, O, W>(
+        &mut self,
+        renderer_key: K,
+        policy: OpenGpuiNodeRegistrationPolicy,
+        factory: F,
+        overview_factory: O,
+    ) where
+        K: Into<String>,
+        F: Fn(Entity<OpenGpuiNodeBinding>, &mut Window, &mut App) -> V + 'static,
+        V: IntoOpenGpuiNodeView,
+        O: Fn(OpenGpuiNodeOverviewMount, &mut Window, &mut App) -> W + 'static,
+        W: IntoOpenGpuiNodeView,
+    {
+        let factory = Box::new(move |binding, window: &mut Window, cx: &mut App| {
+            Ok(factory(binding, window, cx).into_open_gpui_node_view())
+        });
+        let overview_factory = Box::new(
+            move |mount: OpenGpuiNodeOverviewMount, window: &mut Window, cx: &mut App| {
+                Ok(overview_factory(mount, window, cx).into_open_gpui_node_view())
+            },
+        );
+        self.insert(renderer_key.into(), factory, Some(overview_factory), policy);
     }
 
     /// Registers a retained entity factory that can report a recoverable mount failure.
@@ -223,9 +403,9 @@ impl OpenGpuiNodeRegistryBuilder {
                 Entity<OpenGpuiNodeBinding>,
                 &mut Window,
                 &mut App,
-            ) -> Result<Entity<V>, OpenGpuiNodeMountError>
+            ) -> Result<V, OpenGpuiNodeMountError>
             + 'static,
-        V: Render + 'static,
+        V: IntoOpenGpuiNodeView,
     {
         self.try_register_with_policy(
             renderer_key,
@@ -246,20 +426,88 @@ impl OpenGpuiNodeRegistryBuilder {
                 Entity<OpenGpuiNodeBinding>,
                 &mut Window,
                 &mut App,
-            ) -> Result<Entity<V>, OpenGpuiNodeMountError>
+            ) -> Result<V, OpenGpuiNodeMountError>
             + 'static,
-        V: Render + 'static,
+        V: IntoOpenGpuiNodeView,
     {
         let factory = Box::new(move |binding, window: &mut Window, cx: &mut App| {
-            factory(binding, window, cx).map(AnyView::from)
+            factory(binding, window, cx).map(IntoOpenGpuiNodeView::into_open_gpui_node_view)
         });
-        self.insert(renderer_key.into(), factory, policy);
+        self.insert(renderer_key.into(), factory, None, policy);
+    }
+
+    /// Registers fallible retained detail and application-native overview factories.
+    pub fn try_register_with_overview<K, F, V, O, W>(
+        &mut self,
+        renderer_key: K,
+        factory: F,
+        overview_factory: O,
+    ) where
+        K: Into<String>,
+        F: Fn(
+                Entity<OpenGpuiNodeBinding>,
+                &mut Window,
+                &mut App,
+            ) -> Result<V, OpenGpuiNodeMountError>
+            + 'static,
+        V: IntoOpenGpuiNodeView,
+        O: Fn(
+                OpenGpuiNodeOverviewMount,
+                &mut Window,
+                &mut App,
+            ) -> Result<W, OpenGpuiNodeMountError>
+            + 'static,
+        W: IntoOpenGpuiNodeView,
+    {
+        self.try_register_with_policy_and_overview(
+            renderer_key,
+            OpenGpuiNodeRegistrationPolicy::default(),
+            factory,
+            overview_factory,
+        );
+    }
+
+    /// Registers fallible retained detail and overview factories with explicit adapter policy.
+    pub fn try_register_with_policy_and_overview<K, F, V, O, W>(
+        &mut self,
+        renderer_key: K,
+        policy: OpenGpuiNodeRegistrationPolicy,
+        factory: F,
+        overview_factory: O,
+    ) where
+        K: Into<String>,
+        F: Fn(
+                Entity<OpenGpuiNodeBinding>,
+                &mut Window,
+                &mut App,
+            ) -> Result<V, OpenGpuiNodeMountError>
+            + 'static,
+        V: IntoOpenGpuiNodeView,
+        O: Fn(
+                OpenGpuiNodeOverviewMount,
+                &mut Window,
+                &mut App,
+            ) -> Result<W, OpenGpuiNodeMountError>
+            + 'static,
+        W: IntoOpenGpuiNodeView,
+    {
+        let factory = Box::new(move |binding, window: &mut Window, cx: &mut App| {
+            factory(binding, window, cx).map(IntoOpenGpuiNodeView::into_open_gpui_node_view)
+        });
+        let overview_factory = Box::new(
+            move |mount: OpenGpuiNodeOverviewMount, window: &mut Window, cx: &mut App| {
+                overview_factory(mount, window, cx)
+                    .map(IntoOpenGpuiNodeView::into_open_gpui_node_view)
+            },
+        );
+        self.insert(renderer_key.into(), factory, Some(overview_factory), policy);
     }
 
     fn insert(
         &mut self,
         renderer_key: String,
         factory: Box<ErasedNodeFactory>,
+        overview_factory: Option<Box<ErasedOverviewFactory>>,
         policy: OpenGpuiNodeRegistrationPolicy,
     ) {
         if renderer_key.trim().is_empty() {
@@ -273,7 +521,11 @@ impl OpenGpuiNodeRegistryBuilder {
         match self.registrations.entry(renderer_key) {
             std::collections::btree_map::Entry::Vacant(entry) => {
                 entry.insert(PendingRegistration::Renderer(
-                    OpenGpuiNodeRendererRegistration { factory, policy },
+                    OpenGpuiNodeRendererRegistration {
+                        factory,
+                        overview_factory,
+                        policy,
+                    },
                 ));
             }
             std::collections::btree_map::Entry::Occupied(mut entry) => {
@@ -362,11 +614,12 @@ impl OpenGpuiNodeRegistry {
 
     pub(crate) fn mount(
         &self,
-        renderer_key: &str,
+        frame: &FrameNode,
         binding: Entity<OpenGpuiNodeBinding>,
         window: &mut Window,
         cx: &mut App,
     ) -> OpenGpuiNodeMountOutcome {
+        let renderer_key = frame.renderer().key();
         if let Some(issue) = self.invalid.get(renderer_key) {
             return OpenGpuiNodeMountOutcome::Invalid(issue.clone());
         }
@@ -374,12 +627,50 @@ impl OpenGpuiNodeRegistry {
             return OpenGpuiNodeMountOutcome::Missing;
         };
 
-        match (renderer.factory)(binding, window, cx) {
-            Ok(view) => OpenGpuiNodeMountOutcome::Mounted {
-                view,
-                policy: renderer.policy,
-            },
+        match (renderer.factory)(binding.clone(), window, cx) {
+            Ok(view) => {
+                let overview = self.mount_overview(renderer, frame, binding, window, cx);
+                OpenGpuiNodeMountOutcome::Mounted {
+                    view,
+                    overview,
+                    policy: renderer.policy,
+                }
+            }
             Err(error) => OpenGpuiNodeMountOutcome::FactoryFailed(error),
+        }
+    }
+
+    fn mount_overview(
+        &self,
+        renderer: &OpenGpuiNodeRendererRegistration,
+        frame: &FrameNode,
+        binding: Entity<OpenGpuiNodeBinding>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> OpenGpuiNodeOverviewMountOutcome {
+        if renderer.policy.scale_policy() == OpenGpuiNodeScalePolicy::ComponentManaged {
+            return OpenGpuiNodeOverviewMountOutcome::Generic;
+        }
+        let Some(factory) = renderer.overview_factory.as_ref() else {
+            return OpenGpuiNodeOverviewMountOutcome::Generic;
+        };
+        let mount = OpenGpuiNodeOverviewMount::new(binding, frame);
+        match catch_unwind(AssertUnwindSafe(|| (factory)(mount, window, cx))) {
+            Ok(Ok(view)) => OpenGpuiNodeOverviewMountOutcome::Mounted(view),
+            Ok(Err(error)) => OpenGpuiNodeOverviewMountOutcome::FactoryFailed(error),
+            Err(payload) => {
+                let mut panics = OpenGpuiPanicAccumulator::default();
+                panics.push(Some(payload));
+                let recursive_payload = panics.suppress();
+                let message = if recursive_payload {
+                    "application-native overview factory panicked; retained one bounded recursive panic payload sentinel"
+                } else {
+                    "application-native overview factory panicked"
+                };
+                OpenGpuiNodeOverviewMountOutcome::FactoryFailed(OpenGpuiNodeMountError::new(
+                    message,
+                ))
+            }
         }
     }
 }
@@ -387,9 +678,16 @@ impl OpenGpuiNodeRegistry {
 pub(crate) enum OpenGpuiNodeMountOutcome {
     Mounted {
         view: AnyView,
+        overview: OpenGpuiNodeOverviewMountOutcome,
         policy: OpenGpuiNodeRegistrationPolicy,
     },
     Invalid(OpenGpuiNodeRegistryIssue),
     Missing,
+    FactoryFailed(OpenGpuiNodeMountError),
+}
+
+pub(crate) enum OpenGpuiNodeOverviewMountOutcome {
+    Generic,
+    Mounted(AnyView),
     FactoryFailed(OpenGpuiNodeMountError),
 }

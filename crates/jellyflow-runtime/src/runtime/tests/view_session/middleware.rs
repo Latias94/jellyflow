@@ -29,7 +29,7 @@ impl GraphRuntimeMiddleware for TraceMiddleware {
     ) -> Result<(), ApplyPipelineError> {
         self.before_calls.set(self.before_calls.get() + 1);
         assert_eq!(snapshot.graph().revision(), 0);
-        assert_eq!(command.expected_revision(), 0);
+        assert_eq!(command.expected_version().revision(), 0);
         assert_eq!(command.label(), Some("move node"));
         assert_eq!(command.declared_footprint().nodes.len(), 1);
         Ok(())
@@ -82,7 +82,7 @@ fn panicking_before_middleware_is_restored_and_preserves_uncommitted_state() {
 
     let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         runtime.execute(GraphCommand::set_node_data(
-            before.revision(),
+            before.version(),
             ids[0],
             serde_json::json!({ "value": 1 }),
         ))
@@ -94,7 +94,7 @@ fn panicking_before_middleware_is_restored_and_preserves_uncommitted_state() {
 
     runtime
         .execute(GraphCommand::set_node_data(
-            before.revision(),
+            before.version(),
             ids[0],
             serde_json::json!({ "value": 2 }),
         ))
@@ -143,21 +143,22 @@ fn close_before_middleware_panic_after_prior_commit_still_terminalizes() {
             }
         })
         .unwrap();
+    let seed_version = runtime.snapshot().expect("initial snapshot").version();
+    let close_version = runtime
+        .execute(GraphCommand::set_node_data(
+            seed_version,
+            ids[0],
+            serde_json::json!({ "step": 1 }),
+        ))
+        .expect("seed command")
+        .applied()
+        .expect("seed applies")
+        .version();
 
     let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        closing_view.close_with_request(
-            ViewCloseRequest::new()
-                .with_command(GraphCommand::set_node_data(
-                    0,
-                    ids[0],
-                    serde_json::json!({ "step": 1 }),
-                ))
-                .with_command(GraphCommand::set_node_data(
-                    1,
-                    ids[0],
-                    serde_json::json!({ "step": 2 }),
-                )),
-        )
+        closing_view.close_with_request(ViewCloseRequest::new().with_command(
+            GraphCommand::set_node_data(close_version, ids[0], serde_json::json!({ "step": 2 })),
+        ))
     }));
 
     assert!(panic.is_err());
@@ -263,10 +264,11 @@ fn panicking_after_middleware_is_restored_and_preserves_committed_state() {
             .unwrap()
             .is_fresh()
     );
+    let initial_version = runtime.snapshot().expect("initial snapshot").version();
 
     let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         runtime.execute(GraphCommand::set_node_data(
-            0,
+            initial_version,
             ids[0],
             serde_json::json!({ "value": 1 }),
         ))
@@ -289,8 +291,7 @@ fn panicking_after_middleware_is_restored_and_preserves_committed_state() {
     assert_eq!(after_panic_frame.nodes()[0].binding_revision(), 1);
     assert_eq!(after_panic_frame.nodes()[0].layout_generation(), 1);
     assert!(
-        !view
-            .geometry_snapshot()
+        view.geometry_snapshot()
             .unwrap()
             .node(ids[0])
             .unwrap()
@@ -299,7 +300,7 @@ fn panicking_after_middleware_is_restored_and_preserves_committed_state() {
 
     runtime
         .execute(GraphCommand::set_node_data(
-            after_panic.revision(),
+            after_panic.version(),
             ids[0],
             serde_json::json!({ "value": 2 }),
         ))
@@ -378,21 +379,22 @@ fn close_after_middleware_panic_fans_out_committed_patch_and_terminalizes_view()
             }
         })
         .unwrap();
+    let seed_version = runtime.snapshot().expect("initial snapshot").version();
+    let close_version = runtime
+        .execute(GraphCommand::set_node_data(
+            seed_version,
+            ids[0],
+            serde_json::json!({ "step": 1 }),
+        ))
+        .expect("seed command")
+        .applied()
+        .expect("seed applies")
+        .version();
 
     let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        closing_view.close_with_request(
-            ViewCloseRequest::new()
-                .with_command(GraphCommand::set_node_data(
-                    0,
-                    ids[0],
-                    serde_json::json!({ "step": 1 }),
-                ))
-                .with_command(GraphCommand::set_node_data(
-                    1,
-                    ids[0],
-                    serde_json::json!({ "step": 2 }),
-                )),
-        )
+        closing_view.close_with_request(ViewCloseRequest::new().with_command(
+            GraphCommand::set_node_data(close_version, ids[0], serde_json::json!({ "step": 2 })),
+        ))
     }));
 
     assert!(panic.is_err());
@@ -412,7 +414,7 @@ fn close_after_middleware_panic_fans_out_committed_patch_and_terminalizes_view()
     assert_eq!(frame.nodes()[0].binding_revision(), 2);
     assert_eq!(frame.nodes()[0].layout_generation(), 2);
     assert!(
-        !observer
+        observer
             .geometry_snapshot()
             .unwrap()
             .node(ids[0])
@@ -458,11 +460,16 @@ fn graph_runtime_middleware_rewrites_and_observes_authoritative_commits() {
             before_calls: before_calls.clone(),
             after_calls: after_calls.clone(),
         });
+    let initial_version = runtime.snapshot().expect("initial snapshot").version();
 
     let outcome = runtime
         .execute(
-            GraphCommand::set_node_position(0, ids[0], CanvasPoint { x: 12.0, y: 24.0 })
-                .with_label("move node"),
+            GraphCommand::set_node_position(
+                initial_version,
+                ids[0],
+                CanvasPoint { x: 12.0, y: 24.0 },
+            )
+            .with_label("move node"),
         )
         .unwrap()
         .applied()
@@ -507,7 +514,7 @@ fn graph_runtime_middleware_rejection_has_zero_side_effects() {
     let before = runtime.snapshot().unwrap();
 
     let result = runtime.execute(GraphCommand::set_node_data(
-        0,
+        before.version(),
         ids[0],
         serde_json::json!({ "value": 1 }),
     ));
@@ -536,13 +543,22 @@ fn stale_and_rule_rejected_commands_do_not_reach_middleware() {
     let (graph, ids) = graph_with_nodes(1);
     let before_calls = Rc::new(Cell::new(0));
     let runtime = GraphRuntime::builder(Default::default())
-        .build(graph)
+        .build(graph.clone())
         .unwrap()
         .with_middleware(CountBeforeMiddleware(before_calls.clone()));
+    let stale_version = runtime.snapshot().expect("initial snapshot").version();
+    let replacement = runtime
+        .catalog()
+        .canonicalize_graph(&graph)
+        .expect("canonical replacement");
+    runtime
+        .replace_document(replacement)
+        .expect("replace document");
+    let current_version = runtime.snapshot().expect("current snapshot").version();
 
     let stale = runtime
         .execute(GraphCommand::set_node_data(
-            1,
+            stale_version,
             ids[0],
             serde_json::json!({ "value": 1 }),
         ))
@@ -551,7 +567,7 @@ fn stale_and_rule_rejected_commands_do_not_reach_middleware() {
 
     let invalid = runtime
         .execute(GraphCommand::connect(
-            0,
+            current_version,
             jellyflow_core::core::EdgeId::from_u128(500),
             jellyflow_core::core::PortId::from_u128(501),
             jellyflow_core::core::PortId::from_u128(502),
@@ -620,22 +636,25 @@ fn graph_runtime_middleware_observes_undo_and_redo_commands() {
             before: before.clone(),
             after: after.clone(),
         });
+    let initial_version = runtime.snapshot().expect("initial snapshot").version();
 
-    runtime
+    let seeded_version = runtime
         .execute(
-            GraphCommand::set_node_data(0, ids[0], serde_json::json!({ "value": 1 }))
+            GraphCommand::set_node_data(initial_version, ids[0], serde_json::json!({ "value": 1 }))
                 .with_label("seed"),
         )
         .unwrap()
         .applied()
-        .expect("seed applies");
-    runtime
-        .execute(GraphCommand::undo(1))
+        .expect("seed applies")
+        .version();
+    let undone_version = runtime
+        .execute(GraphCommand::undo(seeded_version))
         .unwrap()
         .applied()
-        .expect("undo applies");
+        .expect("undo applies")
+        .version();
     runtime
-        .execute(GraphCommand::redo(2))
+        .execute(GraphCommand::redo(undone_version))
         .unwrap()
         .applied()
         .expect("redo applies");
@@ -669,18 +688,20 @@ fn assert_history_middleware_rejection(rejected_label: &'static str) {
             before: before_calls,
             after: after_calls,
         });
-    runtime
+    let initial_version = runtime.snapshot().expect("initial snapshot").version();
+    let seeded_version = runtime
         .execute(GraphCommand::set_node_data(
-            0,
+            initial_version,
             ids[0],
             serde_json::json!({ "value": 1 }),
         ))
         .unwrap()
         .applied()
-        .expect("seed applies");
+        .expect("seed applies")
+        .version();
     if rejected_label == "redo" {
         runtime
-            .execute(GraphCommand::undo(1))
+            .execute(GraphCommand::undo(seeded_version))
             .unwrap()
             .applied()
             .expect("undo prepares redo history");
@@ -694,10 +715,10 @@ fn assert_history_middleware_rejection(rejected_label: &'static str) {
         .subscribe(move |_| callback_count.set(callback_count.get() + 1))
         .unwrap();
 
-    let revision = before.revision();
+    let version = before.version();
     let command = match rejected_label {
-        "undo" => GraphCommand::undo(revision),
-        "redo" => GraphCommand::redo(revision),
+        "undo" => GraphCommand::undo(version),
+        "redo" => GraphCommand::redo(version),
         _ => unreachable!("test only covers history commands"),
     };
     let outcome = runtime.execute(command).unwrap();

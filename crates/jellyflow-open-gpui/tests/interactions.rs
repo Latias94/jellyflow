@@ -6,14 +6,17 @@ use jellyflow_core::{
     PortCapacity, PortDirection, PortId, PortKey, PortKind,
 };
 use jellyflow_open_gpui::authoring::OpenGpuiNodeBinding;
-use jellyflow_open_gpui::{
-    OpenGpuiNodeRegistry, OpenGpuiPortActivationSource, OpenGpuiPortDragCancelReason,
-    OpenGpuiPortDragPhase, OpenGpuiPortEvent, OpenGpuiSceneHost,
+use jellyflow_open_gpui::host::OpenGpuiSceneHost;
+use jellyflow_open_gpui::interaction::{
+    OpenGpuiPortActivationSource, OpenGpuiPortDragCancelReason, OpenGpuiPortDragPhase,
+    OpenGpuiPortEvent,
 };
+use jellyflow_open_gpui::registry::OpenGpuiNodeRegistry;
 use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec};
 use jellyflow_runtime::{
-    CanvasInteractionPhase, GraphCommand, GraphRuntime, IncidentEdgePolicy, TopologyEdit,
-    TopologyPort, ViewCloseReason, ViewSessionOptions,
+    commands::GraphCommand, commands::IncidentEdgePolicy, commands::TopologyEdit,
+    commands::TopologyPort, graph::GraphRuntime, interaction::CanvasInteractionPhase,
+    view::ViewCloseReason, view::ViewSessionOptions, view::WeakViewSession,
 };
 use open_gpui::{
     AppContext, Context, Entity, KeyUpEvent, Keystroke, Modifiers, MouseButton, ParentElement,
@@ -210,7 +213,7 @@ impl Render for InteractionScene {
 fn tab_shift_tab_enter_and_space_use_native_keyboard_semantics_without_pointer_drag(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    let (_runtime, _host, cx, port, node_events, canvas_events, _, _, control_focus) =
+    let (_runtime, _host, cx, port, node_events, canvas_events, _, _, control_focus, _) =
         mount_scene(cx);
     draw(cx);
 
@@ -259,7 +262,7 @@ fn tab_shift_tab_enter_and_space_use_native_keyboard_semantics_without_pointer_d
 fn semantic_only_port_keeps_keyboard_and_pointer_connection_behavior_without_an_observer(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    let (_runtime, host, cx, port_events, node_events, _, _, _, _) =
+    let (_runtime, host, cx, port_events, node_events, _, _, _, _, _) =
         mount_scene_with_port_observer(cx, false);
     draw(cx);
 
@@ -270,18 +273,20 @@ fn semantic_only_port_keeps_keyboard_and_pointer_connection_behavior_without_an_
     simulate_key_up(cx, "enter");
     cx.run_until_parked();
 
-    let request = cx.read_entity(&host, |host, _| {
+    cx.read_entity(&host, |host, _| {
         assert_eq!(
             host.interaction_presentation().phase(),
-            CanvasInteractionPhase::ConnectionSearch,
+            CanvasInteractionPhase::ConnectionDrag,
         );
-        host.connection_search_request().expect("keyboard search")
+        assert!(host.connection_search_request().is_none());
     });
-    cx.update(|window, cx| {
-        host.update(cx, |host, cx| {
-            host.cancel_connection_search(request, window, cx)
-        })
-        .expect("cancel keyboard search");
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(
+            host.interaction_presentation().phase(),
+            CanvasInteractionPhase::Idle,
+        );
     });
 
     let port = cx.debug_bounds(PORT_SELECTOR).expect("port bounds");
@@ -303,10 +308,10 @@ fn semantic_only_port_keeps_keyboard_and_pointer_connection_behavior_without_an_
 }
 
 #[open_gpui::test]
-fn rejected_pointer_start_reports_start_before_cancel_without_cancelling_keyboard_search(
+fn rejected_pointer_start_reports_start_before_cancel_without_cancelling_keyboard_connection(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    let (_runtime, host, cx, port, _, _, _, _, _) = mount_scene(cx);
+    let (_runtime, host, cx, port, _, _, _, _, _, _) = mount_scene(cx);
     draw(cx);
 
     let control = cx.debug_bounds(CONTROL_SELECTOR).expect("control bounds");
@@ -314,12 +319,12 @@ fn rejected_pointer_start_reports_start_before_cancel_without_cancelling_keyboar
     cx.simulate_keystrokes("tab");
     simulate_key_up(cx, "enter");
     cx.run_until_parked();
-    let request = cx.read_entity(&host, |host, _| {
+    cx.read_entity(&host, |host, _| {
         assert_eq!(
             host.interaction_presentation().phase(),
-            CanvasInteractionPhase::ConnectionSearch
+            CanvasInteractionPhase::ConnectionDrag
         );
-        host.connection_search_request().expect("keyboard search")
+        assert!(host.connection_search_request().is_none());
     });
 
     let bounds = cx.debug_bounds(PORT_SELECTOR).expect("port bounds");
@@ -336,18 +341,14 @@ fn rejected_pointer_start_reports_start_before_cancel_without_cancelling_keyboar
         "a deferred rejection must not overtake the product's Start callback",
     );
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.connection_search_request(), Some(request));
+        assert!(host.connection_search_request().is_none());
         assert_eq!(
             host.interaction_presentation().phase(),
-            CanvasInteractionPhase::ConnectionSearch
+            CanvasInteractionPhase::ConnectionDrag
         );
     });
-    cx.update(|window, cx| {
-        host.update(cx, |host, cx| {
-            host.cancel_connection_search(request, window, cx)
-        })
-        .expect("cancel search");
-    });
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
 }
 
 #[open_gpui::test]
@@ -364,6 +365,7 @@ fn disabled_port_is_skipped_and_blocks_pointer_and_keyboard_activation(
         control_events,
         _,
         control_focus,
+        _,
     ) = mount_scene(cx);
     draw(cx);
 
@@ -425,7 +427,7 @@ fn disabled_port_is_skipped_and_blocks_pointer_and_keyboard_activation(
 fn disabling_an_active_port_drag_cancels_only_that_owner_and_releases_resources(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    let (_runtime, host, cx, port_events, node_events, canvas_events, _, _, control_focus) =
+    let (_runtime, host, cx, port_events, node_events, canvas_events, _, _, control_focus, _) =
         mount_scene(cx);
     draw(cx);
 
@@ -470,7 +472,7 @@ fn disabling_an_active_port_drag_cancels_only_that_owner_and_releases_resources(
 fn removing_a_captured_dynamic_port_cancels_capture_after_the_topology_patch(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    let (runtime, host, cx, port_events, node_events, canvas_events, _, _, _) = mount_scene(cx);
+    let (runtime, host, cx, port_events, node_events, canvas_events, _, _, _, _) = mount_scene(cx);
     draw(cx);
 
     let port = cx.debug_bounds(PORT_SELECTOR).expect("port bounds");
@@ -479,7 +481,10 @@ fn removing_a_captured_dynamic_port_cancels_capture_after_the_topology_patch(
 
     runtime
         .execute(GraphCommand::topology(
-            0,
+            runtime
+                .snapshot()
+                .expect("dynamic-port removal snapshot")
+                .version(),
             TopologyEdit::new().replace_node_ports(
                 node_id(),
                 Vec::<TopologyPort>::new(),
@@ -528,10 +533,10 @@ fn removing_a_captured_dynamic_port_cancels_capture_after_the_topology_patch(
 }
 
 #[open_gpui::test]
-fn removing_a_keyboard_activated_dynamic_port_cancels_create_from_wire(
+fn removing_a_keyboard_activated_dynamic_port_cancels_keyboard_connection(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    let (runtime, host, cx, port_events, node_events, canvas_events, _, _, control_focus) =
+    let (runtime, host, cx, port_events, node_events, canvas_events, _, _, control_focus, _) =
         mount_scene(cx);
     draw(cx);
 
@@ -550,14 +555,17 @@ fn removing_a_keyboard_activated_dynamic_port_cancels_create_from_wire(
     cx.read_entity(&host, |host, _| {
         assert_eq!(
             host.interaction_presentation().phase(),
-            CanvasInteractionPhase::ConnectionSearch
+            CanvasInteractionPhase::ConnectionDrag
         );
-        assert!(host.connection_search_request().is_some());
+        assert!(host.connection_search_request().is_none());
     });
 
     runtime
         .execute(GraphCommand::topology(
-            0,
+            runtime
+                .snapshot()
+                .expect("keyboard-port removal snapshot")
+                .version(),
             TopologyEdit::new().replace_node_ports(
                 node_id(),
                 Vec::<TopologyPort>::new(),
@@ -593,7 +601,7 @@ fn removing_a_keyboard_activated_dynamic_port_cancels_create_from_wire(
 fn disabling_a_port_does_not_steal_focus_acquired_after_the_drag_started(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    let (_runtime, host, cx, port_events, _, _, _, _, control_focus) = mount_scene(cx);
+    let (_runtime, host, cx, port_events, _, _, _, _, control_focus, _) = mount_scene(cx);
     draw(cx);
 
     let port = cx.debug_bounds(PORT_SELECTOR).expect("port bounds");
@@ -627,7 +635,7 @@ fn disabling_a_port_does_not_steal_focus_acquired_after_the_drag_started(
 fn port_capture_survives_redraw_and_transfers_out_of_bounds_release_to_search(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    let (runtime, host, cx, port_events, node_events, canvas_events, _, _, control_focus) =
+    let (runtime, host, cx, port_events, node_events, canvas_events, _, _, control_focus, _) =
         mount_scene(cx);
     draw(cx);
     let control = cx.debug_bounds(CONTROL_SELECTOR).expect("control bounds");
@@ -711,7 +719,7 @@ fn port_capture_survives_redraw_and_transfers_out_of_bounds_release_to_search(
     });
     cx.update(|window, cx| {
         host.update(cx, |host, cx| {
-            host.cancel_connection_search(request, window, cx)
+            host.cancel_connection_search(&request, window, cx)
         })
         .expect("cancel search");
     });
@@ -730,7 +738,7 @@ fn port_capture_survives_redraw_and_transfers_out_of_bounds_release_to_search(
 
 #[open_gpui::test]
 fn escape_cancels_port_capture_and_consumes_the_key(cx: &mut open_gpui::TestAppContext) {
-    let (_runtime, host, cx, port_events, node_events, canvas_events, _, _, control_focus) =
+    let (_runtime, host, cx, port_events, node_events, canvas_events, _, _, control_focus, _) =
         mount_scene(cx);
     draw(cx);
     let control = cx.debug_bounds(CONTROL_SELECTOR).expect("control bounds");
@@ -770,7 +778,7 @@ fn escape_cancels_port_capture_and_consumes_the_key(cx: &mut open_gpui::TestAppC
 fn hard_retirement_cancels_capture_and_suppresses_late_pointer_events(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    let (runtime, host, cx, port_events, node_events, canvas_events, _, _, _) = mount_scene(cx);
+    let (runtime, host, cx, port_events, node_events, canvas_events, _, _, _, _) = mount_scene(cx);
     draw(cx);
     let previous_focus_handle = cx.update(|window, cx| {
         let focus = cx.focus_handle();
@@ -784,7 +792,10 @@ fn hard_retirement_cancels_capture_and_suppresses_late_pointer_events(
 
     runtime
         .execute(GraphCommand::topology(
-            0,
+            runtime
+                .snapshot()
+                .expect("hard-retirement snapshot")
+                .version(),
             TopologyEdit::new().remove_node(node_id(), IncidentEdgePolicy::Reject),
         ))
         .unwrap();
@@ -815,7 +826,7 @@ fn hard_retirement_cancels_capture_and_suppresses_late_pointer_events(
 fn hard_retirement_does_not_steal_focus_acquired_after_drag_started(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    let (runtime, host, cx, port_events, _, _, _, _, control_focus) = mount_scene(cx);
+    let (runtime, host, cx, port_events, _, _, _, _, control_focus, _) = mount_scene(cx);
     draw(cx);
     let port = cx.debug_bounds(PORT_SELECTOR).expect("port bounds");
     cx.simulate_mouse_down(port.center(), MouseButton::Left, Default::default());
@@ -831,7 +842,10 @@ fn hard_retirement_does_not_steal_focus_acquired_after_drag_started(
     });
     runtime
         .execute(GraphCommand::topology(
-            0,
+            runtime
+                .snapshot()
+                .expect("focus-retirement snapshot")
+                .version(),
             TopologyEdit::new().remove_node(node_id(), IncidentEdgePolicy::Reject),
         ))
         .unwrap();
@@ -863,13 +877,13 @@ fn native_control_and_scroll_keep_component_bubbling_without_graph_gestures(
         control_events,
         scroll_events,
         _,
+        view,
     ) = mount_scene(cx);
     draw(cx);
     let graph_before = runtime.snapshot().expect("graph before native controls");
     let history_before = runtime
         .history_state()
         .expect("history before native controls");
-    let view = cx.read_entity(&host, |host, _| host.view_handle());
     let viewport_before = view
         .viewport_transform()
         .expect("viewport before native controls");
@@ -914,7 +928,7 @@ fn native_control_and_scroll_keep_component_bubbling_without_graph_gestures(
 fn captured_owner_is_force_included_until_release_then_becomes_parkable(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    let (_runtime, host, cx, port_events, node_events, canvas_events, _, _, _) = mount_scene(cx);
+    let (_runtime, host, cx, port_events, node_events, canvas_events, _, _, _, _) = mount_scene(cx);
     draw(cx);
     let port = cx.debug_bounds(PORT_SELECTOR).expect("port bounds");
     cx.simulate_mouse_down(port.center(), MouseButton::Left, Default::default());
@@ -956,7 +970,7 @@ fn captured_owner_is_force_included_until_release_then_becomes_parkable(
 fn create_from_wire_search_force_includes_its_source_until_cancelled(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    let (_runtime, host, cx, _, _, _, _, _, _) = mount_scene(cx);
+    let (_runtime, host, cx, _, _, _, _, _, _, _) = mount_scene(cx);
     draw(cx);
     let port = cx.debug_bounds(PORT_SELECTOR).expect("port bounds");
     cx.simulate_mouse_down(port.center(), MouseButton::Left, Default::default());
@@ -984,12 +998,12 @@ fn create_from_wire_search_force_includes_its_source_until_cancelled(
         assert_eq!(host.stats().active_nodes(), 1);
         assert_eq!(host.stats().parked_nodes(), 0);
         assert_eq!(host.stats().protected_instances(), 1);
-        assert_eq!(host.connection_search_request(), Some(request));
+        assert_eq!(host.connection_search_request().as_ref(), Some(&request));
     });
 
     cx.update(|window, cx| {
         host.update(cx, |host, cx| {
-            host.cancel_connection_search(request, window, cx)
+            host.cancel_connection_search(&request, window, cx)
         })
         .expect("cancel search");
     });
@@ -1008,7 +1022,7 @@ fn create_from_wire_search_force_includes_its_source_until_cancelled(
 
 #[open_gpui::test]
 fn window_aware_close_releases_capture_before_returning(cx: &mut open_gpui::TestAppContext) {
-    let (_runtime, host, cx, port_events, node_events, canvas_events, _, _, _) = mount_scene(cx);
+    let (_runtime, host, cx, port_events, node_events, canvas_events, _, _, _, _) = mount_scene(cx);
     draw(cx);
     let control = cx.debug_bounds(CONTROL_SELECTOR).expect("control bounds");
     cx.simulate_click(control.center(), Default::default());
@@ -1041,7 +1055,7 @@ fn window_aware_close_releases_capture_before_returning(cx: &mut open_gpui::Test
 fn runtime_drop_during_connection_drag_releases_capture_and_terminalizes_the_owner(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    let (runtime, host, cx, port_events, node_events, canvas_events, _, _, _) = mount_scene(cx);
+    let (runtime, host, cx, port_events, node_events, canvas_events, _, _, _, _) = mount_scene(cx);
     draw(cx);
     let port = cx.debug_bounds(PORT_SELECTOR).expect("port bounds");
     cx.simulate_mouse_down(port.center(), MouseButton::Left, Default::default());
@@ -1074,7 +1088,7 @@ fn runtime_drop_during_connection_drag_releases_capture_and_terminalizes_the_own
 fn cancelling_create_from_wire_restores_the_pre_drag_focus_and_leaves_no_owner(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    let (runtime, host, cx, _, _, _, _, _, control_focus) = mount_scene(cx);
+    let (runtime, host, cx, _, _, _, _, _, control_focus, _) = mount_scene(cx);
     draw(cx);
     let before = runtime.snapshot().unwrap();
     let history_before = runtime.history_state().unwrap();
@@ -1104,7 +1118,7 @@ fn cancelling_create_from_wire_restores_the_pre_drag_focus_and_leaves_no_owner(
     });
     cx.update(|window, cx| {
         host.update(cx, |host, cx| {
-            host.cancel_connection_search(request, window, cx)
+            host.cancel_connection_search(&request, window, cx)
         })
         .expect("cancel current search");
     });
@@ -1130,7 +1144,7 @@ fn cancelling_create_from_wire_restores_the_pre_drag_focus_and_leaves_no_owner(
 fn escape_without_the_original_mouse_up_does_not_suppress_the_next_click(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    let (_runtime, _host, cx, port_events, node_events, canvas_events, control_events, _, _) =
+    let (_runtime, _host, cx, port_events, node_events, canvas_events, control_events, _, _, _) =
         mount_scene(cx);
     draw(cx);
     let port = cx.debug_bounds(PORT_SELECTOR).expect("port bounds");
@@ -1165,6 +1179,7 @@ fn mount_scene(
     Rc<RefCell<Vec<&'static str>>>,
     Rc<RefCell<Vec<&'static str>>>,
     Rc<RefCell<Option<WeakFocusHandle>>>,
+    WeakViewSession,
 ) {
     mount_scene_with_port_observer(cx, true)
 }
@@ -1182,9 +1197,11 @@ fn mount_scene_with_port_observer(
     Rc<RefCell<Vec<&'static str>>>,
     Rc<RefCell<Vec<&'static str>>>,
     Rc<RefCell<Option<WeakFocusHandle>>>,
+    WeakViewSession,
 ) {
     let runtime = Rc::new(GraphRuntime::builder(catalog()).build(graph()).unwrap());
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    let view_handle = view.downgrade();
     let port_events = Rc::new(PortProbe::enabled());
     let node_events = Rc::new(RefCell::new(Vec::new()));
     let canvas_events = Rc::new(RefCell::new(Vec::new()));
@@ -1241,6 +1258,7 @@ fn mount_scene_with_port_observer(
         control_events,
         scroll_events,
         control_focus,
+        view_handle,
     )
 }
 

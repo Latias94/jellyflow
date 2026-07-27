@@ -1,19 +1,25 @@
 use std::collections::BTreeMap;
 
 use jellyflow_core::{Node, NodeId, Port, PortId};
-use jellyflow_runtime::runtime::viewport::ViewportTransform;
+use jellyflow_runtime::viewport::ViewportTransform;
 use jellyflow_runtime::{
-    GraphCommand, GraphRevision, GraphSnapshot, NodeInstanceKey, PortConnectionSummary,
-    ViewCloseReason, ViewSessionError, WeakViewSession,
+    commands::GraphCommand, graph::GraphRevision, graph::GraphSnapshot, graph::GraphVersion,
+    graph::PortConnectionSummary, graph::PortInstanceKey, view::NodeInstanceKey,
+    view::ViewCloseReason, view::ViewSessionError,
 };
-use open_gpui::{App, FocusHandle};
+use open_gpui::App;
 
+use crate::activity::OpenGpuiNodeActivityRegistry;
 pub use crate::binding::OpenGpuiNodeBinding;
-use crate::binding::{OpenGpuiMountCapability, OpenGpuiMountState};
-use crate::command_journal::{
-    OpenGpuiCommandEnqueueError, OpenGpuiCommandSink, OpenGpuiCommandTicket,
+use crate::binding::{
+    OpenGpuiMountContext, OpenGpuiMountValidationError, OpenGpuiNodePresentationInputSignature,
 };
-use crate::port_handle::OpenGpuiMeasurementSink;
+use crate::command_journal::OpenGpuiCommandSink;
+pub use crate::command_journal::{
+    OPEN_GPUI_COMMAND_JOURNAL_CAPACITY, OpenGpuiCommandEnqueueError, OpenGpuiCommandTicket,
+    OpenGpuiCommandTicketError, OpenGpuiCommandTicketResult,
+};
+pub use crate::node_drag_handle::OpenGpuiNodeDragHandle;
 pub use crate::port_handle::{OpenGpuiPortAnchor, OpenGpuiPortHandle, OpenGpuiPortSide};
 use crate::presentation::{OpenGpuiNodePresentationSnapshot, OpenGpuiPortInteractionState};
 
@@ -23,22 +29,100 @@ use crate::presentation::{OpenGpuiNodePresentationSnapshot, OpenGpuiPortInteract
 /// for one input callback or render pass, but must not be retained as component state. Enqueueing a
 /// command consumes it so a command cannot accidentally be rebound to newer facts.
 pub struct OpenGpuiNodeAuthoring {
-    instance: NodeInstanceKey,
+    context: OpenGpuiMountContext,
     snapshot: GraphSnapshot,
     viewport_transform: ViewportTransform,
     presentation: OpenGpuiNodePresentationSnapshot,
     ports: Vec<OpenGpuiAuthoringPortState>,
-    view: WeakViewSession,
-    mount: OpenGpuiMountCapability,
+    port_index: BTreeMap<PortId, usize>,
     commands: OpenGpuiCommandSink,
+    activity: OpenGpuiNodeActivityRegistry,
+}
+
+/// One value read from the immutable facts owned by an exact node authoring view.
+///
+/// The provenance is intentionally opaque. Retained fields consume it to reject values crossed
+/// between nodes, native mounts, or graph snapshots.
+pub struct OpenGpuiNodeObservation<T> {
+    stamp: OpenGpuiAuthoringStamp,
+    value: T,
+}
+
+impl<T> std::fmt::Debug for OpenGpuiNodeObservation<T>
+where
+    T: std::fmt::Debug,
+{
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("OpenGpuiNodeObservation")
+            .field("instance", self.stamp.context.instance())
+            .field("version", &self.stamp.snapshot.version())
+            .field("value", &self.value)
+            .finish()
+    }
+}
+
+impl<T> OpenGpuiNodeObservation<T> {
+    #[cfg(test)]
+    pub(crate) fn from_parts(stamp: OpenGpuiAuthoringStamp, value: T) -> Self {
+        Self { stamp, value }
+    }
+
+    #[must_use]
+    pub fn instance(&self) -> &NodeInstanceKey {
+        self.stamp.context.instance()
+    }
+
+    #[must_use]
+    pub fn version(&self) -> GraphVersion {
+        self.stamp.snapshot.version()
+    }
+
+    #[must_use]
+    pub fn value(&self) -> &T {
+        &self.value
+    }
+
+    pub(crate) fn into_parts(self) -> (OpenGpuiAuthoringStamp, T) {
+        (self.stamp, self.value)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn stamp(&self) -> &OpenGpuiAuthoringStamp {
+        &self.stamp
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct OpenGpuiAuthoringStamp {
+    pub(crate) context: OpenGpuiMountContext,
+    pub(crate) snapshot: GraphSnapshot,
+    pub(crate) activity: OpenGpuiNodeActivityRegistry,
+}
+
+impl OpenGpuiAuthoringStamp {
+    pub(crate) fn ensure_current(&self) -> Result<(), OpenGpuiNodeAuthoringError> {
+        let current = self.context.ensure_current().map_err(map_mount_error)?;
+        if !self.snapshot.ptr_eq(&current) {
+            return Err(OpenGpuiNodeAuthoringError::StaleRevision {
+                authoring_revision: self.snapshot.revision(),
+                current_revision: current.revision(),
+            });
+        }
+        Ok(())
+    }
+
+    pub(crate) fn same_snapshot(&self, other: &Self) -> bool {
+        self.snapshot.ptr_eq(&other.snapshot)
+    }
 }
 
 impl std::fmt::Debug for OpenGpuiNodeAuthoring {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("OpenGpuiNodeAuthoring")
-            .field("instance", &self.instance)
-            .field("revision", &self.snapshot.revision())
+            .field("instance", self.context.instance())
+            .field("version", &self.snapshot.version())
             .field("port_count", &self.ports.len())
             .finish_non_exhaustive()
     }
@@ -66,6 +150,11 @@ impl<'a> OpenGpuiAuthoringPort<'a> {
     }
 
     #[must_use]
+    pub fn instance(self) -> PortInstanceKey {
+        self.connection.instance()
+    }
+
+    #[must_use]
     pub fn facts(self) -> &'a Port {
         self.port
     }
@@ -83,69 +172,106 @@ impl<'a> OpenGpuiAuthoringPort<'a> {
 
 impl OpenGpuiNodeAuthoring {
     pub(crate) fn open(
-        instance: NodeInstanceKey,
-        view: WeakViewSession,
-        mount: OpenGpuiMountCapability,
+        context: OpenGpuiMountContext,
         commands: OpenGpuiCommandSink,
-        measurement: OpenGpuiMeasurementSink,
-        port_focus: &BTreeMap<PortId, FocusHandle>,
+        activity: OpenGpuiNodeActivityRegistry,
+        port_handle: impl Fn(PortId) -> Option<OpenGpuiPortHandle>,
+        presentation_input: Option<&OpenGpuiNodePresentationInputSignature>,
         presentation: OpenGpuiNodePresentationSnapshot,
     ) -> Result<Self, OpenGpuiNodeAuthoringError> {
-        ensure_current_instance(&instance, &view, &mount)?;
-
-        let snapshot = view.graph_snapshot().map_err(map_session_error)?;
-        let node_id = instance.node();
+        let snapshot = context.ensure_current().map_err(map_mount_error)?;
+        let node_id = context.instance().node();
         let node = snapshot
             .graph()
             .node(&node_id)
             .ok_or(OpenGpuiNodeAuthoringError::MissingNode { node: node_id })?;
-        let viewport_transform = view.viewport_transform().map_err(map_session_error)?;
-        let mut ports = Vec::with_capacity(node.ports.len());
-        for port_id in &node.ports {
-            let port =
-                snapshot
-                    .graph()
-                    .port(port_id)
-                    .ok_or(OpenGpuiNodeAuthoringError::MissingPort {
-                        node: node_id,
-                        port: *port_id,
-                    })?;
-            let connection = view
-                .port_connection_summary(*port_id)
-                .map_err(map_session_error)?
-                .ok_or(OpenGpuiNodeAuthoringError::MissingPort {
-                    node: node_id,
-                    port: *port_id,
-                })?;
-            if connection.revision() != snapshot.revision() {
-                return Err(OpenGpuiNodeAuthoringError::IncoherentPortFacts {
-                    port: *port_id,
-                    authoring_revision: snapshot.revision(),
-                    facts_revision: connection.revision(),
+        let viewport_transform = context
+            .view()
+            .viewport_transform()
+            .map_err(map_session_error)?;
+        let cached_input = presentation_input.filter(|input| {
+            input.graph_revision() == snapshot.revision()
+                && input
+                    .ordered_connection_summaries()
+                    .all(|(_, summary)| summary.version() == snapshot.version())
+                && input
+                    .ordered_connection_summaries()
+                    .map(|(port, _)| port)
+                    .eq(node.ports.iter().copied())
+        });
+        let summaries = if let Some(input) = cached_input {
+            input.ordered_connection_summaries().collect::<Vec<_>>()
+        } else {
+            let summaries = context
+                .view()
+                .port_connection_summaries(&node.ports)
+                .map_err(map_session_error)?;
+            if summaries.version() != snapshot.version() {
+                return Err(OpenGpuiNodeAuthoringError::IncoherentPortBatch {
+                    authoring_version: snapshot.version(),
+                    facts_version: summaries.version(),
                 });
             }
+            summaries
+                .into_entries()
+                .into_iter()
+                .map(|(port, summary)| {
+                    summary.map(|summary| (port, summary)).ok_or(
+                        OpenGpuiNodeAuthoringError::MissingPort {
+                            node: node_id,
+                            port,
+                        },
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        let mut ports = Vec::with_capacity(node.ports.len());
+        let mut port_index = BTreeMap::new();
+        for (index, (port_id, connection)) in summaries.into_iter().enumerate() {
+            debug_assert_eq!(node.ports.get(index), Some(&port_id));
+            if connection.version() != snapshot.version() {
+                return Err(OpenGpuiNodeAuthoringError::IncoherentPortBatch {
+                    authoring_version: snapshot.version(),
+                    facts_version: connection.version(),
+                });
+            }
+            snapshot
+                .graph()
+                .port(&port_id)
+                .ok_or(OpenGpuiNodeAuthoringError::MissingPort {
+                    node: node_id,
+                    port: port_id,
+                })?;
+            let handle =
+                port_handle(port_id).ok_or(OpenGpuiNodeAuthoringError::MissingPortCapability {
+                    node: node_id,
+                    port: port_id,
+                })?;
+            let port_instance = connection.instance();
+            if port_instance.port() != port_id
+                || port_instance.node() != node_id
+                || port_instance.owner() != context.instance().lifetime()
+                || handle.port_instance() != port_instance
+            {
+                return Err(OpenGpuiNodeAuthoringError::IncoherentPortIdentity {
+                    node: node_id,
+                    port: port_id,
+                });
+            }
+            port_index.insert(port_id, index);
             ports.push(OpenGpuiAuthoringPortState {
-                id: *port_id,
+                id: port_id,
                 connection,
-                handle: OpenGpuiPortHandle::new(
-                    instance.clone(),
-                    *port_id,
-                    port.dir,
-                    port.key.0.clone(),
-                    measurement.clone(),
-                )
-                .with_focus_handle(port_focus.get(port_id).cloned())
-                .with_presentation_state(
+                handle: handle.with_presentation_state(
                     presentation
-                        .port(*port_id)
+                        .port(port_id)
                         .cloned()
                         .unwrap_or_else(OpenGpuiPortInteractionState::idle),
                 ),
             });
         }
 
-        ensure_current_instance(&instance, &view, &mount)?;
-        let current = view.graph_snapshot().map_err(map_session_error)?;
+        let current = context.ensure_current().map_err(map_mount_error)?;
         if !snapshot.ptr_eq(&current) {
             return Err(OpenGpuiNodeAuthoringError::SnapshotChanged {
                 authoring_revision: snapshot.revision(),
@@ -154,30 +280,30 @@ impl OpenGpuiNodeAuthoring {
         }
 
         Ok(Self {
-            instance,
+            context,
             snapshot,
             viewport_transform,
             presentation,
             ports,
-            view,
-            mount,
+            port_index,
             commands,
+            activity,
         })
     }
 
     #[must_use]
     pub fn instance(&self) -> &NodeInstanceKey {
-        &self.instance
+        self.context.instance()
     }
 
     #[must_use]
     pub fn node_id(&self) -> NodeId {
-        self.instance.node()
+        self.context.instance().node()
     }
 
     #[must_use]
-    pub fn revision(&self) -> GraphRevision {
-        self.snapshot.revision()
+    pub fn version(&self) -> GraphVersion {
+        self.snapshot.version()
     }
 
     #[must_use]
@@ -198,33 +324,62 @@ impl OpenGpuiNodeAuthoring {
         &self.presentation
     }
 
+    /// Reads one field value from this view's immutable node facts and preserves its provenance.
+    #[must_use]
+    pub fn observe_field<T>(&self, read: impl FnOnce(&Node) -> T) -> OpenGpuiNodeObservation<T> {
+        OpenGpuiNodeObservation {
+            stamp: self.stamp(),
+            value: read(self.node()),
+        }
+    }
+
+    /// Fallible form of [`Self::observe_field`].
+    pub fn try_observe_field<T, E>(
+        &self,
+        read: impl FnOnce(&Node) -> Result<T, E>,
+    ) -> Result<OpenGpuiNodeObservation<T>, E> {
+        Ok(OpenGpuiNodeObservation {
+            stamp: self.stamp(),
+            value: read(self.node())?,
+        })
+    }
+
+    pub(crate) fn stamp(&self) -> OpenGpuiAuthoringStamp {
+        OpenGpuiAuthoringStamp {
+            context: self.context.clone(),
+            snapshot: self.snapshot.clone(),
+            activity: self.activity.clone(),
+        }
+    }
+
     pub fn ports(&self) -> impl ExactSizeIterator<Item = OpenGpuiAuthoringPort<'_>> + '_ {
-        self.node()
-            .ports
+        self.ports
             .iter()
-            .zip(&self.ports)
-            .map(move |(port_id, state)| {
-                debug_assert_eq!(*port_id, state.id);
-                OpenGpuiAuthoringPort {
-                    id: state.id,
-                    port: self
-                        .snapshot
-                        .graph()
-                        .port(port_id)
-                        .expect("an authoring view keeps every validated immutable port"),
-                    connection: state.connection,
-                    handle: &state.handle,
-                }
-            })
+            .map(move |state| self.port_from_state(state))
     }
 
     #[must_use]
     pub fn port(&self, id: PortId) -> Option<OpenGpuiAuthoringPort<'_>> {
-        self.node()
-            .ports
-            .iter()
-            .position(|port| *port == id)
-            .and_then(|index| self.ports().nth(index))
+        let index = *self.port_index.get(&id)?;
+        self.ports
+            .get(index)
+            .map(|state| self.port_from_state(state))
+    }
+
+    fn port_from_state<'a>(
+        &'a self,
+        state: &'a OpenGpuiAuthoringPortState,
+    ) -> OpenGpuiAuthoringPort<'a> {
+        OpenGpuiAuthoringPort {
+            id: state.id,
+            port: self
+                .snapshot
+                .graph()
+                .port(&state.id)
+                .expect("an authoring view keeps every validated immutable port"),
+            connection: state.connection,
+            handle: &state.handle,
+        }
     }
 
     /// Enqueues one application-built command against exactly these authoring facts.
@@ -236,54 +391,44 @@ impl OpenGpuiNodeAuthoring {
         command: GraphCommand,
         cx: &mut App,
     ) -> Result<OpenGpuiCommandTicket, OpenGpuiNodeAuthoringError> {
-        ensure_current_instance(&self.instance, &self.view, &self.mount)?;
-        let command_revision = command.expected_revision();
-        let authoring_revision = self.revision();
-        if command_revision != authoring_revision {
-            return Err(OpenGpuiNodeAuthoringError::CommandRevisionMismatch {
-                authoring_revision,
-                command_revision,
+        self.context.ensure_exact_view().map_err(map_mount_error)?;
+        let command_version = command.expected_version();
+        let authoring_version = self.snapshot.version();
+        if command_version != authoring_version {
+            return Err(OpenGpuiNodeAuthoringError::CommandVersionMismatch {
+                authoring_version,
+                command_version,
             });
         }
 
-        let current = self.view.graph_snapshot().map_err(map_session_error)?;
+        let current = self.context.ensure_current().map_err(map_mount_error)?;
         if !self.snapshot.ptr_eq(&current) {
             return Err(OpenGpuiNodeAuthoringError::StaleRevision {
-                authoring_revision,
+                authoring_revision: authoring_version.revision(),
                 current_revision: current.revision(),
             });
         }
-        ensure_current_instance(&self.instance, &self.view, &self.mount)?;
+        self.context.ensure_exact_view().map_err(map_mount_error)?;
         self.commands.enqueue(command, cx).map_err(Into::into)
     }
 }
 
-fn ensure_current_instance(
-    instance: &NodeInstanceKey,
-    view: &WeakViewSession,
-    mount: &OpenGpuiMountCapability,
-) -> Result<(), OpenGpuiNodeAuthoringError> {
-    match mount.state() {
-        OpenGpuiMountState::Live => {}
-        OpenGpuiMountState::Retired => {
-            return Err(OpenGpuiNodeAuthoringError::RetiredMount {
-                node: instance.node(),
-            });
+fn map_mount_error(error: OpenGpuiMountValidationError) -> OpenGpuiNodeAuthoringError {
+    match error {
+        OpenGpuiMountValidationError::RetiredMount { node } => {
+            OpenGpuiNodeAuthoringError::RetiredMount { node }
         }
-        OpenGpuiMountState::Closed(reason) => {
-            return Err(OpenGpuiNodeAuthoringError::Closed { reason });
+        OpenGpuiMountValidationError::RetiredIncarnation { node } => {
+            OpenGpuiNodeAuthoringError::RetiredIncarnation { node }
         }
+        OpenGpuiMountValidationError::ForeignView => {
+            OpenGpuiNodeAuthoringError::Session(ViewSessionError::ForeignInteractionFacts)
+        }
+        OpenGpuiMountValidationError::Closed { reason } => {
+            OpenGpuiNodeAuthoringError::Closed { reason }
+        }
+        OpenGpuiMountValidationError::Session(error) => map_session_error(error),
     }
-
-    let current = view
-        .node_incarnation(instance.node())
-        .map_err(map_session_error)?;
-    if current != Some(instance.incarnation()) {
-        return Err(OpenGpuiNodeAuthoringError::RetiredIncarnation {
-            node: instance.node(),
-        });
-    }
-    Ok(())
 }
 
 fn map_session_error(error: ViewSessionError) -> OpenGpuiNodeAuthoringError {
@@ -306,13 +451,16 @@ pub enum OpenGpuiNodeAuthoringError {
     MissingNode { node: NodeId },
     #[error("port {port:?} is missing from node {node:?}'s authoring graph snapshot")]
     MissingPort { node: NodeId, port: PortId },
+    #[error("port {port:?} has no live native capability for node {node:?}")]
+    MissingPortCapability { node: NodeId, port: PortId },
+    #[error("port {port:?} facts and native capability disagree for node {node:?}")]
+    IncoherentPortIdentity { node: NodeId, port: PortId },
     #[error(
-        "port {port:?} facts revision {facts_revision} does not match authoring revision {authoring_revision}"
+        "port facts version {facts_version:?} does not match authoring version {authoring_version:?}"
     )]
-    IncoherentPortFacts {
-        port: PortId,
-        authoring_revision: GraphRevision,
-        facts_revision: GraphRevision,
+    IncoherentPortBatch {
+        authoring_version: GraphVersion,
+        facts_version: GraphVersion,
     },
     #[error(
         "graph changed while opening authoring view: revision {authoring_revision} became {current_revision}"
@@ -322,11 +470,11 @@ pub enum OpenGpuiNodeAuthoringError {
         current_revision: GraphRevision,
     },
     #[error(
-        "command revision {command_revision} does not match authoring revision {authoring_revision}"
+        "command version {command_version:?} does not match authoring version {authoring_version:?}"
     )]
-    CommandRevisionMismatch {
-        authoring_revision: GraphRevision,
-        command_revision: GraphRevision,
+    CommandVersionMismatch {
+        authoring_version: GraphVersion,
+        command_version: GraphVersion,
     },
     #[error(
         "authoring revision {authoring_revision} is stale; current graph revision is {current_revision}"

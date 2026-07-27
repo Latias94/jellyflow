@@ -59,6 +59,8 @@ pub enum NodeCatalogInstantiationError {
     MissingKind { kind: NodeKindKey },
     #[error("port id count mismatch: expected {expected}, got {actual}")]
     PortIdCountMismatch { expected: usize, actual: usize },
+    #[error("port id {port:?} was supplied more than once")]
+    DuplicatePortId { port: PortId },
 }
 
 #[derive(Debug)]

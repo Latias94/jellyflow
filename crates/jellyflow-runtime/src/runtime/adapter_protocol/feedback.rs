@@ -2,13 +2,11 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
-use jellyflow_core::core::{CanvasPoint, EdgeId, GroupId, NodeId, PortId};
+use jellyflow_core::core::{NodeId, PortId};
 
-use crate::io::ViewSelectionSeed;
 use crate::runtime::commands::{GraphCommand, GraphCommandOutcome};
 pub use crate::runtime::geometry::HandlePosition;
 use crate::runtime::view_session::{ViewId, ViewSessionError};
-use crate::runtime::viewport::ViewportTransform;
 
 use super::frame::{FrameToken, NodeLayoutTarget, PortLayoutTarget};
 use super::{ViewPoint, ViewRect};
@@ -19,6 +17,7 @@ pub struct RenderedPortLayout {
     pub(crate) target: PortLayoutTarget,
     pub(crate) visual_bounds: ViewRect,
     pub(crate) hit_bounds: ViewRect,
+    pub(crate) interaction_bounds: Option<ViewRect>,
     pub(crate) route_anchor: ViewPoint,
     pub(crate) outward: HandlePosition,
 }
@@ -35,13 +34,19 @@ impl RenderedPortLayout {
             target: target.clone(),
             visual_bounds,
             hit_bounds,
+            interaction_bounds: Some(hit_bounds),
             route_anchor,
             outward,
         }
     }
 
+    fn with_interaction_bounds(mut self, interaction_bounds: Option<ViewRect>) -> Self {
+        self.interaction_bounds = interaction_bounds;
+        self
+    }
+
     pub fn port(&self) -> PortId {
-        self.target.port
+        self.target.port()
     }
 
     pub fn target(&self) -> &PortLayoutTarget {
@@ -56,6 +61,14 @@ impl RenderedPortLayout {
     /// Bounds used by the adapter for pointer targeting.
     pub fn hit_bounds(&self) -> ViewRect {
         self.hit_bounds
+    }
+
+    /// Effective bounds that may participate in native connection probing.
+    ///
+    /// Adapters should clip their declared hit bounds to the framework's active content mask.
+    /// `None` keeps route geometry published while excluding a fully occluded port from probing.
+    pub fn interaction_bounds(&self) -> Option<ViewRect> {
+        self.interaction_bounds
     }
 
     /// Exact point where the routed edge meets the port.
@@ -172,6 +185,25 @@ impl NodeLayoutBuilder {
         )))
     }
 
+    /// Records rendered route geometry with an independently clipped interaction region.
+    ///
+    /// `hit_bounds` remains the adapter's unoccluded target. `interaction_bounds` is the effective
+    /// visible portion and may be `None` when the visual port is fully clipped.
+    pub fn port_rendered_with_interaction_bounds(
+        &mut self,
+        target: &PortLayoutTarget,
+        visual_bounds: ViewRect,
+        hit_bounds: ViewRect,
+        interaction_bounds: Option<ViewRect>,
+        route_anchor: ViewPoint,
+        outward: HandlePosition,
+    ) -> Result<&mut Self, NodeLayoutBuilderError> {
+        self.record(PortLayoutOutcome::Rendered(
+            RenderedPortLayout::new(target, visual_bounds, hit_bounds, route_anchor, outward)
+                .with_interaction_bounds(interaction_bounds),
+        ))
+    }
+
     pub fn port_hidden(
         &mut self,
         target: &PortLayoutTarget,
@@ -285,15 +317,6 @@ impl NodeLayout {
 
 #[derive(Debug, Clone)]
 pub(crate) enum FeedbackOperation {
-    Selection {
-        nodes: Vec<NodeId>,
-        edges: Vec<EdgeId>,
-        groups: Vec<GroupId>,
-    },
-    Viewport {
-        pan: CanvasPoint,
-        zoom: f32,
-    },
     Command(GraphCommand),
     Layout(NodeLayout),
 }
@@ -325,8 +348,6 @@ pub enum FeedbackCollectorError {
     CollectorClosed,
     #[error("feedback collector is busy in another callback")]
     CollectorBusy,
-    #[error("viewport pan must be finite and zoom must be positive and finite")]
-    InvalidViewport,
 }
 
 #[derive(Debug)]
@@ -348,28 +369,6 @@ impl FeedbackCollector {
                 operations: Vec::new(),
             })),
         }
-    }
-
-    pub fn selection(
-        &self,
-        nodes: impl IntoIterator<Item = NodeId>,
-        edges: impl IntoIterator<Item = EdgeId>,
-        groups: impl IntoIterator<Item = GroupId>,
-    ) -> Result<(), FeedbackCollectorError> {
-        self.push(FeedbackOperation::Selection {
-            nodes: nodes.into_iter().collect(),
-            edges: edges.into_iter().collect(),
-            groups: groups.into_iter().collect(),
-        })
-    }
-
-    pub fn viewport(&self, pan: CanvasPoint, zoom: f32) -> Result<(), FeedbackCollectorError> {
-        let transform =
-            ViewportTransform::new(pan, zoom).ok_or(FeedbackCollectorError::InvalidViewport)?;
-        self.push(FeedbackOperation::Viewport {
-            pan: transform.pan,
-            zoom: transform.zoom,
-        })
     }
 
     pub fn command(&self, command: GraphCommand) -> Result<(), FeedbackCollectorError> {
@@ -467,12 +466,6 @@ pub enum LayoutNodeStatus {
 
 #[derive(Debug)]
 pub enum FeedbackOperationReceipt {
-    Selection {
-        selection: ViewSelectionSeed,
-    },
-    Viewport {
-        transform: ViewportTransform,
-    },
     Command {
         outcome: Box<Result<GraphCommandOutcome, ViewSessionError>>,
     },
@@ -486,28 +479,14 @@ impl FeedbackOperationReceipt {
     pub fn layout_status(&self) -> Option<LayoutNodeStatus> {
         match self {
             Self::Layout { status, .. } => Some(*status),
-            Self::Selection { .. } | Self::Viewport { .. } | Self::Command { .. } => None,
-        }
-    }
-
-    pub fn selection(&self) -> Option<&ViewSelectionSeed> {
-        match self {
-            Self::Selection { selection } => Some(selection),
-            Self::Viewport { .. } | Self::Command { .. } | Self::Layout { .. } => None,
-        }
-    }
-
-    pub fn viewport_transform(&self) -> Option<ViewportTransform> {
-        match self {
-            Self::Viewport { transform } => Some(*transform),
-            Self::Selection { .. } | Self::Command { .. } | Self::Layout { .. } => None,
+            Self::Command { .. } => None,
         }
     }
 
     pub fn command_outcome(&self) -> Option<&Result<GraphCommandOutcome, ViewSessionError>> {
         match self {
             Self::Command { outcome } => Some(outcome),
-            Self::Selection { .. } | Self::Viewport { .. } | Self::Layout { .. } => None,
+            Self::Layout { .. } => None,
         }
     }
 
@@ -515,7 +494,7 @@ impl FeedbackOperationReceipt {
     pub fn into_command_outcome(self) -> Option<Result<GraphCommandOutcome, ViewSessionError>> {
         match self {
             Self::Command { outcome } => Some(*outcome),
-            Self::Selection { .. } | Self::Viewport { .. } | Self::Layout { .. } => None,
+            Self::Layout { .. } => None,
         }
     }
 }

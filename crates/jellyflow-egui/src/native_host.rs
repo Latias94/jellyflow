@@ -6,13 +6,16 @@ use std::rc::Rc;
 
 use egui::{Context, Id, Pos2, Rect, Response, Ui, UiBuilder, Vec2};
 use jellyflow_core::{NodeId, NodeKindKey, PortDirection, PortId};
-use jellyflow_runtime::runtime::geometry::HandlePosition;
-use jellyflow_runtime::{
-    AdapterFrame, DocumentEpoch, FeedbackCollector, FeedbackCollectorError, FeedbackReceipt,
-    FeedbackSubmissionError, FrameMaterializationError, FrameNode, FrameRequest, GraphCommand,
-    GraphRevision, NodeInstanceKey, NodeLayout, NodeLayoutBuilderError, RuntimePatch,
-    RuntimePatchKind, ViewCloseOutcome, ViewPoint, ViewRect, ViewSession, ViewSessionError,
-    ViewSessionEvent, ViewSize, ViewSubscriptionToken, side_anchor,
+use jellyflow_runtime::commands::GraphCommand;
+use jellyflow_runtime::geometry::{HandlePosition, ViewPoint, ViewRect, ViewSize, side_anchor};
+use jellyflow_runtime::graph::{
+    DocumentEpoch, GraphRevision, GraphSnapshot, GraphVersion, RuntimePatch, RuntimePatchKind,
+};
+use jellyflow_runtime::view::{
+    AdapterFrame, FeedbackCollector, FeedbackCollectorError, FeedbackReceipt,
+    FeedbackSubmissionError, FrameMaterializationError, FrameNode, FrameRequest, NodeInstanceKey,
+    NodeLayout, NodeLayoutBuilderError, ViewCloseOutcome, ViewSession, ViewSessionError,
+    ViewSessionEvent, ViewSubscriptionToken,
 };
 
 /// Egui-native frame bridge backed by one headless view capability.
@@ -31,12 +34,8 @@ impl EguiNativeFrameHost {
     pub fn new(view: ViewSession) -> Self {
         let initial_snapshot = view.graph_snapshot().ok();
         let lifecycle = Rc::new(RefCell::new(EguiNativeLifecycle {
-            document_epoch: initial_snapshot
-                .as_ref()
-                .map(jellyflow_runtime::GraphSnapshot::document_epoch),
-            observed_revision: initial_snapshot
-                .as_ref()
-                .map(jellyflow_runtime::GraphSnapshot::revision),
+            document_epoch: initial_snapshot.as_ref().map(GraphSnapshot::document_epoch),
+            observed_revision: initial_snapshot.as_ref().map(GraphSnapshot::revision),
             ..EguiNativeLifecycle::default()
         }));
         let weak_lifecycle = Rc::downgrade(&lifecycle);
@@ -95,7 +94,8 @@ impl EguiNativeFrameHost {
 
     /// Renders one frame while keeping unresolved-renderer handling inside the egui adapter.
     ///
-    /// Return `None` when the requested [`RendererStamp`](jellyflow_runtime::RendererStamp) has no
+    /// Return `None` when the requested [`RendererStamp`](jellyflow_runtime::view::RendererStamp)
+    /// has no
     /// application renderer. The host then renders a diagnostic node and measures every real frame
     /// port, so unknown semantic kinds remain inspectable and connectable without interpreting or
     /// mutating their opaque graph payload.
@@ -216,8 +216,8 @@ impl EguiNativeFrameHost {
             return false;
         }
         matches!(
-            self.view.node_incarnation(instance.node()),
-            Ok(Some(current)) if current == instance.incarnation()
+            self.view.node_lifetime_key(instance.node()),
+            Ok(Some(current)) if current == instance.lifetime()
         )
     }
 
@@ -307,8 +307,8 @@ impl EguiNativeFrameHost {
                 {
                     return true;
                 }
-                match self.view.node_incarnation(instance.node()) {
-                    Ok(Some(current)) => current != instance.incarnation(),
+                match self.view.node_lifetime_key(instance.node()) {
+                    Ok(Some(current)) => current != instance.lifetime(),
                     Ok(None) => true,
                     Err(_) => false,
                 }
@@ -466,10 +466,10 @@ fn reconcile_lifecycle_patch(lifecycle: &RefCell<EguiNativeLifecycle>, patch: &R
     let retired = {
         let lifecycle = lifecycle.borrow();
         patch
-            .node_incarnation_changes()
+            .node_lifetime_changes()
             .filter_map(|(node, current)| {
                 let instance = lifecycle.authoritative_instances.get(&node)?;
-                (current != Some(instance.incarnation())).then(|| instance.clone())
+                (current != Some(instance.lifetime())).then(|| instance.clone())
             })
             .collect::<Vec<_>>()
     };
@@ -576,10 +576,16 @@ impl<'frame> EguiNativeNode<'frame> {
         id
     }
 
-    /// Graph revision captured by this frame and suitable for revisioned commands.
+    /// Numeric graph revision captured by this frame for display and diagnostics.
     #[must_use]
     pub fn graph_revision(&self) -> GraphRevision {
         self.frame_node.graph_snapshot().revision()
+    }
+
+    /// Graph version captured by this frame, including runtime provenance.
+    #[must_use]
+    pub fn graph_version(&self) -> GraphVersion {
+        self.frame_node.graph_snapshot().version()
     }
 
     /// Appends a user command at the exact point its egui event is handled.
@@ -589,7 +595,8 @@ impl<'frame> EguiNativeNode<'frame> {
 
     /// Measures a real graph port from one native response.
     ///
-    /// The response rectangle supplies both visual and hit bounds. The route anchor is derived from
+    /// The response rectangle supplies both visual and declared hit bounds. Its egui-clipped
+    /// interaction rectangle supplies the effective hit bounds. The route anchor is derived from
     /// the requested outward side.
     pub fn measure_port(
         &self,
@@ -610,6 +617,10 @@ impl<'frame> EguiNativeNode<'frame> {
     ) -> Result<(), EguiNativePortError> {
         let visual_bounds = egui_rect_to_view(visual.rect, self.scene_origin);
         let hit_bounds = egui_rect_to_view(hit.rect, self.scene_origin);
+        let interaction_bounds = hit
+            .interact_rect
+            .is_positive()
+            .then(|| egui_rect_to_view(hit.interact_rect, self.scene_origin));
         let route_anchor =
             side_anchor(visual_bounds, outward).ok_or(EguiNativePortError::InvalidBounds {
                 node: self.frame_node.id(),
@@ -620,6 +631,7 @@ impl<'frame> EguiNativeNode<'frame> {
             EguiPortLayoutOutcome::Rendered {
                 visual_bounds,
                 hit_bounds,
+                interaction_bounds,
                 route_anchor,
                 outward,
             },
@@ -678,13 +690,15 @@ impl<'frame> EguiNativeNode<'frame> {
                 Some(EguiPortLayoutOutcome::Rendered {
                     visual_bounds,
                     hit_bounds,
+                    interaction_bounds,
                     route_anchor,
                     outward,
                 }) => {
-                    layout.port_rendered(
+                    layout.port_rendered_with_interaction_bounds(
                         port.layout_target(),
                         visual_bounds,
                         hit_bounds,
+                        interaction_bounds,
                         route_anchor,
                         outward,
                     )?;
@@ -709,6 +723,7 @@ enum EguiPortLayoutOutcome {
     Rendered {
         visual_bounds: ViewRect,
         hit_bounds: ViewRect,
+        interaction_bounds: Option<ViewRect>,
         route_anchor: ViewPoint,
         outward: HandlePosition,
     },
@@ -905,10 +920,9 @@ mod tests {
     use jellyflow_core::{
         CanvasPoint, CanvasRect, CanvasSize, GraphBuilder, GraphId, Node, NodeId,
     };
-    use jellyflow_runtime::{
-        FrameMaterializationBudget, GraphCommand, GraphRuntime, IncidentEdgePolicy, RendererStamp,
-        TopologyEdit, ViewSessionOptions,
-    };
+    use jellyflow_runtime::commands::{GraphCommand, IncidentEdgePolicy, TopologyEdit};
+    use jellyflow_runtime::graph::GraphRuntime;
+    use jellyflow_runtime::view::{FrameMaterializationBudget, RendererStamp, ViewSessionOptions};
 
     use super::*;
 
@@ -997,7 +1011,7 @@ mod tests {
 
         runtime
             .execute(GraphCommand::topology(
-                0,
+                runtime.snapshot().expect("retirement snapshot").version(),
                 TopologyEdit::new().remove_node(nodes[0], IncidentEdgePolicy::Reject),
             ))
             .expect("retirement executes")

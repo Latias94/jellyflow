@@ -13,7 +13,7 @@ fn runtime_add_node_requires_exact_canonical_registered_kind() {
         let rejected = assert_rejected_without_side_effects(
             &runtime,
             GraphCommand::topology(
-                0,
+                runtime.snapshot().unwrap().version(),
                 TopologyEdit::new().add_node(
                     node,
                     node_with_kind(template.clone(), kind, version),
@@ -26,13 +26,13 @@ fn runtime_add_node_requires_exact_canonical_registered_kind() {
             rejected.rejection().unwrap().diagnostics()[0].target,
             DiagnosticTarget::Node { id } if id == node
         ));
-        assert!(runtime.node_incarnation(node).unwrap().is_none());
+        assert!(runtime.node_lifetime_key(node).unwrap().is_none());
     }
 
     let canonical = NodeId::from_u128(0xCA10);
     runtime
         .execute(GraphCommand::topology(
-            0,
+            runtime.snapshot().unwrap().version(),
             TopologyEdit::new().add_node(
                 canonical,
                 node_with_kind(template.clone(), "math.add", 2),
@@ -52,7 +52,7 @@ fn runtime_add_node_requires_exact_canonical_registered_kind() {
     opaque_node.data = serde_json::json!({ "sentinel": [1, 2, 3] });
     runtime
         .execute(GraphCommand::topology(
-            1,
+            runtime.snapshot().unwrap().version(),
             TopologyEdit::new().add_node(opaque, opaque_node.clone(), []),
         ))
         .unwrap()
@@ -78,7 +78,7 @@ fn noncanonical_add_rejects_the_entire_atomic_topology_edit() {
     assert_rejected_without_side_effects(
         &runtime,
         GraphCommand::topology(
-            0,
+            runtime.snapshot().unwrap().version(),
             TopologyEdit::new()
                 .add_node(valid, node_with_kind(template.clone(), "math.add", 2), [])
                 .add_node(invalid, node_with_kind(template, "legacy.add", 2), []),
@@ -89,8 +89,8 @@ fn noncanonical_add_rejects_the_entire_atomic_topology_edit() {
     let snapshot = runtime.snapshot().unwrap();
     assert!(snapshot.graph().node(&valid).is_none());
     assert!(snapshot.graph().node(&invalid).is_none());
-    assert!(runtime.node_incarnation(valid).unwrap().is_none());
-    assert!(runtime.node_incarnation(invalid).unwrap().is_none());
+    assert!(runtime.node_lifetime_key(valid).unwrap().is_none());
+    assert!(runtime.node_lifetime_key(invalid).unwrap().is_none());
 }
 
 #[test]
@@ -105,7 +105,7 @@ fn dynamic_port_replacement_is_one_undoable_command() {
     let outcome = runtime
         .execute(
             GraphCommand::topology(
-                0,
+                runtime.snapshot().unwrap().version(),
                 TopologyEdit::new().replace_node_ports(
                     nodes[0],
                     [
@@ -164,7 +164,7 @@ fn late_failure_rolls_back_data_ports_and_incident_edges_atomically() {
     assert_rejected_without_side_effects(
         &runtime,
         GraphCommand::topology(
-            0,
+            runtime.snapshot().unwrap().version(),
             TopologyEdit::new()
                 .set_node_data(
                     ids.source,
@@ -217,7 +217,7 @@ fn data_ports_and_incident_edges_commit_undo_and_redo_as_one_topology_edit() {
 
     runtime
         .execute(GraphCommand::topology(
-            0,
+            runtime.snapshot().unwrap().version(),
             TopologyEdit::new()
                 .set_node_data(ids.source, updated_data.clone())
                 .replace_node_ports(
@@ -288,7 +288,7 @@ fn stable_ports_can_reorder_and_update_payload_without_reallocation() {
 
     runtime
         .execute(GraphCommand::topology(
-            0,
+            runtime.snapshot().unwrap().version(),
             TopologyEdit::new().replace_node_ports(
                 nodes[0],
                 [
@@ -299,12 +299,15 @@ fn stable_ports_can_reorder_and_update_payload_without_reallocation() {
             ),
         ))
         .unwrap();
+    let before = runtime.snapshot().unwrap();
+    let node_lifetime = runtime.node_lifetime_key(nodes[0]).unwrap().unwrap();
+    let second_instance = runtime.port_instance_key(second).unwrap().unwrap();
     let mut updated_second = second_port;
     updated_second.data = serde_json::json!({ "branch": "else" });
 
     runtime
         .execute(GraphCommand::topology(
-            1,
+            before.version(),
             TopologyEdit::new().replace_node_ports(
                 nodes[0],
                 [
@@ -327,6 +330,19 @@ fn stable_ports_can_reorder_and_update_payload_without_reallocation() {
         snapshot.graph().port(&second).unwrap().data,
         serde_json::json!({ "branch": "else" })
     );
+    assert_eq!(
+        runtime.port_instance_key(second).unwrap(),
+        Some(second_instance),
+        "payload and ordering edits preserve a continuous port lifetime",
+    );
+    assert_eq!(
+        runtime.node_lifetime_key(nodes[0]).unwrap(),
+        Some(node_lifetime),
+    );
+    assert_eq!(
+        before.port_instance_key(second),
+        snapshot.port_instance_key(second),
+    );
 
     undo(&runtime);
     let snapshot = runtime.snapshot().unwrap();
@@ -338,6 +354,176 @@ fn stable_ports_can_reorder_and_update_payload_without_reallocation() {
         snapshot.graph().port(&second).unwrap().data,
         serde_json::Value::Null
     );
+    assert_eq!(
+        runtime.port_instance_key(second).unwrap(),
+        Some(second_instance),
+        "undoing mutable port facts must not replace semantic identity",
+    );
+}
+
+#[test]
+fn semantic_port_replacement_retires_identity_across_execute_undo_and_redo() {
+    let (graph, nodes) = graph_with_nodes(1);
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .unwrap();
+    let port_id = PortId::from_u128(113);
+    let initial_port = port(nodes[0], "value", PortDirection::Out);
+
+    runtime
+        .execute(GraphCommand::topology(
+            runtime.snapshot().unwrap().version(),
+            TopologyEdit::new().replace_node_ports(
+                nodes[0],
+                [TopologyPort::new(port_id, initial_port.clone())],
+                IncidentEdgePolicy::Reject,
+            ),
+        ))
+        .unwrap()
+        .applied()
+        .expect("initial port applies");
+    let initial_snapshot = runtime.snapshot().unwrap();
+    let node_lifetime = runtime.node_lifetime_key(nodes[0]).unwrap().unwrap();
+    let initial_instance = runtime.port_instance_key(port_id).unwrap().unwrap();
+
+    let mut replacement = initial_port.clone();
+    replacement.key = PortKey::new("flow");
+    replacement.dir = PortDirection::In;
+    replacement.kind = PortKind::Exec;
+    replacement.capacity = PortCapacity::Single;
+    runtime
+        .execute(GraphCommand::topology(
+            initial_snapshot.version(),
+            TopologyEdit::new().replace_node_ports(
+                nodes[0],
+                [TopologyPort::new(port_id, replacement.clone())],
+                IncidentEdgePolicy::Reject,
+            ),
+        ))
+        .unwrap()
+        .applied()
+        .expect("same-ID semantic replacement applies atomically");
+
+    let replaced_snapshot = runtime.snapshot().unwrap();
+    let replaced_instance = runtime.port_instance_key(port_id).unwrap().unwrap();
+    assert_ne!(replaced_instance, initial_instance);
+    assert_eq!(replaced_instance.owner(), node_lifetime);
+    assert_eq!(
+        runtime.node_lifetime_key(nodes[0]).unwrap(),
+        Some(node_lifetime),
+        "replacing one port must not replace its owning node",
+    );
+    assert_eq!(
+        initial_snapshot.port_instance_key(port_id),
+        Some(initial_instance),
+        "retained snapshots preserve the retired lifetime",
+    );
+    let installed = replaced_snapshot.graph().port(&port_id).unwrap();
+    assert_eq!(installed.key, replacement.key);
+    assert_eq!(installed.dir, replacement.dir);
+    assert_eq!(installed.kind, replacement.kind);
+    assert_eq!(installed.capacity, replacement.capacity);
+
+    undo(&runtime);
+    let undone_instance = runtime.port_instance_key(port_id).unwrap().unwrap();
+    assert_ne!(undone_instance, initial_instance);
+    assert_ne!(undone_instance, replaced_instance);
+    assert_eq!(
+        runtime
+            .snapshot()
+            .unwrap()
+            .graph()
+            .port(&port_id)
+            .unwrap()
+            .key,
+        initial_port.key,
+    );
+
+    redo(&runtime);
+    let redone_instance = runtime.port_instance_key(port_id).unwrap().unwrap();
+    assert_ne!(redone_instance, initial_instance);
+    assert_ne!(redone_instance, replaced_instance);
+    assert_ne!(redone_instance, undone_instance);
+    assert_eq!(
+        runtime
+            .snapshot()
+            .unwrap()
+            .graph()
+            .port(&port_id)
+            .unwrap()
+            .key,
+        replacement.key,
+    );
+}
+
+#[test]
+fn node_snapshot_identity_never_revives_after_same_id_replacement_or_history_replay() {
+    let (graph, nodes) = graph_with_nodes(1);
+    let node_id = nodes[0];
+    let node_record = graph.node(&node_id).unwrap().clone();
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .unwrap();
+    let initial = runtime.snapshot().unwrap();
+    let initial_lifetime = initial
+        .node_lifetime_key(node_id)
+        .expect("initial snapshot owns node identity");
+    assert_eq!(
+        runtime.node_lifetime_key(node_id).unwrap(),
+        Some(initial_lifetime),
+    );
+
+    runtime
+        .execute(GraphCommand::topology(
+            initial.version(),
+            TopologyEdit::new().remove_node(node_id, IncidentEdgePolicy::Reject),
+        ))
+        .unwrap()
+        .applied()
+        .expect("node removal applies");
+    let removed = runtime.snapshot().unwrap();
+    assert_eq!(removed.node_lifetime_key(node_id), None);
+    assert_eq!(
+        initial.node_lifetime_key(node_id),
+        Some(initial_lifetime),
+        "retained snapshots keep their original node lifetime",
+    );
+
+    runtime
+        .execute(GraphCommand::topology(
+            removed.version(),
+            TopologyEdit::new().add_node(node_id, node_record, []),
+        ))
+        .unwrap()
+        .applied()
+        .expect("same node ID can be created in a later command");
+    let replaced = runtime.snapshot().unwrap();
+    let replaced_lifetime = replaced
+        .node_lifetime_key(node_id)
+        .expect("replacement snapshot owns a new node identity");
+    assert_ne!(replaced_lifetime, initial_lifetime);
+
+    undo(&runtime);
+    assert_eq!(runtime.snapshot().unwrap().node_lifetime_key(node_id), None);
+    undo(&runtime);
+    let restored = runtime.snapshot().unwrap();
+    let restored_lifetime = restored
+        .node_lifetime_key(node_id)
+        .expect("undo restores the node under a new lifetime");
+    assert_ne!(restored_lifetime, initial_lifetime);
+    assert_ne!(restored_lifetime, replaced_lifetime);
+
+    redo(&runtime);
+    assert_eq!(runtime.snapshot().unwrap().node_lifetime_key(node_id), None);
+    redo(&runtime);
+    let redone_lifetime = runtime
+        .snapshot()
+        .unwrap()
+        .node_lifetime_key(node_id)
+        .expect("redo recreates the node under another lifetime");
+    assert_ne!(redone_lifetime, initial_lifetime);
+    assert_ne!(redone_lifetime, replaced_lifetime);
+    assert_ne!(redone_lifetime, restored_lifetime);
 }
 
 #[test]
@@ -349,7 +535,7 @@ fn connected_port_removal_obeys_reject_and_cascade_policies() {
 
     let rejected = runtime
         .execute(GraphCommand::topology(
-            0,
+            runtime.snapshot().unwrap().version(),
             TopologyEdit::new().replace_node_ports(ids.source, [], IncidentEdgePolicy::Reject),
         ))
         .unwrap();
@@ -366,7 +552,7 @@ fn connected_port_removal_obeys_reject_and_cascade_policies() {
 
     runtime
         .execute(GraphCommand::topology(
-            0,
+            runtime.snapshot().unwrap().version(),
             TopologyEdit::new().replace_node_ports(ids.source, [], IncidentEdgePolicy::Cascade),
         ))
         .unwrap()
@@ -391,7 +577,7 @@ fn node_removal_cascades_ports_and_edges_and_undo_restores_them() {
 
     runtime
         .execute(GraphCommand::topology(
-            0,
+            runtime.snapshot().unwrap().version(),
             TopologyEdit::new().remove_node(ids.source, IncidentEdgePolicy::Cascade),
         ))
         .unwrap()
@@ -421,7 +607,7 @@ fn duplicate_ports_reject_without_revision_or_history_changes() {
 
     let outcome = runtime
         .execute(GraphCommand::topology(
-            0,
+            runtime.snapshot().unwrap().version(),
             TopologyEdit::new().replace_node_ports(
                 nodes[0],
                 [
@@ -450,7 +636,7 @@ fn runtime_policy_governs_topology_node_deletion_with_element_override_precedenc
     assert_rejected_without_side_effects(
         &runtime,
         GraphCommand::topology(
-            0,
+            runtime.snapshot().unwrap().version(),
             TopologyEdit::new().remove_node(nodes[0], IncidentEdgePolicy::Reject),
         ),
         "delete.node_not_deletable",
@@ -470,7 +656,7 @@ fn runtime_policy_governs_topology_node_deletion_with_element_override_precedenc
         .unwrap();
     runtime
         .execute(GraphCommand::topology(
-            0,
+            runtime.snapshot().unwrap().version(),
             TopologyEdit::new().remove_node(nodes[0], IncidentEdgePolicy::Reject),
         ))
         .unwrap()
@@ -498,7 +684,7 @@ fn atomic_topology_rejects_node_port_and_edge_identity_reuse() {
     let add_then_remove = assert_rejected_without_side_effects(
         &runtime,
         GraphCommand::topology(
-            0,
+            runtime.snapshot().unwrap().version(),
             TopologyEdit::new()
                 .add_node(new_node, existing.clone(), [])
                 .remove_node(new_node, IncidentEdgePolicy::Reject),
@@ -509,12 +695,12 @@ fn atomic_topology_rejects_node_port_and_edge_identity_reuse() {
         add_then_remove.rejection().unwrap().diagnostics()[0].target,
         DiagnosticTarget::Node { id } if id == new_node
     ));
-    assert!(runtime.node_incarnation(new_node).unwrap().is_none());
+    assert!(runtime.node_lifetime_key(new_node).unwrap().is_none());
 
     assert_rejected_without_side_effects(
         &runtime,
         GraphCommand::topology(
-            0,
+            runtime.snapshot().unwrap().version(),
             TopologyEdit::new()
                 .remove_node(nodes[0], IncidentEdgePolicy::Reject)
                 .add_node(nodes[0], existing, []),
@@ -530,7 +716,7 @@ fn atomic_topology_rejects_node_port_and_edge_identity_reuse() {
     let port_reuse = assert_rejected_without_side_effects(
         &runtime,
         GraphCommand::topology(
-            0,
+            runtime.snapshot().unwrap().version(),
             TopologyEdit::new()
                 .replace_node_ports(ids.source, [], IncidentEdgePolicy::Cascade)
                 .replace_node_ports(
@@ -549,7 +735,7 @@ fn atomic_topology_rejects_node_port_and_edge_identity_reuse() {
     let edge_reuse = assert_rejected_without_side_effects(
         &runtime,
         GraphCommand::topology(
-            0,
+            runtime.snapshot().unwrap().version(),
             TopologyEdit::new()
                 .connection(ConnectionEdit::disconnect(ids.edge))
                 .connection(ConnectionEdit::connect(
@@ -570,7 +756,7 @@ fn atomic_topology_rejects_node_port_and_edge_identity_reuse() {
     assert_rejected_without_side_effects(
         &runtime,
         GraphCommand::topology(
-            0,
+            runtime.snapshot().unwrap().version(),
             TopologyEdit::new()
                 .connection(ConnectionEdit::connect(
                     new_edge,

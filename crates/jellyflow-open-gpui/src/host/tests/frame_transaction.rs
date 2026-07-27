@@ -78,7 +78,7 @@ fn aborting_frame_transaction_settles_collected_batch_once() {
     resolve_binding_commands(completed);
     assert!(matches!(
         poll_command_ticket(&mut ticket),
-        Err(crate::OpenGpuiCommandTicketError::FramePreparation { .. })
+        Err(crate::authoring::OpenGpuiCommandTicketError::FramePreparation { .. })
     ));
     assert_command_ticket_pending_at(&mut ticket, "after abort settled it once");
 }
@@ -93,7 +93,7 @@ fn dropping_frame_transaction_resolves_collected_ticket_once() {
     assert_eq!(journal.capacity_usage(), (0, 0, 0));
     assert!(matches!(
         poll_command_ticket(&mut ticket),
-        Err(crate::OpenGpuiCommandTicketError::HostDropped)
+        Err(crate::authoring::OpenGpuiCommandTicketError::HostDropped)
     ));
     assert_command_ticket_pending_at(&mut ticket, "after drop settled it once");
 }
@@ -107,10 +107,14 @@ fn dropping_frame_transaction_defers_internal_origin_for_host_settlement() {
         .attach_view(ViewSessionOptions::default())
         .expect("transaction view");
     let journal = OpenGpuiCommandJournal::new();
+    let version = runtime
+        .snapshot()
+        .expect("internal transaction graph version")
+        .version();
     journal
         .enqueue_detached(
             GraphCommand::set_node_data(
-                0,
+                version,
                 NodeId::from_u128(10),
                 serde_json::json!({ "transaction": "deferred-internal" }),
             ),
@@ -151,7 +155,7 @@ fn dropping_frame_transaction_defers_internal_origin_for_host_settlement() {
     ));
     assert!(matches!(
         completed[0].result,
-        Err(crate::OpenGpuiCommandTicketError::HostDropped)
+        Err(crate::authoring::OpenGpuiCommandTicketError::HostDropped)
     ));
     assert!(journal.take_deferred_completions().is_empty());
     assert_eq!(runtime.snapshot().expect("unsubmitted graph").revision(), 0);
@@ -171,11 +175,11 @@ fn unwind_after_frame_state_take_terminalizes_batch_and_allows_retry() {
     assert!(!journal.has_pending());
     assert!(matches!(
         poll_command_ticket(&mut ticket),
-        Err(crate::OpenGpuiCommandTicketError::FramePreparation { .. })
+        Err(crate::authoring::OpenGpuiCommandTicketError::FramePreparation { .. })
     ));
     assert_command_ticket_pending_at(&mut ticket, "after preparation unwind settled it once");
 
-    let mut retry = submit_command_transaction(&view, &journal, 0, "prepare-unwind-retry");
+    let mut retry = submit_command_transaction(&view, &journal, "prepare-unwind-retry");
     assert_eq!(
         poll_command_ticket(&mut retry)
             .expect("retry command ticket")
@@ -202,11 +206,11 @@ fn unwind_after_feedback_submission_terminalizes_batch_and_allows_retry() {
     assert!(!journal.has_pending());
     assert!(matches!(
         poll_command_ticket(&mut ticket),
-        Err(crate::OpenGpuiCommandTicketError::FeedbackOutcomeUnknown)
+        Err(crate::authoring::OpenGpuiCommandTicketError::FeedbackOutcomeUnknown)
     ));
     assert_command_ticket_pending_at(&mut ticket, "after submitted unwind settled it once");
 
-    let mut retry = submit_command_transaction(&view, &journal, 1, "post-submit-unwind-retry");
+    let mut retry = submit_command_transaction(&view, &journal, "post-submit-unwind-retry");
     assert_eq!(
         poll_command_ticket(&mut retry)
             .expect("retry command ticket")
@@ -223,7 +227,7 @@ fn superseding_retained_frame_transaction_settles_batch_once(cx: &mut open_gpui:
     let (runtime, host, cx) = mount_gesture_scene_for_graph(cx, unconnected_graph());
     draw(cx);
     let (mut ticket, transaction) = cx.update_entity(&host, |host, cx| {
-        let pending = install_collected_transaction(host, 0, "superseded");
+        let pending = install_collected_transaction(host, "superseded");
         cx.notify();
         pending
     });
@@ -232,7 +236,7 @@ fn superseding_retained_frame_transaction_settles_batch_once(cx: &mut open_gpui:
 
     assert!(matches!(
         poll_command_ticket(&mut ticket),
-        Err(crate::OpenGpuiCommandTicketError::FramePreparation { .. })
+        Err(crate::authoring::OpenGpuiCommandTicketError::FramePreparation { .. })
     ));
     assert_command_ticket_pending_at(&mut ticket, "after supersession settled it once");
     assert_eq!(runtime.snapshot().expect("unmodified graph").revision(), 0);
@@ -258,7 +262,7 @@ fn closing_retained_frame_transaction_executes_and_settles_batch_once(
     let (runtime, host, cx) = mount_gesture_scene_for_graph(cx, unconnected_graph());
     draw(cx);
     let (mut ticket, transaction) = cx.update_window_entity(&host, |host, window, cx| {
-        let pending = install_collected_transaction(host, 0, "closed");
+        let pending = install_collected_transaction(host, "closed");
         host.close_in_window(window, cx)
             .expect("window close drains the retained transaction batch");
         pending
@@ -308,11 +312,16 @@ fn unwind_after_runtime_submission_settles_ticket_and_keeps_host_usable(
     let (runtime, host, cx) = mount_gesture_scene_for_graph(cx, unconnected_graph());
     draw(cx);
     let mut submitted = cx.update_entity(&host, |host, cx| {
+        let version = host
+            .view
+            .graph_snapshot()
+            .expect("pre-unwind graph version")
+            .version();
         let ticket = host
             .commands
             .enqueue(
                 GraphCommand::set_node_data(
-                    0,
+                    version,
                     NodeId::from_u128(10),
                     serde_json::json!({ "transaction": "post-submit-unwind" }),
                 ),
@@ -342,11 +351,16 @@ fn unwind_after_runtime_submission_settles_ticket_and_keeps_host_usable(
     });
 
     let mut retry = cx.update_entity(&host, |host, cx| {
+        let version = host
+            .view
+            .graph_snapshot()
+            .expect("post-unwind graph version")
+            .version();
         let ticket = host
             .commands
             .enqueue(
                 GraphCommand::set_node_data(
-                    1,
+                    version,
                     NodeId::from_u128(10),
                     serde_json::json!({ "transaction": "post-unwind-retry" }),
                 ),
@@ -377,7 +391,7 @@ fn command_transaction(
     GraphRuntime,
     ViewSession,
     Rc<OpenGpuiCommandJournal>,
-    crate::OpenGpuiCommandTicket,
+    crate::authoring::OpenGpuiCommandTicket,
     OpenGpuiFrameTransaction,
 ) {
     let runtime = GraphRuntime::builder(catalog())
@@ -387,10 +401,14 @@ fn command_transaction(
         .attach_view(ViewSessionOptions::default())
         .expect("transaction view");
     let journal = OpenGpuiCommandJournal::new();
+    let version = runtime
+        .snapshot()
+        .expect("transaction graph version")
+        .version();
     let ticket = journal
         .enqueue(
             GraphCommand::set_node_data(
-                0,
+                version,
                 NodeId::from_u128(10),
                 serde_json::json!({ "transaction": label }),
             ),
@@ -421,13 +439,16 @@ fn command_transaction(
 fn submit_command_transaction(
     view: &ViewSession,
     journal: &Rc<OpenGpuiCommandJournal>,
-    revision: u64,
     label: &str,
-) -> crate::OpenGpuiCommandTicket {
+) -> crate::authoring::OpenGpuiCommandTicket {
+    let version = view
+        .graph_snapshot()
+        .expect("retry transaction graph version")
+        .version();
     let ticket = journal
         .enqueue(
             GraphCommand::set_node_data(
-                revision,
+                version,
                 NodeId::from_u128(10),
                 serde_json::json!({ "transaction": label }),
             ),
@@ -466,15 +487,22 @@ fn submit_command_transaction(
 
 fn install_collected_transaction(
     host: &mut OpenGpuiSceneHost,
-    revision: u64,
     label: &str,
-) -> (crate::OpenGpuiCommandTicket, Rc<OpenGpuiFrameTransaction>) {
+) -> (
+    crate::authoring::OpenGpuiCommandTicket,
+    Rc<OpenGpuiFrameTransaction>,
+) {
     assert!(host.frame_transaction.is_none());
+    let version = host
+        .view
+        .graph_snapshot()
+        .expect("retained transaction graph version")
+        .version();
     let ticket = host
         .commands
         .enqueue(
             GraphCommand::set_node_data(
-                revision,
+                version,
                 NodeId::from_u128(10),
                 serde_json::json!({ "transaction": label }),
             ),

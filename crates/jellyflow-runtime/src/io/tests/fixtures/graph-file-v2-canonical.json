@@ -370,7 +370,12 @@
         "view": {
           "label": "completion",
           "label_anchor": "center",
-          "route_kind": "smooth_step"
+          "route": {
+            "kind": "smooth_step",
+            "offset": 20.0,
+            "step_position": 0.5,
+            "border_radius": 5.0
+          }
         }
       },
       "00000000-0000-0000-0000-00000000e002": {
@@ -390,7 +395,11 @@
         },
         "view": {
           "style_token": "reference",
-          "route_kind": "orthogonal"
+          "route": {
+            "kind": "orthogonal",
+            "offset": 20.0,
+            "step_position": 0.5
+          }
         }
       }
     },

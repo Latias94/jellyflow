@@ -4,9 +4,10 @@ use std::rc::Rc;
 
 use jellyflow_core::NodeId;
 use jellyflow_runtime::{
-    CommandSettlement, FeedbackCollector, FeedbackCollectorError, FeedbackOperationReceipt,
-    FeedbackReceipt, FeedbackSubmissionError, GraphCommand, GraphCommandOutcome, LayoutNodeStatus,
-    NodeGeometryEdit, ViewSession,
+    commands::GraphCommand, commands::GraphCommandOutcome, commands::NodeGeometryEdit,
+    interaction::CommandSettlement, view::FeedbackCollector, view::FeedbackCollectorError,
+    view::FeedbackOperationReceipt, view::FeedbackReceipt, view::FeedbackSubmissionError,
+    view::LayoutNodeStatus, view::ViewSession,
 };
 use open_gpui::{Context, Task};
 
@@ -60,14 +61,25 @@ pub(super) struct OpenGpuiFrameReceiptDisposition {
 }
 
 pub(super) struct PendingNodeSizeSubmission {
-    commands: Vec<(jellyflow_runtime::NodeInstanceKey, OpenGpuiNodeSizeCommand)>,
-    follow_up_commands: Vec<(jellyflow_runtime::NodeInstanceKey, OpenGpuiNodeSizeCommand)>,
+    commands: Vec<(
+        jellyflow_runtime::view::NodeInstanceKey,
+        OpenGpuiNodeSizeCommand,
+    )>,
+    follow_up_commands: Vec<(
+        jellyflow_runtime::view::NodeInstanceKey,
+        OpenGpuiNodeSizeCommand,
+    )>,
     prefix_task: Option<Task<()>>,
     prefix_cancellation: Option<OpenGpuiCommandPrefixBarrierCancellation>,
 }
 
 impl PendingNodeSizeSubmission {
-    fn new(commands: Vec<(jellyflow_runtime::NodeInstanceKey, OpenGpuiNodeSizeCommand)>) -> Self {
+    fn new(
+        commands: Vec<(
+            jellyflow_runtime::view::NodeInstanceKey,
+            OpenGpuiNodeSizeCommand,
+        )>,
+    ) -> Self {
         Self {
             commands,
             follow_up_commands: Vec::new(),
@@ -427,7 +439,10 @@ impl OpenGpuiSceneHost {
 
     pub(super) fn queue_node_size_updates(
         &mut self,
-        updates: Vec<(jellyflow_runtime::NodeInstanceKey, OpenGpuiNodeSizeUpdate)>,
+        updates: Vec<(
+            jellyflow_runtime::view::NodeInstanceKey,
+            OpenGpuiNodeSizeUpdate,
+        )>,
     ) -> bool {
         let mut commands = Vec::new();
         for (instance, update) in updates {
@@ -522,7 +537,10 @@ impl OpenGpuiSceneHost {
 
     fn bind_and_enqueue_node_sizes(
         &mut self,
-        commands: Vec<(jellyflow_runtime::NodeInstanceKey, OpenGpuiNodeSizeCommand)>,
+        commands: Vec<(
+            jellyflow_runtime::view::NodeInstanceKey,
+            OpenGpuiNodeSizeCommand,
+        )>,
         permit: OpenGpuiCommandPrefixPermit,
     ) {
         let snapshot = match self.view.graph_snapshot() {
@@ -542,9 +560,9 @@ impl OpenGpuiSceneHost {
             let current_epoch = self.mounts.get(&instance).map(|mounted| {
                 OpenGpuiNodeSizeEpoch::new(mounted.content_epoch, self.adapter_environment_epoch)
             });
-            let current_instance = self.view.node_incarnation(instance.node()).ok().flatten();
+            let current_lifetime = self.view.node_lifetime_key(instance.node()).ok().flatten();
             if current_epoch == Some(command.epoch())
-                && current_instance == Some(instance.incarnation())
+                && current_lifetime == Some(instance.lifetime())
                 && snapshot.graph().node(&instance.node()).is_some()
             {
                 valid.push((instance, command));
@@ -569,7 +587,7 @@ impl OpenGpuiSceneHost {
             return;
         }
         let command = GraphCommand::set_node_geometry(
-            snapshot.revision(),
+            snapshot.version(),
             valid.iter().map(|(instance, size_command)| {
                 NodeGeometryEdit::new(instance.node()).with_size(Some(size_command.size()))
             }),
@@ -600,18 +618,21 @@ impl OpenGpuiSceneHost {
 
     fn fail_node_size_commands(
         &mut self,
-        commands: Vec<(jellyflow_runtime::NodeInstanceKey, OpenGpuiNodeSizeCommand)>,
+        commands: Vec<(
+            jellyflow_runtime::view::NodeInstanceKey,
+            OpenGpuiNodeSizeCommand,
+        )>,
         message: String,
     ) {
         self.record_command_diagnostic(message);
         let updates = commands
             .into_iter()
             .filter_map(|(instance, command)| {
-                let current_instance = self.view.node_incarnation(instance.node()).ok().flatten();
+                let current_lifetime = self.view.node_lifetime_key(instance.node()).ok().flatten();
                 self.settle_node_size_command(
                     instance.clone(),
                     command.ticket(),
-                    if current_instance == Some(instance.incarnation()) {
+                    if current_lifetime == Some(instance.lifetime()) {
                         OpenGpuiNodeSizeSettlement::Rejected
                     } else {
                         OpenGpuiNodeSizeSettlement::Retired
@@ -649,10 +670,13 @@ impl OpenGpuiSceneHost {
 
     fn settle_node_size_command(
         &mut self,
-        instance: jellyflow_runtime::NodeInstanceKey,
+        instance: jellyflow_runtime::view::NodeInstanceKey,
         ticket: OpenGpuiNodeSizeTicket,
         settlement: OpenGpuiNodeSizeSettlement,
-    ) -> Option<(jellyflow_runtime::NodeInstanceKey, OpenGpuiNodeSizeUpdate)> {
+    ) -> Option<(
+        jellyflow_runtime::view::NodeInstanceKey,
+        OpenGpuiNodeSizeUpdate,
+    )> {
         let mounted = self.mounts.get_mut(&instance)?;
         let update = mounted.size_state.settle(
             mounted.registration_policy.size_policy(),
@@ -664,10 +688,14 @@ impl OpenGpuiSceneHost {
 
     pub(super) fn apply_frame_receipt_disposition(
         &mut self,
-        disposition: OpenGpuiFrameReceiptDisposition,
+        mut disposition: OpenGpuiFrameReceiptDisposition,
     ) -> OpenGpuiFrameReceiptDisposition {
         for (node, status) in &disposition.rejected_layouts {
             self.record_layout_rejection(*node, *status);
+        }
+        match self.apply_initial_viewport_policy() {
+            Ok(changed) => disposition.request_next_frame |= changed,
+            Err(error) => self.record_command_diagnostic(error.to_string()),
         }
         disposition
     }
@@ -688,7 +716,12 @@ impl OpenGpuiSceneHost {
         match result {
             Ok(()) => resolutions,
             Err(error) => {
-                self.interaction_owner.cancel();
+                if let Err(cancel_error) = self.interaction_owner.cancel() {
+                    self.record_feedback_failure(
+                        None,
+                        format!("failed to cancel native interaction after batch failure: {cancel_error}"),
+                    );
+                }
                 self.discard_pending_interaction_submission();
                 self.record_feedback_failure(
                     None,
@@ -727,27 +760,29 @@ impl OpenGpuiSceneHost {
                 }
                 OpenGpuiCommandOrigin::Interaction { ticket } => {
                     if let Ok(result) = command.into_detached_result() {
-                        let settlement = match &result {
-                            Ok(GraphCommandOutcome::Applied(_)) => CommandSettlement::Applied,
-                            Ok(GraphCommandOutcome::Noop(_)) => CommandSettlement::Noop,
+                        let (settlement, applied_revision) = match &result {
+                            Ok(GraphCommandOutcome::Applied(receipt)) => {
+                                (CommandSettlement::Applied, Some(receipt.revision()))
+                            }
+                            Ok(GraphCommandOutcome::Noop(_)) => (CommandSettlement::Noop, None),
                             Ok(GraphCommandOutcome::Rejected(rejection)) => {
                                 self.record_command_diagnostic(rejection.message().to_owned());
-                                CommandSettlement::Rejected
+                                (CommandSettlement::Rejected, None)
                             }
                             Ok(GraphCommandOutcome::Conflict(conflict)) => {
                                 self.record_command_diagnostic(format!(
-                                    "interaction expected graph revision {} but current revision is {}",
-                                    conflict.expected_revision(),
-                                    conflict.current().revision()
+                                    "interaction expected graph version {:?} but current version is {:?}",
+                                    conflict.expected_version(),
+                                    conflict.current_version()
                                 ));
-                                CommandSettlement::Conflict
+                                (CommandSettlement::Conflict, None)
                             }
                             Err(error) => {
                                 self.record_command_diagnostic(error.to_string());
-                                CommandSettlement::TransportFailure
+                                (CommandSettlement::TransportFailure, None)
                             }
                         };
-                        self.settle_interaction_command(ticket, settlement);
+                        self.settle_interaction_command(ticket, settlement, applied_revision);
                     }
                 }
                 OpenGpuiCommandOrigin::NodeSizes { tickets } => {
@@ -768,9 +803,9 @@ impl OpenGpuiSceneHost {
                         }
                         Ok(GraphCommandOutcome::Conflict(conflict)) => {
                             self.record_command_diagnostic(format!(
-                                "content size expected graph revision {} but current revision is {}",
-                                conflict.expected_revision(),
-                                conflict.current().revision()
+                                "content size expected graph version {:?} but current version is {:?}",
+                                conflict.expected_version(),
+                                conflict.current_version()
                             ));
                             OpenGpuiNodeSizeSettlement::Conflict
                         }

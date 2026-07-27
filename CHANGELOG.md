@@ -6,11 +6,13 @@ The format is based on *Keep a Changelog*, and this project adheres to *Semantic
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-27
+
 ### Breaking Changes
 
 - Replaced the single-view `NodeGraphStore` and portable node UI descriptor stack with an
   authoritative `GraphRuntime`, independently revocable `ViewSession`s, owned render frames,
-  one-shot ordered feedback, and expected-revision graph commands.
+  one-shot ordered feedback, and expected-version graph commands.
 - Reduced node catalogs to semantic kind, creation, migration, real-port, search, and renderer-key
   facts. Native controls, focus, IME, menus, popovers, scrolling, accessibility, themes, and local
   component state now belong to each UI framework and application.
@@ -149,7 +151,8 @@ adapter boundary, layout extension point, release documentation, and crates.io a
 - Fixed CI locked-check failures by committing the workspace lockfile and keeping the root
   `Cargo.lock` unignored.
 
-[Unreleased]: https://github.com/Latias94/jellyflow/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/Latias94/jellyflow/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/Latias94/jellyflow/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Latias94/jellyflow/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Latias94/jellyflow/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Latias94/jellyflow/releases/tag/v0.1.0

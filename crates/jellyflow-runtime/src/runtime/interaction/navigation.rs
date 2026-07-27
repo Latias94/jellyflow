@@ -5,7 +5,9 @@ use std::sync::Arc;
 use jellyflow_core::core::{CanvasPoint, CanvasRect, NodeId};
 
 use crate::runtime::adapter_protocol::{GeometrySnapshot, ViewSize};
-use crate::runtime::view_session::{ViewGeneration, ViewId};
+use crate::runtime::view_session::{
+    AlignmentSnapQueryReceipt, InteractionQueryBinding, ViewGeneration, ViewId,
+};
 use crate::runtime::viewport::ViewportTransform;
 
 use super::{AlignmentGuide, AlignmentGuideAxis, InteractionGeneration};
@@ -36,6 +38,7 @@ pub struct AlignmentSnapQuery {
     release_tolerance_in_view: f32,
     entry_budget: usize,
     locks: AlignmentSnapLocks,
+    interaction_binding: InteractionQueryBinding,
 }
 
 impl AlignmentSnapQuery {
@@ -49,6 +52,7 @@ impl AlignmentSnapQuery {
         release_tolerance_in_view: f32,
         entry_budget: usize,
         locks: AlignmentSnapLocks,
+        interaction_binding: InteractionQueryBinding,
     ) -> Self {
         Self {
             view,
@@ -60,6 +64,7 @@ impl AlignmentSnapQuery {
             release_tolerance_in_view,
             entry_budget,
             locks,
+            interaction_binding,
         }
     }
 
@@ -94,6 +99,10 @@ impl AlignmentSnapQuery {
     pub fn entry_budget(&self) -> usize {
         self.entry_budget
     }
+
+    pub(crate) fn interaction_binding(&self) -> InteractionQueryBinding {
+        self.interaction_binding
+    }
 }
 
 /// Bounded work evidence for a node-alignment query that could not produce a snap.
@@ -101,6 +110,7 @@ impl AlignmentSnapQuery {
 pub struct AlignmentSnapWork {
     generation: InteractionGeneration,
     entries_examined: u64,
+    receipt: Option<AlignmentSnapQueryReceipt>,
 }
 
 impl AlignmentSnapWork {
@@ -108,6 +118,7 @@ impl AlignmentSnapWork {
         Self {
             generation,
             entries_examined,
+            receipt: None,
         }
     }
 
@@ -117,6 +128,15 @@ impl AlignmentSnapWork {
 
     pub fn entries_examined(self) -> u64 {
         self.entries_examined
+    }
+
+    pub fn receipt(self) -> Option<AlignmentSnapQueryReceipt> {
+        self.receipt
+    }
+
+    pub(crate) fn with_receipt(mut self, receipt: Option<AlignmentSnapQueryReceipt>) -> Self {
+        self.receipt = receipt;
+        self
     }
 }
 
@@ -135,6 +155,13 @@ impl AlignmentSnapQueryOutcome {
             Self::BudgetExhausted(work) | Self::GeometryIndeterminate(work) => work.generation(),
         }
     }
+
+    pub fn receipt(&self) -> Option<AlignmentSnapQueryReceipt> {
+        match self {
+            Self::Complete(result) => result.receipt(),
+            Self::BudgetExhausted(work) | Self::GeometryIndeterminate(work) => work.receipt(),
+        }
+    }
 }
 
 /// Bounded alignment result for one node-drag presentation update.
@@ -145,6 +172,7 @@ pub struct AlignmentSnapResult {
     guides: Box<[AlignmentGuide]>,
     candidates_examined: usize,
     locks: AlignmentSnapLocks,
+    receipt: Option<AlignmentSnapQueryReceipt>,
 }
 
 impl AlignmentSnapResult {
@@ -165,6 +193,15 @@ impl AlignmentSnapResult {
     /// Returns the number of spatially admitted, non-moving nodes inspected.
     pub fn candidates_examined(&self) -> usize {
         self.candidates_examined
+    }
+
+    pub fn receipt(&self) -> Option<AlignmentSnapQueryReceipt> {
+        self.receipt
+    }
+
+    pub(crate) fn with_receipt(mut self, receipt: Option<AlignmentSnapQueryReceipt>) -> Self {
+        self.receipt = receipt;
+        self
     }
 
     pub(crate) fn into_parts(
@@ -295,6 +332,7 @@ pub(crate) fn resolve_alignment_snap(
             x: x_snap.map(AxisSnap::lock),
             y: y_snap.map(AxisSnap::lock),
         },
+        receipt: None,
     }
 }
 

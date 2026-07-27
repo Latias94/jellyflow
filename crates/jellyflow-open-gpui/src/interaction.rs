@@ -3,14 +3,16 @@ use std::collections::VecDeque;
 use std::mem;
 use std::rc::{Rc, Weak};
 
-use jellyflow_core::{EdgeId, PortId};
-use jellyflow_runtime::{EdgeEndpoint, NodeInstanceKey};
+use jellyflow_core::PortId;
+use jellyflow_runtime::{
+    graph::EdgeEndpoint, graph::EdgeInstanceKey, graph::PortInstanceKey, view::NodeInstanceKey,
+};
 use open_gpui::{
     AnyElement, App, Bounds, DispatchPhase, Element, ElementId, FocusHandle, GlobalElementId,
     Hitbox, HitboxBehavior, HitboxId, InspectorElementId, InteractiveElement, IntoElement,
-    KeyDownEvent, LayoutId, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    ParentElement, PinchEvent, Pixels, Point, ScrollWheelEvent, Styled, WeakFocusHandle, Window,
-    div,
+    KeyDownEvent, KeyUpEvent, LayoutId, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, ParentElement, PinchEvent, Pixels, Point, ScrollWheelEvent, Styled,
+    WeakFocusHandle, Window, div,
 };
 
 use crate::activity::{
@@ -38,7 +40,8 @@ pub enum OpenGpuiPortDragCancelReason {
     PointerCaptureLost,
 }
 
-/// Graph-semantic lifecycle phase emitted by [`crate::OpenGpuiPortHandle::interactive`].
+/// Graph-semantic lifecycle phase emitted by
+/// [`crate::authoring::OpenGpuiPortHandle::interactive`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OpenGpuiPortDragPhase {
     Start,
@@ -51,7 +54,7 @@ pub enum OpenGpuiPortDragPhase {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OpenGpuiPortDragOwner {
     instance: NodeInstanceKey,
-    port: PortId,
+    port_instance: PortInstanceKey,
 }
 
 impl OpenGpuiPortDragOwner {
@@ -62,7 +65,13 @@ impl OpenGpuiPortDragOwner {
 
     #[must_use]
     pub fn port(&self) -> PortId {
-        self.port
+        self.port_instance.port()
+    }
+
+    /// Returns the exact runtime lifetime owned by this native interaction.
+    #[must_use]
+    pub fn port_instance(&self) -> PortInstanceKey {
+        self.port_instance
     }
 }
 
@@ -475,7 +484,7 @@ impl OpenGpuiNativeInteractionHandle {
         }
     }
 
-    fn overlay_active(&self) -> bool {
+    pub(crate) fn overlay_active(&self) -> bool {
         self.state.borrow().overlay_active
     }
 
@@ -608,7 +617,7 @@ impl OpenGpuiNativeInteractionHandle {
         };
         let weak_state = Rc::downgrade(&self.state);
         let lease =
-            activity.acquire_with_revocation(OpenGpuiActivityKind::PointerCapture, move || {
+            activity.acquire_with_revocation(OpenGpuiActivityKind::GraphInteraction, move || {
                 invalidate_native_generation(&weak_state, generation);
             });
         let lease = match lease {
@@ -1086,7 +1095,7 @@ pub(crate) enum OpenGpuiSceneGestureCancelReason {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum OpenGpuiSceneGestureKind {
     Node(NodeInstanceKey),
-    EdgeReconnect(EdgeId, EdgeEndpoint),
+    EdgeReconnect(EdgeInstanceKey, EdgeEndpoint),
     Pan,
     Selection,
 }
@@ -1281,7 +1290,7 @@ impl OpenGpuiNativeInteractionHandle {
         let lease = if let Some(activity) = activity {
             let weak_state = Rc::downgrade(&self.state);
             match activity
-                .acquire_with_revocation(OpenGpuiActivityKind::PointerCapture, move || {
+                .acquire_with_revocation(OpenGpuiActivityKind::GraphInteraction, move || {
                     invalidate_native_generation(&weak_state, generation)
                 }) {
                 Ok(lease) => Some(lease),
@@ -1462,7 +1471,7 @@ fn release_matching_pointer_capture(
     owns_capture
 }
 
-fn release_pointer_capture_if_owned(hitbox: HitboxId, window: &mut Window) -> bool {
+pub(crate) fn release_pointer_capture_if_owned(hitbox: HitboxId, window: &mut Window) -> bool {
     if window.captured_hitbox() != Some(hitbox) {
         return false;
     }
@@ -1761,7 +1770,8 @@ pub(crate) fn interaction_root(
     id: impl Into<ElementId>,
     interactions: OpenGpuiNativeInteractionHandle,
     focus_handle: FocusHandle,
-    graph_key_listener: Option<OpenGpuiGraphKeyListener>,
+    graph_key_down_listener: Option<OpenGpuiGraphKeyDownListener>,
+    graph_key_up_listener: Option<OpenGpuiGraphKeyUpListener>,
     child: impl IntoElement,
 ) -> impl IntoElement {
     let child = div()
@@ -1773,19 +1783,23 @@ pub(crate) fn interaction_root(
         id: id.into(),
         interactions,
         focus_handle,
-        graph_key_listener,
+        graph_key_down_listener,
+        graph_key_up_listener,
         child: Some(child.into_any_element()),
     }
 }
 
-pub(crate) type OpenGpuiGraphKeyListener =
+pub(crate) type OpenGpuiGraphKeyDownListener =
     Rc<dyn Fn(&KeyDownEvent, &mut Window, &mut App) -> bool + 'static>;
+pub(crate) type OpenGpuiGraphKeyUpListener =
+    Rc<dyn Fn(&KeyUpEvent, &mut Window, &mut App) -> bool + 'static>;
 
 struct OpenGpuiInteractionRoot {
     id: ElementId,
     interactions: OpenGpuiNativeInteractionHandle,
     focus_handle: FocusHandle,
-    graph_key_listener: Option<OpenGpuiGraphKeyListener>,
+    graph_key_down_listener: Option<OpenGpuiGraphKeyDownListener>,
+    graph_key_up_listener: Option<OpenGpuiGraphKeyUpListener>,
     child: Option<AnyElement>,
 }
 
@@ -1874,6 +1888,7 @@ impl Element for OpenGpuiInteractionRoot {
             }
         });
         let interactions = self.interactions.clone();
+        let graph_key_down_after_focus = self.graph_key_down_listener.clone();
         window.on_key_event(move |event: &KeyDownEvent, phase, window, cx| {
             if phase == DispatchPhase::Capture && interactions.handle_key_down(event, window, cx) {
                 cx.stop_propagation();
@@ -1888,11 +1903,16 @@ impl Element for OpenGpuiInteractionRoot {
                 } else {
                     window.focus_next(cx);
                 }
+                if !interactions.overlay_active()
+                    && let Some(listener) = graph_key_down_after_focus.as_ref()
+                {
+                    let _ = listener(event, window, cx);
+                }
                 window.prevent_default();
                 cx.stop_propagation();
             }
         });
-        if let Some(listener) = self.graph_key_listener.clone() {
+        if let Some(listener) = self.graph_key_down_listener.clone() {
             let interactions = self.interactions.clone();
             window.on_key_event(move |event: &KeyDownEvent, phase, window, cx| {
                 if phase == DispatchPhase::Bubble
@@ -1900,6 +1920,14 @@ impl Element for OpenGpuiInteractionRoot {
                     && !interactions.overlay_active()
                     && listener(event, window, cx)
                 {
+                    window.prevent_default();
+                    cx.stop_propagation();
+                }
+            });
+        }
+        if let Some(listener) = self.graph_key_up_listener.clone() {
+            window.on_key_event(move |event: &KeyUpEvent, phase, window, cx| {
+                if phase == DispatchPhase::Capture && listener(event, window, cx) {
                     window.prevent_default();
                     cx.stop_propagation();
                 }
@@ -2155,8 +2183,14 @@ fn dispatch_cancelled_start(
     );
 }
 
-pub(crate) fn port_drag_owner(instance: NodeInstanceKey, port: PortId) -> OpenGpuiPortDragOwner {
-    OpenGpuiPortDragOwner { instance, port }
+pub(crate) fn port_drag_owner(
+    instance: NodeInstanceKey,
+    port_instance: PortInstanceKey,
+) -> Option<OpenGpuiPortDragOwner> {
+    (instance.lifetime() == port_instance.owner()).then_some(OpenGpuiPortDragOwner {
+        instance,
+        port_instance,
+    })
 }
 
 #[cfg(test)]

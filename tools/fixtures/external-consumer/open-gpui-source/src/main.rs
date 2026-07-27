@@ -5,22 +5,22 @@ use jellyflow_core::{
     CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId, EdgeKind, EdgeViewDescriptor, GraphBuilder,
     GraphId, NodeId, NodeKindKey, PortCapacity, PortDirection, PortId, PortKey, PortKind,
 };
-use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec, NodePortSpec};
-use jellyflow_runtime::{
-    GraphCommand, GraphRuntime, IncidentEdgePolicy, PublishedPortOutcome, TopologyEdit,
-    TopologyPort, ViewSessionOptions,
-};
 use jellyflow_open_gpui::activity::OpenGpuiActivityKind;
 use jellyflow_open_gpui::authoring::{OpenGpuiNodeBinding, OpenGpuiPortHandle};
 use jellyflow_open_gpui::chrome::{
     OpenGpuiEdgeLabelAppearance, OpenGpuiEdgeMarkerShape, OpenGpuiEdgePainterRecipe,
     OpenGpuiEdgePainterRegistry, OpenGpuiEdgeStrokePattern, OpenGpuiEdgeTone,
 };
-use jellyflow_open_gpui::{
-    OpenGpuiContentHeightPolicy, OpenGpuiGraphTheme, OpenGpuiNodeRegistrationPolicy,
-    OpenGpuiNodeRegistry, OpenGpuiNodeSizePolicy, OpenGpuiRendererRegistrationStatus,
-    OpenGpuiSceneHost,
+use jellyflow_open_gpui::host::OpenGpuiSceneHost;
+use jellyflow_open_gpui::registry::{
+    OpenGpuiNodeRegistrationPolicy, OpenGpuiNodeRegistry, OpenGpuiRendererRegistrationStatus,
 };
+use jellyflow_open_gpui::size_policy::{OpenGpuiContentHeightPolicy, OpenGpuiNodeSizePolicy};
+use jellyflow_open_gpui::theme::OpenGpuiGraphTheme;
+use jellyflow_runtime::commands::{GraphCommand, IncidentEdgePolicy, TopologyEdit, TopologyPort};
+use jellyflow_runtime::graph::GraphRuntime;
+use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec, NodePortSpec};
+use jellyflow_runtime::view::{PublishedPortOutcome, ViewSessionOptions};
 use open_gpui::{
     AnyElement, AppContext, Context, Entity, InteractiveElement, IntoElement, MouseButton,
     ParentElement, Render, Styled, Task, Window, div, px, rgb,
@@ -124,7 +124,7 @@ impl Render for ProductNode {
                             let mut dynamic = base.clone();
                             dynamic.key = PortKey::new("dynamic-result");
                             let command = GraphCommand::topology(
-                                authoring.revision(),
+                                authoring.version(),
                                 TopologyEdit::new().replace_node_ports(
                                     node_id(),
                                     [

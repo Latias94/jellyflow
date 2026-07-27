@@ -66,7 +66,8 @@ fn plan_builtin_layout(graph: &Graph) -> Result<LayoutResult, jellyflow_layout::
 
 Applications using `jellyflow-runtime` map `result.nodes` to
 `NodeGeometryEdit::new(position.node).with_position(position.pos)`, then build one
-`GraphCommand::set_node_geometry` with the expected graph revision. Validate application-built
+`GraphCommand::set_node_geometry` with the opaque graph version from the snapshot used to plan the
+layout. Validate application-built
 results for duplicate or foreign node identities before enqueueing them. This keeps every layout
 write on the same explicit command path as other document mutations without coupling the runtime
 to a layout engine.

@@ -12,16 +12,21 @@ the full Jellyflow node-instance identity when a node is replaced, removed, or i
 `EguiCanvasInteraction` is the matching input bridge. Begin it with the current scene rectangle,
 pass only explicit graph-interactive `egui::Response` values to `handle_response`, and end it after
 all responses have been rendered. The bridge normalizes raw press/move/release events, owns the
-active egui `Id`, resolves bounded runtime geometry queries, and applies renderer-neutral selection
-and viewport effects to the same `ViewSession`. Missing responses, stolen drag ownership, escape,
+active egui `Id`, and resolves bounded runtime geometry queries. The attached interaction session
+commits view-local selection and viewport state to the same `ViewSession`. Missing responses,
+stolen drag ownership, escape,
 pointer loss, owner retirement, and view close all terminate native ownership explicitly.
 
 ```rust,ignore
-interaction.begin_frame(view, ui.ctx(), ui.max_rect())?;
-interaction.handle_response(view, &drag_handle, node_drag_target)?;
-interaction.handle_response(view, &port_handle, connection_target)?;
-let output = interaction.end_frame(view, ui.ctx())?;
+interaction.begin_frame(ui.ctx(), ui.max_rect())?;
+interaction.handle_response(&canvas_keyboard_scope, CanvasPressTarget::Pan)?;
+interaction.handle_response(&drag_handle, node_drag_target)?;
+interaction.handle_response(&port_handle, connection_target)?;
+let output = interaction.end_frame(ui.ctx())?;
 ```
+
+The focused graph response is also the keyboard authority boundary: Delete and Backspace submit one
+policy-filtered selection deletion, while native controls and focused text editors retain those keys.
 
 `output` retains only application work: create-from-wire search requests and fresh graph mutations.
 The application must bind graph mutations to a fresh snapshot, preserve its command ordering, and

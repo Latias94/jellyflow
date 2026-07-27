@@ -4,15 +4,18 @@ use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context as TaskContext, Poll, Waker};
 
-use jellyflow_runtime::runtime::adapter_protocol::conformance::{
+use jellyflow_runtime::adapter::conformance::{
     ConformanceAction, ConformanceCancelReason, ConformanceCandidate, ConformanceEffect,
-    ConformanceGeometry, ConformanceOwnership, ConformancePhase, ConformanceScenario,
-    ConformanceScenarioId, ConformanceSettlement, ConformanceTarget, ConformanceTerminal,
-    ConformanceTicket, NormalizedObservation, canonical_scenarios, compare_observations,
+    ConformanceGeometry, ConformanceGraph, ConformanceIntent, ConformanceOwnership,
+    ConformancePhase, ConformanceScenario, ConformanceScenarioId, ConformanceSelection,
+    ConformanceSettlement, ConformanceTarget, ConformanceTerminal, ConformanceTicket,
+    ConformanceViewStatus, NormalizedObservation, canonical_scenarios, compare_observations,
 };
 use open_gpui::{InputEvent, MouseUpEvent};
 
+use super::super::scene_render::open_gpui_reconnect_hit_selector;
 use crate::command_journal::{OpenGpuiCommandOrigin, OpenGpuiCommandPrefixPermit};
+use crate::interaction::release_pointer_capture_if_owned;
 
 fn source_node() -> NodeId {
     NodeId::from_u128(10)
@@ -155,6 +158,9 @@ struct CanonicalDriver {
     control_hits: std::rc::Rc<std::cell::Cell<u32>>,
     prefix_permit: Option<OpenGpuiCommandPrefixPermit>,
     foreign_capture: Option<HitboxId>,
+    previous_capture: Option<HitboxId>,
+    baseline_source_position: CanvasPoint,
+    baseline_source_bounds: CanvasRect,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -169,7 +175,7 @@ struct EffectEvidence {
     connection_pointer: Option<CanvasPoint>,
     pending: Option<PendingMutationKind>,
     search_open: bool,
-    active_edge: Option<EdgeId>,
+    active_edge: Option<jellyflow_runtime::graph::EdgeInstanceKey>,
     terminal: Option<InteractionTerminalReason>,
 }
 
@@ -182,6 +188,8 @@ impl CanonicalDriver {
             scenario.id,
             ConformanceScenarioId::ReconnectSource(_)
                 | ConformanceScenarioId::ReconnectTarget(_)
+                | ConformanceScenarioId::ReconnectSourcePrefixWait
+                | ConformanceScenarioId::ReconnectTargetPrefixWait
                 | ConformanceScenarioId::EdgePick
         );
         let runtime = GraphRuntime::builder(catalog())
@@ -220,9 +228,9 @@ impl CanonicalDriver {
                     viewport(),
                 );
                 if scenario_id == ConformanceScenarioId::OutsideClick {
-                    host.with_connection_options(crate::OpenGpuiConnectionOptions {
+                    host.with_connection_options(crate::host::OpenGpuiConnectionOptions {
                         allow_create_from_wire: false,
-                        ..crate::OpenGpuiConnectionOptions::default()
+                        ..crate::host::OpenGpuiConnectionOptions::default()
                     })
                 } else {
                     host
@@ -234,16 +242,33 @@ impl CanonicalDriver {
         let host = captured_host.borrow().clone().expect("captured host");
         if matches!(
             scenario.id,
-            ConformanceScenarioId::ReconnectSource(_) | ConformanceScenarioId::ReconnectTarget(_)
+            ConformanceScenarioId::ReconnectSource(_)
+                | ConformanceScenarioId::ReconnectTarget(_)
+                | ConformanceScenarioId::ReconnectSourcePrefixWait
+                | ConformanceScenarioId::ReconnectTargetPrefixWait
         ) {
             cx.read_entity(&host, |host, _| {
-                host.view
-                    .set_selection(Vec::new(), vec![canonical_edge()], Vec::new())
+                set_selection_by_id(&host.view, Vec::new(), vec![canonical_edge()])
                     .expect("seed reconnect edge selection");
             });
         }
         draw(cx);
         draw(cx);
+        let baseline_source_position = runtime
+            .snapshot()
+            .expect("canonical Open GPUI source baseline")
+            .graph()
+            .node(&source_node())
+            .expect("canonical Open GPUI source node")
+            .pos;
+        let baseline_source_bounds = cx.read_entity(&host, |host, _| {
+            host.view
+                .geometry_snapshot()
+                .expect("canonical Open GPUI geometry baseline")
+                .node(source_node())
+                .expect("canonical Open GPUI source geometry")
+                .bounds()
+        });
 
         (
             Self {
@@ -257,6 +282,9 @@ impl CanonicalDriver {
                 control_hits,
                 prefix_permit: None,
                 foreign_capture: None,
+                previous_capture: None,
+                baseline_source_position,
+                baseline_source_bounds,
             },
             cx,
         )
@@ -291,10 +319,10 @@ impl CanonicalDriver {
                         .connection_search_request()
                         .expect("active canonical search request");
                     let candidates = host
-                        .connection_search_candidates(request, window, cx)
+                        .connection_search_candidates(&request, window, cx)
                         .expect("canonical search candidates");
                     assert!(!candidates.candidates().is_empty());
-                    host.select_connection_search_candidate(request, &candidates, 0, window, cx)
+                    host.select_connection_search_candidate(&request, &candidates, 0, window, cx)
                         .expect("select canonical search candidate");
                 });
             }
@@ -306,12 +334,11 @@ impl CanonicalDriver {
             }
             ConformanceAction::Settle(settlement) => {
                 self.settle_retained_frames(cx);
-                if settlement == ConformanceSettlement::Applied {
-                    self.assert_applied_mutation();
-                }
+                let _ = settlement;
             }
             ConformanceAction::LoseCapture => self.lose_capture(cx),
             ConformanceAction::ReplaceOwner => self.replace_owner(cx),
+            ConformanceAction::ReleasePreviousOwner => self.release_previous_owner(cx),
             ConformanceAction::Cancel(ConformanceCancelReason::Escape) => {
                 cx.simulate_keystrokes("escape");
             }
@@ -351,16 +378,22 @@ impl CanonicalDriver {
                 .debug_bounds(&canonical_node_selector(source_node()))
                 .expect("canonical node drag handle")
                 .center(),
-            ConformanceTarget::ReconnectSource => self.edge_endpoint_position(
-                jellyflow_runtime::runtime::geometry::EdgePathAnchor::Source,
-                cx,
-            ),
-            ConformanceTarget::ReconnectTarget => self.edge_endpoint_position(
-                jellyflow_runtime::runtime::geometry::EdgePathAnchor::Target,
-                cx,
-            ),
+            ConformanceTarget::ReconnectSource => cx
+                .debug_bounds(&open_gpui_reconnect_hit_selector(
+                    canonical_edge(),
+                    EdgeEndpoint::From,
+                ))
+                .expect("canonical reconnect-source grip")
+                .center(),
+            ConformanceTarget::ReconnectTarget => cx
+                .debug_bounds(&open_gpui_reconnect_hit_selector(
+                    canonical_edge(),
+                    EdgeEndpoint::To,
+                ))
+                .expect("canonical reconnect-target grip")
+                .center(),
             ConformanceTarget::Edge => self.edge_endpoint_position(
-                jellyflow_runtime::runtime::geometry::EdgePathAnchor::Progress(0.35),
+                jellyflow_runtime::geometry::EdgePathAnchor::Progress(0.35),
                 cx,
             ),
         };
@@ -375,7 +408,9 @@ impl CanonicalDriver {
         let position = self.pointer.expect("canonical release position");
         if matches!(
             self.id,
-            ConformanceScenarioId::CreateFromWire(_) | ConformanceScenarioId::EdgePick
+            ConformanceScenarioId::CreateFromWire(_)
+                | ConformanceScenarioId::CreateFromWirePrefixWait
+                | ConformanceScenarioId::EdgePick
         ) {
             cx.simulate_mouse_up(position, MouseButton::Left, Default::default());
         } else {
@@ -391,16 +426,19 @@ impl CanonicalDriver {
         match candidate {
             ConformanceCandidate::None => point(px(740.0), px(520.0)),
             ConformanceCandidate::Invalid => match self.id {
-                ConformanceScenarioId::ReconnectSource(_) => {
+                ConformanceScenarioId::ReconnectSource(_)
+                | ConformanceScenarioId::ReconnectSourcePrefixWait => {
                     self.port_position(alternate_target_port(), cx)
                 }
                 _ => self.port_position(invalid_output_port(), cx),
             },
             ConformanceCandidate::Valid => match self.id {
-                ConformanceScenarioId::ReconnectSource(_) => {
+                ConformanceScenarioId::ReconnectSource(_)
+                | ConformanceScenarioId::ReconnectSourcePrefixWait => {
                     self.port_position(alternate_source_port(), cx)
                 }
-                ConformanceScenarioId::ReconnectTarget(_) => {
+                ConformanceScenarioId::ReconnectTarget(_)
+                | ConformanceScenarioId::ReconnectTargetPrefixWait => {
                     self.port_position(alternate_target_port(), cx)
                 }
                 _ => self.port_position(target_port(), cx),
@@ -420,7 +458,7 @@ impl CanonicalDriver {
 
     fn edge_endpoint_position(
         &self,
-        anchor: jellyflow_runtime::runtime::geometry::EdgePathAnchor,
+        anchor: jellyflow_runtime::geometry::EdgePathAnchor,
         cx: &mut open_gpui::VisualTestContext,
     ) -> open_gpui::Point<open_gpui::Pixels> {
         cx.read_entity(&self.host, |host, _| {
@@ -484,7 +522,7 @@ impl CanonicalDriver {
         permit
             .enqueue_detached(
                 GraphCommand::set_node_data(
-                    snapshot.revision(),
+                    snapshot.version(),
                     invalid_node(),
                     serde_json::json!({ "external": "prefix" }),
                 ),
@@ -502,10 +540,29 @@ impl CanonicalDriver {
 
     fn replace_owner(&mut self, cx: &mut open_gpui::VisualTestContext) {
         let successor = HitboxId::placeholder();
-        cx.update(|window, _| window.capture_pointer(successor));
+        self.previous_capture = cx.update(|window, _| {
+            let previous = window.captured_hitbox();
+            window.capture_pointer(successor);
+            previous
+        });
+        assert!(self.previous_capture.is_some());
         self.foreign_capture = Some(successor);
         draw_once(cx);
         cx.run_until_parked();
+    }
+
+    fn release_previous_owner(&self, cx: &mut open_gpui::VisualTestContext) {
+        let successor = self
+            .foreign_capture
+            .expect("owner replacement installs a successor capture");
+        let previous = self
+            .previous_capture
+            .expect("owner replacement remembers the previous capture");
+        assert!(!cx.update(|window, _| { release_pointer_capture_if_owned(previous, window) }));
+        assert_eq!(
+            cx.update(|window, _| window.captured_hitbox()),
+            Some(successor)
+        );
     }
 
     fn prepare_injected_receipt(&mut self, cx: &mut open_gpui::VisualTestContext) {
@@ -534,10 +591,10 @@ impl CanonicalDriver {
             ticket
         });
         let snapshot = self.runtime.snapshot().expect("receipt injection snapshot");
-        let expected_revision = snapshot.revision();
+        let expected_version = snapshot.version();
         let command = match settlement {
             ConformanceSettlement::Noop => GraphCommand::set_node_data(
-                expected_revision,
+                expected_version,
                 source_node(),
                 snapshot
                     .graph()
@@ -549,7 +606,7 @@ impl CanonicalDriver {
             ConformanceSettlement::Conflict => {
                 self.runtime
                     .execute(GraphCommand::set_node_data(
-                        expected_revision,
+                        expected_version,
                         invalid_node(),
                         serde_json::json!({ "external": "conflict" }),
                     ))
@@ -558,7 +615,7 @@ impl CanonicalDriver {
                     .expect("external conflict setup applies");
                 self.excluded_revision_delta = self.excluded_revision_delta.saturating_add(1);
                 GraphCommand::set_node_data(
-                    expected_revision,
+                    expected_version,
                     source_node(),
                     serde_json::json!({ "stale": true }),
                 )
@@ -573,14 +630,14 @@ impl CanonicalDriver {
     }
 
     fn retire_source(&mut self, cx: &mut open_gpui::VisualTestContext) {
-        let revision = self
+        let version = self
             .runtime
             .snapshot()
             .expect("source retirement snapshot")
-            .revision();
+            .version();
         self.runtime
             .execute(GraphCommand::topology(
-                revision,
+                version,
                 TopologyEdit::new().remove_node(source_node(), IncidentEdgePolicy::Reject),
             ))
             .expect("retire canonical source")
@@ -594,7 +651,8 @@ impl CanonicalDriver {
     fn assert_applied_mutation(&self) {
         let snapshot = self.runtime.snapshot().expect("applied canonical snapshot");
         match self.id {
-            ConformanceScenarioId::NewConnection(_) => {
+            ConformanceScenarioId::NewConnection(_)
+            | ConformanceScenarioId::NewConnectionPrefixWait => {
                 let edge = snapshot
                     .graph()
                     .edges()
@@ -603,27 +661,34 @@ impl CanonicalDriver {
                     .expect("new connection edge");
                 assert_eq!((edge.from, edge.to), (source_port(), target_port()));
             }
-            ConformanceScenarioId::ReconnectSource(_) => {
+            ConformanceScenarioId::ReconnectSource(_)
+            | ConformanceScenarioId::ReconnectSourcePrefixWait => {
                 let edge = snapshot
                     .graph()
                     .edge(&canonical_edge())
                     .expect("source-reconnected edge retains identity");
                 assert_eq!(
                     (edge.from, edge.to),
-                    (alternate_source_port(), target_port())
+                    (alternate_source_port(), target_port()),
+                    "canonical scenario {:?}",
+                    self.id,
                 );
             }
-            ConformanceScenarioId::ReconnectTarget(_) => {
+            ConformanceScenarioId::ReconnectTarget(_)
+            | ConformanceScenarioId::ReconnectTargetPrefixWait => {
                 let edge = snapshot
                     .graph()
                     .edge(&canonical_edge())
                     .expect("target-reconnected edge retains identity");
                 assert_eq!(
                     (edge.from, edge.to),
-                    (source_port(), alternate_target_port())
+                    (source_port(), alternate_target_port()),
+                    "canonical scenario {:?}",
+                    self.id,
                 );
             }
-            ConformanceScenarioId::CreateFromWire(_) => {
+            ConformanceScenarioId::CreateFromWire(_)
+            | ConformanceScenarioId::CreateFromWirePrefixWait => {
                 assert_eq!(snapshot.graph().nodes().len(), 6);
                 assert!(
                     snapshot
@@ -663,7 +728,7 @@ impl CanonicalDriver {
             let connection = presentation.connection();
             EffectEvidence {
                 phase: presentation.phase(),
-                connection_pointer: connection.map(|connection| connection.pointer().canvas()),
+                connection_pointer: connection.map(|connection| connection.pointer_canvas()),
                 pending: connection
                     .and_then(|connection| connection.ticket())
                     .map(|_| PendingMutationKind::Connection)
@@ -682,40 +747,247 @@ impl CanonicalDriver {
 
     fn observe(&self, cx: &mut open_gpui::VisualTestContext) -> NormalizedObservation {
         let captured = cx.update(|window, _| window.captured_hitbox());
+        let graph = self.observed_graph();
+        let geometry = self.observed_geometry(graph, cx);
         cx.read_entity(&self.host, |host, _| {
             let presentation = host.interaction_presentation();
             let ticket = presentation
                 .connection()
                 .and_then(|connection| connection.ticket())
                 .or_else(|| presentation.node_drag().and_then(|drag| drag.ticket()));
-            NormalizedObservation {
-                phase: normalized_phase(&presentation),
-                effect: self.last_effect,
-                terminal: presentation.terminal().map(normalized_terminal),
-                ownership: if captured.is_some() && captured != self.foreign_capture {
-                    ConformanceOwnership::Held
-                } else {
-                    ConformanceOwnership::Released
+            let mut observation = NormalizedObservation::new(
+                normalized_phase(&presentation),
+                self.last_effect,
+                match captured {
+                    None => ConformanceOwnership::Released,
+                    Some(owner) if Some(owner) == self.foreign_capture => {
+                        ConformanceOwnership::HeldBySuccessor
+                    }
+                    Some(_) => ConformanceOwnership::HeldByAdapter,
                 },
-                ticket: if ticket.is_some() {
+                if ticket.is_some() {
                     ConformanceTicket::Pending
                 } else {
                     ConformanceTicket::None
                 },
-                optimistic_presentation: ticket.is_some()
-                    && (presentation.connection().is_some() || presentation.node_drag().is_some()),
-                graph_revision_delta: self
-                    .runtime
+                self.runtime
                     .snapshot()
                     .expect("canonical graph snapshot")
                     .revision()
                     .saturating_sub(self.baseline_revision)
                     .saturating_sub(self.excluded_revision_delta),
-                geometry: if host.view.geometry_snapshot().is_ok() {
-                    ConformanceGeometry::Available
-                } else {
-                    ConformanceGeometry::Unavailable
-                },
+                geometry,
+            );
+            observation.optimistic_presentation = ticket.is_some()
+                && (presentation.connection().is_some() || presentation.node_drag().is_some());
+            observation.terminal = presentation.terminal().map(normalized_terminal);
+            observation.intent = presentation
+                .connection_intent()
+                .map_or(ConformanceIntent::None, normalized_intent);
+            observation.graph = graph;
+            observation.selection = match host.view.selection() {
+                Ok(selection)
+                    if selection.nodes().is_empty()
+                        && selection.edges().is_empty()
+                        && selection.groups().is_empty() =>
+                {
+                    ConformanceSelection::Empty
+                }
+                Ok(selection)
+                    if selection.nodes() == [source_node()]
+                        && selection.edges().is_empty()
+                        && selection.groups().is_empty() =>
+                {
+                    ConformanceSelection::SourceNode
+                }
+                Ok(selection)
+                    if selection.nodes().is_empty()
+                        && selection.edges() == [canonical_edge()]
+                        && selection.groups().is_empty() =>
+                {
+                    ConformanceSelection::CanonicalEdge
+                }
+                Ok(selection) => {
+                    panic!("unexpected canonical Open GPUI selection: {selection:?}")
+                }
+                Err(_) => ConformanceSelection::Unavailable,
+            };
+            observation.view_status = match host.view.close_reason() {
+                None => ConformanceViewStatus::Open,
+                Some(ViewCloseReason::HostClosed) => ConformanceViewStatus::HostClosed,
+                Some(ViewCloseReason::RuntimeDropped) => ConformanceViewStatus::RuntimeDropped,
+            };
+            observation
+        })
+    }
+
+    fn observed_graph(&self) -> ConformanceGraph {
+        let snapshot = self
+            .runtime
+            .snapshot()
+            .expect("canonical Open GPUI graph remains available");
+        let graph = snapshot.graph();
+        if graph.node(&source_node()).is_none() {
+            assert!(graph.port(&source_port()).is_none());
+            return ConformanceGraph::SourceRetired;
+        }
+        if let Some(edge) = graph.edge(&canonical_edge()) {
+            match (edge.from, edge.to) {
+                (from, to) if from == alternate_source_port() && to == target_port() => {
+                    return ConformanceGraph::ReconnectSource;
+                }
+                (from, to) if from == source_port() && to == alternate_target_port() => {
+                    return ConformanceGraph::ReconnectTarget;
+                }
+                (from, to) if from == source_port() && to == target_port() => {}
+                endpoints => {
+                    panic!("unexpected canonical Open GPUI reconnect endpoints: {endpoints:?}")
+                }
+            }
+        }
+        let mut new_edges = graph
+            .edges()
+            .iter()
+            .filter(|(edge, _)| **edge != canonical_edge());
+        if let Some((_, edge)) = new_edges.next() {
+            assert!(new_edges.next().is_none());
+            return match (edge.from, edge.to) {
+                (from, to) if from == source_port() && to == target_port() => {
+                    ConformanceGraph::NewConnection
+                }
+                (from, to)
+                    if from == source_port()
+                        && graph
+                            .port(&to)
+                            .is_some_and(|port| port.node != target_node()) =>
+                {
+                    assert_eq!(graph.nodes().len(), 6);
+                    ConformanceGraph::CreateFromWire
+                }
+                endpoints => {
+                    panic!("unexpected canonical Open GPUI new edge endpoints: {endpoints:?}")
+                }
+            };
+        }
+        match graph.node(&source_node()) {
+            Some(source) if source.pos != self.baseline_source_position => {
+                let expected = CanvasPoint {
+                    x: self.baseline_source_position.x + 48.0,
+                    y: self.baseline_source_position.y + 36.0,
+                };
+                assert!((source.pos.x - expected.x).abs() < 0.001);
+                assert!((source.pos.y - expected.y).abs() < 0.001);
+                ConformanceGraph::NodeMoved
+            }
+            Some(_) | None => ConformanceGraph::Baseline,
+        }
+    }
+
+    fn observed_geometry(
+        &self,
+        graph: ConformanceGraph,
+        cx: &mut open_gpui::VisualTestContext,
+    ) -> ConformanceGeometry {
+        cx.read_entity(&self.host, |host, _| {
+            let Ok(geometry) = host.view.geometry_snapshot() else {
+                return ConformanceGeometry::Unavailable;
+            };
+            for port in [
+                target_port(),
+                alternate_target_port(),
+                alternate_source_port(),
+            ] {
+                let published = geometry.port(port).unwrap_or_else(|| {
+                    panic!("canonical Open GPUI geometry is missing port {port:?}")
+                });
+                assert!(published.hit_bounds().is_some());
+            }
+            match graph {
+                ConformanceGraph::Baseline => {
+                    if host
+                        .view
+                        .graph_snapshot()
+                        .unwrap()
+                        .graph()
+                        .edge(&canonical_edge())
+                        .is_some()
+                    {
+                        assert_route_matches(
+                            &geometry,
+                            canonical_edge(),
+                            source_port(),
+                            target_port(),
+                        );
+                    }
+                    ConformanceGeometry::Baseline
+                }
+                ConformanceGraph::SourceRetired => {
+                    assert!(geometry.node(source_node()).is_none());
+                    assert!(geometry.port(source_port()).is_none());
+                    ConformanceGeometry::SourceRetired
+                }
+                ConformanceGraph::NewConnection => {
+                    let snapshot = host.view.graph_snapshot().unwrap();
+                    let edge = snapshot
+                        .graph()
+                        .edges()
+                        .iter()
+                        .find_map(|(id, edge)| {
+                            (edge.from == source_port() && edge.to == target_port()).then_some(*id)
+                        })
+                        .expect("canonical Open GPUI new edge");
+                    assert_route_matches(&geometry, edge, source_port(), target_port());
+                    ConformanceGeometry::NewConnectionRouted
+                }
+                ConformanceGraph::ReconnectSource => {
+                    assert_route_matches(
+                        &geometry,
+                        canonical_edge(),
+                        alternate_source_port(),
+                        target_port(),
+                    );
+                    ConformanceGeometry::ReconnectSourceRouted
+                }
+                ConformanceGraph::ReconnectTarget => {
+                    assert_route_matches(
+                        &geometry,
+                        canonical_edge(),
+                        source_port(),
+                        alternate_target_port(),
+                    );
+                    ConformanceGeometry::ReconnectTargetRouted
+                }
+                ConformanceGraph::CreateFromWire => {
+                    let snapshot = host.view.graph_snapshot().unwrap();
+                    let (edge, target) = snapshot
+                        .graph()
+                        .edges()
+                        .iter()
+                        .find_map(|(id, edge)| {
+                            (edge.from == source_port() && edge.to != target_port())
+                                .then_some((*id, edge.to))
+                        })
+                        .expect("canonical Open GPUI create-from-wire edge");
+                    assert!(geometry.port(target).is_none());
+                    assert!(geometry.route(edge).is_none());
+                    ConformanceGeometry::CreateFromWireAwaitingLayout
+                }
+                ConformanceGraph::NodeMoved => {
+                    let snapshot = host.view.graph_snapshot().unwrap();
+                    let source_position = snapshot.graph().node(&source_node()).unwrap().pos;
+                    let source_bounds = geometry.node(source_node()).unwrap().bounds();
+                    let dx = source_position.x - self.baseline_source_position.x;
+                    let dy = source_position.y - self.baseline_source_position.y;
+                    assert!(
+                        (source_bounds.origin.x - self.baseline_source_bounds.origin.x - dx).abs()
+                            < 0.001
+                    );
+                    assert!(
+                        (source_bounds.origin.y - self.baseline_source_bounds.origin.y - dy).abs()
+                            < 0.001
+                    );
+                    ConformanceGeometry::NodeMoved
+                }
             }
         })
     }
@@ -739,7 +1011,7 @@ impl CanonicalDriver {
 }
 
 fn normalized_phase(
-    presentation: &jellyflow_runtime::CanvasInteractionPresentation,
+    presentation: &jellyflow_runtime::interaction::CanvasInteractionPresentation,
 ) -> ConformancePhase {
     match presentation.phase() {
         CanvasInteractionPhase::Idle | CanvasInteractionPhase::Closed => ConformancePhase::Idle,
@@ -819,6 +1091,33 @@ fn normalized_terminal(terminal: InteractionTerminalReason) -> ConformanceTermin
     }
 }
 
+fn normalized_intent(binding: ConnectionGestureBinding) -> ConformanceIntent {
+    if binding.reconnect_edge().is_none() {
+        return ConformanceIntent::Connect;
+    }
+    match binding.fixed_endpoint() {
+        EdgeEndpoint::To => ConformanceIntent::ReconnectSource,
+        EdgeEndpoint::From => ConformanceIntent::ReconnectTarget,
+    }
+}
+
+fn assert_route_matches(
+    geometry: &jellyflow_runtime::view::GeometrySnapshot,
+    edge: EdgeId,
+    from: PortId,
+    to: PortId,
+) {
+    let route = geometry
+        .route(edge)
+        .unwrap_or_else(|| panic!("canonical Open GPUI geometry is missing route {edge:?}"));
+    let source = geometry
+        .port(from)
+        .expect("Open GPUI route source geometry");
+    let target = geometry.port(to).expect("Open GPUI route target geometry");
+    assert_eq!(route.facts().endpoints.source.point, source.route_anchor());
+    assert_eq!(route.facts().endpoints.target.point, target.route_anchor());
+}
+
 fn scenario_settlement(id: ConformanceScenarioId) -> Option<ConformanceSettlement> {
     match id {
         ConformanceScenarioId::NewConnection(settlement)
@@ -826,7 +1125,12 @@ fn scenario_settlement(id: ConformanceScenarioId) -> Option<ConformanceSettlemen
         | ConformanceScenarioId::ReconnectTarget(settlement)
         | ConformanceScenarioId::CreateFromWire(settlement)
         | ConformanceScenarioId::NodeDrag(settlement) => Some(settlement),
-        ConformanceScenarioId::NodeDragPrefixWait
+        ConformanceScenarioId::NewConnectionPrefixWait
+        | ConformanceScenarioId::ReconnectSourcePrefixWait
+        | ConformanceScenarioId::ReconnectTargetPrefixWait
+        | ConformanceScenarioId::CreateFromWirePrefixWait
+        | ConformanceScenarioId::NodeDragPrefixWait => Some(ConformanceSettlement::Applied),
+        ConformanceScenarioId::NodePressBelowThreshold
         | ConformanceScenarioId::NativeControl
         | ConformanceScenarioId::EdgePick
         | ConformanceScenarioId::CaptureLost
@@ -865,6 +1169,9 @@ fn run_canonical_scenario(scenario: &ConformanceScenario, cx: &mut open_gpui::Te
     }
     compare_observations(scenario, &observations)
         .unwrap_or_else(|error| panic!("Open GPUI canonical mismatch: {error}"));
+    if scenario_settlement(scenario.id) == Some(ConformanceSettlement::Applied) {
+        driver.assert_applied_mutation();
+    }
     driver.close(cx);
 }
 

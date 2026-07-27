@@ -13,12 +13,22 @@ description = "Retained native Open GPUI adapter for Jellyflow node graphs."
 keywords = ["gpui", "graph", "node-graph", "adapter"]
 categories = ["gui", "visualization"]
 
+[features]
+default = []
+test-support = []
+
 [dependencies]
 jellyflow-core.workspace = true
 jellyflow-runtime.workspace = true
 lyon.workspace = true
+futures-util.workspace = true
 open_gpui = { package = "open-gpui", version = "=0.2.0", default-features = false }
 thiserror.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+dispatch2 = "0.3.1"
+objc = "0.2.7"
+raw-window-handle = "0.6.2"
 
 [dev-dependencies]
 jellyflow-runtime = { workspace = true, features = ["adapter-conformance"] }

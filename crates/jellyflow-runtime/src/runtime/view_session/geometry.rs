@@ -1,6 +1,7 @@
 //! Per-view geometry publication, indexing, and route derivation.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Bound::{Excluded, Unbounded};
 use std::sync::Arc;
 
 use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize, Graph, Node, NodeId, NodeKindKey};
@@ -12,7 +13,8 @@ use crate::runtime::adapter_protocol::{
 };
 use crate::runtime::geometry::CanvasBounds;
 use crate::runtime::graph_runtime::{
-    GeometryImpact, GraphSnapshot, IncidentEdgeSnapshot, IncidentSnapshotWork, NodeIncarnation,
+    AdapterNodeRuntimeFacts, GeometryImpact, GraphSnapshot, IncidentEdgeSnapshot,
+    IncidentSnapshotWork,
 };
 use crate::runtime::interaction::{
     AlignmentSnapQuery, AlignmentSnapQueryOutcome, AlignmentSnapWork, resolve_alignment_snap,
@@ -21,7 +23,156 @@ use crate::runtime::viewport::ViewportTransform;
 
 use super::derived_geometry::LayoutWithdrawal;
 use super::protocol::{ExpectedNodeLayout, PendingFrame, PendingLayout};
-use super::{ViewSession, ViewSessionError, ViewShared, ViewState, WeakViewSession, ensure_open};
+use super::{
+    AlignmentSnapQueryReceipt, InteractionQueryBinding, NodeIntersectionQueryReceipt,
+    ViewQueryIdentity, ViewQueryIdentityStaleReason, ViewSession, ViewSessionError, ViewShared,
+    ViewState, WeakViewSession, ensure_open,
+};
+
+const HARD_NODE_INTERSECTION_ENTRY_LIMIT: u64 = 16_384;
+
+#[derive(Debug)]
+pub struct NodeIntersectionQuery {
+    request: NodeIntersectionRequest,
+    entry_budget: usize,
+    interaction_binding: Option<InteractionQueryBinding>,
+}
+
+impl NodeIntersectionQuery {
+    pub fn new(bounds: CanvasRect, entry_budget: usize) -> Self {
+        Self {
+            request: NodeIntersectionRequest::Start(bounds),
+            entry_budget,
+            interaction_binding: None,
+        }
+    }
+
+    pub fn resume(cursor: Box<NodeIntersectionCursor>, entry_budget: usize) -> Self {
+        Self {
+            request: NodeIntersectionRequest::Resume(cursor),
+            entry_budget,
+            interaction_binding: None,
+        }
+    }
+
+    pub(crate) fn bind_interaction(mut self, binding: InteractionQueryBinding) -> Self {
+        self.interaction_binding = Some(binding);
+        self
+    }
+}
+
+#[derive(Debug)]
+enum NodeIntersectionRequest {
+    Start(CanvasRect),
+    Resume(Box<NodeIntersectionCursor>),
+}
+
+#[derive(Debug)]
+pub struct NodeIntersectionCursor {
+    identity: ViewQueryIdentity,
+    index_epoch: u128,
+    bounds: CanvasBounds,
+    sources: Vec<NodeSpatialQuerySource>,
+    source_index: usize,
+    source_started: bool,
+    last_node: Option<NodeId>,
+    checked: BTreeSet<NodeId>,
+    matched: BTreeSet<NodeId>,
+    total_entries_examined: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NodeIntersectionWork {
+    pub cells_examined: u64,
+    pub entries_examined: u64,
+    pub exact_tests: u64,
+    receipt: Option<NodeIntersectionQueryReceipt>,
+}
+
+impl NodeIntersectionWork {
+    pub fn receipt(self) -> Option<NodeIntersectionQueryReceipt> {
+        self.receipt
+    }
+
+    fn with_receipt(mut self, receipt: Option<NodeIntersectionQueryReceipt>) -> Self {
+        self.receipt = receipt;
+        self
+    }
+}
+
+#[derive(Debug)]
+pub enum NodeIntersectionQueryOutcome {
+    Complete {
+        nodes: Vec<NodeId>,
+        work: NodeIntersectionWork,
+    },
+    Incomplete {
+        cursor: Box<NodeIntersectionCursor>,
+        work: NodeIntersectionWork,
+    },
+    BudgetExhausted {
+        work: NodeIntersectionWork,
+    },
+}
+
+impl NodeIntersectionQueryOutcome {
+    pub fn receipt(&self) -> Option<NodeIntersectionQueryReceipt> {
+        match self {
+            Self::Complete { work, .. }
+            | Self::Incomplete { work, .. }
+            | Self::BudgetExhausted { work } => work.receipt(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum NodeIntersectionCursorStaleReason {
+    #[error("the cursor belongs to another view")]
+    ForeignView,
+    #[error("the view generation changed")]
+    ViewGeneration,
+    #[error("the viewport transform changed")]
+    ViewportTransform,
+    #[error("published node geometry changed")]
+    NodeGeometry,
+}
+
+impl NodeIntersectionCursorStaleReason {
+    pub const fn is_restartable(self) -> bool {
+        matches!(self, Self::ViewportTransform | Self::NodeGeometry)
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum NodeIntersectionQueryError {
+    #[error(transparent)]
+    View(#[from] ViewSessionError),
+    #[error("the node-intersection query is invalid")]
+    InvalidQuery,
+    #[error("the node-intersection cursor is stale: {0}")]
+    StaleCursor(NodeIntersectionCursorStaleReason),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NodeSpatialQuerySource {
+    Overflow,
+    Cell(SpatialCell),
+    All,
+}
+
+pub(super) enum InternalNodeIntersectionOutcome {
+    Complete {
+        nodes: BTreeSet<NodeId>,
+        work: NodeIntersectionWork,
+    },
+    Incomplete {
+        cursor: NodeIntersectionCursor,
+        work: NodeIntersectionWork,
+    },
+    BudgetExhausted {
+        work: NodeIntersectionWork,
+    },
+}
 
 impl ViewSession {
     pub fn geometry_snapshot(&self) -> Result<GeometrySnapshot, ViewSessionError> {
@@ -29,20 +180,12 @@ impl ViewSession {
         self.shared.geometry_snapshot()
     }
 
-    pub fn nodes_intersecting(&self, bounds: CanvasRect) -> Result<Vec<NodeId>, ViewSessionError> {
+    pub fn nodes_intersecting(
+        &self,
+        query: NodeIntersectionQuery,
+    ) -> Result<NodeIntersectionQueryOutcome, NodeIntersectionQueryError> {
         self.runtime()?;
-        let state = self
-            .shared
-            .state
-            .try_borrow()
-            .map_err(|_| ViewSessionError::Busy)?;
-        ensure_open(state.status)?;
-        Ok(state
-            .derived
-            .nodes_intersecting(bounds)
-            .nodes
-            .into_iter()
-            .collect())
+        self.shared.nodes_intersecting(query)
     }
 
     /// Resolves one bounded alignment query from this view's fresh spatial geometry.
@@ -66,6 +209,14 @@ impl WeakViewSession {
         view.geometry_snapshot()
     }
 
+    pub(crate) fn nodes_intersecting(
+        &self,
+        query: NodeIntersectionQuery,
+    ) -> Result<NodeIntersectionQueryOutcome, NodeIntersectionQueryError> {
+        let (view, _) = self.open_capability()?;
+        view.nodes_intersecting(query)
+    }
+
     /// Resolves one bounded alignment query without reviving or owning the view session.
     pub fn alignment_snap(
         &self,
@@ -77,6 +228,74 @@ impl WeakViewSession {
 }
 
 impl ViewShared {
+    fn nodes_intersecting(
+        &self,
+        query: NodeIntersectionQuery,
+    ) -> Result<NodeIntersectionQueryOutcome, NodeIntersectionQueryError> {
+        let (outcome, receipt) = {
+            let state = self
+                .state
+                .try_borrow()
+                .map_err(|_| ViewSessionError::Busy)?;
+            ensure_open(state.status)?;
+            let identity = state.query_identity();
+            let index_epoch = state.derived.node_spatial_index_epoch();
+            let receipt = NodeIntersectionQueryReceipt::issue(
+                query.interaction_binding,
+                identity,
+                [index_epoch, 0, 0, 0],
+            )?;
+            let cursor = match query.request {
+                NodeIntersectionRequest::Start(bounds) => {
+                    if !bounds.is_finite() || bounds.size.width < 0.0 || bounds.size.height < 0.0 {
+                        return Err(NodeIntersectionQueryError::InvalidQuery);
+                    }
+                    if bounds.size.width == 0.0 || bounds.size.height == 0.0 {
+                        return Ok(NodeIntersectionQueryOutcome::Complete {
+                            nodes: Vec::new(),
+                            work: NodeIntersectionWork::default().with_receipt(receipt),
+                        });
+                    }
+                    let Some(canvas_bounds) = CanvasBounds::from_rect(bounds) else {
+                        return Err(NodeIntersectionQueryError::InvalidQuery);
+                    };
+                    state.derived.new_node_intersection_cursor(
+                        state.query_identity(),
+                        bounds,
+                        canvas_bounds,
+                    )
+                }
+                NodeIntersectionRequest::Resume(cursor) => {
+                    validate_node_intersection_cursor(&state, &cursor)?;
+                    *cursor
+                }
+            };
+            let outcome = state
+                .derived
+                .query_node_intersection_page(cursor, query.entry_budget);
+            (outcome, receipt)
+        };
+        Ok(match outcome {
+            InternalNodeIntersectionOutcome::Complete { nodes, work } => {
+                NodeIntersectionQueryOutcome::Complete {
+                    nodes: nodes.into_iter().collect(),
+                    work: work.with_receipt(receipt),
+                }
+            }
+            InternalNodeIntersectionOutcome::Incomplete { cursor, work } => {
+                NodeIntersectionQueryOutcome::Incomplete {
+                    cursor: Box::new(cursor),
+                    work: work.with_receipt(receipt),
+                }
+            }
+            InternalNodeIntersectionOutcome::BudgetExhausted { work } => {
+                NodeIntersectionQueryOutcome::BudgetExhausted {
+                    work: work.with_receipt(receipt),
+                }
+            }
+        })
+    }
+
     pub(super) fn geometry_snapshot(&self) -> Result<GeometrySnapshot, ViewSessionError> {
         let mut state = self
             .state
@@ -95,7 +314,19 @@ impl ViewShared {
             .try_borrow_mut()
             .map_err(|_| ViewSessionError::Busy)?;
         ensure_open(state.status)?;
-        let work = |entries_examined| AlignmentSnapWork::new(query.generation(), entries_examined);
+        let receipt = AlignmentSnapQueryReceipt::issue(
+            Some(query.interaction_binding()),
+            state.query_identity(),
+            [
+                state.derived.node_spatial_index_epoch(),
+                state.interaction_order_revision,
+                u128::from(state.seen_revision),
+                0,
+            ],
+        )?;
+        let work = |entries_examined| {
+            AlignmentSnapWork::new(query.generation(), entries_examined).with_receipt(receipt)
+        };
         if query.view() != state.id || query.view_generation() != state.generation {
             return Ok(AlignmentSnapQueryOutcome::GeometryIndeterminate(work(0)));
         }
@@ -145,13 +376,16 @@ impl ViewShared {
                 candidates.entries_examined,
             )));
         }
-        Ok(AlignmentSnapQueryOutcome::Complete(resolve_alignment_snap(
-            &geometry,
-            &query,
-            &candidates.nodes,
-            acquire_tolerance,
-            release_tolerance,
-        )))
+        Ok(AlignmentSnapQueryOutcome::Complete(
+            resolve_alignment_snap(
+                &geometry,
+                &query,
+                &candidates.nodes,
+                acquire_tolerance,
+                release_tolerance,
+            )
+            .with_receipt(receipt),
+        ))
     }
 }
 
@@ -176,6 +410,7 @@ pub(super) struct ViewSpatialIndex {
     alignment_y: BTreeMap<i32, BTreeSet<NodeId>>,
     nodes: BTreeMap<NodeId, IndexedNodeSpatial>,
     overflow_nodes: BTreeSet<NodeId>,
+    index_epoch: u128,
 }
 
 #[derive(Debug)]
@@ -225,6 +460,7 @@ impl ViewSpatialIndex {
                 alignment_y,
             },
         );
+        self.index_epoch = self.index_epoch.saturating_add(1);
         true
     }
 
@@ -244,19 +480,131 @@ impl ViewSpatialIndex {
         }
         remove_axis_membership(&mut self.alignment_x, indexed.alignment_x, node);
         remove_axis_membership(&mut self.alignment_y, indexed.alignment_y, node);
+        self.index_epoch = self.index_epoch.saturating_add(1);
         true
     }
 
     pub(super) fn clear(&mut self) {
+        let changed = !self.nodes.is_empty();
         self.cells.clear();
         self.alignment_x.clear();
         self.alignment_y.clear();
         self.nodes.clear();
         self.overflow_nodes.clear();
+        if changed {
+            self.index_epoch = self.index_epoch.saturating_add(1);
+        }
     }
 
-    pub(super) fn nodes_intersecting(&self, bounds: CanvasRect) -> SpatialQuery {
-        self.nodes_intersecting_with_limit(bounds, usize::MAX)
+    pub(super) fn index_epoch(&self) -> u128 {
+        self.index_epoch
+    }
+
+    pub(super) fn new_intersection_cursor(
+        &self,
+        identity: ViewQueryIdentity,
+        bounds: CanvasRect,
+        canvas_bounds: CanvasBounds,
+    ) -> NodeIntersectionCursor {
+        let sources = covered_spatial_cells(bounds).map_or_else(
+            || vec![NodeSpatialQuerySource::All],
+            |cells| {
+                std::iter::once(NodeSpatialQuerySource::Overflow)
+                    .chain(cells.into_iter().map(NodeSpatialQuerySource::Cell))
+                    .collect()
+            },
+        );
+        NodeIntersectionCursor {
+            identity,
+            index_epoch: self.index_epoch,
+            bounds: canvas_bounds,
+            sources,
+            source_index: 0,
+            source_started: false,
+            last_node: None,
+            checked: BTreeSet::new(),
+            matched: BTreeSet::new(),
+            total_entries_examined: 0,
+        }
+    }
+
+    pub(super) fn query_intersection_page(
+        &self,
+        mut cursor: NodeIntersectionCursor,
+        entry_budget: usize,
+    ) -> InternalNodeIntersectionOutcome {
+        let mut work = NodeIntersectionWork::default();
+        let mut remaining = entry_budget;
+        let query = cursor.bounds;
+        loop {
+            if cursor.source_index >= cursor.sources.len() {
+                return InternalNodeIntersectionOutcome::Complete {
+                    nodes: cursor.matched,
+                    work,
+                };
+            }
+            let source = cursor.sources[cursor.source_index];
+            if !cursor.source_started {
+                if matches!(source, NodeSpatialQuerySource::Cell(_)) {
+                    work.cells_examined = work.cells_examined.saturating_add(1);
+                }
+                cursor.source_started = true;
+            }
+            let next = match source {
+                NodeSpatialQuerySource::Overflow => cursor.last_node.map_or_else(
+                    || self.overflow_nodes.iter().next().copied(),
+                    |last| {
+                        self.overflow_nodes
+                            .range((Excluded(last), Unbounded))
+                            .next()
+                            .copied()
+                    },
+                ),
+                NodeSpatialQuerySource::Cell(cell) => self.cells.get(&cell).and_then(|nodes| {
+                    cursor.last_node.map_or_else(
+                        || nodes.iter().next().copied(),
+                        |last| nodes.range((Excluded(last), Unbounded)).next().copied(),
+                    )
+                }),
+                NodeSpatialQuerySource::All => cursor.last_node.map_or_else(
+                    || self.nodes.keys().next().copied(),
+                    |last| {
+                        self.nodes
+                            .range((Excluded(last), Unbounded))
+                            .next()
+                            .map(|(node, _)| *node)
+                    },
+                ),
+            };
+            let Some(node) = next else {
+                cursor.source_index += 1;
+                cursor.source_started = false;
+                cursor.last_node = None;
+                continue;
+            };
+            if remaining == 0 {
+                return InternalNodeIntersectionOutcome::Incomplete { cursor, work };
+            }
+            if cursor.total_entries_examined >= HARD_NODE_INTERSECTION_ENTRY_LIMIT {
+                return InternalNodeIntersectionOutcome::BudgetExhausted { work };
+            }
+            remaining -= 1;
+            cursor.last_node = Some(node);
+            cursor.total_entries_examined = cursor.total_entries_examined.saturating_add(1);
+            work.entries_examined = work.entries_examined.saturating_add(1);
+            if !cursor.checked.insert(node) {
+                continue;
+            }
+            work.exact_tests = work.exact_tests.saturating_add(1);
+            if self
+                .nodes
+                .get(&node)
+                .and_then(|indexed| CanvasBounds::from_rect(indexed.bounds))
+                .is_some_and(|bounds| bounds.intersects(query))
+            {
+                cursor.matched.insert(node);
+            }
+        }
     }
 
     pub(super) fn nodes_intersecting_with_limit(
@@ -646,7 +994,7 @@ pub(super) fn publish_layouts(
     state: &mut ViewState,
     snapshot: &GraphSnapshot,
     pending: &PendingFrame,
-    current_node_facts: &BTreeMap<NodeId, (NodeIncarnation, IncidentEdgeSnapshot)>,
+    current_node_facts: &BTreeMap<NodeId, AdapterNodeRuntimeFacts>,
     geometry_impact: &GeometryImpact,
     layouts: Vec<PendingLayout>,
     receipts: &mut [Option<FeedbackOperationReceipt>],
@@ -750,30 +1098,34 @@ pub(super) fn publish_layouts(
                 incident_edges,
                 current_node_facts
                     .get(&node)
-                    .map(|(_, incident_edges)| incident_edges.clone()),
+                    .map(|facts| facts.incident_edges.clone()),
             )
         })
         .collect();
     let policy = state.policy;
-    let selected_edges = state.selected_edge_membership.clone();
     state
         .derived
         .record_layout_candidate_impact(impact_candidates_checked, impact_candidates_stale);
-    state.derived.publish_complete_layout(
+    let ViewState {
+        derived,
+        selected_edge_membership,
+        ..
+    } = state;
+    derived.publish_complete_layout(
         snapshot,
         staged,
         withdrawals,
         geometry_impact.incident_edges(),
         request_refresh,
         policy,
-        &selected_edges,
+        selected_edge_membership,
     )
 }
 
 fn evaluate_layout_candidate(
     state: &ViewState,
     snapshot: &GraphSnapshot,
-    current_node_facts: &BTreeMap<NodeId, (NodeIncarnation, IncidentEdgeSnapshot)>,
+    current_node_facts: &BTreeMap<NodeId, AdapterNodeRuntimeFacts>,
     expected: &ExpectedNodeLayout,
     layout: crate::runtime::adapter_protocol::NodeLayout,
     frame_sequence: u64,
@@ -784,17 +1136,17 @@ fn evaluate_layout_candidate(
     let target = layout.target().clone();
     if target.instance().view() != state.id
         || target.instance().node() != node
-        || target.instance().incarnation() != expected.incarnation
+        || target.instance().lifetime() != expected.lifetime
         || target.instance().renderer() != &expected.renderer
         || target.layout_generation() != expected.layout_generation
         || target.frame_sequence() != frame_sequence
     {
         return (LayoutNodeStatus::Stale, None);
     }
-    let Some((incarnation, _)) = current_node_facts.get(&node) else {
+    let Some(runtime_facts) = current_node_facts.get(&node) else {
         return (LayoutNodeStatus::MissingNode, None);
     };
-    if *incarnation != expected.incarnation
+    if runtime_facts.lifetime != expected.lifetime
         || state.derived.layout_generation(node) != expected.layout_generation
     {
         return (LayoutNodeStatus::Stale, None);
@@ -831,13 +1183,30 @@ fn evaluate_layout_candidate(
         if current.node != node {
             return (LayoutNodeStatus::ForeignPort, None);
         }
+        if runtime_facts.port_instances.get(&port_id).copied()
+            != Some(outcome.target().port_instance())
+        {
+            return (LayoutNodeStatus::Stale, None);
+        }
         let published = match outcome {
             PortLayoutOutcome::Rendered(port) => {
                 let Some(visual_bounds) = port.visual_bounds.to_canvas_rect(transform) else {
                     return (LayoutNodeStatus::InvalidBounds, None);
                 };
-                let Some(hit_bounds) = port.hit_bounds.to_canvas_rect(transform) else {
+                if port.hit_bounds.to_canvas_rect(transform).is_none() {
                     return (LayoutNodeStatus::InvalidBounds, None);
+                }
+                let interaction_bounds = match port.interaction_bounds {
+                    Some(bounds) => {
+                        if !view_rect_contains(port.hit_bounds, bounds) {
+                            return (LayoutNodeStatus::InvalidBounds, None);
+                        }
+                        let Some(bounds) = bounds.to_canvas_rect(transform) else {
+                            return (LayoutNodeStatus::InvalidBounds, None);
+                        };
+                        Some(bounds)
+                    }
+                    None => None,
                 };
                 let Some(route_anchor) = port.route_anchor.to_canvas_point(transform) else {
                     return (LayoutNodeStatus::InvalidBounds, None);
@@ -846,7 +1215,7 @@ fn evaluate_layout_candidate(
                     port_id,
                     node,
                     visual_bounds,
-                    hit_bounds,
+                    interaction_bounds,
                     route_anchor,
                     port.outward,
                 ))
@@ -858,8 +1227,7 @@ fn evaluate_layout_candidate(
         port_outcomes.insert(port_id, published);
     }
     let candidate = PublishedNodeGeometry::new(
-        node,
-        expected.incarnation,
+        expected.lifetime,
         expected.renderer.clone(),
         expected.layout_generation,
         node_bounds,
@@ -870,4 +1238,42 @@ fn evaluate_layout_candidate(
     } else {
         (LayoutNodeStatus::Published, Some(candidate))
     }
+}
+
+fn view_rect_contains(
+    outer: crate::runtime::adapter_protocol::ViewRect,
+    inner: crate::runtime::adapter_protocol::ViewRect,
+) -> bool {
+    let outer_right = outer.origin.x + outer.size.width;
+    let outer_bottom = outer.origin.y + outer.size.height;
+    let inner_right = inner.origin.x + inner.size.width;
+    let inner_bottom = inner.origin.y + inner.size.height;
+    inner.origin.x >= outer.origin.x
+        && inner.origin.y >= outer.origin.y
+        && inner_right <= outer_right
+        && inner_bottom <= outer_bottom
+}
+
+fn validate_node_intersection_cursor(
+    state: &ViewState,
+    cursor: &NodeIntersectionCursor,
+) -> Result<(), NodeIntersectionQueryError> {
+    let stale = match cursor.identity.stale_reason(state.query_identity()) {
+        Some(ViewQueryIdentityStaleReason::ForeignView) => {
+            Some(NodeIntersectionCursorStaleReason::ForeignView)
+        }
+        Some(ViewQueryIdentityStaleReason::ViewGeneration) => {
+            Some(NodeIntersectionCursorStaleReason::ViewGeneration)
+        }
+        Some(ViewQueryIdentityStaleReason::ViewportTransform) => {
+            Some(NodeIntersectionCursorStaleReason::ViewportTransform)
+        }
+        None if cursor.index_epoch != state.derived.node_spatial_index_epoch() => {
+            Some(NodeIntersectionCursorStaleReason::NodeGeometry)
+        }
+        None => None,
+    };
+    stale
+        .map(NodeIntersectionQueryError::StaleCursor)
+        .map_or(Ok(()), Err)
 }

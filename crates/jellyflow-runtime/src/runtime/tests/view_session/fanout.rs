@@ -1,7 +1,10 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize};
+
 use crate::io::{ViewSelectionSeed, ViewSessionSeed, ViewStackingSeed};
+use crate::runtime::adapter_protocol::{AdapterEnvironment, FrameRequest, RendererStamp};
 use crate::runtime::commands::{GraphCommand, IncidentEdgePolicy, TopologyEdit};
 use crate::runtime::graph_runtime::{
     GraphRuntime, GraphRuntimeError, GraphRuntimeEvent, RuntimePatch, RuntimePatchKind,
@@ -9,7 +12,7 @@ use crate::runtime::graph_runtime::{
 use crate::runtime::view_session::{ViewCloseReason, ViewSession, ViewSessionEvent};
 use crate::schema::NodeCatalog;
 
-use super::fixtures::{graph_with_nodes, view_options};
+use super::fixtures::{graph_with_nodes, publish_graph_layouts, view_options};
 
 struct PanicIfDropped;
 
@@ -17,6 +20,111 @@ impl Drop for PanicIfDropped {
     fn drop(&mut self) {
         panic!("panic payload must not be dropped during unwind");
     }
+}
+
+fn layout_event_frame_request(renderer_incarnation: u64) -> FrameRequest {
+    FrameRequest::new(
+        CanvasRect {
+            origin: CanvasPoint {
+                x: -100.0,
+                y: -100.0,
+            },
+            size: CanvasSize {
+                width: 1_000.0,
+                height: 600.0,
+            },
+        },
+        RendererStamp::new("test.seed", renderer_incarnation),
+    )
+}
+
+#[test]
+fn frame_layout_subscriber_panic_finishes_fanout_and_leaves_the_session_usable() {
+    let (graph, _) = graph_with_nodes(1);
+    let runtime = GraphRuntime::builder(NodeCatalog::new())
+        .build(graph)
+        .expect("runtime");
+    let view = runtime.attach_view(Default::default()).expect("view");
+    publish_graph_layouts(&view);
+
+    view.subscribe(|event| {
+        if matches!(event, ViewSessionEvent::LayoutPublished { .. }) {
+            panic!("frame layout subscriber panic");
+        }
+    })
+    .unwrap();
+    let later_layout_calls = Rc::new(Cell::new(0));
+    let callback_calls = later_layout_calls.clone();
+    view.subscribe(move |event| {
+        if matches!(event, ViewSessionEvent::LayoutPublished { .. }) {
+            callback_calls.set(callback_calls.get() + 1);
+        }
+    })
+    .unwrap();
+
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        view.frame(layout_event_frame_request(2))
+    }))
+    .expect_err("the first frame layout subscriber panic remains observable");
+
+    assert_eq!(
+        panic.downcast_ref::<&str>(),
+        Some(&"frame layout subscriber panic")
+    );
+    assert_eq!(later_layout_calls.get(), 1);
+
+    let recovered = view
+        .frame(layout_event_frame_request(2))
+        .expect("the session accepts a successor frame after the callback panic");
+    view.submit_feedback(recovered.collector().finish().unwrap())
+        .expect("the recovered frame remains consumable");
+}
+
+#[test]
+fn environment_layout_subscriber_panic_finishes_fanout_and_commits_the_environment() {
+    let (graph, _) = graph_with_nodes(1);
+    let runtime = GraphRuntime::builder(NodeCatalog::new())
+        .build(graph)
+        .expect("runtime");
+    let view = runtime.attach_view(Default::default()).expect("view");
+    publish_graph_layouts(&view);
+
+    view.subscribe(|event| {
+        if matches!(event, ViewSessionEvent::LayoutPublished { .. }) {
+            panic!("environment layout subscriber panic");
+        }
+    })
+    .unwrap();
+    let later_layout_calls = Rc::new(Cell::new(0));
+    let callback_calls = later_layout_calls.clone();
+    view.subscribe(move |event| {
+        if matches!(event, ViewSessionEvent::LayoutPublished { .. }) {
+            callback_calls.set(callback_calls.get() + 1);
+        }
+    })
+    .unwrap();
+    let environment = AdapterEnvironment::new(2, 3, 5, 7);
+
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        view.set_adapter_environment(environment)
+    }))
+    .expect_err("the first environment layout subscriber panic remains observable");
+
+    assert_eq!(
+        panic.downcast_ref::<&str>(),
+        Some(&"environment layout subscriber panic")
+    );
+    assert_eq!(later_layout_calls.get(), 1);
+    assert!(
+        !view.set_adapter_environment(environment).unwrap(),
+        "the environment mutation must commit before the callback panic resumes"
+    );
+
+    let recovered = view
+        .frame(layout_event_frame_request(1))
+        .expect("the session accepts a frame after the callback panic");
+    view.submit_feedback(recovered.collector().finish().unwrap())
+        .expect("the recovered frame remains consumable");
 }
 
 #[test]
@@ -62,7 +170,7 @@ fn subscriber_panics_do_not_truncate_committed_patch_fanout() {
 
     let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         runtime.execute(GraphCommand::set_node_data(
-            0,
+            runtime.snapshot().unwrap().version(),
             ids[0],
             serde_json::json!({ "value": 1 }),
         ))
@@ -261,7 +369,7 @@ fn panicking_reentrant_callback_can_unsubscribe_and_close_without_truncating_lat
 
     let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         runtime.execute(GraphCommand::set_node_data(
-            0,
+            runtime.snapshot().unwrap().version(),
             ids[0],
             serde_json::json!({ "value": 1 }),
         ))
@@ -284,13 +392,13 @@ fn document_replacement_fans_out_one_reset_patch_and_retires_every_old_incarnati
     let runtime = GraphRuntime::builder(NodeCatalog::new())
         .build(graph)
         .expect("runtime");
-    let initial_incarnations = ids
+    let initial_lifetimes = ids
         .iter()
-        .map(|node| runtime.node_incarnation(*node).unwrap().unwrap())
+        .map(|node| runtime.node_lifetime_key(*node).unwrap().unwrap())
         .collect::<Vec<_>>();
     runtime
         .execute(GraphCommand::set_node_data(
-            0,
+            runtime.snapshot().unwrap().version(),
             ids[0],
             serde_json::json!({ "before_reset": true }),
         ))
@@ -325,14 +433,14 @@ fn document_replacement_fans_out_one_reset_patch_and_retires_every_old_incarnati
     assert_eq!(patch.document_epoch(), 1);
     assert_eq!(runtime.history_state().unwrap().undo_len(), 0);
     assert_eq!(runtime.history_state().unwrap().redo_len(), 0);
-    let replacement_incarnation = runtime.node_incarnation(ids[0]).unwrap().unwrap();
-    assert!(replacement_incarnation > initial_incarnations[0]);
+    let replacement_lifetime = runtime.node_lifetime_key(ids[0]).unwrap().unwrap();
+    assert_ne!(replacement_lifetime, initial_lifetimes[0]);
     assert_eq!(
-        patch.node_incarnation_change(ids[0]),
-        Some(Some(replacement_incarnation))
+        patch.node_lifetime_change(ids[0]),
+        Some(Some(replacement_lifetime))
     );
-    assert_eq!(patch.node_incarnation_change(ids[1]), Some(None));
-    assert_eq!(runtime.node_incarnation(ids[1]).unwrap(), None);
+    assert_eq!(patch.node_lifetime_change(ids[1]), Some(None));
+    assert_eq!(runtime.node_lifetime_key(ids[1]).unwrap(), None);
     assert_eq!(runtime.stats().unwrap().patch_deliveries, 2);
     for (view, patches) in views.iter().zip(&observed) {
         assert_eq!(view.graph_snapshot().unwrap().revision(), 2);
@@ -351,7 +459,7 @@ fn foreign_catalog_document_replacement_has_zero_side_effects() {
         .expect("runtime");
     runtime
         .execute(GraphCommand::set_node_data(
-            0,
+            runtime.snapshot().unwrap().version(),
             ids[0],
             serde_json::json!({ "retained": true }),
         ))
@@ -369,7 +477,7 @@ fn foreign_catalog_document_replacement_has_zero_side_effects() {
     let before = runtime.snapshot().unwrap();
     let history_before = runtime.history_state().unwrap();
     let stats_before = runtime.stats().unwrap();
-    let incarnation_before = runtime.node_incarnation(ids[0]).unwrap();
+    let lifetime_before = runtime.node_lifetime_key(ids[0]).unwrap();
     let foreign_catalog = NodeCatalog::new();
     let replacement = foreign_catalog
         .canonicalize_graph(before.graph())
@@ -382,10 +490,7 @@ fn foreign_catalog_document_replacement_has_zero_side_effects() {
     assert!(before.ptr_eq(&runtime.snapshot().unwrap()));
     assert_eq!(runtime.history_state().unwrap(), history_before);
     assert_eq!(runtime.stats().unwrap(), stats_before);
-    assert_eq!(
-        runtime.node_incarnation(ids[0]).unwrap(),
-        incarnation_before
-    );
+    assert_eq!(runtime.node_lifetime_key(ids[0]).unwrap(), lifetime_before);
     assert_eq!(view_events.get(), 0);
     assert_eq!(runtime_events.get(), 0);
 }
@@ -440,7 +545,7 @@ fn one_node_change_has_bounded_four_view_fanout_in_ten_thousand_node_graph() {
 
     let outcome = runtime
         .execute(GraphCommand::set_node_data(
-            0,
+            runtime.snapshot().unwrap().version(),
             ids[4_321],
             serde_json::json!({ "value": 42 }),
         ))
@@ -509,7 +614,7 @@ fn one_retirement_uses_exact_tombstones_across_four_ten_thousand_item_draw_order
 
     runtime
         .execute(GraphCommand::topology(
-            0,
+            runtime.snapshot().unwrap().version(),
             TopologyEdit::new().remove_node(retired, IncidentEdgePolicy::Reject),
         ))
         .unwrap()
@@ -549,7 +654,7 @@ fn unselected_retirement_skips_full_selection_sanitation_in_four_large_views() {
 
     runtime
         .execute(GraphCommand::topology(
-            0,
+            runtime.snapshot().unwrap().version(),
             TopologyEdit::new().remove_node(retired, IncidentEdgePolicy::Reject),
         ))
         .unwrap()
@@ -574,10 +679,10 @@ fn retirements_outside_explicit_draw_order_do_not_allocate_tombstones() {
         .attach_view(view_options(ViewSessionSeed::new(graph_id)))
         .expect("view");
 
-    for (revision, node) in ids.into_iter().enumerate() {
+    for node in ids {
         runtime
             .execute(GraphCommand::topology(
-                revision as u64,
+                runtime.snapshot().unwrap().version(),
                 TopologyEdit::new().remove_node(node, IncidentEdgePolicy::Reject),
             ))
             .unwrap()
@@ -608,7 +713,7 @@ fn undoing_retirement_restores_explicit_draw_order_without_a_stale_tombstone() {
 
     runtime
         .execute(GraphCommand::topology(
-            0,
+            runtime.snapshot().unwrap().version(),
             TopologyEdit::new().remove_node(node, IncidentEdgePolicy::Reject),
         ))
         .unwrap()
@@ -618,7 +723,7 @@ fn undoing_retirement_restores_explicit_draw_order_without_a_stale_tombstone() {
     assert_eq!(view.draw_order_storage_counts_for_test(), (1, 1));
 
     runtime
-        .execute(GraphCommand::undo(1))
+        .execute(GraphCommand::undo(runtime.snapshot().unwrap().version()))
         .unwrap()
         .applied()
         .expect("undo applies");

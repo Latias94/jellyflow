@@ -11,26 +11,30 @@ use crate::runtime::adapter_protocol::{
     RendererStamp, SharedGeometryMap, ViewPoint,
 };
 use crate::runtime::geometry::{
-    EdgeEndpointPosition, EdgeInteractionFacts, EdgePosition, resolve_edge_route_path,
+    CanvasBounds, EdgeEndpointPosition, EdgeInteractionFacts, EdgePosition, resolve_edge_route_path,
 };
 use crate::runtime::graph_runtime::{
     GraphRevision, GraphRuntimePolicy, GraphSnapshot, IncidentEdgeSnapshot, IncidentSnapshotWork,
     RuntimePatch, RuntimePatchKind,
 };
-use crate::runtime::interaction::ConnectionGestureIntent;
+use crate::runtime::interaction::ConnectionGestureBinding;
 use crate::runtime::policy::resolve_edge_policy;
 use crate::runtime::viewport::ViewportTransform;
 
 use super::edge_pick::{EdgePickCursor, InternalEdgePickOutcome, record_edge_pick_stats};
-use super::geometry::{AdmissionIndex, SpatialQuery, ViewSpatialIndex};
+use super::geometry::{
+    AdmissionIndex, InternalNodeIntersectionOutcome, NodeIntersectionCursor, SpatialQuery,
+    ViewSpatialIndex,
+};
 use super::port_geometry::{
-    ConnectionProbeCursor, InternalProbeOutcome, PortGeometryIndex, record_probe_query_stats,
+    ConnectionProbeCursor, ConnectionProbeTargeting, InternalProbeOutcome, PortGeometryIndex,
+    record_probe_query_stats,
 };
 use super::route_geometry::{
     InternalRouteQueryOutcome, RouteGeometryIndex, RouteGeometryRevision, VisibleRouteCursor,
     record_route_query_stats,
 };
-use super::{ViewGeneration, ViewId, ViewSessionStats};
+use super::{DerivedGeometryStats, SelectedEdgeMembership, ViewProvenance, ViewQueryIdentity};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct RouteRecomputation {
@@ -62,8 +66,9 @@ impl LayoutWithdrawal {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(super) struct DerivedGeometry {
+    provenance: ViewProvenance,
     layout_revision: u64,
     route_facts_revision: u128,
     layout_generations: BTreeMap<NodeId, u64>,
@@ -80,10 +85,33 @@ pub(super) struct DerivedGeometry {
     route_index: RouteGeometryIndex,
     unresolved_routes: BTreeSet<EdgeId>,
     snapshot_cache: Option<GeometrySnapshot>,
-    stats: ViewSessionStats,
+    stats: DerivedGeometryStats,
 }
 
 impl DerivedGeometry {
+    pub(super) fn new(provenance: ViewProvenance) -> Self {
+        Self {
+            provenance,
+            layout_revision: 0,
+            route_facts_revision: 0,
+            layout_generations: BTreeMap::new(),
+            binding_revisions: BTreeMap::new(),
+            renderer_bindings: BTreeMap::new(),
+            nodes: SharedGeometryMap::default(),
+            ports: SharedGeometryMap::default(),
+            port_outcomes: SharedGeometryMap::default(),
+            port_index: PortGeometryIndex::default(),
+            node_spatial: ViewSpatialIndex::default(),
+            admission: AdmissionIndex::default(),
+            active_frame_nodes: BTreeSet::new(),
+            routes: SharedGeometryMap::default(),
+            route_index: RouteGeometryIndex::default(),
+            unresolved_routes: BTreeSet::new(),
+            snapshot_cache: None,
+            stats: DerivedGeometryStats::default(),
+        }
+    }
+
     #[cfg(test)]
     pub(super) fn layout_revision(&self) -> u64 {
         self.layout_revision
@@ -114,25 +142,21 @@ impl DerivedGeometry {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new_connection_probe_cursor(
         &self,
-        view: ViewId,
-        generation: ViewGeneration,
-        transform_revision: u64,
+        identity: ViewQueryIdentity,
         graph_revision: GraphRevision,
         order_revision: u128,
-        intent: ConnectionGestureIntent,
+        intent: ConnectionGestureBinding,
         pointer: ViewPoint,
-        radius_in_view: f32,
+        targeting: ConnectionProbeTargeting,
         transform: ViewportTransform,
     ) -> Option<ConnectionProbeCursor> {
         self.port_index.new_cursor(
-            view,
-            generation,
-            transform_revision,
+            identity,
             graph_revision,
             order_revision,
             intent,
             pointer,
-            radius_in_view,
+            targeting,
             transform,
         )
     }
@@ -143,16 +167,19 @@ impl DerivedGeometry {
 
     pub(super) fn query_connection_probe_page(
         &mut self,
-        graph: &Graph,
+        snapshot: &GraphSnapshot,
         node_draw_order_ranks: &BTreeMap<NodeId, usize>,
         selected_nodes: &HashSet<NodeId>,
+        recent_interaction_node: Option<NodeId>,
         cursor: ConnectionProbeCursor,
         entry_budget: usize,
     ) -> InternalProbeOutcome {
         let outcome = self.port_index.query_page(
-            graph,
+            snapshot.graph(),
+            |port| snapshot.port_instance_key(port),
             node_draw_order_ranks,
             selected_nodes,
+            recent_interaction_node,
             cursor,
             entry_budget,
         );
@@ -162,13 +189,10 @@ impl DerivedGeometry {
 
     pub(super) fn new_visible_route_cursor(
         &self,
-        view: ViewId,
-        generation: ViewGeneration,
-        transform_revision: u64,
+        identity: ViewQueryIdentity,
         bounds: CanvasRect,
     ) -> VisibleRouteCursor {
-        self.route_index
-            .new_cursor(view, generation, transform_revision, bounds)
+        self.route_index.new_cursor(identity, bounds)
     }
 
     pub(super) fn visible_route_index_epoch(&self) -> u128 {
@@ -193,18 +217,14 @@ impl DerivedGeometry {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new_edge_pick_cursor(
         &self,
-        view: ViewId,
-        generation: ViewGeneration,
-        transform_revision: u64,
+        identity: ViewQueryIdentity,
         order_revision: u128,
         pointer: ViewPoint,
         radius_in_view: f32,
         transform: ViewportTransform,
     ) -> Option<EdgePickCursor> {
         self.route_index.new_pick_cursor(
-            view,
-            generation,
-            transform_revision,
+            identity,
             order_revision,
             pointer,
             radius_in_view,
@@ -222,7 +242,7 @@ impl DerivedGeometry {
     pub(super) fn query_edge_pick_page(
         &mut self,
         edge_draw_order_ranks: &BTreeMap<EdgeId, usize>,
-        selected_edges: &HashSet<EdgeId>,
+        selected_edges: &SelectedEdgeMembership,
         cursor: EdgePickCursor,
         entry_budget: usize,
     ) -> InternalEdgePickOutcome {
@@ -250,8 +270,27 @@ impl DerivedGeometry {
             .is_some_and(|current| current.approximately_eq(candidate, epsilon))
     }
 
-    pub(super) fn nodes_intersecting(&self, bounds: CanvasRect) -> SpatialQuery {
-        self.node_spatial.nodes_intersecting(bounds)
+    pub(super) fn new_node_intersection_cursor(
+        &self,
+        identity: ViewQueryIdentity,
+        bounds: CanvasRect,
+        canvas_bounds: CanvasBounds,
+    ) -> NodeIntersectionCursor {
+        self.node_spatial
+            .new_intersection_cursor(identity, bounds, canvas_bounds)
+    }
+
+    pub(super) fn query_node_intersection_page(
+        &self,
+        cursor: NodeIntersectionCursor,
+        entry_budget: usize,
+    ) -> InternalNodeIntersectionOutcome {
+        self.node_spatial
+            .query_intersection_page(cursor, entry_budget)
+    }
+
+    pub(super) fn node_spatial_index_epoch(&self) -> u128 {
+        self.node_spatial.index_epoch()
     }
 
     pub(super) fn nodes_intersecting_with_limit(
@@ -297,13 +336,13 @@ impl DerivedGeometry {
         renderer: &RendererStamp,
         request: &FrameRequest,
     ) -> Option<(CanvasRect, FrameBoundsSource)> {
-        let generation = self.layout_generation(node_id);
         if let Some(published) = self.nodes.get(&node_id)
             && published.is_fresh()
             && published.renderer() == renderer
-            && published.layout_generation() == generation
             && published.bounds().is_positive_finite()
         {
+            // A newer generation rejects old feedback, but the last valid geometry remains the
+            // best admission bound until that generation publishes its replacement.
             return Some((published.bounds(), FrameBoundsSource::Published));
         }
         let (size, source) = if let Some(size) = node.size.filter(|size| size.is_positive_finite())
@@ -338,6 +377,7 @@ impl DerivedGeometry {
             return snapshot.clone();
         }
         let snapshot = GeometrySnapshot::new(
+            self.provenance,
             self.layout_revision,
             self.nodes.clone(),
             self.ports.clone(),
@@ -350,7 +390,7 @@ impl DerivedGeometry {
         snapshot
     }
 
-    pub(super) fn stats(&self) -> ViewSessionStats {
+    pub(super) fn stats(&self) -> DerivedGeometryStats {
         self.stats
     }
 
@@ -434,7 +474,7 @@ impl DerivedGeometry {
         impact_incident_edges: &BTreeSet<EdgeId>,
         request_refresh: bool,
         policy: GraphRuntimePolicy,
-        selected_edges: &HashSet<EdgeId>,
+        selected_edges: &SelectedEdgeMembership,
     ) -> (Option<LayoutPublicationReceipt>, IncidentSnapshotWork) {
         let mut published_nodes = Vec::new();
         let mut withdrawn_nodes = Vec::new();
@@ -511,15 +551,9 @@ impl DerivedGeometry {
         snapshot: &GraphSnapshot,
         renderers: &BTreeMap<NodeId, RendererStamp>,
         active_nodes: &BTreeSet<NodeId>,
-        node_facts: &BTreeMap<
-            NodeId,
-            (
-                crate::runtime::graph_runtime::NodeIncarnation,
-                IncidentEdgeSnapshot,
-            ),
-        >,
+        node_facts: &BTreeMap<NodeId, crate::runtime::graph_runtime::AdapterNodeRuntimeFacts>,
         policy: GraphRuntimePolicy,
-        selected_edges: &HashSet<EdgeId>,
+        selected_edges: &SelectedEdgeMembership,
     ) -> (
         Option<(u64, Vec<NodeId>)>,
         IncidentSnapshotWork,
@@ -553,9 +587,9 @@ impl DerivedGeometry {
             let spatial_changed = self.node_spatial.remove(*node);
             geometry_changed |= self.remove_node(*node);
             spatial_updates = spatial_updates.saturating_add(u64::from(spatial_changed));
-            if let Some((_, incident_edges)) = node_facts.get(node) {
-                incident_work.materialize(incident_edges);
-                route_edges.extend(incident_edges.iter().copied());
+            if let Some(facts) = node_facts.get(node) {
+                incident_work.materialize(&facts.incident_edges);
+                route_edges.extend(facts.incident_edges.iter().copied());
             }
             invalidated_nodes.push(*node);
         }
@@ -572,9 +606,9 @@ impl DerivedGeometry {
             }
             geometry_changed = true;
             invalidated_nodes.push(*node);
-            if let Some((_, incident_edges)) = node_facts.get(node) {
-                incident_work.materialize(incident_edges);
-                route_edges.extend(incident_edges.iter().copied());
+            if let Some(facts) = node_facts.get(node) {
+                incident_work.materialize(&facts.incident_edges);
+                route_edges.extend(facts.incident_edges.iter().copied());
             }
         }
 
@@ -611,7 +645,7 @@ impl DerivedGeometry {
         &mut self,
         patch: &RuntimePatch,
         policy: GraphRuntimePolicy,
-        selected_edges: &HashSet<EdgeId>,
+        selected_edges: &SelectedEdgeMembership,
     ) {
         let document_reset = patch.kind() == RuntimePatchKind::DocumentReset;
         if document_reset {
@@ -649,13 +683,13 @@ impl DerivedGeometry {
             }
         }
         for node in patch.affected_nodes() {
-            let Some(Some(incarnation)) = patch.node_incarnation_change(*node) else {
+            let Some(Some(lifetime)) = patch.node_lifetime_change(*node) else {
                 continue;
             };
             if self
                 .nodes
                 .get(node)
-                .is_some_and(|geometry| geometry.incarnation() != incarnation)
+                .is_some_and(|geometry| geometry.lifetime() != lifetime)
                 && self.remove_node(*node)
             {
                 spatially_updated.insert(*node);
@@ -668,14 +702,6 @@ impl DerivedGeometry {
         }
         for node in &impact.layout_dirty_nodes {
             self.advance_node_generation(*node);
-            let ports = patch
-                .snapshot()
-                .graph()
-                .node(node)
-                .map(|node| node.ports.iter().copied())
-                .into_iter()
-                .flatten();
-            self.mark_node_stale(*node, ports);
         }
         let route_edges = impact.route_edges.iter().copied().collect::<BTreeSet<_>>();
         let recomputation =
@@ -709,13 +735,14 @@ impl DerivedGeometry {
     pub(super) fn update_route_selection(
         &mut self,
         edges: &BTreeSet<EdgeId>,
-        selected_edges: &HashSet<EdgeId>,
+        selected_edges: &SelectedEdgeMembership,
     ) {
         for edge in edges {
             let Some(route) = self.routes.get(edge).map(|route| route.as_ref().clone()) else {
                 continue;
             };
-            self.upsert_route(*edge, route.with_selected(selected_edges.contains(edge)));
+            let selected = selected_edges.contains(route.instance());
+            self.upsert_route(*edge, route.with_selected(selected));
         }
         self.assert_consistent();
     }
@@ -726,7 +753,7 @@ impl DerivedGeometry {
         ports_by_node: &BTreeMap<NodeId, Vec<PortId>>,
         route_edges: &BTreeSet<EdgeId>,
         policy: GraphRuntimePolicy,
-        selected_edges: &HashSet<EdgeId>,
+        selected_edges: &SelectedEdgeMembership,
     ) -> Option<u64> {
         for node in ports_by_node.keys() {
             self.advance_node_generation(*node);
@@ -764,7 +791,7 @@ impl DerivedGeometry {
         ports: impl IntoIterator<Item = PortId>,
         route_edges: &BTreeSet<EdgeId>,
         policy: GraphRuntimePolicy,
-        selected_edges: &HashSet<EdgeId>,
+        selected_edges: &SelectedEdgeMembership,
     ) -> Option<u64> {
         self.advance_node_generation(node);
         let geometry_changed = self.mark_node_stale(node, ports);
@@ -1017,7 +1044,7 @@ impl DerivedGeometry {
         snapshot: &GraphSnapshot,
         edges: &BTreeSet<EdgeId>,
         policy: GraphRuntimePolicy,
-        selected_edges: &HashSet<EdgeId>,
+        selected_edges: &SelectedEdgeMembership,
     ) -> RouteRecomputation {
         let mut changed = false;
         for edge_id in edges {
@@ -1032,6 +1059,7 @@ impl DerivedGeometry {
                 continue;
             }
             let route = (|| {
+                let instance = snapshot.edge_instance_key(*edge_id)?;
                 let source = self.published_port(snapshot, edge.from)?;
                 let target = self.published_port(snapshot, edge.to)?;
                 let endpoints = EdgePosition {
@@ -1043,13 +1071,13 @@ impl DerivedGeometry {
                     .map(|facts| {
                         facts.with_interaction(EdgeInteractionFacts {
                             selectable: edge_policy.can_select(),
-                            selected: selected_edges.contains(edge_id),
+                            selected: selected_edges.contains(instance),
                             deletable: edge_policy.can_delete(),
                             reconnect_source: edge_policy.can_reconnect_source(),
                             reconnect_target: edge_policy.can_reconnect_target(),
                         })
                     })
-                    .map(|facts| PublishedEdgeRoute::new(*edge_id, facts))
+                    .and_then(|facts| PublishedEdgeRoute::new(self.provenance, instance, facts))
             })();
             if let Some(route) = route {
                 changed |= self.upsert_route(*edge_id, route);
@@ -1140,10 +1168,15 @@ impl DerivedGeometry {
             expected_outcomes,
             self.port_outcomes.keys().copied().collect::<BTreeSet<_>>()
         );
+        let expected_interactive_ports = self
+            .ports
+            .iter()
+            .filter_map(|(port, geometry)| geometry.hit_bounds().map(|_| *port))
+            .collect::<BTreeSet<_>>();
         assert_eq!(
-            expected_ports,
+            expected_interactive_ports,
             self.port_index.indexed_ports_for_test(),
-            "global rendered ports and the hit index must have identical keys"
+            "only rendered ports with effective interaction bounds belong to the hit index"
         );
         for port in self.ports.values() {
             assert!(self.port_index.matches_geometry_for_test(port));

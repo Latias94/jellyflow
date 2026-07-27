@@ -2,16 +2,20 @@
 
 use std::collections::BTreeMap;
 
-use jellyflow_core::{EdgeKind, EdgeLabelAnchor};
-use jellyflow_runtime::runtime::geometry::EdgePresentationFacts;
+use jellyflow_core::{EdgeKind, EdgeLabelAnchor, TypeDesc};
+use jellyflow_runtime::geometry::EdgePresentationFacts;
 
 use super::edge::{
-    OpenGpuiEdgeBatchKey, OpenGpuiEdgeStyle, OpenGpuiEdgeTone, OpenGpuiEdgeVisualState,
+    OpenGpuiEdgeBatchKey, OpenGpuiEdgeStyle, OpenGpuiEdgeTone, OpenGpuiEdgeVisualFacts,
+    OpenGpuiEdgeWeightTier,
 };
-use crate::theme::OpenGpuiGraphTheme;
+use crate::theme::{OpenGpuiGraphStyleCue, OpenGpuiGraphStyleSlot, OpenGpuiGraphTheme};
 
 /// Maximum number of application edge painters retained by one registry.
 pub const OPEN_GPUI_MAX_EDGE_PAINTER_REGISTRATIONS: usize = 64;
+
+/// Maximum number of renderer-neutral graph types mapped to native style slots by one registry.
+pub const OPEN_GPUI_MAX_TYPE_STYLE_REGISTRATIONS: usize = 16;
 
 /// Maximum UTF-8 byte length retained for one edge renderer key.
 pub const OPEN_GPUI_MAX_EDGE_RENDERER_KEY_BYTES: usize = 128;
@@ -87,6 +91,7 @@ pub struct OpenGpuiEdgePainterRecipe {
     source_marker: OpenGpuiEdgeMarkerShape,
     target_marker: OpenGpuiEdgeMarkerShape,
     label_appearance: OpenGpuiEdgeLabelAppearance,
+    weight_tier: OpenGpuiEdgeWeightTier,
 }
 
 impl OpenGpuiEdgePainterRecipe {
@@ -105,6 +110,7 @@ impl OpenGpuiEdgePainterRecipe {
             source_marker,
             target_marker,
             label_appearance,
+            weight_tier: OpenGpuiEdgeWeightTier::Regular,
         }
     }
 
@@ -125,7 +131,8 @@ impl OpenGpuiEdgePainterRecipe {
                 OpenGpuiEdgeMarkerShape::None,
                 OpenGpuiEdgeMarkerShape::Arrow,
                 OpenGpuiEdgeLabelAppearance::Plain,
-            ),
+            )
+            .with_weight_tier(OpenGpuiEdgeWeightTier::Strong),
         }
     }
 
@@ -157,6 +164,19 @@ impl OpenGpuiEdgePainterRecipe {
     #[must_use]
     pub const fn label_appearance(self) -> OpenGpuiEdgeLabelAppearance {
         self.label_appearance
+    }
+
+    /// Sets the closed screen-space width tier for this immutable recipe.
+    #[must_use]
+    pub const fn with_weight_tier(mut self, weight_tier: OpenGpuiEdgeWeightTier) -> Self {
+        self.weight_tier = weight_tier;
+        self
+    }
+
+    /// Returns the closed screen-space width tier selected by this recipe.
+    #[must_use]
+    pub const fn weight_tier(self) -> OpenGpuiEdgeWeightTier {
+        self.weight_tier
     }
 
     const fn uses_round_line_cap(self) -> bool {
@@ -200,12 +220,22 @@ pub enum OpenGpuiEdgePainterRegistrationError {
         /// Maximum number of application registrations.
         capacity: usize,
     },
+    /// One renderer-neutral type can map to only one native style slot.
+    #[error("graph type already has a native style slot")]
+    DuplicateTypeStyle,
+    /// Type-to-slot mappings share a fixed host-scoped budget.
+    #[error("graph type style registry reached its capacity of {capacity} registrations")]
+    TypeStyleCapacityExceeded {
+        /// Maximum number of renderer-neutral type mappings.
+        capacity: usize,
+    },
 }
 
 /// Mutable, bounded construction phase for an edge painter registry.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct OpenGpuiEdgePainterRegistryBuilder {
     registrations: BTreeMap<String, OpenGpuiEdgePainterRecipe>,
+    type_style_slots: Vec<(TypeDesc, OpenGpuiGraphStyleSlot)>,
 }
 
 impl OpenGpuiEdgePainterRegistryBuilder {
@@ -251,19 +281,53 @@ impl OpenGpuiEdgePainterRegistryBuilder {
         Ok(())
     }
 
+    /// Maps one renderer-neutral graph type to a bounded application-native style slot.
+    ///
+    /// The adapter does not interpret product type names. Exact [`TypeDesc`] values remain owned by
+    /// the application and the fixed registration budget prevents unbounded batch vocabularies.
+    ///
+    /// # Errors
+    ///
+    /// Returns an explicit error for a duplicate type or an exhausted type-style budget. A failed
+    /// registration never changes the builder.
+    pub fn register_type_style(
+        &mut self,
+        ty: TypeDesc,
+        style_slot: OpenGpuiGraphStyleSlot,
+    ) -> Result<(), OpenGpuiEdgePainterRegistrationError> {
+        if self
+            .type_style_slots
+            .iter()
+            .any(|(registered, _)| registered == &ty)
+        {
+            return Err(OpenGpuiEdgePainterRegistrationError::DuplicateTypeStyle);
+        }
+        if self.type_style_slots.len() >= OPEN_GPUI_MAX_TYPE_STYLE_REGISTRATIONS {
+            return Err(
+                OpenGpuiEdgePainterRegistrationError::TypeStyleCapacityExceeded {
+                    capacity: OPEN_GPUI_MAX_TYPE_STYLE_REGISTRATIONS,
+                },
+            );
+        }
+        self.type_style_slots.push((ty, style_slot));
+        Ok(())
+    }
+
     /// Seals the current registrations into an immutable lookup table.
     #[must_use]
     pub fn build(self) -> OpenGpuiEdgePainterRegistry {
         OpenGpuiEdgePainterRegistry {
             registrations: self.registrations,
+            type_style_slots: self.type_style_slots,
         }
     }
 }
 
 /// Host-scoped immutable registry for bounded edge painter recipes.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct OpenGpuiEdgePainterRegistry {
     registrations: BTreeMap<String, OpenGpuiEdgePainterRecipe>,
+    type_style_slots: Vec<(TypeDesc, OpenGpuiGraphStyleSlot)>,
 }
 
 impl OpenGpuiEdgePainterRegistry {
@@ -279,10 +343,24 @@ impl OpenGpuiEdgePainterRegistry {
         self.registrations.len()
     }
 
-    /// Returns whether no application recipes are retained.
+    /// Returns whether no application painter or type-style registrations are retained.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.registrations.is_empty()
+        self.registrations.is_empty() && self.type_style_slots.is_empty()
+    }
+
+    /// Returns the number of renderer-neutral graph types mapped to native style slots.
+    #[must_use]
+    pub fn type_style_len(&self) -> usize {
+        self.type_style_slots.len()
+    }
+
+    /// Resolves an exact renderer-neutral graph type to its bounded native style slot.
+    #[must_use]
+    pub fn style_slot_for_type(&self, ty: &TypeDesc) -> Option<OpenGpuiGraphStyleSlot> {
+        self.type_style_slots
+            .iter()
+            .find_map(|(registered, slot)| (registered == ty).then_some(*slot))
     }
 
     /// Resolves authoritative presentation facts into a bounded, immutable paint recipe.
@@ -294,8 +372,37 @@ impl OpenGpuiEdgePainterRegistry {
     pub fn resolve<'a>(
         &self,
         edge_kind: EdgeKind,
-        visual_state: OpenGpuiEdgeVisualState,
+        visual_facts: OpenGpuiEdgeVisualFacts,
         presentation: &'a EdgePresentationFacts,
+        theme: &OpenGpuiGraphTheme,
+    ) -> OpenGpuiResolvedEdgePaintRecipe<'a> {
+        self.resolve_with_style_slot(edge_kind, visual_facts, presentation, None, theme)
+    }
+
+    /// Resolves paint from an optional renderer-neutral graph type mapping.
+    ///
+    /// Unregistered types use the same deterministic tone and painter fallback as an absent type.
+    #[must_use]
+    pub fn resolve_for_type<'a>(
+        &self,
+        edge_kind: EdgeKind,
+        visual_facts: OpenGpuiEdgeVisualFacts,
+        presentation: &'a EdgePresentationFacts,
+        ty: Option<&TypeDesc>,
+        theme: &OpenGpuiGraphTheme,
+    ) -> OpenGpuiResolvedEdgePaintRecipe<'a> {
+        let style_slot = ty.and_then(|ty| self.style_slot_for_type(ty));
+        self.resolve_with_style_slot(edge_kind, visual_facts, presentation, style_slot, theme)
+    }
+
+    /// Resolves paint from an explicitly selected bounded application-native style slot.
+    #[must_use]
+    pub fn resolve_with_style_slot<'a>(
+        &self,
+        edge_kind: EdgeKind,
+        visual_facts: OpenGpuiEdgeVisualFacts,
+        presentation: &'a EdgePresentationFacts,
+        style_slot: Option<OpenGpuiGraphStyleSlot>,
         theme: &OpenGpuiGraphTheme,
     ) -> OpenGpuiResolvedEdgePaintRecipe<'a> {
         let (painter, unknown_renderer_key) =
@@ -310,10 +417,20 @@ impl OpenGpuiEdgePainterRegistry {
             presentation.target_marker_key.as_deref(),
             painter.target_marker,
         );
-        let style = theme.resolve_edge_style(
-            OpenGpuiEdgeVisualState::Ordinary,
-            canonical_style_token(tone),
+        let style = theme.resolve_edge_style_slot_with_weight_tier(
+            OpenGpuiEdgeVisualFacts::default(),
+            tone,
+            style_slot,
+            painter.weight_tier,
         );
+        let stroke_pattern = style
+            .style_slot()
+            .and_then(|slot| theme.style_slot(slot))
+            .map_or(painter.stroke_pattern, |recipe| match recipe.cue() {
+                OpenGpuiGraphStyleCue::Inherit => painter.stroke_pattern,
+                OpenGpuiGraphStyleCue::Dashed => OpenGpuiEdgeStrokePattern::Dashed,
+                OpenGpuiGraphStyleCue::Dotted => OpenGpuiEdgeStrokePattern::Dotted,
+            });
         let label = presentation
             .label
             .as_deref()
@@ -330,11 +447,12 @@ impl OpenGpuiEdgePainterRegistry {
             style,
             path_batch_key: OpenGpuiEdgePainterBatchKey {
                 path: style.batch_key(),
-                stroke_pattern: painter.stroke_pattern,
+                stroke_pattern,
                 round_line_cap: painter.uses_round_line_cap(),
                 round_line_join: painter.uses_round_line_join(),
                 invalid_cue: false,
             },
+            halo_path_batch_key: None,
             source_marker: OpenGpuiEdgeMarkerRecipe {
                 endpoint: OpenGpuiEdgeMarkerEndpoint::Source,
                 shape: source_marker,
@@ -353,7 +471,7 @@ impl OpenGpuiEdgePainterRegistry {
                 unknown_target_marker_key,
             },
         }
-        .with_visual_state(visual_state, theme)
+        .with_visual_facts(visual_facts, theme)
     }
 
     fn resolve_painter<'a>(
@@ -375,7 +493,8 @@ impl OpenGpuiEdgePainterRegistry {
 
 /// Allocation-free path grouping key produced by a resolved painter recipe.
 ///
-/// Label text, marker keys, renderer keys, and arbitrary style tokens are deliberately excluded.
+/// Label text, marker keys, renderer keys, arbitrary style tokens, and the semantic weight tier
+/// are deliberately excluded. The tier has already resolved to one validated screen-space width.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct OpenGpuiEdgePainterBatchKey {
     path: OpenGpuiEdgeBatchKey,
@@ -396,6 +515,11 @@ impl OpenGpuiEdgePainterBatchKey {
             round_line_join: true,
             invalid_cue: false,
         }
+    }
+
+    const fn with_path(mut self, path: OpenGpuiEdgeBatchKey) -> Self {
+        self.path = path;
+        self
     }
 
     /// Returns the existing style/layer batch key.
@@ -543,6 +667,7 @@ pub struct OpenGpuiResolvedEdgePaintRecipe<'a> {
     painter: OpenGpuiEdgePainterRecipe,
     style: OpenGpuiEdgeStyle,
     path_batch_key: OpenGpuiEdgePainterBatchKey,
+    halo_path_batch_key: Option<OpenGpuiEdgePainterBatchKey>,
     source_marker: OpenGpuiEdgeMarkerRecipe,
     target_marker: OpenGpuiEdgeMarkerRecipe,
     label: Option<OpenGpuiEdgeLabelRecipe<'a>>,
@@ -562,19 +687,29 @@ impl<'a> OpenGpuiResolvedEdgePaintRecipe<'a> {
         self.style
     }
 
-    /// Reapplies hover, selection, active, or preview treatment to the same semantic recipe.
+    /// Returns the closed screen-space weight tier retained by the resolved style.
+    #[must_use]
+    pub const fn weight_tier(self) -> OpenGpuiEdgeWeightTier {
+        self.style.weight_tier()
+    }
+
+    /// Reapplies orthogonal visual facts to the same semantic recipe.
     ///
     /// Painter, stroke-pattern, marker, label, and fallback facts remain unchanged. This lets a
     /// preview and its eventual committed edge share one base recipe while varying only native
     /// visual treatment.
     #[must_use]
-    pub fn with_visual_state(
+    pub fn with_visual_facts(
         mut self,
-        visual_state: OpenGpuiEdgeVisualState,
+        visual_facts: OpenGpuiEdgeVisualFacts,
         theme: &OpenGpuiGraphTheme,
     ) -> Self {
-        self.style = self.style.with_visual_state(visual_state, theme);
+        self.style = self.style.with_visual_facts(visual_facts, theme);
         self.path_batch_key.path = self.style.batch_key();
+        self.halo_path_batch_key = self
+            .style
+            .halo_batch_key()
+            .map(|path| self.path_batch_key.with_path(path));
         self
     }
 
@@ -587,6 +722,10 @@ impl<'a> OpenGpuiResolvedEdgePaintRecipe<'a> {
         if !self.path_batch_key.invalid_cue {
             self.path_batch_key.stroke_pattern = self.path_batch_key.stroke_pattern.invalid_cue();
             self.path_batch_key.invalid_cue = true;
+            if let Some(halo) = &mut self.halo_path_batch_key {
+                halo.stroke_pattern = halo.stroke_pattern.invalid_cue();
+                halo.invalid_cue = true;
+            }
         }
         self
     }
@@ -595,6 +734,12 @@ impl<'a> OpenGpuiResolvedEdgePaintRecipe<'a> {
     #[must_use]
     pub const fn path_batch_key(self) -> OpenGpuiEdgePainterBatchKey {
         self.path_batch_key
+    }
+
+    /// Returns the bounded halo batch key when any visual emphasis fact is active.
+    #[must_use]
+    pub const fn halo_path_batch_key(self) -> Option<OpenGpuiEdgePainterBatchKey> {
+        self.halo_path_batch_key
     }
 
     /// Returns whether this resolved recipe carries a non-color invalid-connection cue.
@@ -646,17 +791,6 @@ fn resolve_tone(
     }
 }
 
-fn canonical_style_token(tone: OpenGpuiEdgeTone) -> Option<&'static str> {
-    match tone {
-        OpenGpuiEdgeTone::Default => None,
-        OpenGpuiEdgeTone::Data => Some("data"),
-        OpenGpuiEdgeTone::Control => Some("control"),
-        OpenGpuiEdgeTone::Success => Some("success"),
-        OpenGpuiEdgeTone::Warning => Some("warning"),
-        OpenGpuiEdgeTone::Danger => Some("danger"),
-    }
-}
-
 fn resolve_marker(
     marker_key: Option<&str>,
     fallback: OpenGpuiEdgeMarkerShape,
@@ -680,6 +814,10 @@ fn resolve_marker(
 mod tests {
     use std::collections::BTreeSet;
 
+    use crate::chrome::{OpenGpuiPortMarker, OpenGpuiPortMarkerCue, OpenGpuiPortTone};
+    use crate::presentation::OpenGpuiPortInteractionState;
+    use crate::theme::OpenGpuiGraphStyleRecipe;
+
     use super::*;
 
     fn presentation() -> EdgePresentationFacts {
@@ -693,6 +831,18 @@ mod tests {
         }
     }
 
+    fn ordinary() -> OpenGpuiEdgeVisualFacts {
+        OpenGpuiEdgeVisualFacts::default()
+    }
+
+    fn selected() -> OpenGpuiEdgeVisualFacts {
+        OpenGpuiEdgeVisualFacts::default().with_selected(true)
+    }
+
+    fn preview_facts() -> OpenGpuiEdgeVisualFacts {
+        OpenGpuiEdgeVisualFacts::default().with_preview(true)
+    }
+
     #[test]
     fn default_recipe_uses_edge_kind_and_carries_label_and_marker_facts() {
         let registry = OpenGpuiEdgePainterRegistry::default();
@@ -704,12 +854,26 @@ mod tests {
 
         let resolved = registry.resolve(
             EdgeKind::Exec,
-            OpenGpuiEdgeVisualState::Selected,
+            selected(),
             &presentation,
             &OpenGpuiGraphTheme::default(),
         );
 
         assert_eq!(resolved.painter().default_tone(), OpenGpuiEdgeTone::Control);
+        assert_eq!(
+            resolved.painter().weight_tier(),
+            OpenGpuiEdgeWeightTier::Strong
+        );
+        assert_eq!(resolved.weight_tier(), OpenGpuiEdgeWeightTier::Strong);
+        assert_eq!(resolved.style().stroke_width(), 2.0);
+        assert_eq!(
+            resolved
+                .style()
+                .halo()
+                .expect("selected halo")
+                .stroke_width(),
+            3.0
+        );
         assert_eq!(resolved.style().tone(), OpenGpuiEdgeTone::Warning);
         assert_eq!(
             resolved.path_batch_key().stroke_pattern(),
@@ -749,7 +913,7 @@ mod tests {
 
         let resolved = registry.resolve(
             EdgeKind::Data,
-            OpenGpuiEdgeVisualState::Ordinary,
+            ordinary(),
             &presentation,
             &OpenGpuiGraphTheme::default(),
         );
@@ -769,6 +933,82 @@ mod tests {
     }
 
     #[test]
+    fn registered_weight_tier_is_closed_and_preserved_by_resolved_visual_states() {
+        let regular = OpenGpuiEdgePainterRecipe::new(
+            OpenGpuiEdgeStrokePattern::Solid,
+            OpenGpuiEdgeTone::Data,
+            OpenGpuiEdgeMarkerShape::None,
+            OpenGpuiEdgeMarkerShape::None,
+            OpenGpuiEdgeLabelAppearance::Plain,
+        );
+        let strong = regular.with_weight_tier(OpenGpuiEdgeWeightTier::Strong);
+        let mut builder = OpenGpuiEdgePainterRegistry::builder();
+        builder
+            .register("regular", regular)
+            .expect("regular recipe registration");
+        builder
+            .register("strong", strong)
+            .expect("strong recipe registration");
+        let registry = builder.build();
+        let theme = OpenGpuiGraphTheme::default();
+
+        let mut regular_presentation = presentation();
+        regular_presentation.renderer_key = Some("regular".to_owned());
+        let mut strong_presentation = presentation();
+        strong_presentation.renderer_key = Some("strong".to_owned());
+        let resolved_regular =
+            registry.resolve(EdgeKind::Data, ordinary(), &regular_presentation, &theme);
+        let resolved_strong =
+            registry.resolve(EdgeKind::Data, ordinary(), &strong_presentation, &theme);
+        let preview = resolved_strong.with_visual_facts(preview_facts(), &theme);
+
+        assert_eq!(regular.weight_tier(), OpenGpuiEdgeWeightTier::Regular);
+        assert_eq!(strong.weight_tier(), OpenGpuiEdgeWeightTier::Strong);
+        assert_eq!(
+            resolved_regular.weight_tier(),
+            OpenGpuiEdgeWeightTier::Regular
+        );
+        assert_eq!(
+            resolved_strong.weight_tier(),
+            OpenGpuiEdgeWeightTier::Strong
+        );
+        assert_eq!(resolved_regular.style().stroke_width(), 1.5);
+        assert_eq!(resolved_strong.style().stroke_width(), 2.0);
+        assert_eq!(preview.weight_tier(), OpenGpuiEdgeWeightTier::Strong);
+        assert_eq!(preview.style().stroke_width(), 2.0);
+        assert_eq!(
+            preview.style().halo().expect("preview halo").stroke_width(),
+            3.0
+        );
+        assert_ne!(
+            resolved_regular.path_batch_key(),
+            resolved_strong.path_batch_key()
+        );
+    }
+
+    #[test]
+    fn registry_clone_keeps_the_same_closed_recipe_table() {
+        let mut builder = OpenGpuiEdgePainterRegistry::builder();
+        builder
+            .register(
+                "control",
+                OpenGpuiEdgePainterRecipe::for_edge_kind(EdgeKind::Exec),
+            )
+            .expect("control recipe registration");
+        let registry = builder.build();
+        let cloned = registry.clone();
+        let mut presentation = presentation();
+        presentation.renderer_key = Some("control".to_owned());
+        let theme = OpenGpuiGraphTheme::default();
+
+        let original = registry.resolve(EdgeKind::Data, selected(), &presentation, &theme);
+        let copied = cloned.resolve(EdgeKind::Data, selected(), &presentation, &theme);
+
+        assert_eq!(original, copied);
+        assert_eq!(copied.weight_tier(), OpenGpuiEdgeWeightTier::Strong);
+    }
+
+    #[test]
     fn unknown_presentation_keys_report_fallbacks_without_changing_semantic_defaults() {
         let registry = OpenGpuiEdgePainterRegistry::default();
         let mut presentation = presentation();
@@ -779,7 +1019,7 @@ mod tests {
 
         let resolved = registry.resolve(
             EdgeKind::Exec,
-            OpenGpuiEdgeVisualState::Ordinary,
+            ordinary(),
             &presentation,
             &OpenGpuiGraphTheme::default(),
         );
@@ -826,7 +1066,7 @@ mod tests {
         presentation.renderer_key = Some("workflow.edge".to_owned());
         let resolved = registry.resolve(
             EdgeKind::Exec,
-            OpenGpuiEdgeVisualState::Ordinary,
+            ordinary(),
             &presentation,
             &OpenGpuiGraphTheme::default(),
         );
@@ -859,12 +1099,7 @@ mod tests {
                 let mut presentation = presentation();
                 presentation.style_token = Some(format!("arbitrary.style.{index}"));
                 registry
-                    .resolve(
-                        EdgeKind::Data,
-                        OpenGpuiEdgeVisualState::Ordinary,
-                        &presentation,
-                        &theme,
-                    )
+                    .resolve(EdgeKind::Data, ordinary(), &presentation, &theme)
                     .path_batch_key()
             })
             .collect::<BTreeSet<_>>();
@@ -879,19 +1114,10 @@ mod tests {
         presentation.target_marker_key = Some("arrow".to_owned());
         presentation.style_token = Some("warning".to_owned());
         let theme = OpenGpuiGraphTheme::default();
-        let committed = registry.resolve(
-            EdgeKind::Exec,
-            OpenGpuiEdgeVisualState::Ordinary,
-            &presentation,
-            &theme,
-        );
-        let preview = committed.with_visual_state(OpenGpuiEdgeVisualState::Preview, &theme);
-        let directly_resolved_preview = registry.resolve(
-            EdgeKind::Exec,
-            OpenGpuiEdgeVisualState::Preview,
-            &presentation,
-            &theme,
-        );
+        let committed = registry.resolve(EdgeKind::Exec, ordinary(), &presentation, &theme);
+        let preview = committed.with_visual_facts(preview_facts(), &theme);
+        let directly_resolved_preview =
+            registry.resolve(EdgeKind::Exec, preview_facts(), &presentation, &theme);
 
         assert_eq!(preview, directly_resolved_preview);
         assert_eq!(preview.painter(), committed.painter());
@@ -900,12 +1126,43 @@ mod tests {
         assert_eq!(preview.label(), committed.label());
         assert_eq!(preview.fallbacks(), committed.fallbacks());
         assert_eq!(preview.style().tone(), committed.style().tone());
-        assert_ne!(preview.style().layer(), committed.style().layer());
-        assert_ne!(preview.style().color(), committed.style().color());
+        assert_eq!(preview.style().layer(), committed.style().layer());
+        assert_eq!(preview.style().color(), committed.style().color());
+        assert!(committed.halo_path_batch_key().is_none());
+        assert!(preview.halo_path_batch_key().is_some());
         assert_eq!(
             preview.path_batch_key().stroke_pattern(),
             committed.path_batch_key().stroke_pattern()
         );
+    }
+
+    #[test]
+    fn composed_edge_paint_plan_keeps_one_typed_base_and_one_finite_halo_key() {
+        let registry = OpenGpuiEdgePainterRegistry::default();
+        let theme = OpenGpuiGraphTheme::default();
+        let presentation = presentation();
+        let base = registry.resolve(EdgeKind::Data, ordinary(), &presentation, &theme);
+        let composed = registry.resolve(
+            EdgeKind::Data,
+            OpenGpuiEdgeVisualFacts::default()
+                .with_hovered(true)
+                .with_selected(true)
+                .with_focused(true),
+            &presentation,
+            &theme,
+        );
+
+        assert_eq!(composed.path_batch_key(), base.path_batch_key());
+        assert_eq!(composed.style().color(), base.style().color());
+        assert_eq!(composed.style().stroke_width(), base.style().stroke_width());
+        let halo = composed
+            .halo_path_batch_key()
+            .expect("composed facts produce one halo batch");
+        assert_eq!(
+            halo.path().layer(),
+            crate::chrome::OpenGpuiEdgeLayer::Focused
+        );
+        assert!(halo.path().stroke_width() > composed.path_batch_key().path().stroke_width());
     }
 
     #[test]
@@ -925,12 +1182,7 @@ mod tests {
         let mut presentation = presentation();
         presentation.renderer_key = Some("conditional".to_owned());
         let theme = OpenGpuiGraphTheme::default();
-        let base = registry.resolve(
-            EdgeKind::Exec,
-            OpenGpuiEdgeVisualState::Preview,
-            &presentation,
-            &theme,
-        );
+        let base = registry.resolve(EdgeKind::Exec, preview_facts(), &presentation, &theme);
         let invalid = base.with_invalid_connection_cue();
 
         assert!(invalid.has_invalid_connection_cue());
@@ -954,12 +1206,7 @@ mod tests {
         let registry = OpenGpuiEdgePainterRegistry::default();
         let presentation = presentation();
         let theme = OpenGpuiGraphTheme::default();
-        let resolved = registry.resolve(
-            EdgeKind::Exec,
-            OpenGpuiEdgeVisualState::Ordinary,
-            &presentation,
-            &theme,
-        );
+        let resolved = registry.resolve(EdgeKind::Exec, ordinary(), &presentation, &theme);
         let batch = resolved.path_batch_key();
 
         assert!(batch.uses_round_line_cap());
@@ -988,5 +1235,133 @@ mod tests {
             })
         );
         assert!(builder.build().is_empty());
+    }
+
+    #[test]
+    fn type_style_mapping_is_bounded_exact_and_rejects_duplicates() {
+        let slot = OpenGpuiGraphStyleSlot::new(1).expect("in-range style slot");
+        let mut builder = OpenGpuiEdgePainterRegistry::builder();
+        builder
+            .register_type_style(TypeDesc::Float, slot)
+            .expect("first Float style mapping");
+        assert_eq!(
+            builder.register_type_style(
+                TypeDesc::Float,
+                OpenGpuiGraphStyleSlot::new(2).expect("in-range style slot"),
+            ),
+            Err(OpenGpuiEdgePainterRegistrationError::DuplicateTypeStyle)
+        );
+        for index in 1..OPEN_GPUI_MAX_TYPE_STYLE_REGISTRATIONS {
+            builder
+                .register_type_style(
+                    TypeDesc::Opaque {
+                        key: format!("test.type.{index}"),
+                        params: Vec::new(),
+                    },
+                    slot,
+                )
+                .expect("mapping within fixed capacity");
+        }
+        assert_eq!(
+            builder.register_type_style(TypeDesc::Int, slot),
+            Err(
+                OpenGpuiEdgePainterRegistrationError::TypeStyleCapacityExceeded {
+                    capacity: OPEN_GPUI_MAX_TYPE_STYLE_REGISTRATIONS,
+                }
+            )
+        );
+
+        let registry = builder.build();
+        assert_eq!(
+            registry.type_style_len(),
+            OPEN_GPUI_MAX_TYPE_STYLE_REGISTRATIONS
+        );
+        assert_eq!(registry.style_slot_for_type(&TypeDesc::Float), Some(slot));
+        assert_eq!(registry.style_slot_for_type(&TypeDesc::Int), None);
+    }
+
+    #[test]
+    fn typed_port_preview_and_committed_wire_share_slot_color_and_cue() {
+        let slot = OpenGpuiGraphStyleSlot::new(3).expect("in-range style slot");
+        let color = open_gpui::rgb(0xe8b95c).into();
+        let theme = OpenGpuiGraphTheme::default().with_style_slot(
+            slot,
+            OpenGpuiGraphStyleRecipe::new(color).with_cue(OpenGpuiGraphStyleCue::Dotted),
+        );
+        let mut builder = OpenGpuiEdgePainterRegistry::builder();
+        builder
+            .register_type_style(TypeDesc::Float, slot)
+            .expect("Float style mapping");
+        let registry = builder.build();
+        let presentation = presentation();
+        let committed = registry.resolve_for_type(
+            EdgeKind::Data,
+            ordinary(),
+            &presentation,
+            Some(&TypeDesc::Float),
+            &theme,
+        );
+        let preview = registry.resolve_for_type(
+            EdgeKind::Data,
+            preview_facts(),
+            &presentation,
+            Some(&TypeDesc::Float),
+            &theme,
+        );
+        let marker = OpenGpuiPortMarker::new(
+            &OpenGpuiPortInteractionState::idle(),
+            OpenGpuiPortTone::Data,
+            theme,
+        )
+        .with_style_slot(slot)
+        .style();
+
+        assert_eq!(committed.style().style_slot(), Some(slot));
+        assert_eq!(preview.style().style_slot(), Some(slot));
+        assert_eq!(marker.visual_facts().style_slot(), Some(slot));
+        assert_eq!(committed.style().color(), marker.border_color());
+        assert_eq!(committed.style().color(), color);
+        assert_eq!(marker.cue(), OpenGpuiPortMarkerCue::StyleDot);
+        assert_eq!(
+            committed.path_batch_key().stroke_pattern(),
+            OpenGpuiEdgeStrokePattern::Dotted
+        );
+        assert_eq!(
+            preview.path_batch_key().stroke_pattern(),
+            OpenGpuiEdgeStrokePattern::Dotted
+        );
+    }
+
+    #[test]
+    fn unregistered_type_and_theme_slot_share_the_default_batch_fallback() {
+        let slot = OpenGpuiGraphStyleSlot::new(5).expect("in-range style slot");
+        let mut builder = OpenGpuiEdgePainterRegistry::builder();
+        builder
+            .register_type_style(TypeDesc::Float, slot)
+            .expect("Float style mapping");
+        let registry = builder.build();
+        let presentation = presentation();
+        let theme = OpenGpuiGraphTheme::default();
+        let absent =
+            registry.resolve_for_type(EdgeKind::Data, ordinary(), &presentation, None, &theme);
+        let unknown = registry.resolve_for_type(
+            EdgeKind::Data,
+            ordinary(),
+            &presentation,
+            Some(&TypeDesc::Int),
+            &theme,
+        );
+        let theme_unregistered = registry.resolve_for_type(
+            EdgeKind::Data,
+            ordinary(),
+            &presentation,
+            Some(&TypeDesc::Float),
+            &theme,
+        );
+
+        assert_eq!(absent, unknown);
+        assert_eq!(unknown, theme_unregistered);
+        assert_eq!(theme_unregistered.style().style_slot(), None);
+        assert_eq!(absent.path_batch_key(), theme_unregistered.path_batch_key());
     }
 }

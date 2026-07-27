@@ -6,11 +6,10 @@ mod navigation;
 mod presentation;
 mod session;
 
-pub use connection::{ConnectionGestureIntent, ConnectionProbe, ConnectionProbeTarget};
-pub use intent::{
-    ConnectionTopology, EdgeDeletionIntent, FreshGraphMutation, FreshGraphMutationBindError,
-    RelativeNodeMoveIntent, SelectionBaseline,
+pub use connection::{
+    ConnectionGestureBinding, ConnectionProbe, ConnectionProbeTarget, ConnectionProbeTargetIdentity,
 };
+pub use intent::{FreshGraphMutationBindError, MAX_NODE_MOVE_COHORT_SIZE, SelectionBaseline};
 pub(crate) use navigation::resolve_alignment_snap;
 pub use navigation::{
     AlignmentSnapQuery, AlignmentSnapQueryOutcome, AlignmentSnapResult, AlignmentSnapWork,
@@ -18,15 +17,21 @@ pub use navigation::{
 };
 pub use presentation::{
     AlignmentGuide, AlignmentGuideAxis, CanvasInteractionPhase, CanvasInteractionPresentation,
-    ConnectionPresentation, ConnectionSearchStatus, InteractionPosition, InteractionTerminalReason,
-    NodeDragPresentation,
+    ConnectionPresentation, ConnectionProbeValidity, ConnectionSearchStatus,
+    ConnectionWireProjection, InteractionTerminalReason, NodeDragPresentation,
 };
+pub(crate) use session::SelectionMutation;
 pub use session::{
     AlignmentSnapConfig, CanvasInteractionConfig, CanvasInteractionDispatch,
     CanvasInteractionEffect, CanvasInteractionError, CanvasInteractionQuery,
     CanvasInteractionSession, CanvasInteractionUpdate, CanvasPressFallback, CanvasPressTarget,
     CommandSettlement, ConnectionInteractionStart, ConnectionSearchRequest,
-    ConnectionSearchSelection, InteractionDamage, InteractionGeneration, InteractionOwner,
-    InteractionQueryId, InteractionTickDemand, InteractionTicketId, NodeDragStart, SelectionMode,
-    SelectionMutation, ViewportMutation,
+    ConnectionSearchSelection, InteractionDamage, InteractionGeneration,
+    InteractionGraphSubmission, InteractionGraphSubmissionBindError, InteractionOwner,
+    InteractionQueryId, InteractionSessionId, InteractionTickDemand, InteractionTicketId,
+    KeyboardConnectionFeedback, KeyboardConnectionPort, NodeDragStart, NodeNudgeDirection,
+    SelectionMode,
 };
+
+#[cfg(test)]
+pub(crate) use session::CanvasInteractionQueryKind;

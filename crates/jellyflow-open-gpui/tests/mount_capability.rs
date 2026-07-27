@@ -7,15 +7,17 @@ use jellyflow_core::{
     PortCapacity, PortDirection, PortId, PortKey, PortKind,
 };
 use jellyflow_open_gpui::authoring::{
-    OpenGpuiNodeAuthoring, OpenGpuiNodeAuthoringError, OpenGpuiNodeBinding, OpenGpuiPortHandle,
+    OpenGpuiCommandTicket, OpenGpuiCommandTicketResult, OpenGpuiNodeAuthoring,
+    OpenGpuiNodeAuthoringError, OpenGpuiNodeBinding, OpenGpuiNodeDragHandle, OpenGpuiPortHandle,
 };
-use jellyflow_open_gpui::{
-    OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY, OpenGpuiNodeDragHandle, OpenGpuiNodeMountError,
-    OpenGpuiNodeRegistry, OpenGpuiPortDragPhase, OpenGpuiPortEvent, OpenGpuiSceneHost,
-};
+use jellyflow_open_gpui::host::{OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY, OpenGpuiSceneHost};
+use jellyflow_open_gpui::interaction::{OpenGpuiPortDragPhase, OpenGpuiPortEvent};
+use jellyflow_open_gpui::navigation::{OpenGpuiInputBindings, OpenGpuiNavigationConfig};
+use jellyflow_open_gpui::registry::{OpenGpuiNodeMountError, OpenGpuiNodeRegistry};
 use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec};
 use jellyflow_runtime::{
-    CanvasInteractionPhase, GraphCommand, GraphRuntime, ViewCloseReason, ViewSessionOptions,
+    commands::GraphCommand, graph::GraphRuntime, interaction::CanvasInteractionPhase,
+    view::ViewCloseReason, view::ViewSessionOptions,
 };
 use open_gpui::{
     AppContext, Context, Entity, InteractiveElement, IntoElement, MouseButton, ParentElement,
@@ -325,19 +327,27 @@ fn authoring_rejects_mismatched_and_stale_commands_before_journal_admission(
         .clone()
         .expect("captured live binding");
 
+    let foreign_runtime = GraphRuntime::builder(catalog())
+        .build(graph_with_nodes(1))
+        .expect("foreign runtime");
+    let foreign_version = foreign_runtime
+        .snapshot()
+        .expect("foreign runtime snapshot")
+        .version();
     let mismatched = binding_authoring(cx, &binding);
+    let authoring_version = mismatched.version();
     let mismatch = cx.update(|_, cx| {
         mismatched.enqueue(
-            GraphCommand::set_node_data(1, node_id(), serde_json::json!("mismatch")),
+            GraphCommand::set_node_data(foreign_version, node_id(), serde_json::json!("mismatch")),
             cx,
         )
     });
     assert!(matches!(
         mismatch,
-        Err(OpenGpuiNodeAuthoringError::CommandRevisionMismatch {
-            authoring_revision: 0,
-            command_revision: 1,
-        })
+        Err(OpenGpuiNodeAuthoringError::CommandVersionMismatch {
+            authoring_version: actual_authoring,
+            command_version: actual_command,
+        }) if actual_authoring == authoring_version && actual_command == foreign_version
     ));
     draw(cx);
     assert_eq!(runtime.snapshot().unwrap().revision(), 0);
@@ -349,7 +359,7 @@ fn authoring_rejects_mismatched_and_stale_commands_before_journal_admission(
     );
     runtime
         .execute(GraphCommand::set_port_data(
-            0,
+            runtime.snapshot().unwrap().version(),
             port_id(),
             serde_json::json!("newer graph"),
         ))
@@ -366,9 +376,10 @@ fn authoring_rejects_mismatched_and_stale_commands_before_journal_admission(
         fresh.port(port_id()).unwrap().facts().data,
         serde_json::json!("newer graph"),
     );
+    let stale_version = stale.version();
     let stale_result = cx.update(|_, cx| {
         stale.enqueue(
-            GraphCommand::set_node_data(0, node_id(), serde_json::json!("stale")),
+            GraphCommand::set_node_data(stale_version, node_id(), serde_json::json!("stale")),
             cx,
         )
     });
@@ -428,9 +439,10 @@ fn host_close_reason_is_preserved_for_binding_and_captured_authoring(
         ));
     });
 
+    let captured_version = captured_authoring.version();
     let closed_result = cx.update(|_, cx| {
         captured_authoring.enqueue(
-            GraphCommand::set_node_data(0, node_id(), serde_json::json!("closed")),
+            GraphCommand::set_node_data(captured_version, node_id(), serde_json::json!("closed")),
             cx,
         )
     });
@@ -703,6 +715,11 @@ fn revoked_port_prepaint_cannot_cancel_replacement_mount_drag(cx: &mut open_gpui
                 registry.seal().expect("valid test registry"),
                 visible_viewport(),
             )
+            .with_navigation_config(
+                OpenGpuiNavigationConfig::default().with_input_bindings(
+                    OpenGpuiInputBindings::default().with_connect_on_click(false),
+                ),
+            )
         });
         *scene_host.borrow_mut() = Some(host.clone());
         ExternalPortScene {
@@ -795,7 +812,7 @@ fn assert_stale_authoring_rejected(
     cx: &mut open_gpui::VisualTestContext,
 ) {
     let command = GraphCommand::set_node_data(
-        stale_execute.revision(),
+        stale_execute.version(),
         node_id(),
         serde_json::json!("retired authoring must not execute"),
     );
@@ -828,7 +845,7 @@ fn assert_live_replacement(
     );
 
     let authoring = binding_authoring(cx, binding);
-    let command = GraphCommand::set_node_data(authoring.revision(), node_id(), value);
+    let command = GraphCommand::set_node_data(authoring.version(), node_id(), value);
     let mut ticket = cx
         .update(|_, cx| authoring.enqueue(command, cx))
         .expect("replacement binding enqueues");
@@ -838,9 +855,7 @@ fn assert_live_replacement(
     assert_eq!(runtime.snapshot().unwrap().revision(), 1);
 }
 
-fn poll_command_ticket(
-    ticket: &mut jellyflow_open_gpui::OpenGpuiCommandTicket,
-) -> jellyflow_open_gpui::OpenGpuiCommandTicketResult {
+fn poll_command_ticket(ticket: &mut OpenGpuiCommandTicket) -> OpenGpuiCommandTicketResult {
     let mut context = std::task::Context::from_waker(std::task::Waker::noop());
     match std::future::Future::poll(std::pin::Pin::new(ticket), &mut context) {
         std::task::Poll::Ready(result) => result,

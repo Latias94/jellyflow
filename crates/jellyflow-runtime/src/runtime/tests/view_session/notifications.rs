@@ -25,10 +25,10 @@ fn runtime_document_subscription_is_owned_and_unsubscribable() {
         .unwrap();
 
     for value in [1, 2] {
-        let revision = runtime.snapshot().unwrap().revision();
+        let version = runtime.snapshot().unwrap().version();
         runtime
             .execute(GraphCommand::set_node_data(
-                revision,
+                version,
                 ids[0],
                 serde_json::json!({ "value": value }),
             ))
@@ -66,9 +66,10 @@ fn runtime_subscription_token_cannot_unsubscribe_another_runtime() {
         .expect("runtime B token");
 
     assert!(!runtime_b.unsubscribe(foreign));
+    let version = runtime_b.snapshot().unwrap().version();
     runtime_b
         .execute(GraphCommand::set_node_data(
-            0,
+            version,
             ids_b[0],
             serde_json::json!({ "value": 1 }),
         ))
@@ -103,9 +104,10 @@ fn view_subscription_token_cannot_unsubscribe_another_view() {
         .expect("view B token");
 
     assert!(!view_b.unsubscribe(foreign).expect("foreign unsubscribe"));
+    let version = runtime.snapshot().unwrap().version();
     runtime
         .execute(GraphCommand::set_node_data(
-            0,
+            version,
             ids[0],
             serde_json::json!({ "value": 1 }),
         ))
@@ -147,9 +149,10 @@ fn history_clear_is_rejected_inside_a_patch_batch_and_published_when_run_afterwa
         })
         .unwrap();
 
+    let version = runtime.snapshot().unwrap().version();
     runtime
         .execute(GraphCommand::set_node_data(
-            0,
+            version,
             ids[0],
             serde_json::json!({ "value": 1 }),
         ))
@@ -193,10 +196,10 @@ fn callbacks_can_query_and_self_unsubscribe_without_borrow_panics() {
     token_slot.set(Some(token));
 
     for value in [1, 2] {
-        let revision = runtime.snapshot().unwrap().revision();
+        let version = runtime.snapshot().unwrap().version();
         runtime
             .execute(GraphCommand::set_node_data(
-                revision,
+                version,
                 ids[0],
                 serde_json::json!({ "value": value }),
             ))
@@ -236,7 +239,7 @@ fn mutation_from_a_notification_is_rejected_structurally_and_later_commits_still
                 return;
             }
             let result = callback_runtime.execute(GraphCommand::set_node_data(
-                patch.to_revision(),
+                callback_runtime.snapshot().unwrap().version(),
                 nested_node,
                 serde_json::json!({ "nested": true }),
             ));
@@ -253,9 +256,10 @@ fn mutation_from_a_notification_is_rejected_structurally_and_later_commits_still
         })
         .unwrap();
 
+    let version = runtime.snapshot().unwrap().version();
     runtime
         .execute(GraphCommand::set_node_data(
-            0,
+            version,
             outer_node,
             serde_json::json!({ "outer": true }),
         ))
@@ -268,9 +272,10 @@ fn mutation_from_a_notification_is_rejected_structurally_and_later_commits_still
     assert_eq!(&*b_revisions.borrow(), &[1]);
     assert_eq!(runtime.snapshot().unwrap().revision(), 1);
 
+    let version = runtime.snapshot().unwrap().version();
     runtime
         .execute(GraphCommand::set_node_data(
-            1,
+            version,
             nested_node,
             serde_json::json!({ "later": true }),
         ))

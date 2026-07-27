@@ -4,10 +4,12 @@ use std::rc::Rc;
 
 use jellyflow_core::types::TypeDesc;
 use jellyflow_core::{GraphBuilder, GraphId, Symbol, SymbolId};
-use jellyflow_runtime::{GraphCommand, GraphRuntime};
-use open_gpui::{ScrollDelta, ScrollWheelEvent, TouchPhase, point};
+use jellyflow_runtime::commands::GraphCommand;
+use jellyflow_runtime::graph::GraphRuntime;
+use open_gpui::{AppContext, ScrollDelta, ScrollWheelEvent, TouchPhase, point};
 use open_gpui_canvas_jellyflow::blackboard::{
-    BlackboardCommandError, BlackboardSource, BlackboardSourceError, BlackboardSourceSnapshot,
+    BlackboardCommandError, BlackboardResourceStatus, BlackboardSource, BlackboardSourceCallback,
+    BlackboardSourceError, BlackboardSourceInvalidation, BlackboardSourceSnapshot,
     BlackboardSourceSubscription, GraphRuntimeBlackboardSource, NativeBlackboard,
     blackboard_empty_selector, blackboard_failed_selector, blackboard_loading_selector,
     blackboard_retry_selector, blackboard_scroll_selector,
@@ -175,6 +177,133 @@ fn failed_blackboard_source_waits_for_explicit_retry_before_loading_symbols(
 }
 
 #[open_gpui::test]
+fn blackboard_snapshot_panic_becomes_an_explicit_retryable_failure(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    cx.update(init_text_input);
+    let symbol_id = SymbolId::from_u128(0xb1ac_0008);
+    let graph = GraphBuilder::new(GraphId::from_u128(0xb1b4))
+        .with_symbol(symbol_id, symbol("recovered after snapshot panic"))
+        .build()
+        .expect("valid snapshot panic recovery graph");
+    let runtime = Rc::new(
+        GraphRuntime::builder(Default::default())
+            .build(graph)
+            .expect("snapshot panic recovery runtime"),
+    );
+    let source = Rc::new(FaultInjectingBlackboardSource::new(
+        runtime,
+        [
+            FaultySnapshot::Ready,
+            FaultySnapshot::Panic,
+            FaultySnapshot::Ready,
+        ],
+        0,
+    ));
+    let panel_source: Rc<dyn BlackboardSource> = source.clone();
+    let (blackboard, cx) = cx.add_window_view(move |_, _| NativeBlackboard::new(panel_source));
+
+    draw(cx);
+    assert_eq!(source.attempts(), 1);
+    assert!(
+        cx.debug_bounds(&blackboard_symbol_name_selector(symbol_id))
+            .is_some()
+    );
+
+    source.publish_refresh();
+    draw(cx);
+
+    assert!(cx.debug_bounds(blackboard_failed_selector()).is_some());
+    cx.read_entity(&blackboard, |blackboard, _| {
+        let BlackboardResourceStatus::Failed(error) = blackboard.resource_status() else {
+            panic!("snapshot panic must publish a failed resource state");
+        };
+        assert_eq!(error.message(), "blackboard source snapshot panicked");
+    });
+    assert!(!source.has_subscriber());
+    assert!(
+        cx.debug_bounds(&blackboard_symbol_name_selector(symbol_id))
+            .is_none()
+    );
+    draw(cx);
+    assert_eq!(source.attempts(), 1, "failure must wait for explicit retry");
+
+    let retry = cx
+        .debug_bounds(blackboard_retry_selector())
+        .expect("snapshot panic exposes retry control");
+    cx.simulate_click(retry.center(), Default::default());
+    draw(cx);
+
+    assert_eq!(source.attempts(), 2);
+    assert!(source.has_subscriber());
+    assert!(cx.debug_bounds(blackboard_failed_selector()).is_none());
+    assert!(
+        cx.debug_bounds(&blackboard_symbol_name_selector(symbol_id))
+            .is_some()
+    );
+}
+
+#[open_gpui::test]
+fn blackboard_subscription_cancel_panic_preserves_failure_and_retry(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    cx.update(init_text_input);
+    let symbol_id = SymbolId::from_u128(0xb1ac_0009);
+    let graph = GraphBuilder::new(GraphId::from_u128(0xb1b5))
+        .with_symbol(symbol_id, symbol("recovered after cancel panic"))
+        .build()
+        .expect("valid cancel panic recovery graph");
+    let runtime = Rc::new(
+        GraphRuntime::builder(Default::default())
+            .build(graph)
+            .expect("cancel panic recovery runtime"),
+    );
+    let source = Rc::new(FaultInjectingBlackboardSource::new(
+        runtime,
+        [
+            FaultySnapshot::Error("source failed before cancellation"),
+            FaultySnapshot::Ready,
+        ],
+        1,
+    ));
+    let panel_source: Rc<dyn BlackboardSource> = source.clone();
+    let (blackboard, cx) = cx.add_window_view(move |_, _| NativeBlackboard::new(panel_source));
+
+    draw(cx);
+
+    assert_eq!(source.attempts(), 1);
+    assert!(cx.debug_bounds(blackboard_failed_selector()).is_some());
+    cx.read_entity(&blackboard, |blackboard, _| {
+        let BlackboardResourceStatus::Failed(error) = blackboard.resource_status() else {
+            panic!("cancel panic must preserve a failed resource state");
+        };
+        assert_eq!(
+            error.message(),
+            "source failed before cancellation; blackboard source subscription cancellation panicked"
+        );
+    });
+    assert!(!source.has_subscriber());
+    assert!(
+        cx.debug_bounds(&blackboard_symbol_name_selector(symbol_id))
+            .is_none()
+    );
+
+    let retry = cx
+        .debug_bounds(blackboard_retry_selector())
+        .expect("cancel panic preserves retry control");
+    cx.simulate_click(retry.center(), Default::default());
+    draw(cx);
+
+    assert_eq!(source.attempts(), 2);
+    assert!(source.has_subscriber());
+    assert!(cx.debug_bounds(blackboard_failed_selector()).is_none());
+    assert!(
+        cx.debug_bounds(&blackboard_symbol_name_selector(symbol_id))
+            .is_some()
+    );
+}
+
+#[open_gpui::test]
 fn native_blackboard_edits_graph_symbols_with_stable_identity_and_exact_undo(
     cx: &mut open_gpui::TestAppContext,
 ) {
@@ -239,7 +368,7 @@ fn native_blackboard_edits_graph_symbols_with_stable_identity_and_exact_undo(
     assert_eq!(runtime.history_state().unwrap().undo_len(), 1);
 
     runtime
-        .execute(GraphCommand::undo(edited.revision()))
+        .execute(GraphCommand::undo(edited.version()))
         .expect("undo symbol edit")
         .applied()
         .expect("undo applies");
@@ -279,10 +408,15 @@ fn stale_blackboard_draft_requires_an_explicit_reapply_before_overwriting_remote
     cx.simulate_click(name.center(), Default::default());
     cx.simulate_keystrokes("end");
     cx.simulate_input(" local");
+    let remote_version = runtime
+        .snapshot()
+        .expect("remote command snapshot")
+        .version();
     runtime
         .execute(GraphCommand::symbols(
-            0,
-            jellyflow_runtime::SymbolEdit::new().update(symbol_id, symbol("remote winner")),
+            remote_version,
+            jellyflow_runtime::commands::SymbolEdit::new()
+                .update(symbol_id, symbol("remote winner")),
         ))
         .expect("remote symbol command")
         .applied()
@@ -309,7 +443,7 @@ fn stale_blackboard_draft_requires_an_explicit_reapply_before_overwriting_remote
     );
 
     runtime
-        .execute(GraphCommand::undo(reapplied.revision()))
+        .execute(GraphCommand::undo(reapplied.version()))
         .expect("undo explicit reapply")
         .applied()
         .expect("undo applies");
@@ -352,10 +486,15 @@ fn unrelated_graph_revision_advances_blackboard_draft_without_a_false_conflict(
     cx.simulate_click(name.center(), Default::default());
     cx.simulate_keystrokes("end");
     cx.simulate_input(" local");
+    let unrelated_version = runtime
+        .snapshot()
+        .expect("unrelated command snapshot")
+        .version();
     runtime
         .execute(GraphCommand::symbols(
-            0,
-            jellyflow_runtime::SymbolEdit::new().update(unrelated, symbol("changed elsewhere")),
+            unrelated_version,
+            jellyflow_runtime::commands::SymbolEdit::new()
+                .update(unrelated, symbol("changed elsewhere")),
         ))
         .expect("unrelated symbol command")
         .applied()
@@ -405,10 +544,14 @@ fn accepting_remote_blackboard_value_clears_conflict_without_writing_the_graph(
     cx.simulate_click(name.center(), Default::default());
     cx.simulate_keystrokes("end");
     cx.simulate_input(" local");
+    let remote_version = runtime
+        .snapshot()
+        .expect("remote command snapshot")
+        .version();
     runtime
         .execute(GraphCommand::symbols(
-            0,
-            jellyflow_runtime::SymbolEdit::new().update(symbol_id, symbol("remote")),
+            remote_version,
+            jellyflow_runtime::commands::SymbolEdit::new().update(symbol_id, symbol("remote")),
         ))
         .expect("remote symbol command")
         .applied()
@@ -496,7 +639,124 @@ fn uncertain_blackboard_command_stays_single_flight_until_authoritative_refresh(
     assert_eq!(source.execute_calls(), 1);
 }
 
-type BlackboardCallbackSlot = Rc<RefCell<Option<Rc<dyn Fn()>>>>;
+#[open_gpui::test]
+fn coalesced_remove_and_readd_does_not_restore_the_removed_symbol_draft(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    cx.update(init_text_input);
+    let reincarnated = SymbolId::from_u128(0xb1ac_0009);
+    let survivor = SymbolId::from_u128(0xb1ac_000a);
+    let graph = GraphBuilder::new(GraphId::from_u128(0xb1b5))
+        .with_symbol(reincarnated, symbol("first"))
+        .with_symbol(survivor, symbol("second"))
+        .build()
+        .expect("valid multi-symbol blackboard graph");
+    let runtime = Rc::new(
+        GraphRuntime::builder(Default::default())
+            .build(graph)
+            .expect("multi-symbol blackboard runtime"),
+    );
+    let panel_runtime = Rc::clone(&runtime);
+    let (_blackboard, cx) = cx.add_window_view(move |_, _| runtime_blackboard(panel_runtime));
+    draw(cx);
+
+    for (id, suffix) in [(reincarnated, " old draft"), (survivor, " survivor draft")] {
+        let input = cx
+            .debug_bounds(&blackboard_symbol_name_selector(id))
+            .expect("multi-symbol name input");
+        cx.simulate_click(input.center(), Default::default());
+        cx.simulate_keystrokes("end");
+        cx.simulate_input(suffix);
+        draw(cx);
+    }
+
+    let removal_version = runtime.snapshot().expect("removal snapshot").version();
+    runtime
+        .execute(GraphCommand::symbols(
+            removal_version,
+            jellyflow_runtime::commands::SymbolEdit::new().remove(reincarnated),
+        ))
+        .expect("remove edited symbol")
+        .applied()
+        .expect("edited symbol removal applies");
+
+    let recreation_version = runtime.snapshot().expect("recreation snapshot").version();
+    runtime
+        .execute(GraphCommand::symbols(
+            recreation_version,
+            jellyflow_runtime::commands::SymbolEdit::new().add(reincarnated, symbol("fresh")),
+        ))
+        .expect("recreate symbol identity")
+        .applied()
+        .expect("symbol recreation applies");
+    draw(cx);
+
+    let reincarnated_input = cx
+        .debug_bounds(&blackboard_symbol_name_selector(reincarnated))
+        .expect("reincarnated symbol input");
+    cx.simulate_click(reincarnated_input.center(), Default::default());
+    cx.simulate_keystrokes("end");
+    cx.simulate_input(" new edit");
+    draw(cx);
+    let reincarnated_apply = cx
+        .debug_bounds(&blackboard_symbol_apply_selector(reincarnated))
+        .expect("reincarnated symbol apply");
+    cx.simulate_click(reincarnated_apply.center(), Default::default());
+    draw(cx);
+
+    let survivor_apply = cx
+        .debug_bounds(&blackboard_symbol_apply_selector(survivor))
+        .expect("surviving symbol apply");
+    cx.simulate_click(survivor_apply.center(), Default::default());
+    draw(cx);
+
+    let snapshot = runtime.snapshot().expect("final multi-symbol snapshot");
+    assert_eq!(snapshot.revision(), 4);
+    assert_eq!(
+        snapshot.graph().symbol(&reincarnated).unwrap().name,
+        "fresh new edit",
+        "a removed application owner must not restore its old draft"
+    );
+    assert_eq!(
+        snapshot.graph().symbol(&survivor).unwrap().name,
+        "second survivor draft",
+        "another symbol's owner must survive unrelated identity churn"
+    );
+}
+
+#[open_gpui::test]
+fn closing_blackboard_window_releases_its_source_subscription(cx: &mut open_gpui::TestAppContext) {
+    cx.update(init_text_input);
+    let symbol_id = SymbolId::from_u128(0xb1ac_000b);
+    let graph = GraphBuilder::new(GraphId::from_u128(0xb1b6))
+        .with_symbol(symbol_id, symbol("lifecycle"))
+        .build()
+        .expect("valid lifecycle blackboard graph");
+    let runtime = Rc::new(
+        GraphRuntime::builder(Default::default())
+            .build(graph)
+            .expect("lifecycle blackboard runtime"),
+    );
+    let source = Rc::new(ControlledBlackboardSource::new(runtime, [None], false));
+    let panel_source: Rc<dyn BlackboardSource> = source.clone();
+    let (blackboard, cx) = cx.add_window_view(move |_, _| NativeBlackboard::new(panel_source));
+    draw(cx);
+    assert!(source.has_subscriber());
+
+    drop(blackboard);
+    let window = cx
+        .windows()
+        .into_iter()
+        .next()
+        .expect("blackboard test window");
+    assert!(cx.simulate_window_close(window));
+    assert!(
+        !source.has_subscriber(),
+        "panel entity teardown must release source callbacks and owned fields"
+    );
+}
+
+type BlackboardCallbackSlot = Rc<RefCell<Option<BlackboardSourceCallback>>>;
 
 struct ControlledBlackboardSource {
     runtime: Rc<GraphRuntime>,
@@ -525,10 +785,14 @@ impl ControlledBlackboardSource {
         self.attempts.get()
     }
 
+    fn has_subscriber(&self) -> bool {
+        self.callback.borrow().is_some()
+    }
+
     fn publish_ready(&self) {
         self.loading.set(false);
         if let Some(callback) = self.callback.borrow().as_ref() {
-            callback();
+            callback(BlackboardSourceInvalidation::refresh());
         }
     }
 }
@@ -536,7 +800,7 @@ impl ControlledBlackboardSource {
 impl BlackboardSource for ControlledBlackboardSource {
     fn subscribe(
         &self,
-        callback: Rc<dyn Fn()>,
+        callback: BlackboardSourceCallback,
     ) -> Result<BlackboardSourceSubscription, BlackboardSourceError> {
         self.attempts.set(self.attempts.get().saturating_add(1));
         if let Some(Some(message)) = self.subscribe_outcomes.borrow_mut().pop_front() {
@@ -562,7 +826,98 @@ impl BlackboardSource for ControlledBlackboardSource {
     fn execute(
         &self,
         command: GraphCommand,
-    ) -> Result<jellyflow_runtime::GraphCommandOutcome, BlackboardCommandError> {
+    ) -> Result<jellyflow_runtime::commands::GraphCommandOutcome, BlackboardCommandError> {
+        self.runtime
+            .execute(command)
+            .map_err(|error| BlackboardCommandError::new(error.to_string()))
+    }
+}
+
+enum FaultySnapshot {
+    Ready,
+    Error(&'static str),
+    Panic,
+}
+
+struct FaultInjectingBlackboardSource {
+    runtime: Rc<GraphRuntime>,
+    snapshot_outcomes: RefCell<VecDeque<FaultySnapshot>>,
+    attempts: Cell<usize>,
+    callback: BlackboardCallbackSlot,
+    cancel_panics_remaining: Rc<Cell<usize>>,
+}
+
+impl FaultInjectingBlackboardSource {
+    fn new(
+        runtime: Rc<GraphRuntime>,
+        snapshot_outcomes: impl IntoIterator<Item = FaultySnapshot>,
+        cancel_panics: usize,
+    ) -> Self {
+        Self {
+            runtime,
+            snapshot_outcomes: RefCell::new(snapshot_outcomes.into_iter().collect()),
+            attempts: Cell::new(0),
+            callback: Rc::default(),
+            cancel_panics_remaining: Rc::new(Cell::new(cancel_panics)),
+        }
+    }
+
+    fn attempts(&self) -> usize {
+        self.attempts.get()
+    }
+
+    fn has_subscriber(&self) -> bool {
+        self.callback.borrow().is_some()
+    }
+
+    fn publish_refresh(&self) {
+        let callback = self.callback.borrow().clone();
+        if let Some(callback) = callback {
+            callback(BlackboardSourceInvalidation::refresh());
+        }
+    }
+}
+
+impl BlackboardSource for FaultInjectingBlackboardSource {
+    fn subscribe(
+        &self,
+        callback: BlackboardSourceCallback,
+    ) -> Result<BlackboardSourceSubscription, BlackboardSourceError> {
+        self.attempts.set(self.attempts.get().saturating_add(1));
+        *self.callback.borrow_mut() = Some(callback);
+        let callback = Rc::clone(&self.callback);
+        let cancel_panics_remaining = Rc::clone(&self.cancel_panics_remaining);
+        Ok(BlackboardSourceSubscription::new(move || {
+            callback.borrow_mut().take();
+            let remaining = cancel_panics_remaining.get();
+            if remaining > 0 {
+                cancel_panics_remaining.set(remaining - 1);
+                panic!("injected blackboard subscription cancellation panic");
+            }
+        }))
+    }
+
+    fn snapshot(&self) -> Result<BlackboardSourceSnapshot, BlackboardSourceError> {
+        match self
+            .snapshot_outcomes
+            .borrow_mut()
+            .pop_front()
+            .unwrap_or(FaultySnapshot::Ready)
+        {
+            FaultySnapshot::Ready => self
+                .runtime
+                .snapshot()
+                .map(BlackboardSourceSnapshot::Ready)
+                .map_err(|error| BlackboardSourceError::new(error.to_string())),
+            FaultySnapshot::Error(message) => Err(BlackboardSourceError::new(message)),
+            FaultySnapshot::Panic => panic!("injected blackboard snapshot panic"),
+        }
+    }
+
+    fn execute(
+        &self,
+        command: GraphCommand,
+    ) -> Result<jellyflow_runtime::commands::GraphCommandOutcome, BlackboardCommandError> {
         self.runtime
             .execute(command)
             .map_err(|error| BlackboardCommandError::new(error.to_string()))
@@ -571,7 +926,7 @@ impl BlackboardSource for ControlledBlackboardSource {
 
 struct UncertainCommitBlackboardSource {
     runtime: Rc<GraphRuntime>,
-    visible: RefCell<jellyflow_runtime::GraphSnapshot>,
+    visible: RefCell<jellyflow_runtime::graph::GraphSnapshot>,
     callback: BlackboardCallbackSlot,
     execute_calls: Cell<usize>,
 }
@@ -599,7 +954,7 @@ impl UncertainCommitBlackboardSource {
             .snapshot()
             .expect("latest uncertain source snapshot");
         if let Some(callback) = self.callback.borrow().as_ref() {
-            callback();
+            callback(BlackboardSourceInvalidation::refresh());
         }
     }
 }
@@ -607,7 +962,7 @@ impl UncertainCommitBlackboardSource {
 impl BlackboardSource for UncertainCommitBlackboardSource {
     fn subscribe(
         &self,
-        callback: Rc<dyn Fn()>,
+        callback: BlackboardSourceCallback,
     ) -> Result<BlackboardSourceSubscription, BlackboardSourceError> {
         *self.callback.borrow_mut() = Some(callback);
         let callback = Rc::clone(&self.callback);
@@ -625,7 +980,7 @@ impl BlackboardSource for UncertainCommitBlackboardSource {
     fn execute(
         &self,
         command: GraphCommand,
-    ) -> Result<jellyflow_runtime::GraphCommandOutcome, BlackboardCommandError> {
+    ) -> Result<jellyflow_runtime::commands::GraphCommandOutcome, BlackboardCommandError> {
         self.execute_calls
             .set(self.execute_calls.get().saturating_add(1));
         self.runtime

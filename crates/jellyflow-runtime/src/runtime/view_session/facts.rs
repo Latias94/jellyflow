@@ -1,16 +1,20 @@
+use std::collections::BTreeSet;
+
 use jellyflow_core::core::{CanvasPoint, EdgeId, Graph, GraphId, GroupId, NodeId};
 
 use crate::io::{
     ViewSelectionSeed, ViewSessionSeed, ViewStackingSeed, ViewportSeed, edge_is_visible,
     retain_first,
 };
+use crate::runtime::graph_runtime::{EdgeInstanceKey, GraphSnapshot, NodeLifetimeKey};
+use crate::runtime::viewport::ViewportTransform;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ViewFacts {
     pub(crate) pan: CanvasPoint,
     pub(crate) zoom: f32,
-    pub(crate) selected_nodes: Vec<NodeId>,
-    pub(crate) selected_edges: Vec<EdgeId>,
+    pub(crate) selected_nodes: Vec<NodeLifetimeKey>,
+    pub(crate) selected_edges: Vec<EdgeInstanceKey>,
     pub(crate) selected_groups: Vec<GroupId>,
     pub(crate) draw_order: Vec<NodeId>,
     pub(crate) edge_draw_order: Vec<EdgeId>,
@@ -18,18 +22,28 @@ pub(crate) struct ViewFacts {
 }
 
 impl ViewFacts {
-    pub(crate) fn from_seed(seed: ViewSessionSeed) -> Self {
+    pub(crate) fn from_seed(seed: ViewSessionSeed, snapshot: &GraphSnapshot) -> Self {
         let (_, viewport, selection, stacking) = seed.into_parts();
-        Self {
+        let mut facts = Self {
             pan: viewport.pan(),
             zoom: viewport.zoom(),
-            selected_nodes: selection.nodes().to_vec(),
-            selected_edges: selection.edges().to_vec(),
+            selected_nodes: selection
+                .nodes()
+                .iter()
+                .filter_map(|node| snapshot.node_lifetime_key(*node))
+                .collect(),
+            selected_edges: selection
+                .edges()
+                .iter()
+                .filter_map(|edge| snapshot.edge_instance_key(*edge))
+                .collect(),
             selected_groups: selection.groups().to_vec(),
             draw_order: stacking.nodes().to_vec(),
             edge_draw_order: stacking.edges().to_vec(),
             group_draw_order: stacking.groups().to_vec(),
-        }
+        };
+        facts.reconcile_selection(snapshot, &BTreeSet::new(), false);
+        facts
     }
 
     pub(crate) fn into_seed(self, graph_id: GraphId) -> ViewSessionSeed {
@@ -37,59 +51,89 @@ impl ViewFacts {
             graph_id,
             ViewportSeed::new(self.pan, self.zoom),
             ViewSelectionSeed::new(
-                self.selected_nodes,
-                self.selected_edges,
+                self.selected_nodes
+                    .into_iter()
+                    .map(NodeLifetimeKey::node)
+                    .collect(),
+                self.selected_edges
+                    .into_iter()
+                    .map(EdgeInstanceKey::edge)
+                    .collect(),
                 self.selected_groups,
             ),
             ViewStackingSeed::new(self.draw_order, self.edge_draw_order, self.group_draw_order),
         )
     }
 
-    pub(crate) fn to_seed(&self, graph_id: GraphId) -> ViewSessionSeed {
-        self.clone().into_seed(graph_id)
+    pub(crate) fn set_viewport(&mut self, transform: ViewportTransform) {
+        self.pan = transform.pan;
+        self.zoom = transform.zoom;
     }
 
-    pub(crate) fn set_viewport(&mut self, pan: CanvasPoint, zoom: f32) {
-        let viewport = ViewportSeed::new(pan, zoom);
-        self.pan = viewport.pan();
-        self.zoom = viewport.zoom();
-    }
-
-    pub(crate) fn set_selection(
+    pub(crate) fn set_live_selection(
         &mut self,
-        nodes: Vec<NodeId>,
-        edges: Vec<EdgeId>,
+        snapshot: &GraphSnapshot,
+        nodes: Vec<NodeLifetimeKey>,
+        edges: Vec<EdgeInstanceKey>,
         groups: Vec<GroupId>,
     ) {
         self.selected_nodes = nodes;
         self.selected_edges = edges;
         self.selected_groups = groups;
+        self.reconcile_selection(snapshot, &BTreeSet::new(), false);
     }
 
     pub(crate) fn selection(&self) -> ViewSelectionSeed {
         ViewSelectionSeed::new(
-            self.selected_nodes.clone(),
-            self.selected_edges.clone(),
+            self.selected_nodes.iter().map(|node| node.node()).collect(),
+            self.selected_edges.iter().map(|edge| edge.edge()).collect(),
             self.selected_groups.clone(),
         )
     }
 
-    pub(crate) fn sanitize_for_graph(&mut self, graph: &Graph) {
-        let mut seed = self.to_seed(graph.graph_id());
-        seed.sanitize_for_graph(graph)
-            .expect("view facts are always bound to the current graph");
-        *self = Self::from_seed(seed);
+    pub(crate) fn reconcile_for_snapshot(
+        &mut self,
+        snapshot: &GraphSnapshot,
+        retired_groups: &BTreeSet<GroupId>,
+        clear_groups: bool,
+    ) {
+        self.reconcile_selection(snapshot, retired_groups, clear_groups);
+        self.sanitize_draw_order(snapshot.graph());
     }
 
-    pub(crate) fn sanitize_selection_for_graph(&mut self, graph: &Graph) {
-        let visible_node = |id: &NodeId| graph.node(id).is_some_and(|node| !node.hidden);
-        let visible_edge = |id: &EdgeId| edge_is_visible(graph, *id);
-
-        self.selected_nodes.retain(visible_node);
-        self.selected_edges.retain(visible_edge);
-        self.selected_groups.retain(|id| graph.group(id).is_some());
+    pub(crate) fn reconcile_selection(
+        &mut self,
+        snapshot: &GraphSnapshot,
+        retired_groups: &BTreeSet<GroupId>,
+        clear_groups: bool,
+    ) {
+        let graph = snapshot.graph();
+        self.selected_nodes.retain(|key| {
+            snapshot.node_lifetime_is_current(*key)
+                && graph.node(&key.node()).is_some_and(|node| !node.hidden)
+        });
+        self.selected_edges.retain(|key| {
+            snapshot.edge_instance_is_current(*key) && edge_is_visible(graph, key.edge())
+        });
+        if clear_groups {
+            self.selected_groups.clear();
+        } else {
+            self.selected_groups
+                .retain(|group| !retired_groups.contains(group) && graph.group(group).is_some());
+        }
         retain_first(&mut self.selected_nodes);
         retain_first(&mut self.selected_edges);
         retain_first(&mut self.selected_groups);
+    }
+
+    fn sanitize_draw_order(&mut self, graph: &Graph) {
+        self.draw_order
+            .retain(|id| graph.node(id).is_some_and(|node| !node.hidden));
+        self.edge_draw_order
+            .retain(|id| edge_is_visible(graph, *id));
+        self.group_draw_order.retain(|id| graph.group(id).is_some());
+        retain_first(&mut self.draw_order);
+        retain_first(&mut self.edge_draw_order);
+        retain_first(&mut self.group_draw_order);
     }
 }

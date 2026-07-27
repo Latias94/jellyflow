@@ -5,10 +5,9 @@ use jellyflow_core::{
     Node, NodeId, NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKey, PortKind,
 };
 use jellyflow_egui::{EguiNativeFrameHost, EguiNativeFrameOutcome};
-use jellyflow_runtime::runtime::geometry::HandlePosition;
-use jellyflow_runtime::{
-    FrameRequest, GraphRuntime, LayoutNodeStatus, RendererStamp, ViewSessionOptions,
-};
+use jellyflow_runtime::geometry::HandlePosition;
+use jellyflow_runtime::graph::GraphRuntime;
+use jellyflow_runtime::view::{FrameRequest, LayoutNodeStatus, RendererStamp, ViewSessionOptions};
 
 const STRUCTURED_RENDERER: &str = "test.egui.structured-native";
 

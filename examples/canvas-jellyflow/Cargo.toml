@@ -4,6 +4,7 @@ resolver = "2"
 [package]
 name = "open-gpui-canvas-jellyflow"
 version = "0.4.0"
+default-run = "open-gpui-canvas-jellyflow"
 edition = "2024"
 rust-version = "1.95"
 authors = ["Mingzhen Zhuang <superfrankie621@gmail.com>"]
@@ -16,13 +17,22 @@ description = "Retained native Open GPUI workflow and shader graphs built on Jel
 
 [features]
 default = []
-real-window-smoke = ["open_gpui/test-support", "open_gpui_platform/test-support"]
+real-window-smoke = [
+    "jellyflow-open-gpui/test-support",
+    "open_gpui/test-support",
+    "open_gpui_platform/test-support",
+]
 
 [[bin]]
 name = "open-gpui-canvas-jellyflow"
 path = "src/main.rs"
 
+[[bin]]
+name = "open-gpui-native-frame-clock-witness"
+path = "src/bin/native_frame_clock_witness.rs"
+
 [dependencies]
+futures-util = "0.3"
 jellyflow-core = { path = "../../crates/jellyflow-core" }
 jellyflow-open-gpui = { path = "../../crates/jellyflow-open-gpui" }
 jellyflow-runtime = { path = "../../crates/jellyflow-runtime" }

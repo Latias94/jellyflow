@@ -282,8 +282,8 @@ fn flatten_cubic(
 }
 
 fn cubic_flatness(curve: Cubic) -> Result<f32, EdgePathFlattenError> {
-    let first = distance_to_infinite_line(curve.control1, curve.start, curve.end)?;
-    let second = distance_to_infinite_line(curve.control2, curve.start, curve.end)?;
+    let first = distance_to_segment(curve.control1, curve.start, curve.end)?;
+    let second = distance_to_segment(curve.control2, curve.start, curve.end)?;
     Ok(first.max(second))
 }
 
@@ -318,28 +318,6 @@ fn midpoint(a: CanvasPoint, b: CanvasPoint) -> Result<CanvasPoint, EdgePathFlatt
     midpoint
         .is_finite()
         .then_some(midpoint)
-        .ok_or(EdgePathFlattenError::InvalidGeometry)
-}
-
-fn distance_to_infinite_line(
-    point: CanvasPoint,
-    a: CanvasPoint,
-    b: CanvasPoint,
-) -> Result<f32, EdgePathFlattenError> {
-    let dx = b.x - a.x;
-    let dy = b.y - a.y;
-    let length = (dx * dx + dy * dy).sqrt();
-    if !length.is_finite() {
-        return Err(EdgePathFlattenError::InvalidGeometry);
-    }
-    if length <= f32::EPSILON {
-        return distance(point, a);
-    }
-    let cross = ((point.x - a.x) * dy - (point.y - a.y) * dx).abs();
-    let distance = cross / length;
-    distance
-        .is_finite()
-        .then_some(distance)
         .ok_or(EdgePathFlattenError::InvalidGeometry)
 }
 
@@ -550,6 +528,67 @@ mod tests {
         assert_eq!(
             flatten_edge_path(&two_lines, segment_limited),
             Err(EdgePathFlattenError::SegmentLimitExceeded { max_segments: 1 })
+        );
+    }
+
+    #[test]
+    fn collinear_controls_beyond_the_chord_are_not_treated_as_a_flat_cubic() {
+        let overshooting = EdgePath {
+            commands: vec![
+                PathCommand::MoveTo(CanvasPoint { x: 0.0, y: 0.0 }),
+                PathCommand::CubicTo {
+                    control1: CanvasPoint { x: 100.0, y: 0.0 },
+                    control2: CanvasPoint { x: -90.0, y: 0.0 },
+                    to: CanvasPoint { x: 10.0, y: 0.0 },
+                },
+            ],
+            label: crate::runtime::geometry::EdgePathLabel {
+                point: CanvasPoint { x: 5.0, y: 0.0 },
+                offset_x: 0.0,
+                offset_y: 0.0,
+            },
+        };
+
+        let flattened = flatten_edge_path(&overshooting, EdgeFlattenOptions::default()).unwrap();
+
+        assert!(flattened.segments().len() > 1);
+        assert!(
+            flattened
+                .segments()
+                .iter()
+                .flat_map(|segment| [segment.from().x, segment.to().x])
+                .any(|x| !(0.0..=10.0).contains(&x))
+        );
+    }
+
+    #[test]
+    fn finite_cubic_with_unrepresentable_distance_fails_explicitly() {
+        let extent = f32::MAX * 0.5;
+        let extreme = EdgePath {
+            commands: vec![
+                PathCommand::MoveTo(CanvasPoint { x: -extent, y: 0.0 }),
+                PathCommand::CubicTo {
+                    control1: CanvasPoint {
+                        x: -extent,
+                        y: extent,
+                    },
+                    control2: CanvasPoint {
+                        x: extent,
+                        y: -extent,
+                    },
+                    to: CanvasPoint { x: extent, y: 0.0 },
+                },
+            ],
+            label: crate::runtime::geometry::EdgePathLabel {
+                point: CanvasPoint::default(),
+                offset_x: 0.0,
+                offset_y: 0.0,
+            },
+        };
+
+        assert_eq!(
+            flatten_edge_path(&extreme, EdgeFlattenOptions::default()),
+            Err(EdgePathFlattenError::InvalidGeometry)
         );
     }
 }

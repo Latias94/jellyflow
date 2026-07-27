@@ -112,11 +112,28 @@ fn plan_replace_node_ports(
     for port in ports {
         context.read_facts(1);
         if let Some(current) = context.graph().port(&port.id).cloned() {
-            validate_stable_port_identity(port.id, node_id, &current, &port.port)?;
-            if profile.is_some() || current.ty != port.port.ty || current.data != port.port.data {
+            validate_port_owner(port.id, node_id, &port.port)?;
+            if port_semantic_identity_changed(&current, &port.port) {
+                if context.was_port_added(port.id) || context.was_port_removed(port.id) {
+                    return Err(GraphCommandPlanningError::PortLifecycleConflict(port.id));
+                }
+                let removal = {
+                    let (graph, mut query) = context.query_parts();
+                    plan_remove_port(graph, &mut query, port.id, incident_edges)?
+                };
+                context.stage(removal)?;
+                context.stage([GraphOp::AddPort {
+                    id: port.id,
+                    port: port.port.clone(),
+                }])?;
                 ports_to_revalidate.insert(port.id);
+            } else {
+                if profile.is_some() || current.ty != port.port.ty || current.data != port.port.data
+                {
+                    ports_to_revalidate.insert(port.id);
+                }
+                context.stage(port_updates(port.id, &current, &port.port))?;
             }
-            context.stage(port_updates(port.id, &current, &port.port))?;
         } else {
             if context.was_port_removed(port.id) {
                 return Err(GraphCommandPlanningError::PortLifecycleConflict(port.id));
@@ -178,10 +195,9 @@ fn validate_new_ports(
         .collect())
 }
 
-fn validate_stable_port_identity(
+fn validate_port_owner(
     port_id: PortId,
     node: NodeId,
-    current: &Port,
     desired: &Port,
 ) -> Result<(), GraphCommandPlanningError> {
     if desired.node != node {
@@ -191,15 +207,15 @@ fn validate_stable_port_identity(
             actual: desired.node,
         });
     }
-    if current.node != desired.node
+    Ok(())
+}
+
+fn port_semantic_identity_changed(current: &Port, desired: &Port) -> bool {
+    current.node != desired.node
         || current.key != desired.key
         || current.dir != desired.dir
         || current.kind != desired.kind
         || current.capacity != desired.capacity
-    {
-        return Err(GraphCommandPlanningError::PortIdentityChanged { port: port_id });
-    }
-    Ok(())
 }
 
 fn port_updates(id: PortId, current: &Port, desired: &Port) -> Vec<GraphOp> {

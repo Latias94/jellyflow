@@ -1,14 +1,31 @@
+use std::cell::{Cell, RefCell};
 use std::fmt;
+use std::future::Future;
+use std::panic::AssertUnwindSafe;
+use std::pin::Pin;
+use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::task::{Context as TaskContext, Poll};
 
-use jellyflow_runtime::{GraphCommandOutcome, GraphRevision, NodeInstanceKey, ViewCloseReason};
-use open_gpui::Task;
+use futures_util::FutureExt;
+use jellyflow_core::NodeId;
+use jellyflow_runtime::{
+    commands::GraphCommand, commands::GraphCommandIdentity, commands::GraphCommandOutcome,
+    graph::GraphRevision, graph::GraphVersion, graph::RuntimeProvenance, view::NodeInstanceKey,
+    view::ViewCloseReason,
+};
+use open_gpui::{App, Task};
 
 use crate::activity::{
     OpenGpuiActivityAcquireError, OpenGpuiActivityKind, OpenGpuiActivityLease,
     OpenGpuiNodeActivityRegistry,
 };
-use crate::binding::{OpenGpuiMountCapability, OpenGpuiMountState, OpenGpuiNodeBinding};
-use crate::command_journal::OpenGpuiCommandTicketResult;
+use crate::authoring::{
+    OpenGpuiAuthoringStamp, OpenGpuiNodeAuthoring, OpenGpuiNodeAuthoringError,
+    OpenGpuiNodeObservation,
+};
+use crate::binding::{OpenGpuiMountContext, OpenGpuiMountValidationError};
+use crate::command_journal::{OpenGpuiCommandTicket, OpenGpuiCommandTicketResult};
 use crate::draft::{
     DraftAttempt, DraftConflict, DraftConflictResolution, DraftIntentRejection, DraftPhase,
     DraftReceiptDecision, DraftReconcileDecision, DraftRecovery, DraftResolutionDecision,
@@ -20,6 +37,20 @@ pub use crate::draft_store::{
 };
 
 const RETAINED_FIELD_KEY_MAX_BYTES: usize = 128;
+const DISPATCH_ATTEMPT_DROPPED_MESSAGE: &str = "field command outcome is uncertain: the dispatched attempt was dropped before its ticket settled";
+const DISPATCH_TASK_INSTALLATION_UNWOUND_MESSAGE: &str =
+    "field command outcome is uncertain: task installation unwound after the command was enqueued";
+const DISPATCH_TASK_PANICKED_MESSAGE: &str =
+    "field command outcome is uncertain: the dispatched task panicked before its ticket settled";
+static NEXT_RETAINED_DRAFT_NONCE: AtomicU64 = AtomicU64::new(1);
+
+fn allocate_retained_draft_nonce() -> Option<u64> {
+    NEXT_RETAINED_DRAFT_NONCE
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            current.checked_add(1)
+        })
+        .ok()
+}
 
 /// Stable product-owned identity for one editable value inside a native node.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -46,14 +77,28 @@ impl RetainedFieldKey {
     }
 }
 
-/// Stable identity for one explicit field submission.
+/// Stable capability for one explicit submission by one retained draft.
+///
+/// [`Self::get`] exposes the draft-local sequence for diagnostics only. Equality and command
+/// settlement also include the private draft nonce, so another field's same-numbered attempt is
+/// never authoritative.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct RetainedFieldAttempt(DraftAttempt);
+pub struct RetainedFieldAttempt {
+    draft_nonce: u64,
+    sequence: DraftAttempt,
+}
 
 impl RetainedFieldAttempt {
+    const fn new(draft_nonce: u64, sequence: DraftAttempt) -> Self {
+        Self {
+            draft_nonce,
+            sequence,
+        }
+    }
+
     #[must_use]
     pub const fn get(self) -> u64 {
-        self.0.get()
+        self.sequence.get()
     }
 }
 
@@ -117,13 +162,14 @@ pub enum RetainedFieldSubmitMode {
 /// Product-facing, inert command intent. Planning never dispatches or retries.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RetainedFieldIntent<T> {
+    draft_nonce: u64,
     inner: DraftSubmissionIntent<T>,
 }
 
 impl<T> RetainedFieldIntent<T> {
     #[must_use]
     pub const fn attempt(&self) -> RetainedFieldAttempt {
-        RetainedFieldAttempt(self.inner.attempt())
+        RetainedFieldAttempt::new(self.draft_nonce, self.inner.attempt())
     }
 
     #[must_use]
@@ -145,6 +191,77 @@ impl<T> RetainedFieldIntent<T> {
     }
 }
 
+/// Application-scoped submission intent bound to one exact authoritative runtime version.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ApplicationRetainedFieldIntent<T> {
+    expected_version: GraphVersion,
+    inner: RetainedFieldIntent<T>,
+}
+
+impl<T> ApplicationRetainedFieldIntent<T> {
+    #[must_use]
+    pub const fn attempt(&self) -> RetainedFieldAttempt {
+        self.inner.attempt()
+    }
+
+    #[must_use]
+    pub const fn mode(&self) -> RetainedFieldSubmitMode {
+        self.inner.mode()
+    }
+
+    #[must_use]
+    pub const fn expected_version(&self) -> GraphVersion {
+        self.expected_version
+    }
+
+    #[must_use]
+    pub const fn value(&self) -> &T {
+        self.inner.value()
+    }
+
+    /// Binds this field attempt to the exact command that will carry it.
+    pub fn bind_command(
+        &self,
+        command: &GraphCommand,
+    ) -> Result<ApplicationRetainedFieldDispatchReceipt, RetainedFieldError> {
+        let actual = command.expected_version();
+        if actual != self.expected_version {
+            return Err(RetainedFieldError::DispatchVersionMismatch {
+                expected: self.expected_version,
+                actual,
+            });
+        }
+        Ok(ApplicationRetainedFieldDispatchReceipt {
+            attempt: self.attempt(),
+            expected_version: self.expected_version,
+            command_identity: command.identity().clone(),
+        })
+    }
+}
+
+/// Opaque evidence tying one application field attempt to one concrete graph command.
+///
+/// Settlement requires the outcome to carry the same runtime-issued command identity and a version
+/// transition valid for the command's expected version.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ApplicationRetainedFieldDispatchReceipt {
+    attempt: RetainedFieldAttempt,
+    expected_version: GraphVersion,
+    command_identity: GraphCommandIdentity,
+}
+
+impl ApplicationRetainedFieldDispatchReceipt {
+    #[must_use]
+    pub const fn attempt(&self) -> RetainedFieldAttempt {
+        self.attempt
+    }
+
+    #[must_use]
+    pub const fn expected_version(&self) -> GraphVersion {
+        self.expected_version
+    }
+}
+
 /// Explicit choices for a conflicting local value.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RetainedFieldConflictChoice {
@@ -159,6 +276,14 @@ pub enum RetainedFieldResolution<T> {
     AcceptedRemote { revision: GraphRevision },
     KeptLocal { conflict: RetainedFieldConflict },
     Reapply(RetainedFieldIntent<T>),
+}
+
+/// Application-scoped conflict resolution preserving exact runtime-version evidence.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ApplicationRetainedFieldResolution<T> {
+    AcceptedRemote { version: GraphVersion },
+    KeptLocal { conflict: RetainedFieldConflict },
+    Reapply(ApplicationRetainedFieldIntent<T>),
 }
 
 /// Mechanical command state, orthogonal to [`RetainedFieldPhase`].
@@ -294,17 +419,24 @@ impl RetainedFieldRecovery {
     }
 }
 
-impl From<DraftRecovery> for RetainedFieldRecovery {
-    fn from(value: DraftRecovery) -> Self {
+impl RetainedFieldRecovery {
+    fn from_draft(value: DraftRecovery, draft_nonce: Option<u64>) -> Self {
+        if value.is_empty() {
+            return Self::default();
+        }
         Self {
-            interrupted_attempt: value.interrupted_attempt().map(RetainedFieldAttempt),
+            interrupted_attempt: draft_nonce
+                .zip(value.interrupted_attempt())
+                .map(|(draft_nonce, sequence)| RetainedFieldAttempt::new(draft_nonce, sequence)),
             composition_interrupted: value.composition_interrupted(),
         }
     }
 }
 
-/// Pure revision-aware field reducer with explicit command-ordering evidence.
-pub struct RevisionedField<T> {
+/// Private revision-aware reducer shared by the two lifecycle-owning field interfaces.
+#[derive(Clone)]
+struct RevisionedField<T> {
+    draft_nonce: Option<u64>,
     draft: RevisionedDraft<T>,
     attempt_state: RetainedFieldAttemptState,
     notice: Option<String>,
@@ -331,6 +463,7 @@ where
     #[must_use]
     pub fn new(revision: GraphRevision, authoritative: T) -> Self {
         Self {
+            draft_nonce: allocate_retained_draft_nonce(),
             draft: RevisionedDraft::new(revision, authoritative),
             attempt_state: RetainedFieldAttemptState::Idle,
             notice: None,
@@ -338,7 +471,8 @@ where
     }
 
     fn from_restore(restored: DraftRestore<T>) -> (Self, RetainedFieldRecovery) {
-        let recovery = RetainedFieldRecovery::from(restored.recovery());
+        let draft_nonce = allocate_retained_draft_nonce();
+        let recovery = RetainedFieldRecovery::from_draft(restored.recovery(), draft_nonce);
         let draft = restored.into_draft();
         let attempt_state =
             recovery
@@ -351,6 +485,7 @@ where
                 });
         (
             Self {
+                draft_nonce,
                 draft,
                 attempt_state,
                 notice: (!recovery.is_empty())
@@ -358,6 +493,16 @@ where
             },
             recovery,
         )
+    }
+
+    fn retained_attempt(&self, sequence: DraftAttempt) -> Option<RetainedFieldAttempt> {
+        self.draft_nonce
+            .map(|draft_nonce| RetainedFieldAttempt::new(draft_nonce, sequence))
+    }
+
+    fn is_pending_attempt(&self, attempt: RetainedFieldAttempt) -> bool {
+        self.draft_nonce == Some(attempt.draft_nonce)
+            && self.draft.pending_attempt() == Some(attempt.sequence)
     }
 
     #[must_use]
@@ -458,7 +603,10 @@ where
         }
 
         let decision = self.draft.reconcile_remote(revision, authoritative);
-        if let Some(attempt) = self.draft.pending_attempt().map(RetainedFieldAttempt)
+        if let Some(attempt) = self
+            .draft
+            .pending_attempt()
+            .and_then(|sequence| self.retained_attempt(sequence))
             && self.draft.pending_accepted_revision().is_none()
             && let Some(observed_revision) = self.draft.pending_matching_snapshot_revision()
         {
@@ -482,11 +630,16 @@ where
             DraftReconcileDecision::BaseAdvanced { .. } => RetainedFieldUpdate::BaseAdvanced,
             DraftReconcileDecision::Conflict { .. } => RetainedFieldUpdate::Conflict,
             DraftReconcileDecision::SelfAcknowledged {
-                attempt,
+                attempt: sequence,
                 revision,
                 local_changed_after_submission,
             } => {
-                let attempt = RetainedFieldAttempt(attempt);
+                let Some(attempt) = self.retained_attempt(sequence) else {
+                    self.attempt_state = RetainedFieldAttemptState::Idle;
+                    self.notice =
+                        Some("field acknowledgement lost its retained draft identity".to_owned());
+                    return RetainedFieldUpdate::InconsistentSnapshot;
+                };
                 self.attempt_state = RetainedFieldAttemptState::Idle;
                 self.notice = None;
                 RetainedFieldUpdate::Acknowledged {
@@ -517,16 +670,21 @@ where
                 attempt: self.attempt_state.attempt(),
             });
         }
+        let Some(draft_nonce) = self.draft_nonce else {
+            return Err(RetainedFieldError::AttemptIdentityExhausted);
+        };
         match self.draft.plan_submission_at(command_revision) {
             DraftSubmissionDecision::Submit(inner) => {
-                let intent = RetainedFieldIntent { inner };
+                let intent = RetainedFieldIntent { draft_nonce, inner };
                 self.attempt_state = RetainedFieldAttemptState::Pending {
                     attempt: intent.attempt(),
                 };
                 self.notice = None;
                 Ok(intent)
             }
-            DraftSubmissionDecision::Rejected(reason) => Err(map_plan_error(reason)),
+            DraftSubmissionDecision::Rejected(reason) => {
+                Err(map_plan_error(reason, self.draft_nonce))
+            }
         }
     }
 
@@ -545,6 +703,9 @@ where
             RetainedFieldConflictChoice::KeepLocal => DraftConflictResolution::KeepLocal,
             RetainedFieldConflictChoice::ReapplyLocal => DraftConflictResolution::ReapplyLocal,
         };
+        if choice == DraftConflictResolution::ReapplyLocal && self.draft_nonce.is_none() {
+            return Err(RetainedFieldError::AttemptIdentityExhausted);
+        }
         match self.draft.resolve_at(choice, command_revision) {
             DraftResolutionDecision::AcceptedRemote { revision } => {
                 self.notice = None;
@@ -556,14 +717,19 @@ where
                 })
             }
             DraftResolutionDecision::Reapply(inner) => {
-                let intent = RetainedFieldIntent { inner };
+                let Some(draft_nonce) = self.draft_nonce else {
+                    return Err(RetainedFieldError::AttemptIdentityExhausted);
+                };
+                let intent = RetainedFieldIntent { draft_nonce, inner };
                 self.attempt_state = RetainedFieldAttemptState::Pending {
                     attempt: intent.attempt(),
                 };
                 self.notice = None;
                 Ok(RetainedFieldResolution::Reapply(intent))
             }
-            DraftResolutionDecision::Rejected(reason) => Err(map_plan_error(reason)),
+            DraftResolutionDecision::Rejected(reason) => {
+                Err(map_plan_error(reason, self.draft_nonce))
+            }
         }
     }
 
@@ -571,10 +737,10 @@ where
         &mut self,
         attempt: RetainedFieldAttempt,
     ) -> Result<(), RetainedFieldError> {
-        if self.draft.pending_attempt() != Some(attempt.0) {
+        if !self.is_pending_attempt(attempt) {
             return Err(RetainedFieldError::AttemptMismatch { attempt });
         }
-        self.draft.reject_submission(attempt.0);
+        self.draft.reject_submission(attempt.sequence);
         self.attempt_state = RetainedFieldAttemptState::Idle;
         Ok(())
     }
@@ -584,16 +750,32 @@ where
         attempt: RetainedFieldAttempt,
         result: OpenGpuiCommandTicketResult,
     ) -> RetainedFieldSettlement {
-        if self.draft.pending_attempt() != Some(attempt.0) {
+        if !self.is_pending_attempt(attempt) {
             return RetainedFieldSettlement::Ignored { attempt };
         }
         match result {
             Ok(GraphCommandOutcome::Applied(receipt)) => {
                 self.record_receipt(attempt, receipt.revision())
             }
-            Ok(GraphCommandOutcome::Noop(noop)) => self.record_receipt(attempt, noop.revision()),
+            Ok(GraphCommandOutcome::Noop(noop)) => {
+                self.draft.reject_submission(attempt.sequence);
+                let minimum_revision = noop.revision();
+                let message = format!(
+                    "field command made no authoritative change at revision {minimum_revision}; refresh before retry"
+                );
+                self.attempt_state = RetainedFieldAttemptState::RefreshRequired {
+                    attempt: Some(attempt),
+                    minimum_revision,
+                };
+                self.notice = Some(message.clone());
+                RetainedFieldSettlement::RefreshRequired {
+                    attempt,
+                    minimum_revision,
+                    message,
+                }
+            }
             Ok(GraphCommandOutcome::Conflict(conflict)) => {
-                self.draft.reject_submission(attempt.0);
+                self.draft.reject_submission(attempt.sequence);
                 let minimum_revision = conflict.current().revision();
                 let message = format!(
                     "field command conflicted at revision {minimum_revision}; refresh before retry"
@@ -610,7 +792,7 @@ where
                 }
             }
             Ok(GraphCommandOutcome::Rejected(rejection)) => {
-                self.draft.reject_submission(attempt.0);
+                self.draft.reject_submission(attempt.sequence);
                 let minimum_revision = self.draft.remote_revision();
                 let message = format!("field command was rejected: {}", rejection.message());
                 self.attempt_state = RetainedFieldAttemptState::RefreshRequired {
@@ -647,9 +829,12 @@ where
         attempt: RetainedFieldAttempt,
         committed_revision: GraphRevision,
     ) -> RetainedFieldSettlement {
+        if !self.is_pending_attempt(attempt) {
+            return RetainedFieldSettlement::Ignored { attempt };
+        }
         match self
             .draft
-            .record_self_receipt(attempt.0, committed_revision)
+            .record_self_receipt(attempt.sequence, committed_revision)
         {
             DraftReceiptDecision::Acknowledged {
                 revision,
@@ -702,7 +887,7 @@ where
         minimum_revision: GraphRevision,
         message: &str,
     ) -> RetainedFieldSettlement {
-        self.draft.reject_submission(attempt.0);
+        self.draft.reject_submission(attempt.sequence);
         self.attempt_state = RetainedFieldAttemptState::RefreshRequired {
             attempt: Some(attempt),
             minimum_revision,
@@ -720,7 +905,7 @@ where
         attempt: RetainedFieldAttempt,
         message: impl Into<String>,
     ) -> Result<RetainedFieldSettlement, RetainedFieldError> {
-        if self.draft.pending_attempt() != Some(attempt.0) {
+        if !self.is_pending_attempt(attempt) {
             return Err(RetainedFieldError::AttemptMismatch { attempt });
         }
         let expected_revision = self
@@ -773,10 +958,11 @@ where
             .pending_value()
             .is_some_and(|submitted| *submitted == authoritative);
         if submitted_is_authoritative {
-            self.draft.reject_submission(attempt.0);
+            self.draft.reject_submission(attempt.sequence);
             self.draft.reconcile_remote(revision, authoritative);
         } else {
-            self.draft.reject_stale(attempt.0, revision, authoritative);
+            self.draft
+                .reject_stale(attempt.sequence, revision, authoritative);
         }
         self.attempt_state = RetainedFieldAttemptState::Idle;
         self.notice = None;
@@ -792,46 +978,534 @@ where
     }
 }
 
+struct FieldTransition<T, R> {
+    field: RevisionedField<T>,
+    output: R,
+}
+
+struct FieldOwnerState<T> {
+    field: RevisionedField<T>,
+}
+
+impl<T> FieldOwnerState<T> {
+    fn new(field: RevisionedField<T>) -> Self {
+        Self { field }
+    }
+
+    fn published(&self) -> &RevisionedField<T> {
+        &self.field
+    }
+}
+
+impl<T> FieldOwnerState<T>
+where
+    T: Clone + PartialEq,
+{
+    fn prepare<R>(
+        &self,
+        operation: impl FnOnce(&mut RevisionedField<T>) -> R,
+    ) -> FieldTransition<T, R> {
+        let mut field = self.field.clone();
+        let output = operation(&mut field);
+        FieldTransition { field, output }
+    }
+
+    fn try_prepare<R>(
+        &self,
+        operation: impl FnOnce(&mut RevisionedField<T>) -> Result<R, RetainedFieldError>,
+    ) -> Result<FieldTransition<T, R>, RetainedFieldError> {
+        let mut field = self.field.clone();
+        let output = operation(&mut field)?;
+        Ok(FieldTransition { field, output })
+    }
+
+    fn publish<R>(&mut self, transition: FieldTransition<T, R>) -> R {
+        self.field = transition.field;
+        transition.output
+    }
+
+    fn transition<R>(&mut self, operation: impl FnOnce(&mut RevisionedField<T>) -> R) -> R {
+        let transition = self.prepare(operation);
+        self.publish(transition)
+    }
+
+    fn try_transition<R>(
+        &mut self,
+        operation: impl FnOnce(&mut RevisionedField<T>) -> Result<R, RetainedFieldError>,
+    ) -> Result<R, RetainedFieldError> {
+        let transition = self.try_prepare(operation)?;
+        Ok(self.publish(transition))
+    }
+
+    fn clear_notice(&mut self) {
+        self.field.clear_notice();
+    }
+}
+
+/// Application-scoped owner for one revision-aware editable field.
+///
+/// The application owns this value inside a real business lifetime such as an Open GPUI entity or
+/// a collection keyed by a domain ID. It deliberately has no node mount, activity budget, or
+/// overflow store: application panels must not fabricate a [`NodeInstanceKey`] merely to reuse
+/// draft reconciliation. Every mutation is applied to a private candidate first and published only
+/// after the owner is already retained by its application lifetime.
+pub struct ApplicationRetainedField<T> {
+    remote_version: GraphVersion,
+    state: FieldOwnerState<T>,
+}
+
+impl<T> fmt::Debug for ApplicationRetainedField<T>
+where
+    T: fmt::Debug,
+{
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ApplicationRetainedField")
+            .field("remote_version", &self.remote_version)
+            .field("field", self.state.published())
+            .finish()
+    }
+}
+
+impl<T> ApplicationRetainedField<T>
+where
+    T: Clone + PartialEq,
+{
+    #[must_use]
+    pub fn new(version: GraphVersion, authoritative: T) -> Self {
+        Self {
+            remote_version: version,
+            state: FieldOwnerState::new(RevisionedField::new(version.revision(), authoritative)),
+        }
+    }
+
+    #[must_use]
+    pub fn local(&self) -> &T {
+        self.state.published().local()
+    }
+
+    #[must_use]
+    pub fn remote(&self) -> &T {
+        self.state.published().remote()
+    }
+
+    #[must_use]
+    pub const fn base_revision(&self) -> GraphRevision {
+        self.state.field.base_revision()
+    }
+
+    #[must_use]
+    pub const fn remote_revision(&self) -> GraphRevision {
+        self.state.field.remote_revision()
+    }
+
+    #[must_use]
+    pub const fn remote_version(&self) -> GraphVersion {
+        self.remote_version
+    }
+
+    #[must_use]
+    pub fn phase(&self) -> RetainedFieldPhase {
+        self.state.published().phase()
+    }
+
+    #[must_use]
+    pub fn conflict(&self) -> Option<RetainedFieldConflict> {
+        self.state.published().conflict()
+    }
+
+    #[must_use]
+    pub const fn attempt_state(&self) -> RetainedFieldAttemptState {
+        self.state.field.attempt_state()
+    }
+
+    #[must_use]
+    pub fn notice(&self) -> Option<&str> {
+        self.state.published().notice()
+    }
+
+    #[must_use]
+    pub fn can_submit(&self) -> bool {
+        self.state.published().can_submit()
+    }
+
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        self.phase() != RetainedFieldPhase::Clean
+            || self.attempt_state() != RetainedFieldAttemptState::Idle
+    }
+
+    pub fn edit(&mut self, value: T) -> RetainedFieldPhase {
+        self.state.transition(|field| field.edit(value))
+    }
+
+    pub fn set_composing(&mut self, composing: bool) -> RetainedFieldPhase {
+        self.state
+            .transition(|field| field.set_composing(composing))
+    }
+
+    pub fn observe(
+        &mut self,
+        version: GraphVersion,
+        authoritative: T,
+    ) -> Result<RetainedFieldUpdate, RetainedFieldError> {
+        self.ensure_authority(version)?;
+        let update = self
+            .state
+            .transition(|field| field.observe(version.revision(), authoritative));
+        if self.state.field.remote_revision() == version.revision() {
+            self.remote_version = version;
+        }
+        Ok(update)
+    }
+
+    pub fn plan(
+        &mut self,
+        command_version: GraphVersion,
+    ) -> Result<ApplicationRetainedFieldIntent<T>, RetainedFieldError> {
+        if self.state.field.attempt_state().blocks_submission() {
+            return Err(RetainedFieldError::AttemptPending {
+                attempt: self.state.field.attempt_state().attempt(),
+            });
+        }
+        self.ensure_current_version(command_version)?;
+        let inner = self
+            .state
+            .try_transition(|field| field.plan(command_version.revision()))?;
+        Ok(ApplicationRetainedFieldIntent {
+            expected_version: command_version,
+            inner,
+        })
+    }
+
+    pub fn resolve(
+        &mut self,
+        choice: RetainedFieldConflictChoice,
+        command_version: GraphVersion,
+    ) -> Result<ApplicationRetainedFieldResolution<T>, RetainedFieldError> {
+        self.ensure_current_version(command_version)?;
+        let resolution = self
+            .state
+            .try_transition(|field| field.resolve(choice, command_version.revision()))?;
+        Ok(match resolution {
+            RetainedFieldResolution::AcceptedRemote { .. } => {
+                ApplicationRetainedFieldResolution::AcceptedRemote {
+                    version: command_version,
+                }
+            }
+            RetainedFieldResolution::KeptLocal { conflict } => {
+                ApplicationRetainedFieldResolution::KeptLocal { conflict }
+            }
+            RetainedFieldResolution::Reapply(inner) => {
+                ApplicationRetainedFieldResolution::Reapply(ApplicationRetainedFieldIntent {
+                    expected_version: command_version,
+                    inner,
+                })
+            }
+        })
+    }
+
+    pub fn not_dispatched(
+        &mut self,
+        attempt: RetainedFieldAttempt,
+    ) -> Result<(), RetainedFieldError> {
+        self.state
+            .try_transition(|field| field.not_dispatched(attempt))
+    }
+
+    pub fn settle_command(
+        &mut self,
+        receipt: ApplicationRetainedFieldDispatchReceipt,
+        outcome: GraphCommandOutcome,
+    ) -> Result<RetainedFieldSettlement, RetainedFieldError> {
+        if !self.state.field.is_pending_attempt(receipt.attempt) {
+            return Ok(RetainedFieldSettlement::Ignored {
+                attempt: receipt.attempt,
+            });
+        }
+        self.validate_receipt(&receipt)?;
+        self.validate_outcome(&receipt, &outcome)?;
+        Ok(self
+            .state
+            .transition(|field| field.settle_ticket(receipt.attempt, Ok(outcome))))
+    }
+
+    pub fn mark_uncertain(
+        &mut self,
+        receipt: ApplicationRetainedFieldDispatchReceipt,
+        message: impl Into<String>,
+    ) -> Result<RetainedFieldSettlement, RetainedFieldError> {
+        self.validate_receipt(&receipt)?;
+        let message = message.into();
+        self.state
+            .try_transition(|field| field.mark_uncertain(receipt.attempt, message))
+    }
+
+    pub fn resolve_uncertain_from_fresh(
+        &mut self,
+        version: GraphVersion,
+        authoritative: T,
+    ) -> Result<RetainedFieldUpdate, RetainedFieldError> {
+        self.ensure_authority(version)?;
+        let update = self.state.try_transition(|field| {
+            field.resolve_uncertain_from_fresh(version.revision(), authoritative)
+        })?;
+        if self.state.field.remote_revision() == version.revision() {
+            self.remote_version = version;
+        }
+        Ok(update)
+    }
+
+    pub fn clear_notice(&mut self) {
+        self.state.clear_notice();
+    }
+
+    fn ensure_authority(&self, version: GraphVersion) -> Result<(), RetainedFieldError> {
+        let expected = self.remote_version.provenance();
+        let actual = version.provenance();
+        if actual != expected {
+            return Err(RetainedFieldError::ForeignRuntimeAuthority { expected, actual });
+        }
+        Ok(())
+    }
+
+    fn ensure_current_version(&self, version: GraphVersion) -> Result<(), RetainedFieldError> {
+        self.ensure_authority(version)?;
+        if version != self.remote_version {
+            return Err(RetainedFieldError::DispatchVersionMismatch {
+                expected: self.remote_version,
+                actual: version,
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_receipt(
+        &self,
+        receipt: &ApplicationRetainedFieldDispatchReceipt,
+    ) -> Result<(), RetainedFieldError> {
+        self.ensure_authority(receipt.expected_version)?;
+        if !self.state.field.is_pending_attempt(receipt.attempt) {
+            return Err(RetainedFieldError::AttemptMismatch {
+                attempt: receipt.attempt,
+            });
+        }
+        let expected_revision = self
+            .state
+            .field
+            .draft
+            .pending_expected_revision()
+            .unwrap_or(self.state.field.remote_revision());
+        if receipt.expected_version.revision() != expected_revision {
+            return Err(RetainedFieldError::DispatchVersionMismatch {
+                expected: self.remote_version,
+                actual: receipt.expected_version,
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_outcome(
+        &self,
+        receipt: &ApplicationRetainedFieldDispatchReceipt,
+        outcome: &GraphCommandOutcome,
+    ) -> Result<(), RetainedFieldError> {
+        self.ensure_authority(outcome.version())?;
+        if outcome.identity() != &receipt.command_identity {
+            return Err(RetainedFieldError::OutcomeCommandMismatch);
+        }
+
+        let expected = receipt.expected_version;
+        let actual = outcome.version();
+        let version_is_valid = match outcome {
+            GraphCommandOutcome::Applied(_) => expected
+                .revision()
+                .checked_add(1)
+                .is_some_and(|revision| actual.revision() == revision),
+            GraphCommandOutcome::Noop(_) | GraphCommandOutcome::Rejected(_) => actual == expected,
+            GraphCommandOutcome::Conflict(conflict) => {
+                conflict.expected_version() == expected && actual != expected
+            }
+        };
+        if !version_is_valid {
+            return Err(RetainedFieldError::OutcomeVersionMismatch { expected, actual });
+        }
+        Ok(())
+    }
+}
+
 /// Exact retained native mount captured by a field owner.
 #[derive(Clone)]
 pub(crate) struct RetainedFieldMountCapability {
-    instance: NodeInstanceKey,
-    view: jellyflow_runtime::WeakViewSession,
-    mount: OpenGpuiMountCapability,
+    context: OpenGpuiMountContext,
     activity: OpenGpuiNodeActivityRegistry,
 }
 
 impl RetainedFieldMountCapability {
     pub(crate) fn new(
-        instance: NodeInstanceKey,
-        view: jellyflow_runtime::WeakViewSession,
-        mount: OpenGpuiMountCapability,
+        context: OpenGpuiMountContext,
         activity: OpenGpuiNodeActivityRegistry,
     ) -> Self {
-        Self {
-            instance,
-            view,
-            mount,
-            activity,
+        Self { context, activity }
+    }
+
+    fn from_authoring(stamp: &OpenGpuiAuthoringStamp) -> Self {
+        Self::new(stamp.context.clone(), stamp.activity.clone())
+    }
+
+    fn ensure_current(&self) -> Result<(), RetainedFieldError> {
+        self.context
+            .ensure_current()
+            .map(|_| ())
+            .map_err(map_mount_validation_error)
+    }
+}
+
+fn map_mount_validation_error(error: OpenGpuiMountValidationError) -> RetainedFieldError {
+    match error {
+        OpenGpuiMountValidationError::RetiredMount { .. }
+        | OpenGpuiMountValidationError::RetiredIncarnation { .. } => RetainedFieldError::Retired,
+        OpenGpuiMountValidationError::ForeignView => RetainedFieldError::View(
+            jellyflow_runtime::view::ViewSessionError::ForeignInteractionFacts,
+        ),
+        OpenGpuiMountValidationError::Closed { reason } => RetainedFieldError::Closed { reason },
+        OpenGpuiMountValidationError::Session(error) => RetainedFieldError::View(error),
+    }
+}
+
+#[derive(Debug)]
+enum FieldRetentionState {
+    Idle,
+    Protected { _lease: OpenGpuiActivityLease },
+    Externalized,
+}
+
+impl FieldRetentionState {
+    fn public(&self) -> RetainedFieldRetention {
+        match self {
+            Self::Idle => RetainedFieldRetention::Idle,
+            Self::Protected { .. } => RetainedFieldRetention::Protected,
+            Self::Externalized => RetainedFieldRetention::Externalized,
         }
     }
 
-    fn state(&self) -> OpenGpuiMountState {
-        self.mount.state()
+    fn is_protected(&self) -> bool {
+        matches!(self, Self::Protected { .. })
+    }
+
+    fn is_externalized(&self) -> bool {
+        matches!(self, Self::Externalized)
+    }
+
+    fn release_protection(&mut self) {
+        if self.is_protected() {
+            *self = Self::Idle;
+        }
+    }
+}
+
+#[derive(Debug)]
+struct FieldTaskState {
+    attempt: RetainedFieldAttempt,
+    _task: Task<()>,
+    _lease: OpenGpuiActivityLease,
+}
+
+impl FieldTaskState {
+    fn attached(
+        attempt: RetainedFieldAttempt,
+        task: Task<()>,
+        lease: OpenGpuiActivityLease,
+    ) -> Self {
+        Self {
+            attempt,
+            _task: task,
+            _lease: lease,
+        }
+    }
+
+    fn attempt(&self) -> RetainedFieldAttempt {
+        self.attempt
+    }
+}
+
+enum FieldTaskCompletion {
+    Ticket {
+        attempt: RetainedFieldAttempt,
+        result: Box<OpenGpuiCommandTicketResult>,
+    },
+    OutcomeUnknown {
+        attempt: RetainedFieldAttempt,
+        message: &'static str,
+    },
+}
+
+impl FieldTaskCompletion {
+    fn attempt(&self) -> RetainedFieldAttempt {
+        match self {
+            Self::Ticket { attempt, .. } | Self::OutcomeUnknown { attempt, .. } => *attempt,
+        }
+    }
+}
+
+/// Future owned exclusively by the retained-field supervisor after command dispatch.
+///
+/// Keeping the ticket in this future prevents product tasks from dropping its completion path or
+/// allowing a runner panic to bypass the field lifecycle.
+#[must_use = "a retained field dispatch supervisor must be retained until its ticket settles"]
+struct RetainedFieldDispatchedAttempt {
+    attempt: RetainedFieldAttempt,
+    ticket: Pin<Box<OpenGpuiCommandTicket>>,
+    completion: Rc<RefCell<Option<FieldTaskCompletion>>>,
+    post_enqueue_cleanup: Rc<Cell<bool>>,
+    ticket_settled: bool,
+}
+
+impl Future for RetainedFieldDispatchedAttempt {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, context: &mut TaskContext<'_>) -> Poll<Self::Output> {
+        let Poll::Ready(result) = self.ticket.as_mut().poll(context) else {
+            return Poll::Pending;
+        };
+        self.ticket_settled = true;
+        let mut completion = self.completion.borrow_mut();
+        if completion.is_none() {
+            *completion = Some(FieldTaskCompletion::Ticket {
+                attempt: self.attempt,
+                result: Box::new(result),
+            });
+        }
+        Poll::Ready(())
+    }
+}
+
+impl Drop for RetainedFieldDispatchedAttempt {
+    fn drop(&mut self) {
+        if self.ticket_settled || self.post_enqueue_cleanup.get() {
+            return;
+        }
+        let mut completion = self.completion.borrow_mut();
+        if completion.is_none() {
+            *completion = Some(FieldTaskCompletion::OutcomeUnknown {
+                attempt: self.attempt,
+                message: DISPATCH_ATTEMPT_DROPPED_MESSAGE,
+            });
+        }
     }
 }
 
 /// Open GPUI-local owner for one retained editable field.
 pub struct RetainedField<T> {
     mount: RetainedFieldMountCapability,
+    observation: OpenGpuiAuthoringStamp,
     key: RetainedFieldKey,
     store: RetainedFieldStore<T>,
-    field: RevisionedField<T>,
+    state: FieldOwnerState<T>,
     recovery: RetainedFieldRecovery,
-    draft_lease: Option<OpenGpuiActivityLease>,
-    task_lease: Option<OpenGpuiActivityLease>,
-    task: Option<Task<()>>,
-    externalized: bool,
+    retention: FieldRetentionState,
+    task_state: Option<FieldTaskState>,
+    task_completion: Rc<RefCell<Option<FieldTaskCompletion>>>,
 }
 
 impl<T> fmt::Debug for RetainedField<T>
@@ -841,13 +1515,17 @@ where
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("RetainedField")
-            .field("instance", &self.mount.instance)
+            .field("instance", self.mount.context.instance())
             .field("key", &self.key)
-            .field("field", &self.field)
+            .field("field", self.state.published())
             .field("recovery", &self.recovery)
-            .field("has_draft_lease", &self.draft_lease.is_some())
-            .field("has_task", &self.task.is_some())
-            .field("externalized", &self.externalized)
+            .field("has_draft_lease", &self.retention.is_protected())
+            .field(
+                "task_attempt",
+                &self.task_state.as_ref().map(FieldTaskState::attempt),
+            )
+            .field("has_task", &self.task_state.is_some())
+            .field("externalized", &self.retention.is_externalized())
             .finish()
     }
 }
@@ -857,27 +1535,48 @@ where
     T: Clone + PartialEq + 'static,
 {
     pub fn mount(
-        binding: &OpenGpuiNodeBinding,
+        observation: OpenGpuiNodeObservation<T>,
         key: RetainedFieldKey,
         store: RetainedFieldStore<T>,
-        revision: GraphRevision,
+    ) -> Result<Self, RetainedFieldError> {
+        let (observation, authoritative) = observation.into_parts();
+        observation.ensure_current().map_err(map_authoring_error)?;
+        let mount = RetainedFieldMountCapability::from_authoring(&observation);
+        Self::mount_capability(mount, observation, key, store, authoritative)
+    }
+
+    fn mount_capability(
+        mount: RetainedFieldMountCapability,
+        observation: OpenGpuiAuthoringStamp,
+        key: RetainedFieldKey,
+        store: RetainedFieldStore<T>,
         authoritative: T,
     ) -> Result<Self, RetainedFieldError> {
-        let mount = binding.retained_field_mount();
-        store.ensure_bound(mount.instance.view(), &mount.view)?;
-        let restored = store.restore(&mount.instance, key.as_str(), revision, authoritative)?;
+        mount.ensure_current()?;
+        store.ensure_bound(mount.context.view())?;
+        let revision = observation.snapshot.revision();
+        let restored = store.restore(
+            mount.context.instance(),
+            key.as_str(),
+            revision,
+            authoritative,
+        )?;
         let (field, recovery) = RevisionedField::from_restore(restored);
-        Ok(Self {
+        let mut retained = Self {
             mount,
+            observation,
             key,
             store,
-            field,
+            state: FieldOwnerState::new(field),
             recovery,
-            draft_lease: None,
-            task_lease: None,
-            task: None,
-            externalized: false,
-        })
+            retention: FieldRetentionState::Idle,
+            task_state: None,
+            task_completion: Rc::new(RefCell::new(None)),
+        };
+        retained.ensure_live()?;
+        let candidate = retained.state.prepare(|_| ());
+        retained.commit_candidate(candidate)?;
+        Ok(retained)
     }
 
     #[must_use]
@@ -887,16 +1586,133 @@ where
 
     #[must_use]
     pub fn instance(&self) -> &NodeInstanceKey {
-        &self.mount.instance
+        self.mount.context.instance()
     }
 
     #[must_use]
-    pub fn field(&self) -> &RevisionedField<T> {
-        &self.field
+    pub fn local(&self) -> &T {
+        self.state.published().local()
     }
 
-    pub fn field_mut(&mut self) -> &mut RevisionedField<T> {
-        &mut self.field
+    #[must_use]
+    pub fn remote(&self) -> &T {
+        self.state.published().remote()
+    }
+
+    #[must_use]
+    pub const fn base_revision(&self) -> GraphRevision {
+        self.state.field.base_revision()
+    }
+
+    #[must_use]
+    pub const fn remote_revision(&self) -> GraphRevision {
+        self.state.field.remote_revision()
+    }
+
+    #[must_use]
+    pub fn phase(&self) -> RetainedFieldPhase {
+        self.state.published().phase()
+    }
+
+    #[must_use]
+    pub fn conflict(&self) -> Option<RetainedFieldConflict> {
+        self.state.published().conflict()
+    }
+
+    #[must_use]
+    pub const fn attempt_state(&self) -> RetainedFieldAttemptState {
+        self.state.field.attempt_state()
+    }
+
+    #[must_use]
+    pub fn notice(&self) -> Option<&str> {
+        self.state.published().notice()
+    }
+
+    #[must_use]
+    pub fn can_submit(&self) -> bool {
+        self.state.published().can_submit()
+    }
+
+    /// Atomically replaces the local value and establishes retention before publishing it.
+    pub fn edit(&mut self, value: T) -> Result<RetainedFieldPhase, RetainedFieldError> {
+        self.mutate(|field| Ok(field.edit(value)))
+    }
+
+    /// Atomically updates framework-owned composition state.
+    pub fn set_composing(
+        &mut self,
+        composing: bool,
+    ) -> Result<RetainedFieldPhase, RetainedFieldError> {
+        self.mutate(|field| Ok(field.set_composing(composing)))
+    }
+
+    /// Atomically reconciles one authoritative value carrying its authoring provenance.
+    pub fn observe(
+        &mut self,
+        observation: OpenGpuiNodeObservation<T>,
+    ) -> Result<RetainedFieldUpdate, RetainedFieldError> {
+        let (observation, authoritative) = observation.into_parts();
+        self.validate_observation(&observation)?;
+        let settlement = self.drain_task_completion()?;
+        let revision = observation.snapshot.revision();
+        let update = self.mutate(|field| Ok(field.observe(revision, authoritative)))?;
+        self.observation = observation;
+        if let RetainedFieldUpdate::Acknowledged { attempt, .. }
+        | RetainedFieldUpdate::UncertainResolved { attempt, .. } = update
+        {
+            self.release_task_resources(attempt);
+        }
+        Ok(prefer_completion_update(settlement, update))
+    }
+
+    /// Plans one dispatch against the exact authoring view that supplied the latest observation.
+    ///
+    /// Dropping the returned plan before dispatch rolls the pending attempt back automatically.
+    pub fn plan(
+        &mut self,
+        authoring: OpenGpuiNodeAuthoring,
+        mode: RetainedFieldSubmitMode,
+    ) -> Result<RetainedFieldDispatchPlan<'_, T>, RetainedFieldError> {
+        let stamp = authoring.stamp();
+        self.validate_planning_authoring(&stamp)?;
+        self.drain_task_completion()?;
+        let revision = stamp.snapshot.revision();
+        let intent = match mode {
+            RetainedFieldSubmitMode::Commit => self.mutate(|field| field.plan(revision))?,
+            RetainedFieldSubmitMode::Reapply => {
+                match self.mutate(|field| {
+                    field.resolve(RetainedFieldConflictChoice::ReapplyLocal, revision)
+                })? {
+                    RetainedFieldResolution::Reapply(intent) => intent,
+                    RetainedFieldResolution::AcceptedRemote { .. }
+                    | RetainedFieldResolution::KeptLocal { .. } => {
+                        return Err(RetainedFieldError::ConflictRequiresResolution);
+                    }
+                }
+            }
+        };
+        Ok(RetainedFieldDispatchPlan::new(self, authoring, intent))
+    }
+
+    /// Atomically applies one explicit conflict choice.
+    pub fn resolve(
+        &mut self,
+        authoring: &OpenGpuiNodeAuthoring,
+        choice: RetainedFieldConflictChoice,
+    ) -> Result<RetainedFieldResolution<T>, RetainedFieldError> {
+        let stamp = authoring.stamp();
+        self.validate_planning_authoring(&stamp)?;
+        self.drain_task_completion()?;
+        if choice == RetainedFieldConflictChoice::ReapplyLocal {
+            return Err(RetainedFieldError::ReapplyRequiresDispatchPlan);
+        }
+        self.mutate(|field| field.resolve(choice, stamp.snapshot.revision()))
+    }
+
+    /// Clears presentation-only diagnostic text without changing retention state.
+    pub fn clear_notice(&mut self) {
+        self.state.clear_notice();
     }
 
     #[must_use]
@@ -904,105 +1720,416 @@ where
         self.recovery
     }
 
-    pub fn prepare_task(
+    /// Returns the already-established retention state for the current field value.
+    #[must_use]
+    pub fn retention(&self) -> RetainedFieldRetention {
+        self.retention.public()
+    }
+
+    /// Resolves an uncertain attempt only from a strictly newer authoritative snapshot.
+    pub fn resolve_uncertain_from_fresh(
         &mut self,
-        attempt: RetainedFieldAttempt,
+        observation: OpenGpuiNodeObservation<T>,
+    ) -> Result<RetainedFieldUpdate, RetainedFieldError> {
+        let (observation, authoritative) = observation.into_parts();
+        self.validate_observation(&observation)?;
+        self.drain_task_completion()?;
+        let revision = observation.snapshot.revision();
+        let update =
+            self.mutate(|field| field.resolve_uncertain_from_fresh(revision, authoritative))?;
+        self.observation = observation;
+        if let RetainedFieldUpdate::UncertainResolved { attempt, .. } = update {
+            self.release_task_resources(attempt);
+        }
+        Ok(update)
+    }
+
+    fn dispatch_planned(
+        &mut self,
+        authoring: OpenGpuiNodeAuthoring,
+        intent: RetainedFieldIntent<T>,
+        command: GraphCommand,
+        cx: &mut App,
     ) -> Result<(), RetainedFieldError> {
-        self.ensure_live()?;
-        if self.field.attempt_state().attempt() != Some(attempt) {
+        let attempt = intent.attempt();
+        if let Err(error) = self.ensure_live() {
+            self.cancel_planned(attempt);
+            return Err(error);
+        }
+        if self.state.published().attempt_state().attempt() != Some(attempt) {
             return Err(RetainedFieldError::AttemptMismatch { attempt });
         }
-        if self.task_lease.is_none() {
-            self.task_lease = Some(self.mount.activity.acquire(OpenGpuiActivityKind::Task)?);
+        let stamp = authoring.stamp();
+        if let Err(error) = self.validate_planning_authoring(&stamp) {
+            self.cancel_planned(attempt);
+            return Err(error);
+        }
+        if intent.expected_revision() != stamp.snapshot.revision() {
+            self.cancel_planned(attempt);
+            return Err(RetainedFieldError::RevisionMismatch {
+                observed_revision: stamp.snapshot.revision(),
+                requested_revision: intent.expected_revision(),
+            });
+        }
+
+        let lease = match self.mount.activity.acquire(OpenGpuiActivityKind::Task) {
+            Ok(lease) => lease,
+            Err(error) => {
+                self.cancel_planned(attempt);
+                return Err(error.into());
+            }
+        };
+        let ticket = match authoring.enqueue(command, cx) {
+            Ok(ticket) => ticket,
+            Err(error) => {
+                self.cancel_planned(attempt);
+                return Err(map_authoring_error(error));
+            }
+        };
+        let dispatched = RetainedFieldDispatchedAttempt {
+            attempt,
+            ticket: Box::pin(ticket),
+            completion: Rc::clone(&self.task_completion),
+            post_enqueue_cleanup: Rc::new(Cell::new(false)),
+            ticket_settled: false,
+        };
+        let mut post_enqueue = RetainedFieldPostEnqueueGuard::new(
+            self,
+            attempt,
+            Rc::clone(&dispatched.post_enqueue_cleanup),
+        );
+        let completion = Rc::clone(&post_enqueue.field.task_completion);
+        let task = cx.spawn(async move |cx| {
+            let task_panicked = AssertUnwindSafe(dispatched).catch_unwind().await.is_err();
+            if task_panicked {
+                let mut completion = completion.borrow_mut();
+                if completion.is_none() {
+                    *completion = Some(FieldTaskCompletion::OutcomeUnknown {
+                        attempt,
+                        message: DISPATCH_TASK_PANICKED_MESSAGE,
+                    });
+                }
+            }
+            if completion.borrow().is_some() {
+                cx.refresh();
+            }
+        });
+        post_enqueue.field.task_state = Some(FieldTaskState::attached(attempt, task, lease));
+        post_enqueue.disarm();
+        Ok(())
+    }
+
+    fn cancel_planned(&mut self, attempt: RetainedFieldAttempt) {
+        let Ok(candidate) = self
+            .state
+            .try_prepare(|field| field.not_dispatched(attempt))
+        else {
+            return;
+        };
+        let _ = self.commit_candidate(candidate);
+        self.release_task_resources(attempt);
+    }
+
+    fn validate_observation(
+        &mut self,
+        observation: &OpenGpuiAuthoringStamp,
+    ) -> Result<(), RetainedFieldError> {
+        self.validate_authoring_identity(observation)?;
+        observation.ensure_current().map_err(map_authoring_error)
+    }
+
+    fn validate_planning_authoring(
+        &mut self,
+        authoring: &OpenGpuiAuthoringStamp,
+    ) -> Result<(), RetainedFieldError> {
+        self.validate_observation(authoring)?;
+        if !self.observation.same_snapshot(authoring) {
+            return Err(RetainedFieldError::ObservationSnapshotMismatch {
+                observed_revision: self.observation.snapshot.revision(),
+                authoring_revision: authoring.snapshot.revision(),
+            });
         }
         Ok(())
     }
 
-    pub fn attach_task(
+    fn validate_authoring_identity(
         &mut self,
-        attempt: RetainedFieldAttempt,
-        task: Task<()>,
+        authoring: &OpenGpuiAuthoringStamp,
     ) -> Result<(), RetainedFieldError> {
-        self.ensure_live()?;
-        if self.field.attempt_state().attempt() != Some(attempt) || self.task_lease.is_none() {
-            return Err(RetainedFieldError::AttemptMismatch { attempt });
+        if authoring.context.instance() != self.mount.context.instance() {
+            return Err(RetainedFieldError::ForeignAuthoring {
+                expected: Box::new(self.mount.context.instance().clone()),
+                actual: Box::new(authoring.context.instance().clone()),
+            });
         }
-        self.task = Some(task);
-        Ok(())
+        if !authoring
+            .context
+            .mount()
+            .is_same_mount(self.mount.context.mount())
+        {
+            return Err(RetainedFieldError::CrossedMount {
+                node: self.mount.context.instance().node(),
+            });
+        }
+        self.ensure_live()
     }
 
-    pub fn not_dispatched(
+    fn drain_task_completion(
         &mut self,
-        attempt: RetainedFieldAttempt,
-    ) -> Result<(), RetainedFieldError> {
-        self.task.take();
-        self.task_lease.take();
-        self.field.not_dispatched(attempt)
+    ) -> Result<Option<RetainedFieldSettlement>, RetainedFieldError> {
+        let completion = self.task_completion.borrow_mut().take();
+        let Some(completion) = completion else {
+            return Ok(None);
+        };
+        let attempt = completion.attempt();
+        let settlement = self.mutate(|field| match completion {
+            FieldTaskCompletion::Ticket {
+                attempt, result, ..
+            } => Ok(field.settle_ticket(attempt, *result)),
+            FieldTaskCompletion::OutcomeUnknown { attempt, message } => {
+                field.mark_uncertain(attempt, message)
+            }
+        })?;
+        if !matches!(settlement, RetainedFieldSettlement::Ignored { .. }) {
+            self.release_task_resources(attempt);
+        }
+        Ok(Some(settlement))
     }
 
-    pub fn settle_ticket(
+    fn mutate<R>(
         &mut self,
-        attempt: RetainedFieldAttempt,
-        result: OpenGpuiCommandTicketResult,
-    ) -> Result<RetainedFieldSettlement, RetainedFieldError> {
+        operation: impl FnOnce(&mut RevisionedField<T>) -> Result<R, RetainedFieldError>,
+    ) -> Result<R, RetainedFieldError> {
         self.ensure_live()?;
-        self.task.take();
-        self.task_lease.take();
-        Ok(self.field.settle_ticket(attempt, result))
+        let candidate = self.state.try_prepare(operation)?;
+        self.commit_candidate(candidate)
     }
 
-    pub fn sync_retention(&mut self) -> Result<RetainedFieldRetention, RetainedFieldError> {
-        self.ensure_live()?;
-        let active = self.field.phase() != RetainedFieldPhase::Clean
-            || self.field.attempt_state() != RetainedFieldAttemptState::Idle;
-        if active && self.draft_lease.is_none() {
+    fn commit_candidate<R>(
+        &mut self,
+        candidate: FieldTransition<T, R>,
+    ) -> Result<R, RetainedFieldError> {
+        let active = candidate.field.phase() != RetainedFieldPhase::Clean
+            || candidate.field.attempt_state() != RetainedFieldAttemptState::Idle;
+        if active && !self.retention.is_protected() {
             match self.mount.activity.acquire(OpenGpuiActivityKind::Draft) {
-                Ok(lease) => self.draft_lease = Some(lease),
+                Ok(lease) => {
+                    if self.retention.is_externalized() {
+                        self.store.discard_externalized(
+                            self.mount.context.instance(),
+                            self.key.as_str(),
+                        )?;
+                    }
+                    self.retention = FieldRetentionState::Protected { _lease: lease };
+                    return Ok(self.state.publish(candidate));
+                }
                 Err(OpenGpuiActivityAcquireError::ProtectedCapacityExceeded { .. }) => {
                     self.store.externalize_overflow(
-                        &self.mount.instance,
+                        self.mount.context.instance(),
                         self.key.as_str(),
-                        self.field.reducer(),
+                        candidate.field.reducer(),
                     )?;
-                    self.externalized = true;
-                    return Ok(RetainedFieldRetention::Externalized);
+                    self.retention = FieldRetentionState::Externalized;
+                    return Ok(self.state.publish(candidate));
                 }
                 Err(error) => return Err(error.into()),
             }
-        } else if !active {
-            self.draft_lease.take();
         }
 
-        if self.externalized && (!active || self.draft_lease.is_some()) {
+        if self.retention.is_externalized() {
             self.store
-                .discard_externalized(&self.mount.instance, self.key.as_str())?;
-            self.externalized = false;
+                .discard_externalized(self.mount.context.instance(), self.key.as_str())?;
         }
-        Ok(if active {
-            RetainedFieldRetention::Protected
-        } else {
-            RetainedFieldRetention::Idle
-        })
+        if !active {
+            self.retention = FieldRetentionState::Idle;
+        }
+        Ok(self.state.publish(candidate))
     }
 
     fn ensure_live(&mut self) -> Result<(), RetainedFieldError> {
-        match self.mount.state() {
-            OpenGpuiMountState::Live => Ok(()),
-            OpenGpuiMountState::Retired => {
-                self.release_terminal_resources();
-                Err(RetainedFieldError::Retired)
-            }
-            OpenGpuiMountState::Closed(reason) => {
-                self.release_terminal_resources();
-                Err(RetainedFieldError::Closed { reason })
-            }
+        let result = self.mount.ensure_current();
+        if matches!(
+            &result,
+            Err(RetainedFieldError::Retired | RetainedFieldError::Closed { .. })
+        ) {
+            self.release_terminal_resources();
         }
+        result
+    }
+
+    fn release_task_resources(&mut self, attempt: RetainedFieldAttempt) {
+        self.task_state
+            .take_if(|task_state| task_state.attempt() == attempt);
     }
 
     fn release_terminal_resources(&mut self) {
-        self.task.take();
-        self.task_lease.take();
-        self.draft_lease.take();
+        self.task_state.take();
+        self.task_completion.borrow_mut().take();
+        self.retention.release_protection();
+    }
+
+    fn terminalize_post_enqueue_unwind(&mut self, attempt: RetainedFieldAttempt) {
+        self.task_completion.borrow_mut().take();
+        let _ = self.state.try_transition(|field| {
+            field.mark_uncertain(attempt, DISPATCH_TASK_INSTALLATION_UNWOUND_MESSAGE)
+        });
+        self.release_task_resources(attempt);
+    }
+}
+
+struct RetainedFieldPostEnqueueGuard<'a, T>
+where
+    T: Clone + PartialEq + 'static,
+{
+    field: &'a mut RetainedField<T>,
+    attempt: RetainedFieldAttempt,
+    cleanup: Rc<Cell<bool>>,
+    armed: bool,
+}
+
+impl<'a, T> RetainedFieldPostEnqueueGuard<'a, T>
+where
+    T: Clone + PartialEq + 'static,
+{
+    fn new(
+        field: &'a mut RetainedField<T>,
+        attempt: RetainedFieldAttempt,
+        cleanup: Rc<Cell<bool>>,
+    ) -> Self {
+        Self {
+            field,
+            attempt,
+            cleanup,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl<T> Drop for RetainedFieldPostEnqueueGuard<'_, T>
+where
+    T: Clone + PartialEq + 'static,
+{
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        self.cleanup.set(true);
+        self.field.terminalize_post_enqueue_unwind(self.attempt);
+    }
+}
+
+/// One planned retained-field submission tied to an exact authoring snapshot.
+///
+/// This type owns the only public path from a field intent to command dispatch. If command
+/// construction returns early, dropping the plan restores the field to a retryable dirty state.
+#[must_use = "dropping an undispatched field plan rolls it back"]
+pub struct RetainedFieldDispatchPlan<'a, T>
+where
+    T: Clone + PartialEq + 'static,
+{
+    field: &'a mut RetainedField<T>,
+    authoring: Option<OpenGpuiNodeAuthoring>,
+    intent: Option<RetainedFieldIntent<T>>,
+}
+
+impl<'a, T> RetainedFieldDispatchPlan<'a, T>
+where
+    T: Clone + PartialEq + 'static,
+{
+    fn new(
+        field: &'a mut RetainedField<T>,
+        authoring: OpenGpuiNodeAuthoring,
+        intent: RetainedFieldIntent<T>,
+    ) -> Self {
+        Self {
+            field,
+            authoring: Some(authoring),
+            intent: Some(intent),
+        }
+    }
+
+    #[must_use]
+    pub fn authoring(&self) -> &OpenGpuiNodeAuthoring {
+        self.authoring
+            .as_ref()
+            .expect("an undispatched field plan retains its authoring view")
+    }
+
+    #[must_use]
+    pub fn mode(&self) -> RetainedFieldSubmitMode {
+        self.intent
+            .as_ref()
+            .expect("an undispatched field plan retains its intent")
+            .mode()
+    }
+
+    #[must_use]
+    pub fn value(&self) -> &T {
+        self.intent
+            .as_ref()
+            .expect("an undispatched field plan retains its intent")
+            .value()
+    }
+
+    /// Enqueues the product command and internally supervises its terminal ticket.
+    ///
+    /// The terminal ticket is intentionally not exposed to product code. The supervisor refreshes
+    /// the window after every terminal outcome so the retained field can reconcile on its next
+    /// authoritative observation.
+    pub fn dispatch(
+        mut self,
+        command: GraphCommand,
+        cx: &mut App,
+    ) -> Result<(), RetainedFieldError> {
+        let authoring = self
+            .authoring
+            .take()
+            .expect("an undispatched field plan retains its authoring view");
+        let intent = self
+            .intent
+            .take()
+            .expect("an undispatched field plan retains its intent");
+        self.field.dispatch_planned(authoring, intent, command, cx)
+    }
+}
+
+impl<T> Drop for RetainedFieldDispatchPlan<'_, T>
+where
+    T: Clone + PartialEq + 'static,
+{
+    fn drop(&mut self) {
+        if let Some(intent) = self.intent.take() {
+            self.field.cancel_planned(intent.attempt());
+        }
+    }
+}
+
+fn prefer_completion_update(
+    settlement: Option<RetainedFieldSettlement>,
+    observed: RetainedFieldUpdate,
+) -> RetainedFieldUpdate {
+    match (settlement, observed) {
+        (
+            Some(RetainedFieldSettlement::Acknowledged {
+                attempt,
+                revision,
+                local_changed_after_submission,
+            }),
+            RetainedFieldUpdate::Unchanged
+            | RetainedFieldUpdate::IgnoredStale
+            | RetainedFieldUpdate::InconsistentSnapshot
+            | RetainedFieldUpdate::RemoteApplied
+            | RetainedFieldUpdate::BaseAdvanced,
+        ) => RetainedFieldUpdate::Acknowledged {
+            attempt,
+            revision,
+            local_changed_after_submission,
+        },
+        (_, observed) => observed,
     }
 }
 
@@ -1032,6 +2159,8 @@ pub enum RetainedFieldError {
     ConflictRequiresResolution,
     #[error("retained field has no conflict to resolve")]
     NoConflict,
+    #[error("retained field reapply must use a revision-bound dispatch plan")]
+    ReapplyRequiresDispatchPlan,
     #[error(
         "retained field observed revision {observed_revision}, not requested revision {requested_revision}"
     )]
@@ -1047,6 +2176,48 @@ pub enum RetainedFieldError {
     AttemptIdentityExhausted,
     #[error("retained field attempt does not match: {attempt:?}")]
     AttemptMismatch { attempt: RetainedFieldAttempt },
+    #[error("retained field belongs to graph runtime {expected:?}, not foreign runtime {actual:?}")]
+    ForeignRuntimeAuthority {
+        expected: RuntimeProvenance,
+        actual: RuntimeProvenance,
+    },
+    #[error("retained field dispatch expected graph version {expected:?}, not {actual:?}")]
+    DispatchVersionMismatch {
+        expected: GraphVersion,
+        actual: GraphVersion,
+    },
+    #[error("retained field outcome belongs to a different graph command")]
+    OutcomeCommandMismatch,
+    #[error(
+        "retained field command outcome version {actual:?} is invalid for expected version {expected:?}"
+    )]
+    OutcomeVersionMismatch {
+        expected: GraphVersion,
+        actual: GraphVersion,
+    },
+    #[error(
+        "retained field belongs to authoring instance {expected:?}, not foreign instance {actual:?}"
+    )]
+    ForeignAuthoring {
+        expected: Box<NodeInstanceKey>,
+        actual: Box<NodeInstanceKey>,
+    },
+    #[error("retained field authoring came from a different native mount for node {node:?}")]
+    CrossedMount { node: NodeId },
+    #[error(
+        "retained field observation revision {observed_revision} is not the planning authoring snapshot at revision {authoring_revision}"
+    )]
+    ObservationSnapshotMismatch {
+        observed_revision: GraphRevision,
+        authoring_revision: GraphRevision,
+    },
+    #[error(
+        "retained field authoring revision {authoring_revision} is stale; current graph revision is {current_revision}"
+    )]
+    StaleAuthoring {
+        authoring_revision: GraphRevision,
+        current_revision: GraphRevision,
+    },
     #[error("retained field has no uncertain attempt")]
     NoUncertainAttempt,
     #[error(
@@ -1062,14 +2233,37 @@ pub enum RetainedFieldError {
     #[error("retained field mount is closed: {reason:?}")]
     Closed { reason: ViewCloseReason },
     #[error(transparent)]
-    View(#[from] jellyflow_runtime::ViewSessionError),
+    View(#[from] jellyflow_runtime::view::ViewSessionError),
     #[error(transparent)]
     Store(#[from] RetainedFieldStoreError),
     #[error(transparent)]
     Activity(#[from] OpenGpuiActivityAcquireError),
+    #[error(transparent)]
+    Authoring(Box<OpenGpuiNodeAuthoringError>),
 }
 
-fn map_plan_error(reason: DraftIntentRejection) -> RetainedFieldError {
+fn map_authoring_error(error: OpenGpuiNodeAuthoringError) -> RetainedFieldError {
+    match error {
+        OpenGpuiNodeAuthoringError::RetiredMount { .. }
+        | OpenGpuiNodeAuthoringError::RetiredIncarnation { .. }
+        | OpenGpuiNodeAuthoringError::MissingNode { .. } => RetainedFieldError::Retired,
+        OpenGpuiNodeAuthoringError::Closed { reason } => RetainedFieldError::Closed { reason },
+        OpenGpuiNodeAuthoringError::SnapshotChanged {
+            authoring_revision,
+            current_revision,
+        }
+        | OpenGpuiNodeAuthoringError::StaleRevision {
+            authoring_revision,
+            current_revision,
+        } => RetainedFieldError::StaleAuthoring {
+            authoring_revision,
+            current_revision,
+        },
+        error => RetainedFieldError::Authoring(Box::new(error)),
+    }
+}
+
+fn map_plan_error(reason: DraftIntentRejection, draft_nonce: Option<u64>) -> RetainedFieldError {
     match reason {
         DraftIntentRejection::Clean => RetainedFieldError::Clean,
         DraftIntentRejection::CompositionActive => RetainedFieldError::CompositionActive,
@@ -1085,7 +2279,7 @@ fn map_plan_error(reason: DraftIntentRejection) -> RetainedFieldError {
             requested_revision,
         },
         DraftIntentRejection::SubmissionPending { attempt } => RetainedFieldError::AttemptPending {
-            attempt: Some(RetainedFieldAttempt(attempt)),
+            attempt: draft_nonce.map(|draft_nonce| RetainedFieldAttempt::new(draft_nonce, attempt)),
         },
         DraftIntentRejection::AttemptIdentityExhausted => {
             RetainedFieldError::AttemptIdentityExhausted
@@ -1095,13 +2289,123 @@ fn map_plan_error(reason: DraftIntentRejection) -> RetainedFieldError {
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroUsize;
+
+    use jellyflow_core::{
+        CanvasPoint, CanvasRect, CanvasSize, GraphBuilder, GraphId, Node, NodeId, NodeKindKey,
+    };
+    use jellyflow_runtime::{
+        graph::GraphRuntime, view::FrameRequest, view::RendererStamp, view::ViewSession,
+        view::ViewSessionOptions,
+    };
+
     use super::*;
+    use crate::activity::OpenGpuiActivityCoordinator;
+    use crate::binding::OpenGpuiMountCapability;
 
     fn dirty_field() -> (RevisionedField<String>, RetainedFieldIntent<String>) {
         let mut field = RevisionedField::new(7, "remote".to_owned());
         field.edit("submitted".to_owned());
         let intent = field.plan(7).expect("plan field submission");
         (field, intent)
+    }
+
+    #[test]
+    fn same_sequence_attempts_from_different_drafts_are_not_interchangeable() {
+        let (_first, first_intent) = dirty_field();
+        let (mut second, second_intent) = dirty_field();
+        let first_attempt = first_intent.attempt();
+        let second_attempt = second_intent.attempt();
+
+        assert_eq!(first_attempt.get(), second_attempt.get());
+        assert_ne!(first_attempt, second_attempt);
+        assert_eq!(
+            second.record_receipt(first_attempt, 8),
+            RetainedFieldSettlement::Ignored {
+                attempt: first_attempt,
+            }
+        );
+        assert!(matches!(
+            second.not_dispatched(first_attempt),
+            Err(RetainedFieldError::AttemptMismatch { attempt })
+                if attempt == first_attempt
+        ));
+        assert!(matches!(
+            second.mark_uncertain(first_attempt, "foreign completion"),
+            Err(RetainedFieldError::AttemptMismatch { attempt })
+                if attempt == first_attempt
+        ));
+        assert_eq!(
+            second.attempt_state(),
+            RetainedFieldAttemptState::Pending {
+                attempt: second_attempt,
+            }
+        );
+        assert_eq!(
+            second.record_receipt(second_attempt, 8),
+            RetainedFieldSettlement::AwaitingSnapshot {
+                attempt: second_attempt,
+                committed_revision: 8,
+            }
+        );
+    }
+
+    #[test]
+    fn application_retained_fields_reject_each_others_same_sequence_ticket() {
+        let (runtime, _view, _instance) = retained_field_instance();
+        let version = runtime.snapshot().expect("application version").version();
+        let mut first = ApplicationRetainedField::new(version, "first remote".to_owned());
+        first.edit("first local".to_owned());
+        let first_intent = first.plan(version).expect("plan first field");
+        let first_attempt = first_intent.attempt();
+        let first_command = GraphCommand::set_node_data(
+            version,
+            NodeId::from_u128(0xffff),
+            serde_json::Value::Null,
+        );
+        let first_receipt = first_intent
+            .bind_command(&first_command)
+            .expect("bind first field command");
+        let first_outcome = runtime
+            .execute(first_command)
+            .expect("issue first field rejection");
+
+        let mut second = ApplicationRetainedField::new(version, "second remote".to_owned());
+        second.edit("second local".to_owned());
+        let second_attempt = second.plan(version).expect("plan second field").attempt();
+
+        assert_eq!(first_attempt.get(), second_attempt.get());
+        assert_ne!(first_attempt, second_attempt);
+        assert!(matches!(
+            second.settle_command(first_receipt, first_outcome),
+            Ok(RetainedFieldSettlement::Ignored {
+                attempt,
+            }) if attempt == first_attempt
+        ));
+        assert_eq!(
+            second.attempt_state(),
+            RetainedFieldAttemptState::Pending {
+                attempt: second_attempt,
+            }
+        );
+        second
+            .not_dispatched(second_attempt)
+            .expect("matching field attempt remains authoritative");
+        assert_eq!(second.attempt_state(), RetainedFieldAttemptState::Idle);
+    }
+
+    #[test]
+    fn cloned_field_candidate_preserves_attempt_capability() {
+        let (field, intent) = dirty_field();
+        let mut candidate = field.clone();
+
+        assert_eq!(
+            candidate.record_receipt(intent.attempt(), 8),
+            RetainedFieldSettlement::AwaitingSnapshot {
+                attempt: intent.attempt(),
+                committed_revision: 8,
+            }
+        );
     }
 
     #[test]
@@ -1171,7 +2475,7 @@ mod tests {
     }
 
     #[test]
-    fn noop_uses_the_same_receipt_snapshot_ordering() {
+    fn recorded_receipt_uses_matching_snapshot_ordering() {
         let (mut field, intent) = dirty_field();
 
         assert!(matches!(
@@ -1275,5 +2579,350 @@ mod tests {
         assert_eq!(field.attempt_state(), RetainedFieldAttemptState::Idle);
         assert_eq!(field.phase(), RetainedFieldPhase::Dirty);
         assert!(field.can_submit());
+    }
+
+    #[test]
+    fn edit_is_rejected_atomically_when_protection_and_external_storage_are_full() {
+        let (_runtime, view, instance) = retained_field_instance();
+        let store = RetainedFieldStore::with_capacity(NonZeroUsize::new(1).unwrap());
+        store
+            .ensure_bound(&view.downgrade())
+            .expect("bind retained field store");
+        let mut occupied = RevisionedDraft::new(0, "occupied remote".to_owned());
+        occupied.edit_local("occupied local".to_owned());
+        store
+            .externalize_overflow(&instance, "occupied", &occupied)
+            .expect("fill external field store");
+
+        let activity = OpenGpuiNodeActivityRegistry::for_host(
+            instance.clone(),
+            OpenGpuiActivityCoordinator::new(0),
+        );
+        let context =
+            OpenGpuiMountContext::new(instance, view.downgrade(), OpenGpuiMountCapability::new())
+                .expect("exact retained field mount");
+        let mut retained = mount_capability_for_test(
+            RetainedFieldMountCapability::new(context, activity),
+            RetainedFieldKey::new("target").unwrap(),
+            store.clone(),
+            "authoritative".to_owned(),
+        )
+        .expect("mount retained field");
+
+        assert!(matches!(
+            retained.edit("must not publish".to_owned()),
+            Err(RetainedFieldError::Store(
+                RetainedFieldStoreError::CapacityExceeded { capacity: 1 }
+            ))
+        ));
+        assert_eq!(retained.local(), "authoritative");
+        assert_eq!(retained.phase(), RetainedFieldPhase::Clean);
+        assert_eq!(retained.retention(), RetainedFieldRetention::Idle);
+        assert_eq!(store.len(), 1);
+    }
+
+    #[test]
+    fn retired_mount_is_rejected_before_externalized_draft_is_consumed() {
+        let (_runtime, view, instance) = retained_field_instance();
+        let store = RetainedFieldStore::new();
+        store
+            .ensure_bound(&view.downgrade())
+            .expect("bind retained field store");
+        let mut draft = RevisionedDraft::new(0, "authoritative".to_owned());
+        draft.edit_local("unsaved".to_owned());
+        store
+            .externalize_overflow(&instance, "target", &draft)
+            .expect("externalize retained draft");
+
+        let mount = OpenGpuiMountCapability::new();
+        let context = OpenGpuiMountContext::new(instance.clone(), view.downgrade(), mount.clone())
+            .expect("exact retained field mount");
+        mount.retire();
+        let capability = RetainedFieldMountCapability::new(
+            context,
+            OpenGpuiNodeActivityRegistry::for_host(instance, OpenGpuiActivityCoordinator::new(1)),
+        );
+
+        assert!(matches!(
+            mount_capability_for_test(
+                capability,
+                RetainedFieldKey::new("target").unwrap(),
+                store.clone(),
+                "authoritative".to_owned(),
+            ),
+            Err(RetainedFieldError::Retired)
+        ));
+        assert_eq!(
+            store.len(),
+            1,
+            "a stale mount must not take the saved draft"
+        );
+    }
+
+    #[test]
+    fn foreign_node_and_crossed_mount_observations_fail_without_mutating_the_field() {
+        let (_runtime, view, instance) = retained_field_instance();
+        let capability = test_capability(&view, instance, 2);
+        let mut field = mount_capability_for_test(
+            capability,
+            RetainedFieldKey::new("target").unwrap(),
+            RetainedFieldStore::new(),
+            "authoritative".to_owned(),
+        )
+        .expect("mount retained field");
+        field.edit("local".to_owned()).expect("retain local edit");
+
+        let (_foreign_runtime, foreign_view, foreign_instance) = retained_field_instance();
+        let foreign = test_capability(&foreign_view, foreign_instance, 2);
+        let foreign_observation = observation_for_test(&foreign, "foreign".to_owned());
+        assert!(matches!(
+            field.observe(foreign_observation),
+            Err(RetainedFieldError::ForeignAuthoring { .. })
+        ));
+
+        let crossed_context = OpenGpuiMountContext::new(
+            field.mount.context.instance().clone(),
+            field.mount.context.view().clone(),
+            OpenGpuiMountCapability::new(),
+        )
+        .expect("crossed mount retains an exact view identity");
+        let crossed =
+            RetainedFieldMountCapability::new(crossed_context, field.mount.activity.clone());
+        let crossed_observation = observation_for_test(&crossed, "crossed".to_owned());
+        assert!(matches!(
+            field.observe(crossed_observation),
+            Err(RetainedFieldError::CrossedMount { .. })
+        ));
+        assert_eq!(field.local(), "local");
+        assert_eq!(field.remote(), "authoritative");
+    }
+
+    #[test]
+    fn stale_observation_and_planning_stamp_fail_before_reconciliation() {
+        let (runtime, view, instance) = retained_field_instance();
+        let capability = test_capability(&view, instance, 2);
+        let stale_observation = observation_for_test(&capability, "stale".to_owned());
+        let stale_planning = stale_observation.stamp().clone();
+        let mut field = mount_capability_for_test(
+            capability,
+            RetainedFieldKey::new("target").unwrap(),
+            RetainedFieldStore::new(),
+            "authoritative".to_owned(),
+        )
+        .expect("mount retained field");
+
+        let current_version = runtime
+            .snapshot()
+            .expect("read retained-field graph version")
+            .version();
+        runtime
+            .execute(GraphCommand::set_node_data(
+                current_version,
+                field.instance().node(),
+                serde_json::json!("fresh"),
+            ))
+            .expect("advance graph snapshot");
+
+        for error in [
+            field
+                .observe(stale_observation)
+                .expect_err("reject stale observation"),
+            field
+                .validate_planning_authoring(&stale_planning)
+                .expect_err("reject stale planning stamp"),
+        ] {
+            assert!(matches!(
+                error,
+                RetainedFieldError::StaleAuthoring {
+                    authoring_revision: 0,
+                    current_revision: 1,
+                }
+            ));
+        }
+        assert_eq!(field.remote(), "authoritative");
+    }
+
+    #[test]
+    fn retired_and_closed_mounts_reject_matching_observations_and_release_resources() {
+        for reason in [None, Some(ViewCloseReason::HostClosed)] {
+            let (_runtime, view, instance) = retained_field_instance();
+            let capability = test_capability(&view, instance, 2);
+            let observation = observation_for_test(&capability, "authoritative".to_owned());
+            let mut field = mount_capability_for_test(
+                capability,
+                RetainedFieldKey::new("target").unwrap(),
+                RetainedFieldStore::new(),
+                "authoritative".to_owned(),
+            )
+            .expect("mount retained field");
+            field.edit("local".to_owned()).expect("protect local edit");
+            match reason {
+                Some(reason) => field.mount.context.mount().close(reason),
+                None => field.mount.context.mount().retire(),
+            }
+
+            let result = field.observe(observation);
+            assert!(matches!(
+                (reason, result),
+                (None, Err(RetainedFieldError::Retired))
+                    | (
+                        Some(ViewCloseReason::HostClosed),
+                        Err(RetainedFieldError::Closed {
+                            reason: ViewCloseReason::HostClosed,
+                        })
+                    )
+            ));
+            assert!(field.task_state.is_none());
+            assert_eq!(field.retention(), RetainedFieldRetention::Idle);
+        }
+    }
+
+    #[test]
+    fn post_enqueue_unwind_marks_the_pending_attempt_uncertain_without_a_task_lease() {
+        let (_runtime, view, instance) = retained_field_instance();
+        let capability = test_capability(&view, instance, 2);
+        let mut field = mount_capability_for_test(
+            capability,
+            RetainedFieldKey::new("target").unwrap(),
+            RetainedFieldStore::new(),
+            "authoritative".to_owned(),
+        )
+        .expect("mount retained field");
+        field.edit("local".to_owned()).expect("retain local edit");
+        let revision = field.base_revision();
+        let intent = field
+            .state
+            .try_transition(|field| field.plan(revision))
+            .expect("plan pending field attempt");
+        let attempt = intent.attempt();
+
+        {
+            let _guard =
+                RetainedFieldPostEnqueueGuard::new(&mut field, attempt, Rc::new(Cell::new(false)));
+        }
+
+        assert_eq!(
+            field.attempt_state(),
+            RetainedFieldAttemptState::Uncertain {
+                attempt,
+                expected_revision: revision,
+            }
+        );
+        assert!(
+            field
+                .notice()
+                .is_some_and(|notice| notice.contains("task installation unwound"))
+        );
+        assert!(field.task_state.is_none());
+    }
+
+    fn mount_capability_for_test<T>(
+        capability: RetainedFieldMountCapability,
+        key: RetainedFieldKey,
+        store: RetainedFieldStore<T>,
+        authoritative: T,
+    ) -> Result<RetainedField<T>, RetainedFieldError>
+    where
+        T: Clone + PartialEq + 'static,
+    {
+        let observation = OpenGpuiAuthoringStamp {
+            context: capability.context.clone(),
+            snapshot: capability
+                .context
+                .view()
+                .graph_snapshot()
+                .map_err(RetainedFieldError::View)?,
+            activity: capability.activity.clone(),
+        };
+        RetainedField::mount_capability(capability, observation, key, store, authoritative)
+    }
+
+    fn test_capability(
+        view: &ViewSession,
+        instance: NodeInstanceKey,
+        protected_capacity: usize,
+    ) -> RetainedFieldMountCapability {
+        let context = OpenGpuiMountContext::new(
+            instance.clone(),
+            view.downgrade(),
+            OpenGpuiMountCapability::new(),
+        )
+        .expect("test mount context");
+        RetainedFieldMountCapability::new(
+            context,
+            OpenGpuiNodeActivityRegistry::for_host(
+                instance,
+                OpenGpuiActivityCoordinator::new(protected_capacity),
+            ),
+        )
+    }
+
+    fn observation_for_test<T>(
+        capability: &RetainedFieldMountCapability,
+        value: T,
+    ) -> OpenGpuiNodeObservation<T> {
+        OpenGpuiNodeObservation::from_parts(
+            OpenGpuiAuthoringStamp {
+                context: capability.context.clone(),
+                snapshot: capability
+                    .context
+                    .view()
+                    .graph_snapshot()
+                    .expect("test authoring snapshot"),
+                activity: capability.activity.clone(),
+            },
+            value,
+        )
+    }
+
+    fn retained_field_instance() -> (GraphRuntime, ViewSession, NodeInstanceKey) {
+        let node = NodeId::from_u128(0x00a7_011c);
+        let graph = GraphBuilder::new(GraphId::from_u128(0x00a7_011d))
+            .with_node(
+                node,
+                Node {
+                    kind: NodeKindKey::new("test.atomic-retained-field"),
+                    kind_version: 1,
+                    pos: CanvasPoint::default(),
+                    origin: None,
+                    selectable: None,
+                    draggable: None,
+                    connectable: None,
+                    deletable: None,
+                    parent: None,
+                    extent: None,
+                    expand_parent: None,
+                    size: Some(CanvasSize {
+                        width: 160.0,
+                        height: 80.0,
+                    }),
+                    hidden: false,
+                    collapsed: false,
+                    ports: Vec::new(),
+                    data: serde_json::Value::Null,
+                },
+            )
+            .build()
+            .expect("atomic retained field graph");
+        let runtime = GraphRuntime::builder(Default::default())
+            .build(graph)
+            .expect("atomic retained field runtime");
+        let view = runtime
+            .attach_view(ViewSessionOptions::default())
+            .expect("atomic retained field view");
+        let frame = view
+            .frame(FrameRequest::new(
+                CanvasRect {
+                    origin: CanvasPoint::default(),
+                    size: CanvasSize {
+                        width: 400.0,
+                        height: 300.0,
+                    },
+                },
+                RendererStamp::new("test.atomic-retained-field", 1),
+            ))
+            .expect("atomic retained field frame");
+        let instance = frame.nodes()[0].instance().clone();
+        (runtime, view, instance)
     }
 }

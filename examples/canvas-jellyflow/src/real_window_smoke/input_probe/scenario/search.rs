@@ -14,21 +14,36 @@ impl RealWindowSmokeProbe {
                 let Some(source) = free_connection_port(view)? else {
                     return self.wait_or_timeout();
                 };
-                let Some(source_point) = port_point(view, source)? else {
+                let Some(source_point) = visible_port_point(view, source, surface_size)? else {
+                    window.refresh();
                     return self.wait_or_timeout();
                 };
                 let Some(blank) = blank_surface_point(view, surface_size)? else {
                     return Err("input_blank_point_missing");
                 };
-                self.press = Some(source_point);
-                self.release = Some(blank);
-                self.dispatch(window, cx, mouse_down(MouseButton::Left, source_point));
+                let interaction = self.interaction_mut()?;
+                interaction.press = Some(source_point);
+                interaction.release = Some(blank);
+                self.dispatch_at_target_zoom(
+                    window,
+                    cx,
+                    view,
+                    mouse_down(MouseButton::Left, source_point),
+                )?;
                 self.transition(ProbePhase::SearchMove);
                 Ok(None)
             }
             ProbePhase::SearchMove => {
-                let blank = self.release.ok_or("input_pointer_plan_missing")?;
-                self.dispatch(window, cx, mouse_move(MouseButton::Left, blank));
+                let blank = self
+                    .interaction()?
+                    .release
+                    .ok_or("input_pointer_plan_missing")?;
+                self.dispatch_at_target_zoom(
+                    window,
+                    cx,
+                    view,
+                    mouse_move(MouseButton::Left, blank),
+                )?;
                 self.transition(ProbePhase::SearchWaitDrag);
                 Ok(None)
             }
@@ -46,9 +61,12 @@ impl RealWindowSmokeProbe {
                 }
             }
             ProbePhase::SearchRelease => {
-                let blank = self.release.ok_or("input_pointer_plan_missing")?;
-                self.dispatch(window, cx, mouse_up(MouseButton::Left, blank));
-                self.search_focus_baseline = window.focused(cx);
+                let blank = self
+                    .interaction()?
+                    .release
+                    .ok_or("input_pointer_plan_missing")?;
+                self.dispatch_at_target_zoom(window, cx, view, mouse_up(MouseButton::Left, blank))?;
+                self.interaction_mut()?.search_focus_baseline = window.focused(cx);
                 self.transition(ProbePhase::SearchWaitOpen);
                 Ok(None)
             }
@@ -62,13 +80,14 @@ impl RealWindowSmokeProbe {
                         host.connection_search_request().is_some(),
                     )
                 };
-                if search_active && request_present && !self.search_render_requested {
+                if search_active && request_present && !self.interaction()?.search_render_requested
+                {
                     surface.update(cx, |_, cx| cx.notify());
                     window.refresh();
                     window
                         .render_to_image()
                         .map_err(|_| "input_search_render_failed")?;
-                    self.search_render_requested = true;
+                    self.interaction_mut()?.search_render_requested = true;
                 }
                 let search_has_focus = surface.read(cx).connection_search_has_focus(window, cx);
                 if search_active && request_present && search_has_focus {
@@ -78,8 +97,9 @@ impl RealWindowSmokeProbe {
                         surface_size,
                         SmokeCaptureState::SearchOpen,
                     )?;
-                    self.search_opened = true;
-                    self.search_focus_moved = true;
+                    let interaction = self.interaction_mut()?;
+                    interaction.search_opened = true;
+                    interaction.search_focus_moved = true;
                     self.transition(ProbePhase::SearchEscape);
                     Ok(None)
                 } else {
@@ -87,7 +107,7 @@ impl RealWindowSmokeProbe {
                 }
             }
             ProbePhase::SearchEscape => {
-                self.dispatch(window, cx, key_down("escape")?);
+                self.dispatch_at_target_zoom(window, cx, view, key_down("escape")?)?;
                 self.transition(ProbePhase::SearchWaitClosed);
                 Ok(None)
             }
@@ -106,13 +126,13 @@ impl RealWindowSmokeProbe {
                 };
                 let surface = surface.read(cx);
                 let focus_restored = !surface.connection_search_has_focus(window, cx)
-                    && (window.focused(cx) == self.search_focus_baseline
+                    && (window.focused(cx) == self.interaction()?.search_focus_baseline
                         || surface.graph_has_focus(window, cx));
                 if request_closed && interaction_closed && focus_restored {
-                    self.search_cancelled = true;
-                    self.search_focus_restored = true;
+                    let interaction = self.interaction_mut()?;
+                    interaction.search_cancelled = true;
+                    interaction.search_focus_restored = true;
                     self.capture_checkpoint(window, view, surface_size, SmokeCaptureState::Final)?;
-                    self.final_frame_validated = true;
                     self.transition(ProbePhase::Complete);
                     self.complete()
                 } else {

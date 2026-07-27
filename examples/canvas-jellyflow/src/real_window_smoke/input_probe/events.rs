@@ -1,4 +1,4 @@
-use jellyflow_runtime::ViewPoint;
+use jellyflow_runtime::geometry::ViewPoint;
 use open_gpui::{
     KeyDownEvent, KeyUpEvent, Keystroke, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     PlatformInput, point, px,

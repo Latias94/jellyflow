@@ -24,6 +24,10 @@ WORKSPACE_INTERNAL_DEPENDENCIES = (
 )
 PRODUCT_MANIFEST = ROOT / "examples" / "canvas-jellyflow" / "Cargo.toml"
 PRODUCT_PACKAGE = "open-gpui-canvas-jellyflow"
+CHANGELOG = ROOT / "CHANGELOG.md"
+CHANGELOG_RELEASE_HEADING = re.compile(
+    r"^## \[(?P<version>[^\]]+)\](?: - (?P<date>.+))?$"
+)
 
 
 def validate_semver(version: str) -> None:
@@ -82,8 +86,42 @@ def crate_version(crate_name: str) -> str:
     raise ValueError(f"{crate_name} does not have a supported package.version field")
 
 
+def extract_release_notes(changelog: str, version: str) -> str:
+    """Return one exact, non-empty release section from Keep a Changelog Markdown."""
+
+    validate_semver(version)
+    lines = changelog.splitlines()
+    matching_headings = [
+        index
+        for index, line in enumerate(lines)
+        if (match := CHANGELOG_RELEASE_HEADING.fullmatch(line)) is not None
+        and match.group("version") == version
+    ]
+    if not matching_headings:
+        raise ValueError(f"CHANGELOG.md is missing an exact ## [{version}] release section")
+    if len(matching_headings) != 1:
+        raise ValueError(
+            f"CHANGELOG.md contains duplicate ## [{version}] release sections"
+        )
+
+    start = matching_headings[0] + 1
+    end = next(
+        (index for index in range(start, len(lines)) if lines[index].startswith("## ")),
+        len(lines),
+    )
+    notes = "\n".join(lines[start:end]).strip()
+    if not notes:
+        raise ValueError(f"CHANGELOG.md ## [{version}] release section is empty")
+    return notes
+
+
+def changelog_release_notes(version: str) -> str:
+    return extract_release_notes(CHANGELOG.read_text(encoding="utf-8"), version)
+
+
 def check_versions(version: str) -> int:
     validate_semver(version)
+    release_notes = changelog_release_notes(version)
 
     actual = [("Cargo workspace version", cargo_workspace_version())]
     actual.extend(
@@ -110,12 +148,15 @@ def check_versions(version: str) -> int:
             file=sys.stderr,
         )
 
+    non_empty_lines = sum(bool(line.strip()) for line in release_notes.splitlines())
+    print(f"CHANGELOG release section: {version} ({non_empty_lines} non-empty lines)")
+
     return 1 if failed else 0
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["check", "crate-version"])
+    parser.add_argument("command", choices=["check", "crate-version", "release-notes"])
     parser.add_argument("--version")
     parser.add_argument("--crate")
     args = parser.parse_args()
@@ -125,7 +166,7 @@ def main() -> int:
             parser.error("check requires --version")
         try:
             return check_versions(args.version)
-        except (KeyError, TypeError, ValueError) as error:
+        except (FileNotFoundError, KeyError, TypeError, ValueError) as error:
             print(f"::error::{error}", file=sys.stderr)
             return 1
     if args.command == "crate-version":
@@ -135,6 +176,15 @@ def main() -> int:
             print(crate_version(args.crate))
             return 0
         except (FileNotFoundError, KeyError, TypeError, ValueError) as error:
+            print(f"::error::{error}", file=sys.stderr)
+            return 1
+    if args.command == "release-notes":
+        if args.version is None:
+            parser.error("release-notes requires --version")
+        try:
+            print(changelog_release_notes(args.version))
+            return 0
+        except (FileNotFoundError, ValueError) as error:
             print(f"::error::{error}", file=sys.stderr)
             return 1
     raise AssertionError(args.command)

@@ -6,10 +6,11 @@ use std::task::{Poll, Waker};
 
 use jellyflow_core::NodeId;
 use jellyflow_runtime::{
-    GraphRevision, NodeIncarnation, NodeInstanceKey, ViewCloseOutcome, ViewCloseReason,
-    ViewCloseRequest, ViewSession, ViewSessionError, ViewSessionEvent, ViewSubscriptionToken,
+    graph::GraphRevision, graph::NodeLifetimeKey, view::NodeInstanceKey, view::ViewCloseOutcome,
+    view::ViewCloseReason, view::ViewCloseRequest, view::ViewSession, view::ViewSessionError,
+    view::ViewSessionEvent, view::ViewSubscriptionToken,
 };
-use open_gpui::{Context, Task, Window};
+use open_gpui::{AsyncWindowContext, Context, Task, WeakEntity, Window};
 
 use crate::command_journal::{
     OpenGpuiCommandCloseError, OpenGpuiCompletedCommand, resolve_command_tickets,
@@ -17,10 +18,13 @@ use crate::command_journal::{
 
 use super::OpenGpuiSceneHost;
 use super::diagnostics::{OpenGpuiSceneHostDiagnostic, OpenGpuiSceneHostDiagnosticKind};
-use super::node_lifecycle::{
-    MountedNode, catch_host_cleanup, resume_mounted_node_panic, retire_mounted_nodes,
-    suppress_host_panic,
-};
+use super::node_lifecycle::{MountedNode, retire_mounted_nodes, suppress_host_panic};
+
+fn release_mounted_pointer_capture(nodes: &[MountedNode], window: &mut Window) -> bool {
+    nodes
+        .iter()
+        .any(|node| node.activity.release_pointer_capture_if_owned(window))
+}
 
 #[derive(Debug)]
 pub(super) enum HostLifecycleEvent {
@@ -50,7 +54,7 @@ impl<'a> IntoIterator for &'a NodeChanges {
 #[derive(Debug, Clone, Copy)]
 pub(super) struct PendingNodeChange {
     revision: GraphRevision,
-    current_incarnation: CurrentNodeIncarnation,
+    current_lifetime: CurrentNodeLifetime,
 }
 
 impl PendingNodeChange {
@@ -59,7 +63,7 @@ impl PendingNodeChange {
     }
 
     pub(super) fn is_stale_for(self, instance: &NodeInstanceKey) -> bool {
-        self.current_incarnation.is_stale_for(instance)
+        self.current_lifetime.is_stale_for(instance)
     }
 
     fn merge(&mut self, next: Self) {
@@ -67,20 +71,20 @@ impl PendingNodeChange {
             return;
         }
         self.revision = next.revision;
-        if next.current_incarnation.is_definitive() {
-            self.current_incarnation = next.current_incarnation;
+        if next.current_lifetime.is_definitive() {
+            self.current_lifetime = next.current_lifetime;
         }
     }
 }
 
 #[derive(Debug, Clone, Copy)]
-enum CurrentNodeIncarnation {
+enum CurrentNodeLifetime {
     Unavailable,
     Retired,
-    Live(NodeIncarnation),
+    Live(NodeLifetimeKey),
 }
 
-impl CurrentNodeIncarnation {
+impl CurrentNodeLifetime {
     fn is_definitive(self) -> bool {
         !matches!(self, Self::Unavailable)
     }
@@ -89,7 +93,7 @@ impl CurrentNodeIncarnation {
         match self {
             Self::Unavailable => false,
             Self::Retired => true,
-            Self::Live(current) => current != instance.incarnation(),
+            Self::Live(current) => current != instance.lifetime(),
         }
     }
 }
@@ -124,12 +128,14 @@ impl HostLifecycleSignal {
         match event {
             ViewSessionEvent::RuntimePatched { patch } => {
                 let nodes = patch.affected_nodes().iter().copied().map(|node| {
-                    let current_incarnation = match patch.node_incarnation_change(node) {
-                        Some(Some(incarnation)) => CurrentNodeIncarnation::Live(incarnation),
-                        Some(None) => CurrentNodeIncarnation::Retired,
-                        None => CurrentNodeIncarnation::Unavailable,
+                    let current_lifetime = match patch.node_lifetime_change(node) {
+                        Some(_) => patch
+                            .snapshot()
+                            .node_lifetime_key(node)
+                            .map_or(CurrentNodeLifetime::Retired, CurrentNodeLifetime::Live),
+                        None => CurrentNodeLifetime::Unavailable,
                     };
-                    (node, current_incarnation)
+                    (node, current_lifetime)
                 });
                 self.publish_patch(patch.to_revision(), nodes);
             }
@@ -167,16 +173,16 @@ impl HostLifecycleSignal {
     fn publish_patch(
         &self,
         revision: GraphRevision,
-        nodes: impl IntoIterator<Item = (NodeId, CurrentNodeIncarnation)>,
+        nodes: impl IntoIterator<Item = (NodeId, CurrentNodeLifetime)>,
     ) {
         if self.state.terminal_reason.get().is_some() {
             return;
         }
         let mut changes = self.state.node_changes.borrow_mut();
-        for (node, current_incarnation) in nodes {
+        for (node, current_lifetime) in nodes {
             let next = PendingNodeChange {
                 revision,
-                current_incarnation,
+                current_lifetime,
             };
             changes
                 .entry(node)
@@ -258,9 +264,35 @@ pub enum OpenGpuiSceneHostCloseError {
 }
 
 impl OpenGpuiSceneHost {
+    pub(super) fn ensure_window_owner(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let window_id = window.window_handle().window_id();
+        if let Some(owner) = &self.window_owner {
+            assert_eq!(
+                owner.window, window_id,
+                "an OpenGpuiSceneHost entity cannot be rendered in more than one window",
+            );
+            return;
+        }
+
+        let host = cx.entity();
+        let release_subscription = window.observe_release(&host, cx, |host, window, cx| {
+            host.release_in_window(window, cx);
+        });
+        self.window_owner = Some(super::OpenGpuiSceneHostWindowOwner {
+            window: window_id,
+            _release_subscription: release_subscription,
+        });
+    }
+
     fn owns_window_resources(&self) -> bool {
         self.interaction_owner.requires_window_cleanup()
             || self.activity_coordinator.requires_window_cleanup()
+    }
+
+    fn release_registered_pointer_capture(&self, window: &mut Window) -> bool {
+        self.mounts
+            .iter()
+            .any(|(_, node)| node.activity.release_pointer_capture_if_owned(window))
     }
 
     /// Closes a never-rendered view capability with no pending window-owned state.
@@ -286,22 +318,23 @@ impl OpenGpuiSceneHost {
             Ok(outcome) => outcome,
             Err(payload) => {
                 if let Some(reason) = self.view.close_reason() {
-                    let _ = catch_host_cleanup(|| self.enter_terminal(reason));
+                    self.pending_terminal_panics.push(Some(payload));
+                    let resolutions = self.prepare_terminal_cleanup(reason);
+                    resolve_command_tickets(resolutions);
+                    self.suppress_pending_terminal_panics();
+                } else {
+                    suppress_host_panic(Some(payload));
                 }
-                suppress_host_panic(Some(payload));
                 return Err(OpenGpuiSceneHostCloseError::PanicDuringClose);
             }
         };
-        let mut cleanup_panicked = false;
-        match &outcome {
-            Ok(outcome) => {
-                cleanup_panicked |= catch_host_cleanup(|| self.enter_terminal(outcome.reason()));
-            }
+        let cleanup_panicked = match &outcome {
+            Ok(outcome) => self.finish_terminal_without_window(outcome.reason()),
             Err(ViewSessionError::Closed { reason }) => {
-                cleanup_panicked |= catch_host_cleanup(|| self.enter_terminal(*reason));
+                self.finish_terminal_without_window(*reason)
             }
-            Err(_) => {}
-        }
+            Err(_) => false,
+        };
         if cleanup_panicked {
             return Err(OpenGpuiSceneHostCloseError::PanicDuringClose);
         }
@@ -323,6 +356,15 @@ impl OpenGpuiSceneHost {
         request: ViewCloseRequest,
         window: &mut Window,
         cx: &mut Context<Self>,
+    ) -> Result<ViewCloseOutcome, OpenGpuiSceneHostCloseError> {
+        self.close_with_request_in_app(request, window, cx)
+    }
+
+    fn close_with_request_in_app(
+        &mut self,
+        request: ViewCloseRequest,
+        window: &mut Window,
+        cx: &mut open_gpui::App,
     ) -> Result<ViewCloseOutcome, OpenGpuiSceneHostCloseError> {
         let drain = self.commands.begin_close().map_err(command_close_error)?;
         let journal_count = drain.len();
@@ -388,17 +430,75 @@ impl OpenGpuiSceneHost {
         completed: Vec<OpenGpuiCompletedCommand>,
         reason: ViewCloseReason,
         window: &mut Window,
-        cx: &mut Context<Self>,
+        cx: &mut open_gpui::App,
     ) -> bool {
-        let mut panicked = false;
+        self.release_registered_pointer_capture(window);
+        let resolutions = self.prepare_terminal_cleanup_with_completed(completed, reason);
+        self.capture_terminal_window_cleanup(window, cx);
+        window.defer(cx, move |_, _| resolve_command_tickets(resolutions));
+        self.suppress_pending_terminal_panics()
+    }
+
+    fn finish_terminal_without_window(&mut self, reason: ViewCloseReason) -> bool {
+        let resolutions = self.prepare_terminal_cleanup(reason);
+        resolve_command_tickets(resolutions);
+        self.suppress_pending_terminal_panics()
+    }
+
+    pub(super) fn prepare_terminal_cleanup(
+        &mut self,
+        reason: ViewCloseReason,
+    ) -> Vec<crate::command_journal::OpenGpuiPendingCommandResolution> {
+        let completed = self.commands.terminate(reason);
+        self.prepare_terminal_cleanup_with_completed(completed, reason)
+    }
+
+    fn prepare_terminal_cleanup_with_completed(
+        &mut self,
+        completed: Vec<OpenGpuiCompletedCommand>,
+        reason: ViewCloseReason,
+    ) -> Vec<crate::command_journal::OpenGpuiPendingCommandResolution> {
         let resolutions = self.handle_completed_commands(completed);
-        panicked |= catch_host_cleanup(|| self.enter_terminal(reason));
-        panicked |= catch_host_cleanup(|| {
+        let panics = retire_mounted_nodes(self.detach_for_terminal(reason));
+        self.pending_terminal_panics.merge(panics);
+        resolutions
+    }
+
+    fn suppress_pending_terminal_panics(&mut self) -> bool {
+        let panics = std::mem::take(&mut self.pending_terminal_panics);
+        let panicked = !panics.is_empty() || panics.leaked_recursive_sentinel();
+        let leaked_recursive_sentinel = panics.suppress();
+        if leaked_recursive_sentinel {
+            self.record_feedback_failure(
+                None,
+                "native lifecycle retained one bounded recursive panic payload sentinel".to_owned(),
+            );
+        }
+        panicked
+    }
+
+    pub(super) fn resume_pending_terminal_panics(&mut self) {
+        let panics = std::mem::take(&mut self.pending_terminal_panics);
+        if panics.leaked_recursive_sentinel() {
+            self.record_feedback_failure(
+                None,
+                "native lifecycle retained one bounded recursive panic payload sentinel".to_owned(),
+            );
+        }
+        panics.resume();
+    }
+
+    pub(super) fn capture_terminal_window_cleanup(
+        &mut self,
+        window: &mut Window,
+        cx: &mut open_gpui::App,
+    ) {
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.interaction_owner
                 .finish_terminal_window_transition(window, cx);
-        });
-        window.defer(cx, move |_, _| resolve_command_tickets(resolutions));
-        panicked
+        }))
+        .err();
+        self.pending_terminal_panics.push(panic);
     }
 
     pub(super) fn finish_terminal_render_cleanup(
@@ -407,12 +507,32 @@ impl OpenGpuiSceneHost {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let completed = self.commands.terminate(reason);
-        let resolutions = self.handle_completed_commands(completed);
-        self.enter_terminal(reason);
-        self.interaction_owner
-            .finish_terminal_window_transition(window, cx);
-        cx.defer(move |_| resolve_command_tickets(resolutions));
+        self.release_registered_pointer_capture(window);
+        let resolutions = self.prepare_terminal_cleanup(reason);
+        self.capture_terminal_window_cleanup(window, cx);
+        resolve_command_tickets(resolutions);
+        self.resume_pending_terminal_panics();
+    }
+
+    fn release_in_window(&mut self, window: &mut Window, cx: &mut open_gpui::App) {
+        let close = self.close_with_request_in_app(ViewCloseRequest::default(), window, cx);
+        if close.is_ok() || (self.terminal_reason.is_some() && !self.owns_window_resources()) {
+            return;
+        }
+
+        let reason = self.close_reason().unwrap_or(ViewCloseReason::HostClosed);
+        if self.view.close_reason().is_none() {
+            let close =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.view.close()));
+            if let Err(payload) = close {
+                suppress_host_panic(Some(payload));
+            }
+        }
+        self.release_registered_pointer_capture(window);
+        let resolutions = self.prepare_terminal_cleanup(reason);
+        self.capture_terminal_window_cleanup(window, cx);
+        window.defer(cx, move |_, _| resolve_command_tickets(resolutions));
+        self.suppress_pending_terminal_panics();
     }
 
     #[must_use]
@@ -420,7 +540,7 @@ impl OpenGpuiSceneHost {
         self.terminal_reason.or_else(|| self.view.close_reason())
     }
 
-    pub(super) fn ensure_lifecycle_bridge(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn ensure_lifecycle_bridge(&mut self, window: &Window, cx: &mut Context<Self>) {
         if self.lifecycle_bridge.is_some() || self.terminal_reason.is_some() {
             return;
         }
@@ -432,13 +552,7 @@ impl OpenGpuiSceneHost {
             .subscribe(move |event| callback_signal.publish(event))
         {
             Ok(subscription) => subscription,
-            Err(ViewSessionError::Closed { reason }) => {
-                let completed = self.commands.terminate(reason);
-                let resolutions = self.handle_completed_commands(completed);
-                self.enter_terminal(reason);
-                cx.defer(move |_| resolve_command_tickets(resolutions));
-                return;
-            }
+            Err(ViewSessionError::Closed { .. }) => return,
             Err(error) => {
                 self.last_diagnostic = Some(OpenGpuiSceneHostDiagnostic {
                     kind: OpenGpuiSceneHostDiagnosticKind::FrameMaterialization,
@@ -450,40 +564,82 @@ impl OpenGpuiSceneHost {
                 return;
             }
         };
-        let task = cx.spawn(async move |host, cx| {
+        let task = cx.spawn_in(
+            window,
+            async move |host: WeakEntity<OpenGpuiSceneHost>, cx: &mut AsyncWindowContext| {
             loop {
                 let event = signal.wait().await;
                 let terminal = matches!(&event, HostLifecycleEvent::Closed(_));
-                let result = host.update(cx, |host, cx| match event {
-                    HostLifecycleEvent::NodesChanged(changes) => {
-                        let retired = host.apply_node_changes(&changes, cx);
-                        cx.notify();
-                        (retired, Vec::new())
-                    }
-                    HostLifecycleEvent::ViewChanged => {
-                        cx.notify();
-                        (Vec::new(), Vec::new())
-                    }
-                    HostLifecycleEvent::Closed(reason) => {
-                        let completed = host.commands.terminate(reason);
-                        let resolutions = host.handle_completed_commands(completed);
-                        let retired = host.detach_for_terminal(reason);
-                        cx.notify();
-                        (retired, resolutions)
-                    }
+                let result = cx.update(|window, app| {
+                    let host = host.upgrade()?;
+                    Some(host.update(app, |host, cx| match event {
+                        HostLifecycleEvent::NodesChanged(changes) => {
+                            let retired = host.apply_node_changes(&changes, cx);
+                            release_mounted_pointer_capture(&retired, window);
+                            host.interaction_owner
+                                .schedule_pending_native_drain(window, cx);
+                            cx.notify();
+                            (retired, Vec::new())
+                        }
+                        HostLifecycleEvent::ViewChanged => {
+                            cx.notify();
+                            (Vec::new(), Vec::new())
+                        }
+                        HostLifecycleEvent::Closed(reason) => {
+                            let completed = host.commands.terminate(reason);
+                            let resolutions = host.handle_completed_commands(completed);
+                            let retired = host.detach_for_terminal(reason);
+                            release_mounted_pointer_capture(&retired, window);
+                            host.capture_terminal_window_cleanup(window, cx);
+                            cx.notify();
+                            (retired, resolutions)
+                        }
+                    }))
                 });
-                let Ok((retired, resolutions)) = result else {
+                let Ok(Some((retired, resolutions))) = result else {
                     break;
                 };
-                for mounted in retired {
-                    mounted.retire();
-                }
+                let panics = retire_mounted_nodes(retired);
                 resolve_command_tickets(resolutions);
+                let panicked = !panics.is_empty() || panics.leaked_recursive_sentinel();
+                if panicked {
+                    let leaked_recursive_sentinel = panics.suppress();
+                    let message = match (terminal, leaked_recursive_sentinel) {
+                        (true, true) => {
+                            "terminal node retirement callback panicked; lifecycle bridge retained one bounded recursive panic payload sentinel"
+                        }
+                        (true, false) => {
+                            "terminal node retirement callback panicked; lifecycle bridge completed cleanup"
+                        }
+                        (false, true) => {
+                            "node retirement callback panicked; lifecycle bridge continued and retained one bounded recursive panic payload sentinel"
+                        }
+                        (false, false) => {
+                            "node retirement callback panicked; lifecycle bridge continued"
+                        }
+                    };
+                    let recorded = cx
+                        .update(|_, app| {
+                            let host = host.upgrade()?;
+                            host.update(app, |host, cx| {
+                                host.record_feedback_failure(None, message.to_owned());
+                                cx.notify();
+                            });
+                            Some(())
+                        })
+                        .ok()
+                        .flatten()
+                        .is_some();
+                    if !recorded {
+                        break;
+                    }
+                }
                 if terminal {
                     break;
                 }
             }
-        });
+        },
+        );
         self.lifecycle_bridge = Some(HostLifecycleBridge::new(subscription, task));
     }
 
@@ -506,9 +662,11 @@ impl OpenGpuiSceneHost {
         self.detach_all_instances()
     }
 
+    #[cfg(test)]
     pub(super) fn enter_terminal(&mut self, reason: ViewCloseReason) {
-        let panic = retire_mounted_nodes(self.detach_for_terminal(reason));
-        resume_mounted_node_panic(panic);
+        let resolutions = self.prepare_terminal_cleanup(reason);
+        resolve_command_tickets(resolutions);
+        self.resume_pending_terminal_panics();
     }
 }
 
@@ -521,11 +679,12 @@ impl Drop for OpenGpuiSceneHost {
             node.mount.close(ViewCloseReason::HostClosed);
         }
         let mounted = self.detach_all_instances();
-        let panic = retire_mounted_nodes(mounted);
-        suppress_host_panic(panic);
+        self.pending_terminal_panics
+            .merge(retire_mounted_nodes(mounted));
         if let Some(bridge) = self.lifecycle_bridge.take() {
             bridge.unsubscribe(&self.view);
         }
         resolve_command_tickets(resolutions);
+        self.suppress_pending_terminal_panics();
     }
 }

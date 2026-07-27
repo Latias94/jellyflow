@@ -92,6 +92,52 @@ fn orthogonal_and_smoothstep_share_route_points_but_not_corner_commands() {
 }
 
 #[test]
+fn explicit_center_routes_reversed_steps_through_an_external_lane() {
+    let source = EdgeEndpointPosition {
+        point: CanvasPoint { x: 780.0, y: 300.0 },
+        position: HandlePosition::Right,
+    };
+    let target = EdgeEndpointPosition {
+        point: CanvasPoint { x: 100.0, y: 220.0 },
+        position: HandlePosition::Left,
+    };
+    let center = CanvasPoint { x: 440.0, y: 620.0 };
+    let orthogonal = orthogonal_edge_path(
+        source,
+        target,
+        OrthogonalEdgeOptions {
+            center: Some(center),
+            ..OrthogonalEdgeOptions::default()
+        },
+    )
+    .expect("orthogonal path");
+    let smooth = smoothstep_edge_path(
+        source,
+        target,
+        SmoothStepEdgeOptions {
+            center: Some(center),
+            ..SmoothStepEdgeOptions::default()
+        },
+    )
+    .expect("smoothstep path");
+
+    assert_eq!(orthogonal.label.point, center);
+    assert_eq!(smooth.label.point, center);
+    assert!(
+        orthogonal.commands.iter().any(|command| {
+            matches!(command, PathCommand::LineTo(point) if point.y == center.y)
+        })
+    );
+    assert!(
+        smooth.commands.iter().any(|command| {
+            matches!(command, PathCommand::LineTo(point) if point.y == center.y)
+        })
+    );
+    assert_path_endpoints(&orthogonal.commands, source.point, target.point);
+    assert_path_endpoints(&smooth.commands, source.point, target.point);
+}
+
+#[test]
 fn orthogonal_route_handles_every_endpoint_direction_and_short_reversed_paths() {
     let positions = [
         HandlePosition::Top,

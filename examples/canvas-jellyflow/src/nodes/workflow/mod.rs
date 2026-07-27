@@ -3,42 +3,44 @@ mod llm;
 
 use jellyflow_core::types::TypeDesc;
 use jellyflow_core::{
-    CanvasPoint, Edge, EdgeId, EdgeKind, Graph, GraphBuilder, GraphId, GraphValidationError,
-    NodeId, NodeKindKey, PortDirection, PortId,
+    CanvasPoint, Edge, EdgeId, EdgeKind, EdgeRouteSpec, EdgeViewDescriptor, Graph, GraphBuilder,
+    GraphId, GraphValidationError, NodeId, NodeKindKey, PortDirection, PortId, PortKind,
 };
-use jellyflow_open_gpui::OpenGpuiNodeRegistryBuilder;
 use jellyflow_open_gpui::accessibility::OPEN_GPUI_DIAGNOSTIC_ROLE;
 use jellyflow_open_gpui::authoring::OpenGpuiPortHandle;
-use jellyflow_open_gpui::chrome::OpenGpuiPortMarker;
+use jellyflow_open_gpui::chrome::{OpenGpuiPortMarker, OpenGpuiPortTone};
+use jellyflow_open_gpui::registry::OpenGpuiNodeRegistryBuilder;
 use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec};
 use open_gpui::{
     AnyElement, Div, ElementId, Entity, InteractiveElement, IntoElement, ParentElement,
-    SharedString, Stateful, StatefulInteractiveElement, Styled, div, px, rgb,
+    SharedString, Stateful, StatefulInteractiveElement, Styled, div, px,
 };
 
 use crate::model_options::WorkflowModelOptionsState;
-
-use super::native_graph_theme;
+use crate::product_theme::{NativeProductTheme, NativeToneTokens};
 
 pub use condition::{
     ConditionCaseAction, WORKFLOW_CONDITION_DEFAULT_SIZE, WORKFLOW_CONDITION_KIND,
     WORKFLOW_CONDITION_RENDERER, WorkflowCase, WorkflowConditionNode, WorkflowConditionOutputs,
     WorkflowElseBranch, condition_cases, condition_outputs, plan_condition_case_action,
-    workflow_condition_add_selector, workflow_condition_case_selector,
-    workflow_condition_else_selector, workflow_condition_node_id,
+    workflow_condition_add_selector, workflow_condition_body_selector,
+    workflow_condition_case_actions_selector, workflow_condition_case_label_selector,
+    workflow_condition_case_selector, workflow_condition_else_label_selector,
+    workflow_condition_else_selector, workflow_condition_node_id, workflow_condition_node_selector,
     workflow_condition_pending_selector, workflow_condition_remove_selector,
     workflow_condition_scroll_selector, workflow_condition_up_selector,
 };
 pub use llm::{
     WORKFLOW_LLM_DEFAULT_SIZE, WORKFLOW_LLM_KIND, WORKFLOW_LLM_RENDERER, WORKFLOW_MODEL_FIELD,
-    WORKFLOW_PROMPT_FIELD, WorkflowFieldStore, WorkflowLlmNode, workflow_llm_node_id,
-    workflow_model_accept_remote_selector, workflow_model_conflict_selector,
-    workflow_model_option_selector, workflow_model_options_empty_selector,
-    workflow_model_options_failed_selector, workflow_model_options_loading_selector,
-    workflow_model_options_partial_selector, workflow_model_options_retry_selector,
-    workflow_model_reapply_selector, workflow_model_selector,
-    workflow_prompt_accept_remote_selector, workflow_prompt_apply_selector,
-    workflow_prompt_conflict_selector, workflow_prompt_reapply_selector, workflow_prompt_selector,
+    WORKFLOW_PROMPT_FIELD, WorkflowFieldStore, WorkflowLlmNode, workflow_llm_body_selector,
+    workflow_llm_node_id, workflow_llm_node_selector, workflow_model_accept_remote_selector,
+    workflow_model_conflict_selector, workflow_model_option_selector,
+    workflow_model_options_empty_selector, workflow_model_options_failed_selector,
+    workflow_model_options_loading_selector, workflow_model_options_partial_selector,
+    workflow_model_options_retry_selector, workflow_model_reapply_selector,
+    workflow_model_selector, workflow_prompt_accept_remote_selector,
+    workflow_prompt_apply_selector, workflow_prompt_conflict_selector,
+    workflow_prompt_reapply_selector, workflow_prompt_selector,
 };
 
 const WORKFLOW_GRAPH_ID: u128 = 0xd1fa_0000;
@@ -48,8 +50,12 @@ const WORKFLOW_CONDITION_INPUT_ID: u128 = 0xd1fa_0201;
 const WORKFLOW_MATCH_PORT_ID: u128 = 0xd1fa_0202;
 const WORKFLOW_ELSE_PORT_ID: u128 = 0xd1fa_0203;
 const WORKFLOW_REVIEW_PORT_ID: u128 = 0xd1fa_0204;
+const WORKFLOW_RESPONSE_LLM_NODE_ID: u128 = 0xd1fa_0003;
+const WORKFLOW_RESPONSE_LLM_INPUT_ID: u128 = 0xd1fa_0401;
+const WORKFLOW_RESPONSE_LLM_OUTPUT_ID: u128 = 0xd1fa_0402;
 const WORKFLOW_FORWARD_EDGE_ID: u128 = 0xd1fa_0301;
-const WORKFLOW_RETRY_EDGE_ID: u128 = 0xd1fa_0302;
+const WORKFLOW_SUCCESS_EDGE_ID: u128 = 0xd1fa_0302;
+const WORKFLOW_RETRY_EDGE_ID: u128 = 0xd1fa_0303;
 const MATCH_CASE_ID: &str = "case-match";
 const REVIEW_CASE_ID: &str = "case-review";
 const WORKFLOW_HEADER_HEIGHT: f32 = 44.0;
@@ -197,6 +203,7 @@ impl std::error::Error for WorkflowNodeError {}
 pub(super) struct WorkflowPort {
     pub(super) id: PortId,
     pub(super) direction: PortDirection,
+    pub(super) kind: PortKind,
     pub(super) handle: OpenGpuiPortHandle,
 }
 
@@ -227,26 +234,34 @@ impl WorkflowNodeStatus {
         }
     }
 
-    const fn colors(self) -> (u32, u32) {
+    const fn tone(self, theme: NativeProductTheme) -> NativeToneTokens {
         match self {
-            Self::Ready => (0x9ee6b8, 0x234433),
-            Self::Draft => (0xf0d28a, 0x4a3d25),
-            Self::Conflict => (0xf0b68f, 0x4d3028),
-            Self::Error => (0xf19a93, 0x4d292d),
+            Self::Ready => theme.status.success,
+            Self::Draft => theme.status.warning,
+            Self::Conflict => theme.status.conflict,
+            Self::Error => theme.status.danger,
         }
     }
 }
 
-fn workflow_header_port_elements(ports: Vec<WorkflowPort>) -> Vec<AnyElement> {
+fn workflow_header_port_elements(
+    ports: Vec<WorkflowPort>,
+    product_theme: NativeProductTheme,
+) -> Vec<AnyElement> {
     ports
         .into_iter()
         .map(|port| {
             let WorkflowPort {
                 id,
                 direction,
+                kind,
                 handle,
             } = port;
-            let chrome = OpenGpuiPortMarker::new(handle.presentation(), native_graph_theme());
+            let chrome = OpenGpuiPortMarker::new(
+                handle.presentation(),
+                OpenGpuiPortTone::from(kind),
+                product_theme.graph_theme(),
+            );
             let minimum_hit_diameter = chrome.minimum_hit_diameter();
             let marker = handle
                 .with_minimum_hit_diameter(minimum_hit_diameter)
@@ -277,38 +292,58 @@ pub(super) fn workflow_header(
     badge: &'static str,
     status: WorkflowNodeStatus,
     ports: Vec<WorkflowPort>,
+    product_theme: NativeProductTheme,
 ) -> impl open_gpui::IntoElement {
     let status_selector = workflow_node_status_selector(node_id, status.key());
-    let (status_text, status_background) = status.colors();
+    let title_selector = workflow_header_title_selector(node_id);
+    let metadata_selector = workflow_header_metadata_selector(node_id);
+    let status_tone = status.tone(product_theme);
     div()
         .relative()
         .h(px(WORKFLOW_HEADER_HEIGHT))
-        .px(px(14.0))
+        .px(px(product_theme.spacing.xl))
         .flex()
         .items_center()
         .justify_between()
+        .gap(px(product_theme.spacing.lg))
         .border_b_1()
-        .border_color(rgb(0x414750))
-        .child(title)
+        .border_color(product_theme.header.border)
         .child(
             div()
+                .debug_selector(move || title_selector.clone())
+                .min_w(px(0.0))
+                .flex_1()
+                .truncate()
+                .child(title),
+        )
+        .child(
+            div()
+                .debug_selector(move || metadata_selector.clone())
+                .flex_none()
                 .flex()
                 .items_center()
-                .gap(px(7.0))
-                .child(div().text_xs().text_color(rgb(0xaab6c6)).child(badge))
+                .gap(px(product_theme.spacing.sm))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(product_theme.header.metadata)
+                        .child(badge),
+                )
                 .child(
                     div()
                         .debug_selector(move || status_selector.clone())
-                        .px(px(6.0))
-                        .py(px(2.0))
-                        .rounded(px(3.0))
-                        .bg(rgb(status_background))
+                        .px(px(product_theme.spacing.sm))
+                        .py(px(product_theme.spacing.xxs))
+                        .rounded(px(product_theme.radius.control))
+                        .border_1()
+                        .border_color(status_tone.border)
+                        .bg(status_tone.surface)
                         .text_xs()
-                        .text_color(rgb(status_text))
+                        .text_color(status_tone.text)
                         .child(status.label()),
                 ),
         )
-        .children(workflow_header_port_elements(ports))
+        .children(workflow_header_port_elements(ports, product_theme))
 }
 
 pub(super) fn workflow_alert(
@@ -331,6 +366,16 @@ pub fn workflow_port_selector(port: PortId) -> String {
     format!("jellyflow-workflow-port-{}", port.0)
 }
 
+#[must_use]
+pub fn workflow_header_title_selector(node: NodeId) -> String {
+    format!("jellyflow-workflow-header-title-{}", node.0)
+}
+
+#[must_use]
+pub fn workflow_header_metadata_selector(node: NodeId) -> String {
+    format!("jellyflow-workflow-header-metadata-{}", node.0)
+}
+
 pub(super) fn catalog_specs() -> [NodeKindSpec; 2] {
     [llm::catalog_spec(), condition::catalog_spec()]
 }
@@ -339,20 +384,24 @@ pub(super) fn register(
     registry: &mut OpenGpuiNodeRegistryBuilder,
     field_store: WorkflowFieldStore,
     model_options: Entity<WorkflowModelOptionsState>,
+    product_theme: NativeProductTheme,
 ) {
-    llm::register(registry, field_store, model_options);
-    condition::register(registry);
+    llm::register(registry, field_store, model_options, product_theme);
+    condition::register(registry, product_theme);
 }
 
 pub fn workflow_demo_graph() -> Result<Graph, Vec<GraphValidationError>> {
     let llm = workflow_llm_node_id();
     let condition = workflow_condition_node_id();
+    let response_llm = NodeId::from_u128(WORKFLOW_RESPONSE_LLM_NODE_ID);
     let llm_input = PortId::from_u128(WORKFLOW_LLM_INPUT_ID);
     let llm_output = PortId::from_u128(WORKFLOW_LLM_OUTPUT_ID);
     let condition_input = PortId::from_u128(WORKFLOW_CONDITION_INPUT_ID);
     let match_output = PortId::from_u128(WORKFLOW_MATCH_PORT_ID);
     let else_output = PortId::from_u128(WORKFLOW_ELSE_PORT_ID);
     let review_output = PortId::from_u128(WORKFLOW_REVIEW_PORT_ID);
+    let response_input = PortId::from_u128(WORKFLOW_RESPONSE_LLM_INPUT_ID);
+    let response_output = PortId::from_u128(WORKFLOW_RESPONSE_LLM_OUTPUT_ID);
     let cases = [
         WorkflowCase {
             id: MATCH_CASE_ID.to_owned(),
@@ -383,10 +432,18 @@ pub fn workflow_demo_graph() -> Result<Graph, Vec<GraphValidationError>> {
         .instantiate_node_with_ids(
             &NodeKindKey::new(WORKFLOW_CONDITION_KIND),
             condition,
-            CanvasPoint { x: 500.0, y: 170.0 },
+            CanvasPoint { x: 650.0, y: 170.0 },
             [condition_input, else_output],
         )
         .expect("workflow condition fixture must match its fixed catalog ports");
+    let response_creation = catalog
+        .instantiate_node_with_ids(
+            &NodeKindKey::new(WORKFLOW_LLM_KIND),
+            response_llm,
+            CanvasPoint { x: 650.0, y: 720.0 },
+            [response_input, response_output],
+        )
+        .expect("workflow response fixture must match its catalog ports");
     let mut graph = GraphBuilder::new(GraphId::from_u128(WORKFLOW_GRAPH_ID));
     graph.insert_symbol(
         jellyflow_core::SymbolId::from_u128(WORKFLOW_GRAPH_ID + 1),
@@ -422,14 +479,44 @@ pub fn workflow_demo_graph() -> Result<Graph, Vec<GraphValidationError>> {
     for case in &cases {
         graph.insert_port(case.port_id(), condition::case_port(condition, case));
     }
-    graph.insert_edge(
-        EdgeId::from_u128(WORKFLOW_FORWARD_EDGE_ID),
-        Edge::new(EdgeKind::Exec, llm_output, condition_input),
+    let (response_id, mut response_node, response_ports) = response_creation.into_parts();
+    response_node.data = serde_json::json!({
+        "title": "Draft response",
+        "prompt": "Write a concise response for the matched request.",
+        "model": llm::DEFAULT_MODEL,
+    });
+    graph.insert_node(response_id, response_node);
+    for (port_id, port) in response_ports {
+        graph.insert_port(port_id, port);
+    }
+    let mut forward_edge = Edge::new(EdgeKind::Exec, llm_output, condition_input);
+    forward_edge.view = EdgeViewDescriptor::new().with_route(EdgeRouteSpec::default_smooth_step());
+    graph.insert_edge(EdgeId::from_u128(WORKFLOW_FORWARD_EDGE_ID), forward_edge);
+    let mut success_edge = Edge::new(EdgeKind::Exec, match_output, response_input);
+    success_edge.view = EdgeViewDescriptor::new().with_route(
+        EdgeRouteSpec::smooth_step(
+            EdgeRouteSpec::DEFAULT_ORTHOGONAL_OFFSET,
+            EdgeRouteSpec::DEFAULT_STEP_POSITION,
+            EdgeRouteSpec::DEFAULT_SMOOTH_STEP_BORDER_RADIUS,
+            Some(CanvasPoint {
+                x: 1_120.0,
+                y: 620.0,
+            }),
+        )
+        .expect("workflow success route is valid"),
     );
-    graph.insert_edge(
-        EdgeId::from_u128(WORKFLOW_RETRY_EDGE_ID),
-        Edge::new(EdgeKind::Exec, else_output, llm_input),
+    graph.insert_edge(EdgeId::from_u128(WORKFLOW_SUCCESS_EDGE_ID), success_edge);
+    let mut retry_edge = Edge::new(EdgeKind::Exec, else_output, llm_input);
+    retry_edge.view = EdgeViewDescriptor::new().with_route(
+        EdgeRouteSpec::smooth_step(
+            EdgeRouteSpec::DEFAULT_ORTHOGONAL_OFFSET,
+            EdgeRouteSpec::DEFAULT_STEP_POSITION,
+            EdgeRouteSpec::DEFAULT_SMOOTH_STEP_BORDER_RADIUS,
+            Some(CanvasPoint { x: 520.0, y: 620.0 }),
+        )
+        .expect("workflow retry route is valid"),
     );
+    graph.insert_edge(EdgeId::from_u128(WORKFLOW_RETRY_EDGE_ID), retry_edge);
     graph.build()
 }
 
@@ -438,6 +525,32 @@ mod tests {
     use super::*;
     use open_gpui::Element;
     use open_gpui::accesskit::{Action, Node};
+    use open_gpui::{Context, Render, Window};
+
+    const LONG_HEADER_FIXTURE_SELECTOR: &str = "jellyflow-long-header-fixture";
+
+    struct LongHeaderFixture;
+
+    impl Render for LongHeaderFixture {
+        fn render(
+            &mut self,
+            _window: &mut Window,
+            _cx: &mut Context<Self>,
+        ) -> impl open_gpui::IntoElement {
+            div()
+                .debug_selector(|| LONG_HEADER_FIXTURE_SELECTOR.to_owned())
+                .w(px(260.0))
+                .child(workflow_header(
+                    NodeId::from_u128(1),
+                    "A_REALLY_LONG_UNBROKEN_WORKFLOW_NODE_TITLE_THAT_MUST_NOT_MOVE_METADATA"
+                        .to_owned(),
+                    "EXEC",
+                    WorkflowNodeStatus::Ready,
+                    Vec::new(),
+                    NativeProductTheme::workflow_dify(),
+                ))
+        }
+    }
 
     #[test]
     fn workflow_conflict_alert_uses_the_production_accesskit_path() {
@@ -456,5 +569,102 @@ mod tests {
         );
         assert!(!node.supports_action(Action::Click));
         assert!(!node.supports_action(Action::Focus));
+    }
+
+    #[open_gpui::test]
+    fn long_workflow_title_truncates_before_fixed_header_metadata(
+        cx: &mut open_gpui::TestAppContext,
+    ) {
+        let (_fixture, cx) = cx.add_window_view(|_, _| LongHeaderFixture);
+        cx.update(|window, cx| window.draw(cx).clear());
+        cx.run_until_parked();
+
+        let header = cx
+            .debug_bounds(LONG_HEADER_FIXTURE_SELECTOR)
+            .expect("fixed workflow header fixture");
+        let title = cx
+            .debug_bounds(&workflow_header_title_selector(NodeId::from_u128(1)))
+            .expect("truncated workflow title");
+        let metadata = cx
+            .debug_bounds(&workflow_header_metadata_selector(NodeId::from_u128(1)))
+            .expect("fixed workflow metadata");
+
+        assert_eq!(header.size.width, px(260.0));
+        assert_eq!(header.size.height, px(WORKFLOW_HEADER_HEIGHT));
+        assert!(title.is_contained_within(&header));
+        assert!(metadata.is_contained_within(&header));
+        assert!(title.origin.x + title.size.width + px(10.0) <= metadata.origin.x);
+    }
+
+    #[test]
+    fn workflow_demo_reserves_a_readable_overview_wire_gutter() {
+        let graph = workflow_demo_graph().expect("valid workflow demo graph");
+        let llm = graph
+            .node(&workflow_llm_node_id())
+            .expect("workflow LLM node");
+        let condition = graph
+            .node(&workflow_condition_node_id())
+            .expect("workflow condition node");
+        let response = graph
+            .node(&NodeId::from_u128(WORKFLOW_RESPONSE_LLM_NODE_ID))
+            .expect("workflow response LLM node");
+        let llm_width = llm
+            .size
+            .expect("workflow LLM has an authoritative size")
+            .width;
+
+        assert!(condition.pos.x - llm.pos.x - llm_width >= 192.0);
+        assert!((condition.pos.y - llm.pos.y).abs() <= 48.0);
+        let condition_height = condition
+            .size
+            .expect("workflow condition has an authoritative size")
+            .height;
+        assert!(response.pos.y - condition.pos.y - condition_height >= 192.0);
+        assert!((response.pos.x - condition.pos.x).abs() <= 1.0);
+
+        let forward = graph
+            .edge(&EdgeId::from_u128(WORKFLOW_FORWARD_EDGE_ID))
+            .expect("workflow forward edge");
+        let success = graph
+            .edge(&EdgeId::from_u128(WORKFLOW_SUCCESS_EDGE_ID))
+            .expect("workflow success edge");
+        let retry = graph
+            .edge(&EdgeId::from_u128(WORKFLOW_RETRY_EDGE_ID))
+            .expect("workflow retry edge");
+        assert_eq!(
+            forward.view.route,
+            Some(EdgeRouteSpec::default_smooth_step())
+        );
+        assert_eq!(
+            success.view.route,
+            Some(
+                EdgeRouteSpec::smooth_step(
+                    EdgeRouteSpec::DEFAULT_ORTHOGONAL_OFFSET,
+                    EdgeRouteSpec::DEFAULT_STEP_POSITION,
+                    EdgeRouteSpec::DEFAULT_SMOOTH_STEP_BORDER_RADIUS,
+                    Some(CanvasPoint {
+                        x: 1_120.0,
+                        y: 620.0,
+                    }),
+                )
+                .expect("valid success route"),
+            )
+        );
+        assert_eq!(
+            retry.view.route,
+            Some(
+                EdgeRouteSpec::smooth_step(
+                    EdgeRouteSpec::DEFAULT_ORTHOGONAL_OFFSET,
+                    EdgeRouteSpec::DEFAULT_STEP_POSITION,
+                    EdgeRouteSpec::DEFAULT_SMOOTH_STEP_BORDER_RADIUS,
+                    Some(CanvasPoint { x: 520.0, y: 620.0 }),
+                )
+                .expect("valid retry route"),
+            )
+        );
+
+        let forward_source = graph.port(&forward.from).expect("forward source port").node;
+        let success_target = graph.port(&success.to).expect("success target port").node;
+        assert_ne!(forward_source, success_target);
     }
 }

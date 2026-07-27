@@ -5,12 +5,13 @@ use jellyflow_core::{
     CanvasPoint, CanvasRect, CanvasSize, GraphBuilder, GraphId, Node, NodeId, NodeKindKey,
 };
 use jellyflow_open_gpui::authoring::OpenGpuiNodeBinding;
-use jellyflow_open_gpui::{
+use jellyflow_open_gpui::host::{
     OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY, OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY,
-    OpenGpuiNodeRegistry, OpenGpuiSceneHost, OpenGpuiSceneHostStats,
+    OpenGpuiSceneHost, OpenGpuiSceneHostStats,
 };
+use jellyflow_open_gpui::registry::OpenGpuiNodeRegistry;
 use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec};
-use jellyflow_runtime::{GraphCommand, GraphRuntime, ViewSessionOptions};
+use jellyflow_runtime::{commands::GraphCommand, graph::GraphRuntime, view::ViewSessionOptions};
 use open_gpui::{AppContext, Context, Entity, ParentElement, Render, Styled, Window, div};
 
 const NODE_COUNT: usize = 10_000;
@@ -85,6 +86,7 @@ fn one_node_change_updates_only_its_binding_across_four_views_at_scale(
     for host in &hosts {
         cx.read_entity(host, |host, _| {
             assert_binding_stats(host.stats(), VISIBLE_NODE_COUNT as u64, 0, 0);
+            assert_presentation_work(host.stats(), 1, VISIBLE_NODE_COUNT as u64);
         });
     }
     for host in &hosts {
@@ -94,12 +96,13 @@ fn one_node_change_updates_only_its_binding_across_four_views_at_scale(
     for host in &hosts {
         cx.read_entity(host, |host, _| {
             assert_binding_stats(host.stats(), VISIBLE_NODE_COUNT as u64, 0, 0);
+            assert_presentation_work(host.stats(), 1, VISIBLE_NODE_COUNT as u64);
         });
     }
     let changed = NodeId::from_u128(43);
     runtime
         .execute(GraphCommand::set_node_data(
-            0,
+            runtime.snapshot().unwrap().version(),
             changed,
             serde_json::json!({ "value": 42 }),
         ))
@@ -109,6 +112,7 @@ fn one_node_change_updates_only_its_binding_across_four_views_at_scale(
     for host in &hosts {
         cx.read_entity(host, |host, _| {
             assert_binding_stats(host.stats(), VISIBLE_NODE_COUNT as u64, 1, 1);
+            assert_presentation_work(host.stats(), 2, VISIBLE_NODE_COUNT as u64 + 1);
             assert_eq!(host.stats().mounts(), VISIBLE_NODE_COUNT as u64);
         });
     }
@@ -120,7 +124,7 @@ fn one_node_change_updates_only_its_binding_across_four_views_at_scale(
             cx.read_entity(binding, |binding, _| {
                 let authoring = binding.authoring().expect("visible binding stays live");
                 (authoring.node_id() == changed).then(|| {
-                    assert_eq!(authoring.revision(), 1);
+                    assert_eq!(authoring.version().revision(), 1);
                     authoring.node().data.clone()
                 })
             })
@@ -137,6 +141,7 @@ fn one_node_change_updates_only_its_binding_across_four_views_at_scale(
     for host in &hosts {
         cx.read_entity(host, |host, _| {
             assert_binding_stats(host.stats(), VISIBLE_NODE_COUNT as u64, 1, 1);
+            assert_presentation_work(host.stats(), 2, VISIBLE_NODE_COUNT as u64 + 1);
         });
     }
 }
@@ -185,6 +190,14 @@ fn assert_binding_stats(
     assert_eq!(stats.binding_updates(), updates);
     assert_eq!(stats.binding_notifications(), updates);
     assert_eq!(stats.binding_reconciliation_visits(), reconciliation_visits,);
+}
+
+fn assert_presentation_work(stats: OpenGpuiSceneHostStats, queries: u64, materializations: u64) {
+    assert_eq!(stats.binding_presentation_queries(), queries);
+    assert_eq!(
+        stats.binding_presentation_materializations(),
+        materializations
+    );
 }
 
 fn draw(cx: &mut open_gpui::VisualTestContext) {

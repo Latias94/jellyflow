@@ -3,18 +3,21 @@ use std::fmt;
 use std::process::ExitCode;
 use std::rc::Rc;
 
-use jellyflow_runtime::{GraphRuntime, ViewSessionOptions};
+use jellyflow_open_gpui::host::InitialViewportPolicy;
+use jellyflow_open_gpui::navigation::{OpenGpuiInputPreset, OpenGpuiNavigationConfig};
+use jellyflow_runtime::graph::GraphRuntime;
+use jellyflow_runtime::view::ViewSessionOptions;
 use open_gpui::{
     App, AppContext, Bounds, Context, Entity, ParentElement, QuitMode, Render, Styled, Window,
-    WindowBounds, WindowOptions, div, px, rgb, size,
+    WindowBounds, WindowOptions, div, px, size,
 };
-use open_gpui_canvas_jellyflow::ShaderGraphProfile;
 use open_gpui_canvas_jellyflow::blackboard::{GraphRuntimeBlackboardSource, NativeBlackboard};
 use open_gpui_canvas_jellyflow::connection_search::NativeGraphSurface;
 use open_gpui_canvas_jellyflow::nodes::{
-    NativeNodeResources, ShaderFieldStore, WorkflowFieldStore, native_node_catalog,
-    native_node_registry, workflow_demo_graph,
+    NativeGraphVisualProfile, NativeNodeResources, ShaderFieldStore, WorkflowFieldStore,
+    native_node_catalog, native_node_registry, workflow_demo_graph,
 };
+use open_gpui_canvas_jellyflow::{NativeProductTheme, ShaderGraphProfile};
 use open_gpui_platform::application;
 use open_gpui_ui_components::ThemeMode;
 use open_gpui_ui_components::gpui_adapter::init_text_input;
@@ -37,6 +40,7 @@ struct NativeGraphScene {
     _runtime: Rc<GraphRuntime>,
     graph: Entity<NativeGraphSurface>,
     blackboard: Entity<NativeBlackboard>,
+    product_theme: NativeProductTheme,
 }
 
 impl Render for NativeGraphScene {
@@ -48,7 +52,7 @@ impl Render for NativeGraphScene {
         div()
             .size_full()
             .flex()
-            .bg(rgb(0x111318))
+            .bg(self.product_theme.surface.app)
             .child(div().flex_1().min_w(px(0.0)).child(self.graph.clone()))
             .child(self.blackboard.clone())
     }
@@ -189,9 +193,10 @@ fn main() -> ExitCode {
             eprintln!("failed to launch retained native graph: {error}");
             app_launch_failed.set(true);
             if let Some(state) = launch_smoke_state.as_ref() {
-                fail_smoke(state, error.reason);
+                fail_smoke(cx, state, error.reason);
+            } else {
+                cx.quit();
             }
-            cx.quit();
         }
     });
 
@@ -234,10 +239,20 @@ fn launch_native_graph(
         .attach_view(ViewSessionOptions::default())
         .map_err(|error| NativeLaunchError::new("view_attachment", error.to_string()))?;
     let smoke_view = options.smoke.then(|| view.downgrade());
+    let visual_profile = match options.demo {
+        NativeDemo::Shader => NativeGraphVisualProfile::shader(),
+        NativeDemo::Workflow => NativeGraphVisualProfile::workflow(),
+    };
+    let product_theme = visual_profile.product_theme();
+    let navigation = OpenGpuiNavigationConfig::for_preset(match options.demo {
+        NativeDemo::Shader => OpenGpuiInputPreset::Blueprint,
+        NativeDemo::Workflow => OpenGpuiInputPreset::Dify,
+    });
     let workflow_fields = WorkflowFieldStore::new();
     let shader_fields = ShaderFieldStore::new();
-    let resources =
-        NativeNodeResources::ready_default(cx).with_field_stores(workflow_fields, shader_fields);
+    let resources = NativeNodeResources::ready_default(cx)
+        .with_field_stores(workflow_fields, shader_fields)
+        .with_product_theme(product_theme);
     let registry = native_node_registry(resources);
     let (window_width, window_height) = smoke_state
         .as_ref()
@@ -252,7 +267,16 @@ fn launch_native_graph(
             ..Default::default()
         },
         move |window, cx| {
-            let graph = cx.new(|cx| NativeGraphSurface::new(view, registry, cx));
+            let graph = cx.new(|cx| {
+                NativeGraphSurface::new_with_visual_profile(
+                    view,
+                    registry,
+                    visual_profile,
+                    navigation,
+                    InitialViewportPolicy::FitOnFirstMeasuredGeometry,
+                    cx,
+                )
+            });
             if let Some(state) = smoke_state {
                 if let Some(smoke_view) = smoke_view {
                     start_smoke_probe(
@@ -260,25 +284,27 @@ fn launch_native_graph(
                         window.window_handle(),
                         graph.clone(),
                         smoke_view,
+                        product_theme,
                         Rc::clone(&state),
                     );
                 } else {
-                    fail_smoke(&state, "smoke_view_unavailable");
-                    cx.quit();
+                    fail_smoke(cx, &state, "smoke_view_unavailable");
                 }
                 start_smoke_timeout(cx, state);
                 window.refresh();
             }
             let blackboard_runtime = Rc::clone(&runtime);
             let blackboard = cx.new(|_| {
-                NativeBlackboard::new(Rc::new(GraphRuntimeBlackboardSource::new(
-                    blackboard_runtime,
-                )))
+                NativeBlackboard::new_with_theme(
+                    Rc::new(GraphRuntimeBlackboardSource::new(blackboard_runtime)),
+                    product_theme,
+                )
             });
             cx.new(|_| NativeGraphScene {
                 _runtime: runtime,
                 graph,
                 blackboard,
+                product_theme,
             })
         },
     )

@@ -11,7 +11,7 @@ mod subscriptions;
 pub use create_from_wire::{CreateFromWireCandidates, CreateFromWireQueryError};
 pub use port_connection_facts::{
     PortConnectionDragFacts, PortConnectionDragIntent, PortConnectionFacts, PortConnectionSummary,
-    PortIncidentConnectionFacts,
+    PortConnectionSummaryBatch, PortIncidentConnectionFacts,
 };
 
 use std::cell::{Cell, RefCell};
@@ -21,7 +21,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::graph_kernel::GraphHistory;
-use jellyflow_core::core::{EdgeId, Graph, GraphValidationError, NodeId};
+use jellyflow_core::core::{EdgeId, Graph, GraphValidationError, NodeId, PortId};
+use rpds::RedBlackTreeMapSync;
 
 use crate::io::ViewSelectionSeed;
 use crate::profile::{ApplyPipelineError, GraphProfile, validate_profile_document};
@@ -42,8 +43,9 @@ use crate::runtime::view_session::{
 
 use self::execution::collect_live_sessions;
 use self::execution::{
-    CommandExecution, MutationGuard, NotificationDrainGuard, allocate_incarnation,
-    command_rejection_from_planning, execute_command_locked, middleware_snapshot, validate_graph,
+    CommandExecution, MutationGuard, NotificationDrainGuard, allocate_edge_incarnation,
+    allocate_incarnation, allocate_port_incarnation, command_rejection_from_planning,
+    execute_command_locked, middleware_snapshot, validate_graph,
 };
 use self::index::IncidentNodeQuery;
 
@@ -68,6 +70,24 @@ impl RuntimeId {
     }
 }
 
+/// Opaque identity of the runtime that issued semantic graph facts.
+///
+/// Values can only be obtained from a live runtime or facts issued by one; callers cannot
+/// manufacture provenance from graph identifiers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RuntimeProvenance(RuntimeId);
+
+impl RuntimeProvenance {
+    pub(crate) const fn new(runtime: RuntimeId) -> Self {
+        Self(runtime)
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn runtime_id(self) -> RuntimeId {
+        self.0
+    }
+}
+
 pub(crate) use self::index::GraphIndex;
 pub use self::patch::{
     FactChange, FactChangeMask, GeometryImpact, RuntimeFactDelta, RuntimeFactKey, RuntimePatch,
@@ -78,16 +98,291 @@ pub use self::subscriptions::GraphRuntimeSubscriptionToken;
 pub type GraphRevision = u64;
 pub type DocumentEpoch = u64;
 
+/// Exact version of one authoritative graph runtime.
+///
+/// A revision is only meaningful inside the runtime that issued it. Keeping both values in one
+/// opaque capability prevents a command planned from one runtime from being accepted by another
+/// runtime that happens to have the same numeric revision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct NodeIncarnation(u64);
+pub struct GraphVersion {
+    provenance: RuntimeProvenance,
+    revision: GraphRevision,
+}
 
-impl NodeIncarnation {
-    pub fn get(self) -> u64 {
+impl GraphVersion {
+    const fn new(provenance: RuntimeProvenance, revision: GraphRevision) -> Self {
+        Self {
+            provenance,
+            revision,
+        }
+    }
+
+    pub const fn provenance(self) -> RuntimeProvenance {
+        self.provenance
+    }
+
+    pub const fn revision(self) -> GraphRevision {
+        self.revision
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct NodeIncarnation(u64);
+
+type NodeIncarnationMap = RedBlackTreeMapSync<NodeId, NodeIncarnation>;
+
+/// Full runtime identity of one continuous node lifetime.
+///
+/// Reusing a [`NodeId`] after removal allocates a new incarnation, while provenance prevents a
+/// key issued by another runtime with matching IDs and counters from gaining authority here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct NodeLifetimeKey {
+    provenance: RuntimeProvenance,
+    node: NodeId,
+    incarnation: NodeIncarnation,
+}
+
+impl NodeLifetimeKey {
+    pub(crate) const fn new(
+        provenance: RuntimeProvenance,
+        node: NodeId,
+        incarnation: NodeIncarnation,
+    ) -> Self {
+        Self {
+            provenance,
+            node,
+            incarnation,
+        }
+    }
+
+    pub const fn provenance(self) -> RuntimeProvenance {
+        self.provenance
+    }
+
+    pub const fn node(self) -> NodeId {
+        self.node
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn unavailable(node: NodeId) -> Self {
+        Self::new(
+            RuntimeProvenance::new(RuntimeId::UNAVAILABLE),
+            node,
+            NodeIncarnation(0),
+        )
+    }
+}
+
+/// Opaque lifetime identity for one materialized port.
+///
+/// A port's identity is retired when the port is removed or when its semantic identity is
+/// replaced. Reusing the same [`PortId`] always allocates a new value, including through undo,
+/// redo, and document replacement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct PortIncarnation(u64);
+
+/// Full runtime identity of one continuous real-port lifetime.
+///
+/// The owning node incarnation participates in the key so neither a recycled node nor a recycled
+/// port can regain authority held by an old adapter capability.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PortInstanceKey {
+    provenance: RuntimeProvenance,
+    node: NodeId,
+    node_incarnation: NodeIncarnation,
+    port: PortId,
+    port_incarnation: PortIncarnation,
+}
+
+impl PortInstanceKey {
+    pub(crate) const fn new(
+        provenance: RuntimeProvenance,
+        node: NodeId,
+        node_incarnation: NodeIncarnation,
+        port: PortId,
+        port_incarnation: PortIncarnation,
+    ) -> Self {
+        Self {
+            provenance,
+            node,
+            node_incarnation,
+            port,
+            port_incarnation,
+        }
+    }
+
+    pub const fn provenance(self) -> RuntimeProvenance {
+        self.provenance
+    }
+
+    pub const fn node(self) -> NodeId {
+        self.node
+    }
+
+    pub const fn owner(self) -> NodeLifetimeKey {
+        NodeLifetimeKey::new(self.provenance, self.node, self.node_incarnation)
+    }
+
+    pub const fn port(self) -> PortId {
+        self.port
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn with_port_for_test(self, port: PortId) -> Self {
+        Self { port, ..self }
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn unavailable(node: NodeId, port: PortId) -> Self {
+        Self::new(
+            RuntimeProvenance::new(RuntimeId::UNAVAILABLE),
+            node,
+            NodeIncarnation(0),
+            port,
+            PortIncarnation(0),
+        )
+    }
+}
+
+/// Opaque lifetime identity for one materialized edge.
+///
+/// Reusing an [`EdgeId`] after removal always allocates a new value, including through undo,
+/// redo, and document replacement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct EdgeIncarnation(u64);
+
+impl EdgeIncarnation {
+    #[cfg(test)]
+    pub(crate) const fn from_u64_for_test(value: u64) -> Self {
+        Self(value)
+    }
+}
+
+/// Full runtime identity of one continuous edge lifetime.
+///
+/// The constructor is runtime-private, so an adapter can transport this key but cannot upgrade a
+/// recycled [`EdgeId`] into authority over its replacement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct EdgeInstanceKey {
+    provenance: RuntimeProvenance,
+    edge: EdgeId,
+    incarnation: EdgeIncarnation,
+}
+
+impl EdgeInstanceKey {
+    pub(crate) const fn new(
+        provenance: RuntimeProvenance,
+        edge: EdgeId,
+        incarnation: EdgeIncarnation,
+    ) -> Self {
+        Self {
+            provenance,
+            edge,
+            incarnation,
+        }
+    }
+
+    pub const fn provenance(self) -> RuntimeProvenance {
+        self.provenance
+    }
+
+    pub const fn edge(self) -> EdgeId {
+        self.edge
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn unavailable(edge: EdgeId) -> Self {
+        Self::new(
+            RuntimeProvenance::new(RuntimeId::UNAVAILABLE),
+            edge,
+            EdgeIncarnation::unavailable(),
+        )
+    }
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static EDGE_INCARNATION_ENTRY_CLONES: Cell<u64> = const { Cell::new(0) };
+}
+
+#[derive(Debug)]
+struct EdgeIncarnationEntry(EdgeIncarnation);
+
+impl EdgeIncarnationEntry {
+    fn incarnation(&self) -> EdgeIncarnation {
         self.0
     }
 }
 
+impl Clone for EdgeIncarnationEntry {
+    fn clone(&self) -> Self {
+        #[cfg(test)]
+        EDGE_INCARNATION_ENTRY_CLONES.with(|clones| clones.set(clones.get().saturating_add(1)));
+        Self(self.0)
+    }
+}
+
+impl EdgeIncarnation {
+    #[cfg(test)]
+    pub(crate) const fn unavailable() -> Self {
+        Self(0)
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn reset_edge_incarnation_entry_clone_count_for_test() {
+    EDGE_INCARNATION_ENTRY_CLONES.with(|clones| clones.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn edge_incarnation_entry_clone_count_for_test() -> u64 {
+    EDGE_INCARNATION_ENTRY_CLONES.with(Cell::get)
+}
+
+type EdgeIncarnationMap = RedBlackTreeMapSync<EdgeId, EdgeIncarnationEntry>;
+
+#[cfg(test)]
+std::thread_local! {
+    static PORT_INCARNATION_ENTRY_CLONES: Cell<u64> = const { Cell::new(0) };
+}
+
+#[derive(Debug)]
+struct PortIncarnationEntry(PortIncarnation);
+
+impl PortIncarnationEntry {
+    fn incarnation(&self) -> PortIncarnation {
+        self.0
+    }
+}
+
+impl Clone for PortIncarnationEntry {
+    fn clone(&self) -> Self {
+        #[cfg(test)]
+        PORT_INCARNATION_ENTRY_CLONES.with(|clones| clones.set(clones.get().saturating_add(1)));
+        Self(self.0)
+    }
+}
+
+type PortIncarnationMap = RedBlackTreeMapSync<PortId, PortIncarnationEntry>;
+
+#[cfg(test)]
+pub(crate) fn reset_port_incarnation_entry_clone_count_for_test() {
+    PORT_INCARNATION_ENTRY_CLONES.with(|clones| clones.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn port_incarnation_entry_clone_count_for_test() -> u64 {
+    PORT_INCARNATION_ENTRY_CLONES.with(Cell::get)
+}
+
 pub(crate) type IncidentEdgeSnapshot = Arc<BTreeSet<EdgeId>>;
+
+#[derive(Debug, Clone)]
+pub(crate) struct AdapterNodeRuntimeFacts {
+    pub(crate) lifetime: NodeLifetimeKey,
+    pub(crate) incident_edges: IncidentEdgeSnapshot,
+    pub(crate) port_instances: BTreeMap<PortId, PortInstanceKey>,
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct IncidentSnapshotWork {
@@ -104,17 +399,33 @@ impl IncidentSnapshotWork {
 
 #[derive(Debug, Clone)]
 pub struct GraphSnapshot {
+    provenance: RuntimeProvenance,
     graph: Arc<Graph>,
     revision: GraphRevision,
     document_epoch: DocumentEpoch,
+    node_incarnations: NodeIncarnationMap,
+    edge_incarnations: EdgeIncarnationMap,
+    port_incarnations: PortIncarnationMap,
 }
 
 impl GraphSnapshot {
-    fn new(graph: Arc<Graph>, revision: GraphRevision, document_epoch: DocumentEpoch) -> Self {
+    fn new(
+        provenance: RuntimeProvenance,
+        graph: Arc<Graph>,
+        revision: GraphRevision,
+        document_epoch: DocumentEpoch,
+        node_incarnations: NodeIncarnationMap,
+        edge_incarnations: EdgeIncarnationMap,
+        port_incarnations: PortIncarnationMap,
+    ) -> Self {
         Self {
+            provenance,
             graph,
             revision,
             document_epoch,
+            node_incarnations,
+            edge_incarnations,
+            port_incarnations,
         }
     }
 
@@ -122,18 +433,94 @@ impl GraphSnapshot {
         &self.graph
     }
 
+    pub fn provenance(&self) -> RuntimeProvenance {
+        self.provenance
+    }
+
     pub fn revision(&self) -> GraphRevision {
         self.revision
+    }
+
+    pub fn version(&self) -> GraphVersion {
+        GraphVersion::new(self.provenance, self.revision)
     }
 
     pub fn document_epoch(&self) -> DocumentEpoch {
         self.document_epoch
     }
 
+    /// Returns the lifetime identity of a node present in this exact graph snapshot.
+    pub(crate) fn node_incarnation(&self, node: NodeId) -> Option<NodeIncarnation> {
+        self.node_incarnations.get(&node).copied()
+    }
+
+    /// Returns the complete identity of a node present in this exact graph snapshot.
+    pub fn node_lifetime_key(&self, node: NodeId) -> Option<NodeLifetimeKey> {
+        Some(NodeLifetimeKey::new(
+            self.provenance,
+            node,
+            self.node_incarnation(node)?,
+        ))
+    }
+
+    /// Returns whether the key still names the same live node in this runtime.
+    pub fn node_lifetime_is_current(&self, key: NodeLifetimeKey) -> bool {
+        self.node_lifetime_key(key.node()) == Some(key)
+    }
+
+    /// Returns the lifetime identity of an edge present in this exact graph snapshot.
+    pub(crate) fn edge_incarnation(&self, edge: EdgeId) -> Option<EdgeIncarnation> {
+        self.edge_incarnations
+            .get(&edge)
+            .map(EdgeIncarnationEntry::incarnation)
+    }
+
+    /// Returns the complete identity of an edge present in this exact graph snapshot.
+    pub fn edge_instance_key(&self, edge: EdgeId) -> Option<EdgeInstanceKey> {
+        Some(EdgeInstanceKey::new(
+            self.provenance,
+            edge,
+            self.edge_incarnation(edge)?,
+        ))
+    }
+
+    /// Returns whether the key still names the same live edge in this runtime.
+    pub fn edge_instance_is_current(&self, key: EdgeInstanceKey) -> bool {
+        self.edge_instance_key(key.edge()) == Some(key)
+    }
+
+    /// Returns the lifetime identity of a port present in this exact graph snapshot.
+    pub(crate) fn port_incarnation(&self, port: PortId) -> Option<PortIncarnation> {
+        self.port_incarnations
+            .get(&port)
+            .map(PortIncarnationEntry::incarnation)
+    }
+
+    /// Returns the complete identity of a port present in this exact graph snapshot.
+    pub fn port_instance_key(&self, port: PortId) -> Option<PortInstanceKey> {
+        let record = self.graph.port(&port)?;
+        Some(PortInstanceKey::new(
+            self.provenance,
+            record.node,
+            self.node_incarnation(record.node)?,
+            port,
+            self.port_incarnation(port)?,
+        ))
+    }
+
+    /// Returns whether the key still names the same live port and owning node in this runtime.
+    pub fn port_instance_is_current(&self, key: PortInstanceKey) -> bool {
+        key.provenance() == self.provenance && self.port_instance_key(key.port()) == Some(key)
+    }
+
     pub fn ptr_eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.graph, &other.graph)
+        self.provenance == other.provenance
+            && Arc::ptr_eq(&self.graph, &other.graph)
             && self.revision == other.revision
             && self.document_epoch == other.document_epoch
+            && self.node_incarnations.ptr_eq(&other.node_incarnations)
+            && self.edge_incarnations.ptr_eq(&other.edge_incarnations)
+            && self.port_incarnations.ptr_eq(&other.port_incarnations)
     }
 }
 
@@ -201,6 +588,11 @@ pub enum GraphRuntimeError {
     CatalogProvenanceMismatch,
     #[error("runtime identity allocator is exhausted")]
     IdentityExhausted,
+    #[error("graph command was issued by another runtime")]
+    ForeignCommandRuntime {
+        command: RuntimeProvenance,
+        runtime: RuntimeProvenance,
+    },
     #[error("graph structure is invalid")]
     InvalidGraph { errors: Vec<GraphValidationError> },
     #[error("graph canonicalization failed: {0}")]
@@ -210,6 +602,7 @@ pub enum GraphRuntimeError {
 }
 
 struct RuntimeState {
+    provenance: RuntimeProvenance,
     graph: Arc<Graph>,
     revision: GraphRevision,
     document_epoch: DocumentEpoch,
@@ -218,11 +611,61 @@ struct RuntimeState {
     profile: Option<Box<dyn GraphProfile>>,
     middleware: Option<Box<dyn GraphRuntimeMiddleware>>,
     index: GraphIndex,
-    incarnations: BTreeMap<NodeId, NodeIncarnation>,
+    incarnations: NodeIncarnationMap,
+    edge_incarnations: EdgeIncarnationMap,
+    port_incarnations: PortIncarnationMap,
     next_incarnation: u64,
     sessions: BTreeMap<ViewId, Weak<ViewShared>>,
     next_view_id: u64,
     stats: GraphRuntimeStats,
+}
+
+fn node_lifetime_key_from_state(
+    runtime: RuntimeId,
+    state: &RuntimeState,
+    node: NodeId,
+) -> Option<NodeLifetimeKey> {
+    Some(NodeLifetimeKey::new(
+        RuntimeProvenance::new(runtime),
+        node,
+        state.incarnations.get(&node).copied()?,
+    ))
+}
+
+fn port_instance_key_from_state(
+    runtime: RuntimeId,
+    state: &RuntimeState,
+    port: PortId,
+) -> Option<PortInstanceKey> {
+    let record = state.graph.port(&port)?;
+    let node_incarnation = state.incarnations.get(&record.node).copied()?;
+    let port_incarnation = state
+        .port_incarnations
+        .get(&port)
+        .map(PortIncarnationEntry::incarnation)?;
+    Some(PortInstanceKey::new(
+        RuntimeProvenance::new(runtime),
+        record.node,
+        node_incarnation,
+        port,
+        port_incarnation,
+    ))
+}
+
+fn edge_instance_key_from_state(
+    runtime: RuntimeId,
+    state: &RuntimeState,
+    edge: EdgeId,
+) -> Option<EdgeInstanceKey> {
+    let incarnation = state
+        .edge_incarnations
+        .get(&edge)
+        .map(EdgeIncarnationEntry::incarnation)?;
+    Some(EdgeInstanceKey::new(
+        RuntimeProvenance::new(runtime),
+        edge,
+        incarnation,
+    ))
 }
 
 enum CommandFinalization {
@@ -292,7 +735,7 @@ pub(crate) struct RuntimeShared {
 ///
 /// ```
 /// use jellyflow_core::{Graph, GraphId};
-/// use jellyflow_runtime::GraphRuntime;
+/// use jellyflow_runtime::graph::GraphRuntime;
 /// use jellyflow_runtime::schema::NodeCatalog;
 ///
 /// let runtime = GraphRuntime::builder(NodeCatalog::new())
@@ -307,7 +750,7 @@ pub(crate) struct RuntimeShared {
 ///
 /// ```compile_fail
 /// use jellyflow_core::{Graph, GraphId};
-/// use jellyflow_runtime::GraphRuntime;
+/// use jellyflow_runtime::graph::GraphRuntime;
 /// use jellyflow_runtime::schema::NodeCatalog;
 ///
 /// let runtime = GraphRuntime::builder(NodeCatalog::new())
@@ -365,6 +808,10 @@ impl std::fmt::Debug for GraphRuntime {
 }
 
 impl GraphRuntime {
+    pub fn provenance(&self) -> RuntimeProvenance {
+        RuntimeProvenance::new(self.shared.id)
+    }
+
     /// Starts a runtime build with the exact catalog that will canonicalize and interpret the graph.
     pub fn builder(catalog: NodeCatalog) -> GraphRuntimeBuilder {
         GraphRuntimeBuilder {
@@ -420,9 +867,23 @@ impl GraphRuntime {
             validate_profile_document(profile, &graph)?;
         }
         let mut next_incarnation = 1;
-        let mut incarnations = BTreeMap::new();
+        let mut incarnations = NodeIncarnationMap::new_sync();
         for node in graph.nodes().keys().copied() {
-            incarnations.insert(node, allocate_incarnation(&mut next_incarnation)?);
+            incarnations.insert_mut(node, allocate_incarnation(&mut next_incarnation)?);
+        }
+        let mut edge_incarnations = EdgeIncarnationMap::new_sync();
+        for edge in graph.edges().keys().copied() {
+            edge_incarnations.insert_mut(
+                edge,
+                EdgeIncarnationEntry(allocate_edge_incarnation(&mut next_incarnation)?),
+            );
+        }
+        let mut port_incarnations = PortIncarnationMap::new_sync();
+        for port in graph.ports().keys().copied() {
+            port_incarnations.insert_mut(
+                port,
+                PortIncarnationEntry(allocate_port_incarnation(&mut next_incarnation)?),
+            );
         }
         let index = GraphIndex::from_graph(&graph);
         let runtime_id = RuntimeId::allocate()?;
@@ -433,6 +894,7 @@ impl GraphRuntime {
                 alive: Cell::new(true),
                 mutating: Cell::new(false),
                 state: RefCell::new(RuntimeState {
+                    provenance: RuntimeProvenance::new(runtime_id),
                     graph: Arc::new(graph),
                     revision: 0,
                     document_epoch: 0,
@@ -442,6 +904,8 @@ impl GraphRuntime {
                     middleware: None,
                     index,
                     incarnations,
+                    edge_incarnations,
+                    port_incarnations,
                     next_incarnation,
                     sessions: BTreeMap::new(),
                     next_view_id: 1,
@@ -480,11 +944,28 @@ impl GraphRuntime {
             .map_err(|_| GraphRuntimeError::Busy)
     }
 
-    pub fn node_incarnation(
+    /// Returns the full current identity for a node owned by this runtime.
+    pub fn node_lifetime_key(
         &self,
         node: NodeId,
-    ) -> Result<Option<NodeIncarnation>, GraphRuntimeError> {
-        self.shared.node_incarnation(node)
+    ) -> Result<Option<NodeLifetimeKey>, GraphRuntimeError> {
+        self.shared.node_lifetime_key(node)
+    }
+
+    /// Returns the full current identity for an edge owned by this runtime.
+    pub fn edge_instance_key(
+        &self,
+        edge: EdgeId,
+    ) -> Result<Option<EdgeInstanceKey>, GraphRuntimeError> {
+        self.shared.edge_instance_key(edge)
+    }
+
+    /// Returns the full current identity for a real port owned by this runtime.
+    pub fn port_instance_key(
+        &self,
+        port: PortId,
+    ) -> Result<Option<PortInstanceKey>, GraphRuntimeError> {
+        self.shared.port_instance_key(port)
     }
 
     pub fn history_state(&self) -> Result<HistoryState, GraphRuntimeError> {
@@ -548,7 +1029,11 @@ impl GraphRuntime {
         let state = self.shared.state.borrow();
         (
             state.index.clone(),
-            state.incarnations.clone(),
+            state
+                .incarnations
+                .iter()
+                .map(|(node, incarnation)| (*node, *incarnation))
+                .collect(),
             state.next_incarnation,
         )
     }
@@ -642,27 +1127,60 @@ impl RuntimeShared {
             .try_borrow()
             .map_err(|_| GraphRuntimeError::Busy)?;
         Ok(GraphSnapshot::new(
+            state.provenance,
             state.graph.clone(),
             state.revision,
             state.document_epoch,
+            state.incarnations.clone(),
+            state.edge_incarnations.clone(),
+            state.port_incarnations.clone(),
         ))
     }
 
-    pub(crate) fn node_incarnation(
+    pub(crate) fn policy(&self) -> Result<GraphRuntimePolicy, GraphRuntimeError> {
+        self.state
+            .try_borrow()
+            .map(|state| state.policy)
+            .map_err(|_| GraphRuntimeError::Busy)
+    }
+
+    pub(crate) fn node_lifetime_key(
         &self,
         node: NodeId,
-    ) -> Result<Option<NodeIncarnation>, GraphRuntimeError> {
+    ) -> Result<Option<NodeLifetimeKey>, GraphRuntimeError> {
         let state = self
             .state
             .try_borrow()
             .map_err(|_| GraphRuntimeError::Busy)?;
-        Ok(state.incarnations.get(&node).copied())
+        Ok(node_lifetime_key_from_state(self.id, &state, node))
+    }
+
+    pub(crate) fn edge_instance_key(
+        &self,
+        edge: EdgeId,
+    ) -> Result<Option<EdgeInstanceKey>, GraphRuntimeError> {
+        let state = self
+            .state
+            .try_borrow()
+            .map_err(|_| GraphRuntimeError::Busy)?;
+        Ok(edge_instance_key_from_state(self.id, &state, edge))
+    }
+
+    pub(crate) fn port_instance_key(
+        &self,
+        port: PortId,
+    ) -> Result<Option<PortInstanceKey>, GraphRuntimeError> {
+        let state = self
+            .state
+            .try_borrow()
+            .map_err(|_| GraphRuntimeError::Busy)?;
+        Ok(port_instance_key_from_state(self.id, &state, port))
     }
 
     pub(crate) fn adapter_frame_node_facts(
         &self,
         nodes: &BTreeSet<NodeId>,
-    ) -> Result<BTreeMap<NodeId, (NodeIncarnation, IncidentEdgeSnapshot)>, GraphRuntimeError> {
+    ) -> Result<BTreeMap<NodeId, AdapterNodeRuntimeFacts>, GraphRuntimeError> {
         let state = self
             .state
             .try_borrow()
@@ -670,9 +1188,25 @@ impl RuntimeShared {
         Ok(nodes
             .iter()
             .filter_map(|node| {
-                let incarnation = state.incarnations.get(node).copied()?;
+                let lifetime = node_lifetime_key_from_state(self.id, &state, *node)?;
                 let incident_edges = state.index.incident_edge_snapshot(*node)?;
-                Some((*node, (incarnation, incident_edges)))
+                let record = state.graph.node(node)?;
+                let port_instances = record
+                    .ports
+                    .iter()
+                    .filter_map(|port| {
+                        port_instance_key_from_state(self.id, &state, *port)
+                            .map(|instance| (*port, instance))
+                    })
+                    .collect();
+                Some((
+                    *node,
+                    AdapterNodeRuntimeFacts {
+                        lifetime,
+                        incident_edges,
+                        port_instances,
+                    },
+                ))
             })
             .collect())
     }
@@ -793,18 +1327,29 @@ impl RuntimeShared {
             .state
             .try_borrow_mut()
             .map_err(|_| AttachViewError::RuntimeBusy)?;
+        let initial_viewport_claim_available = options.seed.is_none();
         let seed = options.sanitized_seed(&state.graph)?;
         let view_id = ViewId::new(self.id, state.next_view_id);
         state.next_view_id = state
             .next_view_id
             .checked_add(1)
             .ok_or(AttachViewError::IdentityExhausted)?;
+        let snapshot = GraphSnapshot::new(
+            state.provenance,
+            state.graph.clone(),
+            state.revision,
+            state.document_epoch,
+            state.incarnations.clone(),
+            state.edge_incarnations.clone(),
+            state.port_incarnations.clone(),
+        );
         let view = ViewShared::new(
             view_id,
             ViewGeneration::initial(),
-            state.revision,
             state.policy,
+            &snapshot,
             seed,
+            initial_viewport_claim_available,
         );
         state.sessions.insert(view_id, Rc::downgrade(&view));
         Ok(ViewSession::new(
@@ -818,6 +1363,7 @@ impl RuntimeShared {
         self: &Rc<Self>,
         command: GraphCommand,
     ) -> Result<GraphCommandOutcome, GraphRuntimeError> {
+        self.ensure_command_runtime(&command)?;
         let guard = MutationGuard::acquire(self)?;
         let execution = {
             let mut state = self
@@ -854,8 +1400,8 @@ impl RuntimeShared {
                 .state
                 .try_borrow()
                 .map_err(|_| GraphRuntimeError::Busy)?;
-            let revision = state.revision;
-            let command = GraphCommand::connection(revision, edit);
+            let version = GraphVersion::new(state.provenance, state.revision);
+            let command = GraphCommand::connection(version, edit);
             let planned = plan_graph_command(
                 &state.graph,
                 &state.index,
@@ -865,10 +1411,11 @@ impl RuntimeShared {
                 &state.policy,
             );
             match planned {
-                Ok(_) => ConnectionEvaluation::accepted(revision),
+                Ok(_) => ConnectionEvaluation::accepted(version),
                 Err(error) => {
-                    let rejection = command_rejection_from_planning(error);
-                    ConnectionEvaluation::rejected(revision, rejection.diagnostics().to_vec())
+                    let rejection =
+                        command_rejection_from_planning(command.identity().clone(), version, error);
+                    ConnectionEvaluation::rejected(version, rejection.diagnostics().to_vec())
                 }
             }
         };
@@ -897,7 +1444,9 @@ impl RuntimeShared {
                 .ok_or(GraphRuntimeError::DocumentEpochExhausted)?;
             let before = state.graph.clone();
             let mut next_incarnation = state.next_incarnation;
-            let mut next_incarnations = BTreeMap::new();
+            let mut next_incarnations = NodeIncarnationMap::new_sync();
+            let mut next_edge_incarnations = EdgeIncarnationMap::new_sync();
+            let mut next_port_incarnations = PortIncarnationMap::new_sync();
             let mut incarnation_delta = before
                 .nodes()
                 .keys()
@@ -906,11 +1455,28 @@ impl RuntimeShared {
                 .collect::<BTreeMap<_, _>>();
             for node in graph.nodes().keys().copied() {
                 let incarnation = allocate_incarnation(&mut next_incarnation)?;
-                next_incarnations.insert(node, incarnation);
+                next_incarnations.insert_mut(node, incarnation);
                 incarnation_delta.insert(node, Some(incarnation));
             }
+            for edge in graph.edges().keys().copied() {
+                let incarnation = allocate_edge_incarnation(&mut next_incarnation)?;
+                next_edge_incarnations.insert_mut(edge, EdgeIncarnationEntry(incarnation));
+            }
+            for port in graph.ports().keys().copied() {
+                let incarnation = allocate_port_incarnation(&mut next_incarnation)?;
+                next_port_incarnations.insert_mut(port, PortIncarnationEntry(incarnation));
+            }
             let graph = Arc::new(graph);
-            let snapshot = GraphSnapshot::new(graph.clone(), to_revision, document_epoch);
+            let edge_incarnations = next_edge_incarnations;
+            let snapshot = GraphSnapshot::new(
+                state.provenance,
+                graph.clone(),
+                to_revision,
+                document_epoch,
+                next_incarnations.clone(),
+                edge_incarnations.clone(),
+                next_port_incarnations.clone(),
+            );
             let patch = RuntimePatch::document_reset(
                 &before,
                 state.revision,
@@ -925,6 +1491,8 @@ impl RuntimeShared {
             state.history.clear();
             state.index = GraphIndex::from_graph(&graph);
             state.incarnations = next_incarnations;
+            state.edge_incarnations = edge_incarnations;
+            state.port_incarnations = next_port_incarnations;
             state.next_incarnation = next_incarnation;
             state.stats.patch_builds = state.stats.patch_builds.saturating_add(1);
             let sessions = collect_live_sessions(&mut state);
@@ -995,6 +1563,7 @@ impl RuntimeShared {
         command: &GraphCommand,
         notifications: &mut Vec<(RuntimePatch, Vec<(Rc<ViewShared>, ViewGeneration)>)>,
     ) -> Result<CommandFinalization, GraphRuntimeError> {
+        self.ensure_command_runtime(command)?;
         let execution = {
             let mut state = self
                 .state
@@ -1009,6 +1578,15 @@ impl RuntimeShared {
         )
     }
 
+    fn ensure_command_runtime(&self, command: &GraphCommand) -> Result<(), GraphRuntimeError> {
+        let runtime = RuntimeProvenance::new(self.id);
+        let command = command.expected_version().provenance();
+        if command != runtime {
+            return Err(GraphRuntimeError::ForeignCommandRuntime { command, runtime });
+        }
+        Ok(())
+    }
+
     fn finalize_command_execution(
         &self,
         execution: CommandExecution,
@@ -1017,6 +1595,7 @@ impl RuntimeShared {
         match execution {
             CommandExecution::Outcome(outcome) => CommandFinalization::Uncommitted(outcome),
             CommandExecution::Committed {
+                identity,
                 patch,
                 sessions,
                 footprint,
@@ -1029,7 +1608,10 @@ impl RuntimeShared {
                 deliver(&patch, sessions);
                 CommandFinalization::Committed {
                     outcome: GraphCommandOutcome::Applied(GraphCommandReceipt::new(
-                        patch, footprint,
+                        identity,
+                        GraphVersion::new(RuntimeProvenance::new(self.id), patch.to_revision()),
+                        patch,
+                        footprint,
                     )),
                     middleware_panic,
                 }

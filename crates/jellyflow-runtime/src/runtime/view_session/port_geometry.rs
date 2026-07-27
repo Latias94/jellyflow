@@ -1,12 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound::{Excluded, Unbounded};
+use std::rc::Rc;
 
 use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize, NodeId, PortDirection, PortId};
 
 use crate::runtime::adapter_protocol::{PublishedPortGeometry, ViewPoint};
-use crate::runtime::graph_runtime::GraphRevision;
+use crate::runtime::graph_runtime::{GraphRevision, PortInstanceKey, RuntimeShared};
 use crate::runtime::interaction::{
-    ConnectionGestureIntent, ConnectionProbe, ConnectionProbeTarget,
+    ConnectionGestureBinding, ConnectionProbe, ConnectionProbeTarget, ConnectionProbeTargetIdentity,
 };
 use crate::runtime::viewport::ViewportTransform;
 
@@ -14,33 +15,80 @@ use super::order::render_order_key;
 use super::spatial_grid::{
     HierarchicalSpatialIndex, SpatialQuerySource, bounded_spatial_cells_for_rect,
 };
-use super::{ViewGeneration, ViewId, ViewSession, ViewSessionError, ensure_open};
+use super::{
+    ConnectionProbeQueryReceipt, InteractionQueryBinding, ViewQueryIdentity,
+    ViewQueryIdentityStaleReason, ViewSession, ViewSessionError, ViewShared, WeakViewSession,
+    ensure_open,
+};
+#[cfg(test)]
+use super::{ViewGeneration, ViewId};
 
 const MAX_CELLS_PER_PORT: i64 = 64;
 const MAX_QUERY_CELLS_PER_LEVEL: i64 = 1_024;
 const HARD_PORT_QUERY_ENTRY_LIMIT: u64 = 16_384;
-const ANCHOR_INDEX_EPSILON: f32 = 0.001;
+
+/// Screen-space target bands and the optional target lifetime retained by a connection drag.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ConnectionProbeTargeting {
+    acquire_radius_in_view: f32,
+    release_radius_in_view: f32,
+    preferred: Option<ConnectionProbeTargetIdentity>,
+}
+
+impl ConnectionProbeTargeting {
+    pub fn new(acquire_radius_in_view: f32, release_radius_in_view: f32) -> Option<Self> {
+        (acquire_radius_in_view.is_finite()
+            && acquire_radius_in_view > 0.0
+            && release_radius_in_view.is_finite()
+            && release_radius_in_view >= acquire_radius_in_view)
+            .then_some(Self {
+                acquire_radius_in_view,
+                release_radius_in_view,
+                preferred: None,
+            })
+    }
+
+    #[must_use]
+    pub const fn with_preferred(mut self, preferred: ConnectionProbeTargetIdentity) -> Self {
+        self.preferred = Some(preferred);
+        self
+    }
+
+    pub const fn acquire_radius_in_view(self) -> f32 {
+        self.acquire_radius_in_view
+    }
+
+    pub const fn release_radius_in_view(self) -> f32 {
+        self.release_radius_in_view
+    }
+
+    pub const fn preferred(self) -> Option<ConnectionProbeTargetIdentity> {
+        self.preferred
+    }
+}
 
 #[derive(Debug)]
 pub struct ConnectionProbeQuery {
     request: ConnectionProbeRequest,
     entry_budget: usize,
+    interaction_binding: Option<InteractionQueryBinding>,
 }
 
 impl ConnectionProbeQuery {
     pub fn new(
-        intent: ConnectionGestureIntent,
+        intent: ConnectionGestureBinding,
         pointer: ViewPoint,
-        radius_in_view: f32,
+        targeting: ConnectionProbeTargeting,
         entry_budget: usize,
     ) -> Self {
         Self {
             request: ConnectionProbeRequest::Start {
                 intent,
                 pointer,
-                radius_in_view,
+                targeting,
             },
             entry_budget,
+            interaction_binding: None,
         }
     }
 
@@ -48,32 +96,37 @@ impl ConnectionProbeQuery {
         Self {
             request: ConnectionProbeRequest::Resume(cursor),
             entry_budget,
+            interaction_binding: None,
         }
+    }
+
+    pub(crate) fn bind_interaction(mut self, binding: InteractionQueryBinding) -> Self {
+        self.interaction_binding = Some(binding);
+        self
     }
 }
 
 #[derive(Debug)]
 enum ConnectionProbeRequest {
     Start {
-        intent: ConnectionGestureIntent,
+        intent: ConnectionGestureBinding,
         pointer: ViewPoint,
-        radius_in_view: f32,
+        targeting: ConnectionProbeTargeting,
     },
     Resume(Box<ConnectionProbeCursor>),
 }
 
 #[derive(Debug)]
 pub struct ConnectionProbeCursor {
-    view: ViewId,
-    generation: ViewGeneration,
-    transform_revision: u64,
+    identity: ViewQueryIdentity,
     graph_revision: GraphRevision,
     index_epoch: u128,
     order_revision: u128,
-    intent: ConnectionGestureIntent,
+    intent: ConnectionGestureBinding,
     canvas_pointer: CanvasPoint,
-    radius_in_view: f32,
-    radius_in_canvas: f32,
+    targeting: ConnectionProbeTargeting,
+    acquire_radius_in_canvas: f32,
+    release_radius_in_canvas: f32,
     sources: Vec<SpatialQuerySource>,
     source_index: usize,
     source_started: bool,
@@ -89,6 +142,18 @@ pub struct ConnectionProbeWork {
     pub entries_examined: u64,
     pub exact_tests: u64,
     pub policy_evaluations: u64,
+    receipt: Option<ConnectionProbeQueryReceipt>,
+}
+
+impl ConnectionProbeWork {
+    pub fn receipt(self) -> Option<ConnectionProbeQueryReceipt> {
+        self.receipt
+    }
+
+    fn with_receipt(mut self, receipt: Option<ConnectionProbeQueryReceipt>) -> Self {
+        self.receipt = receipt;
+        self
+    }
 }
 
 #[derive(Debug)]
@@ -104,6 +169,16 @@ pub enum ConnectionProbeQueryOutcome {
     BudgetExhausted {
         work: ConnectionProbeWork,
     },
+}
+
+impl ConnectionProbeQueryOutcome {
+    pub fn receipt(&self) -> Option<ConnectionProbeQueryReceipt> {
+        match self {
+            Self::Complete { work, .. }
+            | Self::Incomplete { work, .. }
+            | Self::BudgetExhausted { work } => work.receipt(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -160,14 +235,14 @@ struct IndexedPort {
     outward: crate::runtime::geometry::HandlePosition,
 }
 
-impl From<&PublishedPortGeometry> for IndexedPort {
-    fn from(geometry: &PublishedPortGeometry) -> Self {
-        Self {
+impl IndexedPort {
+    fn from_geometry(geometry: &PublishedPortGeometry) -> Option<Self> {
+        Some(Self {
             node: geometry.node(),
-            hit_bounds: geometry.hit_bounds(),
+            hit_bounds: geometry.hit_bounds()?,
             route_anchor: geometry.route_anchor(),
             outward: geometry.outward(),
-        }
+        })
     }
 }
 
@@ -175,19 +250,20 @@ impl From<&PublishedPortGeometry> for IndexedPort {
 pub(super) struct PortProbeCandidate {
     target: ConnectionProbeTarget,
     direct_hit: bool,
+    preferred: bool,
     opposite_direction: bool,
-    paint_order: (bool, bool, usize, NodeId),
+    paint_order: (bool, bool, bool, usize, NodeId),
 }
 
 pub(super) enum InternalProbeOutcome {
     Complete {
-        intent: ConnectionGestureIntent,
+        intent: ConnectionGestureBinding,
         graph_revision: GraphRevision,
         candidate: Option<PortProbeCandidate>,
         work: ConnectionProbeWork,
     },
     Incomplete {
-        cursor: ConnectionProbeCursor,
+        cursor: Box<ConnectionProbeCursor>,
         work: ConnectionProbeWork,
     },
     BudgetExhausted {
@@ -198,14 +274,15 @@ pub(super) enum InternalProbeOutcome {
 impl PortGeometryIndex {
     pub(super) fn upsert(&mut self, geometry: &PublishedPortGeometry) -> bool {
         let port = geometry.port();
-        let indexed = IndexedPort::from(geometry);
+        let Some(indexed) = IndexedPort::from_geometry(geometry) else {
+            return self.remove(port);
+        };
         if self.indexed.get(&port) == Some(&indexed) {
             return false;
         }
-        let bounds = port_index_bounds(indexed.hit_bounds, indexed.route_anchor);
         self.spatial.upsert(
             port,
-            bounded_spatial_cells_for_rect(bounds, MAX_CELLS_PER_PORT),
+            bounded_spatial_cells_for_rect(indexed.hit_bounds, MAX_CELLS_PER_PORT),
         );
         self.indexed.insert(port, indexed);
         self.index_epoch = self.index_epoch.saturating_add(1);
@@ -242,54 +319,65 @@ impl PortGeometryIndex {
 
     #[cfg(test)]
     pub(super) fn matches_geometry_for_test(&self, geometry: &PublishedPortGeometry) -> bool {
-        self.indexed.get(&geometry.port()) == Some(&IndexedPort::from(geometry))
+        match IndexedPort::from_geometry(geometry) {
+            Some(indexed) => self.indexed.get(&geometry.port()) == Some(&indexed),
+            None => !self.indexed.contains_key(&geometry.port()),
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new_cursor(
         &self,
-        view: ViewId,
-        generation: ViewGeneration,
-        transform_revision: u64,
+        identity: ViewQueryIdentity,
         graph_revision: GraphRevision,
         order_revision: u128,
-        intent: ConnectionGestureIntent,
+        intent: ConnectionGestureBinding,
         pointer: ViewPoint,
-        radius_in_view: f32,
+        targeting: ConnectionProbeTargeting,
         transform: ViewportTransform,
     ) -> Option<ConnectionProbeCursor> {
-        if !pointer.is_finite() || !radius_in_view.is_finite() || radius_in_view <= 0.0 {
+        if !pointer.is_finite()
+            || ConnectionProbeTargeting::new(
+                targeting.acquire_radius_in_view(),
+                targeting.release_radius_in_view(),
+            )
+            .is_none()
+        {
             return None;
         }
         let canvas_pointer = pointer.to_canvas_point(transform)?;
-        let radius_in_canvas = radius_in_view / transform.zoom;
-        if !radius_in_canvas.is_finite() || radius_in_canvas <= 0.0 {
+        let acquire_radius_in_canvas = targeting.acquire_radius_in_view() / transform.zoom;
+        let release_radius_in_canvas = targeting.release_radius_in_view() / transform.zoom;
+        if !acquire_radius_in_canvas.is_finite()
+            || acquire_radius_in_canvas <= 0.0
+            || !release_radius_in_canvas.is_finite()
+            || release_radius_in_canvas < acquire_radius_in_canvas
+        {
             return None;
         }
         let query_bounds = CanvasRect {
             origin: CanvasPoint {
-                x: canvas_pointer.x - radius_in_canvas,
-                y: canvas_pointer.y - radius_in_canvas,
+                x: canvas_pointer.x - release_radius_in_canvas,
+                y: canvas_pointer.y - release_radius_in_canvas,
             },
             size: CanvasSize {
-                width: radius_in_canvas * 2.0,
-                height: radius_in_canvas * 2.0,
+                width: release_radius_in_canvas * 2.0,
+                height: release_radius_in_canvas * 2.0,
             },
         };
         if !query_bounds.is_positive_finite() {
             return None;
         }
         Some(ConnectionProbeCursor {
-            view,
-            generation,
-            transform_revision,
+            identity,
             graph_revision,
             index_epoch: self.index_epoch,
             order_revision,
             intent,
             canvas_pointer,
-            radius_in_view,
-            radius_in_canvas,
+            targeting,
+            acquire_radius_in_canvas,
+            release_radius_in_canvas,
             sources: self
                 .spatial
                 .query_sources(query_bounds, MAX_QUERY_CELLS_PER_LEVEL),
@@ -305,8 +393,10 @@ impl PortGeometryIndex {
     pub(super) fn query_page(
         &self,
         graph: &jellyflow_core::core::Graph,
+        port_instance: impl Fn(PortId) -> Option<PortInstanceKey>,
         node_draw_order_ranks: &BTreeMap<NodeId, usize>,
         selected_nodes: &std::collections::HashSet<NodeId>,
+        recent_interaction_node: Option<NodeId>,
         mut cursor: ConnectionProbeCursor,
         entry_budget: usize,
     ) -> InternalProbeOutcome {
@@ -344,7 +434,10 @@ impl PortGeometryIndex {
                 continue;
             };
             if remaining == 0 {
-                return InternalProbeOutcome::Incomplete { cursor, work };
+                return InternalProbeOutcome::Incomplete {
+                    cursor: Box::new(cursor),
+                    work,
+                };
             }
             if cursor.total_entries_examined >= HARD_PORT_QUERY_ENTRY_LIMIT {
                 return InternalProbeOutcome::BudgetExhausted { work };
@@ -353,22 +446,40 @@ impl PortGeometryIndex {
             cursor.last_port = Some(port);
             cursor.total_entries_examined = cursor.total_entries_examined.saturating_add(1);
             work.entries_examined = work.entries_examined.saturating_add(1);
-            if !cursor.checked.insert(port) || port == cursor.intent.fixed_port() {
+            if !cursor.checked.insert(port) || port == cursor.intent.fixed_port_instance().port() {
                 continue;
             }
             let Some(indexed) = self.indexed.get(&port).copied() else {
                 continue;
             };
-            work.exact_tests = work.exact_tests.saturating_add(1);
-            let direct_hit = rect_contains(indexed.hit_bounds, cursor.canvas_pointer);
-            let distance_in_canvas = point_distance(indexed.route_anchor, cursor.canvas_pointer);
-            if !direct_hit && distance_in_canvas > cursor.radius_in_canvas {
+            let Some(instance) = port_instance(port) else {
+                continue;
+            };
+            if instance.node() != indexed.node {
                 continue;
             }
-            let distance_in_view =
-                distance_in_canvas * (cursor.radius_in_view / cursor.radius_in_canvas);
+            work.exact_tests = work.exact_tests.saturating_add(1);
+            let direct_hit = rect_contains(indexed.hit_bounds, cursor.canvas_pointer);
+            let hit_distance_in_canvas =
+                point_rect_distance(cursor.canvas_pointer, indexed.hit_bounds);
+            let distance_in_canvas = point_distance(indexed.route_anchor, cursor.canvas_pointer);
+            let identity = ConnectionProbeTargetIdentity::new(instance);
+            let preferred = cursor.targeting.preferred() == Some(identity);
+            let radius_in_canvas = if preferred {
+                cursor.release_radius_in_canvas
+            } else {
+                cursor.acquire_radius_in_canvas
+            };
+            if !direct_hit
+                && (distance_in_canvas > radius_in_canvas
+                    || hit_distance_in_canvas > radius_in_canvas)
+            {
+                continue;
+            }
+            let distance_in_view = distance_in_canvas
+                * (cursor.targeting.release_radius_in_view() / cursor.release_radius_in_canvas);
             let source_direction = graph
-                .port(&cursor.intent.fixed_port())
+                .port(&cursor.intent.fixed_port_instance().port())
                 .map(|source| source.dir);
             let target_direction = graph.port(&port).map(|target| target.dir);
             let opposite_direction = matches!(
@@ -378,17 +489,18 @@ impl PortGeometryIndex {
             );
             let candidate = PortProbeCandidate {
                 target: ConnectionProbeTarget::new(
-                    port,
-                    indexed.node,
+                    instance,
                     indexed.route_anchor,
                     indexed.outward,
                     distance_in_view,
                 ),
                 direct_hit,
+                preferred,
                 opposite_direction,
                 paint_order: render_order_key(
                     indexed.node,
                     selected_nodes.contains(&indexed.node),
+                    recent_interaction_node == Some(indexed.node),
                     node_draw_order_ranks,
                 ),
             };
@@ -407,110 +519,151 @@ impl ViewSession {
         &self,
         query: ConnectionProbeQuery,
     ) -> Result<ConnectionProbeQueryOutcome, ConnectionProbeQueryError> {
-        self.runtime()?;
-        let graph = self.graph_snapshot()?;
-        let internal = {
-            let mut state = self
-                .shared
-                .state
-                .try_borrow_mut()
-                .map_err(|_| ViewSessionError::Busy)?;
-            ensure_open(state.status)?;
-            let transform = ViewportTransform::new(state.facts.pan, state.facts.zoom)
-                .ok_or(ViewSessionError::InvalidViewport)?;
-            let cursor = match query.request {
-                ConnectionProbeRequest::Start {
+        let runtime = self.runtime()?;
+        connection_probe_page(&self.shared, &runtime, query)
+    }
+}
+
+impl WeakViewSession {
+    pub(crate) fn connection_probe(
+        &self,
+        query: ConnectionProbeQuery,
+    ) -> Result<ConnectionProbeQueryOutcome, ConnectionProbeQueryError> {
+        let (view, runtime) = self.open_capability()?;
+        connection_probe_page(&view, &runtime, query)
+    }
+}
+
+fn connection_probe_page(
+    view: &ViewShared,
+    runtime: &Rc<RuntimeShared>,
+    query: ConnectionProbeQuery,
+) -> Result<ConnectionProbeQueryOutcome, ConnectionProbeQueryError> {
+    let graph = runtime.snapshot().map_err(ViewSessionError::from)?;
+    if let ConnectionProbeRequest::Start { intent, .. } = &query.request {
+        if intent.provenance() != graph.provenance() {
+            return Err(ViewSessionError::ForeignInteractionFacts.into());
+        }
+        let policy = runtime.policy().map_err(ViewSessionError::from)?;
+        if !intent.is_interactive(&graph, policy) {
+            return Err(ViewSessionError::StaleInteractionFacts.into());
+        }
+    }
+    let (internal, receipt) = {
+        let mut state = view
+            .state
+            .try_borrow_mut()
+            .map_err(|_| ViewSessionError::Busy)?;
+        ensure_open(state.status)?;
+        let transform = ViewportTransform::new(state.facts.pan, state.facts.zoom)
+            .ok_or(ViewSessionError::InvalidViewport)?;
+        let cursor = match query.request {
+            ConnectionProbeRequest::Start {
+                intent,
+                pointer,
+                targeting,
+            } => state
+                .derived
+                .new_connection_probe_cursor(
+                    state.query_identity(),
+                    state.seen_revision,
+                    state.interaction_order_revision,
                     intent,
                     pointer,
-                    radius_in_view,
-                } => state
-                    .derived
-                    .new_connection_probe_cursor(
-                        state.id,
-                        state.generation,
-                        state.transform_revision,
-                        state.seen_revision,
-                        state.interaction_order_revision,
-                        intent,
-                        pointer,
-                        radius_in_view,
-                        transform,
-                    )
-                    .ok_or(ConnectionProbeQueryError::InvalidQuery)?,
-                ConnectionProbeRequest::Resume(cursor) => {
-                    validate_probe_cursor(&state, &cursor)?;
-                    *cursor
-                }
-            };
-            if graph.revision() != state.seen_revision {
-                return Err(ConnectionProbeQueryError::StaleCursor(
-                    ConnectionProbeCursorStaleReason::GraphRevision,
-                ));
+                    targeting,
+                    transform,
+                )
+                .ok_or(ConnectionProbeQueryError::InvalidQuery)?,
+            ConnectionProbeRequest::Resume(cursor) => {
+                validate_probe_cursor(&state, &cursor)?;
+                *cursor
             }
-            let state = &mut *state;
-            state.derived.query_connection_probe_page(
-                graph.graph(),
-                &state.node_draw_order_ranks,
-                &state.selected_node_membership,
-                cursor,
-                query.entry_budget,
-            )
         };
+        let receipt = ConnectionProbeQueryReceipt::issue(
+            query.interaction_binding,
+            cursor.identity,
+            [
+                u128::from(cursor.graph_revision),
+                cursor.index_epoch,
+                cursor.order_revision,
+                0,
+            ],
+        )?;
+        if graph.revision() != state.seen_revision {
+            return Err(ConnectionProbeQueryError::StaleCursor(
+                ConnectionProbeCursorStaleReason::GraphRevision,
+            ));
+        }
+        let state = &mut *state;
+        let internal = state.derived.query_connection_probe_page(
+            &graph,
+            &state.node_draw_order_ranks,
+            &state.selected_node_membership,
+            state.recent_interaction_node_id(),
+            cursor,
+            query.entry_budget,
+        );
+        (internal, receipt)
+    };
 
-        match internal {
-            InternalProbeOutcome::Complete {
-                intent,
-                graph_revision,
-                candidate,
-                mut work,
-            } => {
-                let probe = if let Some(candidate) = candidate {
-                    let evaluation =
-                        self.evaluate_connection(intent.edit_for_target(candidate.target.port()))?;
-                    work.policy_evaluations = 1;
-                    {
-                        let mut state = self
-                            .shared
-                            .state
-                            .try_borrow_mut()
-                            .map_err(|_| ViewSessionError::Busy)?;
-                        ensure_open(state.status)?;
-                        state.control_stats.connection_probe_policy_evaluations = state
-                            .control_stats
-                            .connection_probe_policy_evaluations
-                            .saturating_add(1);
-                    }
-                    if evaluation.revision() != graph_revision {
-                        return Err(ConnectionProbeQueryError::StaleCursor(
-                            ConnectionProbeCursorStaleReason::GraphRevision,
-                        ));
-                    }
-                    if evaluation.is_accept() {
-                        ConnectionProbe::Valid {
-                            revision: graph_revision,
-                            target: candidate.target,
-                        }
-                    } else {
-                        ConnectionProbe::Invalid {
-                            revision: graph_revision,
-                            target: candidate.target,
-                            diagnostics: evaluation.diagnostics().to_vec(),
-                        }
+    match internal {
+        InternalProbeOutcome::Complete {
+            intent,
+            graph_revision,
+            candidate,
+            mut work,
+        } => {
+            let probe = if let Some(candidate) = candidate {
+                let evaluation = runtime
+                    .evaluate_connection(intent.edit_for_target(candidate.target.port()))
+                    .map_err(ViewSessionError::from)?;
+                work.policy_evaluations = 1;
+                {
+                    let mut state = view
+                        .state
+                        .try_borrow_mut()
+                        .map_err(|_| ViewSessionError::Busy)?;
+                    ensure_open(state.status)?;
+                    state.control_stats.connection_probe_policy_evaluations = state
+                        .control_stats
+                        .connection_probe_policy_evaluations
+                        .saturating_add(1);
+                }
+                if evaluation.revision() != graph_revision {
+                    return Err(ConnectionProbeQueryError::StaleCursor(
+                        ConnectionProbeCursorStaleReason::GraphRevision,
+                    ));
+                }
+                if evaluation.is_accept() {
+                    ConnectionProbe::Valid {
+                        version: evaluation.version(),
+                        target: candidate.target,
                     }
                 } else {
-                    ConnectionProbe::None
-                };
-                Ok(ConnectionProbeQueryOutcome::Complete { probe, work })
-            }
-            InternalProbeOutcome::Incomplete { cursor, work } => {
-                Ok(ConnectionProbeQueryOutcome::Incomplete {
-                    cursor: Box::new(cursor),
-                    work,
-                })
-            }
-            InternalProbeOutcome::BudgetExhausted { work } => {
-                Ok(ConnectionProbeQueryOutcome::BudgetExhausted { work })
-            }
+                    ConnectionProbe::Invalid {
+                        version: evaluation.version(),
+                        target: candidate.target,
+                        diagnostics: evaluation.diagnostics().to_vec(),
+                    }
+                }
+            } else {
+                ConnectionProbe::None
+            };
+            Ok(ConnectionProbeQueryOutcome::Complete {
+                probe,
+                work: work.with_receipt(receipt),
+            })
+        }
+        InternalProbeOutcome::Incomplete { cursor, work } => {
+            Ok(ConnectionProbeQueryOutcome::Incomplete {
+                cursor,
+                work: work.with_receipt(receipt),
+            })
+        }
+        InternalProbeOutcome::BudgetExhausted { work } => {
+            Ok(ConnectionProbeQueryOutcome::BudgetExhausted {
+                work: work.with_receipt(receipt),
+            })
         }
     }
 }
@@ -519,28 +672,49 @@ fn validate_probe_cursor(
     state: &super::ViewState,
     cursor: &ConnectionProbeCursor,
 ) -> Result<(), ConnectionProbeQueryError> {
-    let reason = if cursor.view != state.id {
-        Some(ConnectionProbeCursorStaleReason::ForeignView)
-    } else if cursor.generation != state.generation {
-        Some(ConnectionProbeCursorStaleReason::ViewGeneration)
-    } else if cursor.transform_revision != state.transform_revision {
-        Some(ConnectionProbeCursorStaleReason::ViewportTransform)
-    } else if cursor.graph_revision != state.seen_revision {
-        Some(ConnectionProbeCursorStaleReason::GraphRevision)
-    } else if cursor.index_epoch != state.derived.connection_probe_index_epoch() {
-        Some(ConnectionProbeCursorStaleReason::PortGeometry)
-    } else if cursor.order_revision != state.interaction_order_revision {
-        Some(ConnectionProbeCursorStaleReason::PaintOrder)
-    } else {
-        None
-    };
-    reason
-        .map(ConnectionProbeQueryError::StaleCursor)
-        .map_or(Ok(()), Err)
+    probe_cursor_stale_reason(
+        state.query_identity(),
+        state.seen_revision,
+        state.derived.connection_probe_index_epoch(),
+        state.interaction_order_revision,
+        cursor,
+    )
+    .map(ConnectionProbeQueryError::StaleCursor)
+    .map_or(Ok(()), Err)
+}
+
+fn probe_cursor_stale_reason(
+    identity: ViewQueryIdentity,
+    graph_revision: GraphRevision,
+    index_epoch: u128,
+    order_revision: u128,
+    cursor: &ConnectionProbeCursor,
+) -> Option<ConnectionProbeCursorStaleReason> {
+    match cursor.identity.stale_reason(identity) {
+        Some(ViewQueryIdentityStaleReason::ForeignView) => {
+            Some(ConnectionProbeCursorStaleReason::ForeignView)
+        }
+        Some(ViewQueryIdentityStaleReason::ViewGeneration) => {
+            Some(ConnectionProbeCursorStaleReason::ViewGeneration)
+        }
+        Some(ViewQueryIdentityStaleReason::ViewportTransform) => {
+            Some(ConnectionProbeCursorStaleReason::ViewportTransform)
+        }
+        None if cursor.graph_revision != graph_revision => {
+            Some(ConnectionProbeCursorStaleReason::GraphRevision)
+        }
+        None if cursor.index_epoch != index_epoch => {
+            Some(ConnectionProbeCursorStaleReason::PortGeometry)
+        }
+        None if cursor.order_revision != order_revision => {
+            Some(ConnectionProbeCursorStaleReason::PaintOrder)
+        }
+        None => None,
+    }
 }
 
 pub(super) fn record_probe_query_stats(
-    stats: &mut super::ViewSessionStats,
+    stats: &mut super::DerivedGeometryStats,
     outcome: &InternalProbeOutcome,
 ) {
     let work = match outcome {
@@ -572,6 +746,9 @@ fn port_candidate_is_better(candidate: PortProbeCandidate, current: PortProbeCan
     if candidate.direct_hit != current.direct_hit {
         return candidate.direct_hit;
     }
+    if !candidate.direct_hit && candidate.preferred != current.preferred {
+        return candidate.preferred;
+    }
     let distance = candidate
         .target
         .distance_in_view()
@@ -602,25 +779,31 @@ fn port_candidate_is_better(candidate: PortProbeCandidate, current: PortProbeCan
     }
 }
 
-fn port_index_bounds(hit_bounds: CanvasRect, anchor: CanvasPoint) -> CanvasRect {
-    let min_x = hit_bounds.origin.x.min(anchor.x - ANCHOR_INDEX_EPSILON);
-    let min_y = hit_bounds.origin.y.min(anchor.y - ANCHOR_INDEX_EPSILON);
-    let max_x = (hit_bounds.origin.x + hit_bounds.size.width).max(anchor.x + ANCHOR_INDEX_EPSILON);
-    let max_y = (hit_bounds.origin.y + hit_bounds.size.height).max(anchor.y + ANCHOR_INDEX_EPSILON);
-    CanvasRect {
-        origin: CanvasPoint { x: min_x, y: min_y },
-        size: CanvasSize {
-            width: max_x - min_x,
-            height: max_y - min_y,
-        },
-    }
-}
-
 fn rect_contains(bounds: CanvasRect, point: CanvasPoint) -> bool {
     point.x >= bounds.origin.x
         && point.y >= bounds.origin.y
         && point.x <= bounds.origin.x + bounds.size.width
         && point.y <= bounds.origin.y + bounds.size.height
+}
+
+fn point_rect_distance(point: CanvasPoint, bounds: CanvasRect) -> f32 {
+    let right = bounds.origin.x + bounds.size.width;
+    let bottom = bounds.origin.y + bounds.size.height;
+    let dx = if point.x < bounds.origin.x {
+        bounds.origin.x - point.x
+    } else if point.x > right {
+        point.x - right
+    } else {
+        0.0
+    };
+    let dy = if point.y < bounds.origin.y {
+        bounds.origin.y - point.y
+    } else if point.y > bottom {
+        point.y - bottom
+    } else {
+        0.0
+    };
+    dx.mul_add(dx, dy * dy).sqrt()
 }
 
 fn point_distance(left: CanvasPoint, right: CanvasPoint) -> f32 {
@@ -640,6 +823,94 @@ mod tests {
 
     use super::*;
     use crate::runtime::geometry::HandlePosition;
+    use crate::runtime::viewport::ViewportRevision;
+
+    #[test]
+    fn probe_cursor_identity_and_epoch_staleness_matrix() {
+        let index = PortGeometryIndex::default();
+        let cursor = cursor(&index, ViewPoint::new(0.0, 0.0), 8.0, 1.0);
+        let identity = cursor.identity;
+        let foreign_identity = ViewQueryIdentity::new(
+            ViewId {
+                runtime: identity.view.runtime,
+                local: identity.view.local.saturating_add(1),
+            },
+            identity.generation,
+            identity.viewport_revision,
+        );
+        let next_generation = ViewQueryIdentity::new(
+            identity.view,
+            identity.generation.terminal(),
+            identity.viewport_revision,
+        );
+        let next_transform = ViewQueryIdentity::new(
+            identity.view,
+            identity.generation,
+            identity.viewport_revision.checked_next().unwrap(),
+        );
+        for (current_identity, graph_revision, index_epoch, order_revision, expected) in [
+            (
+                foreign_identity,
+                cursor.graph_revision,
+                cursor.index_epoch,
+                cursor.order_revision,
+                Some(ConnectionProbeCursorStaleReason::ForeignView),
+            ),
+            (
+                next_generation,
+                cursor.graph_revision,
+                cursor.index_epoch,
+                cursor.order_revision,
+                Some(ConnectionProbeCursorStaleReason::ViewGeneration),
+            ),
+            (
+                next_transform,
+                cursor.graph_revision,
+                cursor.index_epoch,
+                cursor.order_revision,
+                Some(ConnectionProbeCursorStaleReason::ViewportTransform),
+            ),
+            (
+                identity,
+                cursor.graph_revision.saturating_add(1),
+                cursor.index_epoch,
+                cursor.order_revision,
+                Some(ConnectionProbeCursorStaleReason::GraphRevision),
+            ),
+            (
+                identity,
+                cursor.graph_revision,
+                cursor.index_epoch.saturating_add(1),
+                cursor.order_revision,
+                Some(ConnectionProbeCursorStaleReason::PortGeometry),
+            ),
+            (
+                identity,
+                cursor.graph_revision,
+                cursor.index_epoch,
+                cursor.order_revision.saturating_add(1),
+                Some(ConnectionProbeCursorStaleReason::PaintOrder),
+            ),
+            (
+                identity,
+                cursor.graph_revision,
+                cursor.index_epoch,
+                cursor.order_revision,
+                None,
+            ),
+        ] {
+            assert_eq!(
+                probe_cursor_stale_reason(
+                    current_identity,
+                    graph_revision,
+                    index_epoch,
+                    order_revision,
+                    &cursor,
+                ),
+                expected,
+            );
+        }
+    }
 
     #[test]
     fn overlapping_direct_hit_uses_topmost_port_even_when_it_is_not_direction_compatible() {
@@ -668,6 +939,46 @@ mod tests {
         );
 
         assert_eq!(completed_candidate(outcome), Some(invalid_port));
+    }
+
+    #[test]
+    fn recent_selected_node_elevation_also_controls_overlapping_port_hits() {
+        let first_node = NodeId::from_u128(2);
+        let second_node = NodeId::from_u128(3);
+        let first_port = PortId::from_u128(2);
+        let second_port = PortId::from_u128(3);
+        let graph = graph_with_ports(&[
+            (source_node(), source_port(), PortDirection::Out),
+            (first_node, first_port, PortDirection::In),
+            (second_node, second_port, PortDirection::In),
+        ]);
+        let mut index = PortGeometryIndex::default();
+        index.upsert(&geometry(first_node, first_port, 100.0, 100.0));
+        index.upsert(&geometry(second_node, second_port, 100.0, 100.0));
+        let ranks = BTreeMap::from([(first_node, 0), (second_node, 1)]);
+        let selected = HashSet::from([first_node, second_node]);
+
+        let baseline = index.query_page(
+            &graph,
+            |port| test_port_instance(&graph, port),
+            &ranks,
+            &selected,
+            None,
+            cursor(&index, ViewPoint::new(100.0, 100.0), 12.0, 1.0),
+            32,
+        );
+        assert_eq!(completed_candidate(baseline), Some(second_port));
+
+        let elevated = index.query_page(
+            &graph,
+            |port| test_port_instance(&graph, port),
+            &ranks,
+            &selected,
+            Some(first_node),
+            cursor(&index, ViewPoint::new(100.0, 100.0), 12.0, 1.0),
+            32,
+        );
+        assert_eq!(completed_candidate(elevated), Some(first_port));
     }
 
     #[test]
@@ -738,6 +1049,142 @@ mod tests {
     }
 
     #[test]
+    fn preferred_target_uses_release_band_but_direct_hit_still_wins() {
+        let first_node = NodeId::from_u128(2);
+        let second_node = NodeId::from_u128(3);
+        let first_port = PortId::from_u128(2);
+        let second_port = PortId::from_u128(3);
+        let graph = graph_with_ports(&[
+            (source_node(), source_port(), PortDirection::Out),
+            (first_node, first_port, PortDirection::In),
+            (second_node, second_port, PortDirection::In),
+        ]);
+        let preferred = ConnectionProbeTargetIdentity::new(PortInstanceKey::unavailable(
+            first_node, first_port,
+        ));
+        for zoom in [0.5, 1.0, 2.0] {
+            let first_x = 100.0;
+            let second_x = first_x + 12.0 / zoom;
+            let pointer_x = first_x * zoom + 7.0;
+            let small_hit = |node, port, x| {
+                geometry_for_zoom(node, port, x, 100.0, zoom).with_hit_bounds_for_test(Some(
+                    CanvasRect {
+                        origin: CanvasPoint {
+                            x: x - 1.0 / zoom,
+                            y: 100.0 - 1.0 / zoom,
+                        },
+                        size: CanvasSize {
+                            width: 2.0 / zoom,
+                            height: 2.0 / zoom,
+                        },
+                    },
+                ))
+            };
+            let mut index = PortGeometryIndex::default();
+            index.upsert(&small_hit(first_node, first_port, first_x));
+            index.upsert(&small_hit(second_node, second_port, second_x));
+
+            let acquired_without_lock = query_with_targeting(
+                &index,
+                &graph,
+                &BTreeMap::new(),
+                ViewPoint::new(pointer_x, 100.0 * zoom),
+                ConnectionProbeTargeting::new(6.0, 10.0).unwrap(),
+                zoom,
+                32,
+            );
+            assert_eq!(
+                completed_candidate(acquired_without_lock),
+                Some(second_port)
+            );
+
+            let retained = query_with_targeting(
+                &index,
+                &graph,
+                &BTreeMap::new(),
+                ViewPoint::new(pointer_x, 100.0 * zoom),
+                ConnectionProbeTargeting::new(6.0, 10.0)
+                    .unwrap()
+                    .with_preferred(preferred),
+                zoom,
+                32,
+            );
+            assert_eq!(completed_candidate(retained), Some(first_port));
+
+            let direct = query_with_targeting(
+                &index,
+                &graph,
+                &BTreeMap::new(),
+                ViewPoint::new(second_x * zoom, 100.0 * zoom),
+                ConnectionProbeTargeting::new(6.0, 14.0)
+                    .unwrap()
+                    .with_preferred(preferred),
+                zoom,
+                32,
+            );
+            assert_eq!(completed_candidate(direct), Some(second_port));
+        }
+    }
+
+    #[test]
+    fn replaced_preferred_target_loses_release_authority() {
+        let target_node = NodeId::from_u128(2);
+        let target_port = PortId::from_u128(2);
+        let graph = graph_with_ports(&[
+            (source_node(), source_port(), PortDirection::Out),
+            (target_node, target_port, PortDirection::In),
+        ]);
+        let mut index = PortGeometryIndex::default();
+        index.upsert(
+            &geometry(target_node, target_port, 100.0, 100.0).with_hit_bounds_for_test(Some(
+                CanvasRect {
+                    origin: CanvasPoint { x: 99.0, y: 99.0 },
+                    size: CanvasSize {
+                        width: 2.0,
+                        height: 2.0,
+                    },
+                },
+            )),
+        );
+        let stale = ConnectionProbeTargetIdentity::new(PortInstanceKey::unavailable(
+            NodeId::from_u128(999),
+            target_port,
+        ));
+        let cursor = index
+            .new_cursor(
+                ViewQueryIdentity::new(
+                    ViewId::unavailable(),
+                    ViewGeneration::initial(),
+                    ViewportRevision::initial(),
+                ),
+                0,
+                0,
+                ConnectionGestureBinding::connect_for_test(
+                    test_edge(),
+                    source_port(),
+                    NodeGraphConnectionMode::Strict,
+                ),
+                ViewPoint::new(108.0, 100.0),
+                ConnectionProbeTargeting::new(6.0, 10.0)
+                    .unwrap()
+                    .with_preferred(stale),
+                ViewportTransform::new(CanvasPoint::default(), 1.0).unwrap(),
+            )
+            .unwrap();
+        let outcome = index.query_page(
+            &graph,
+            |port| test_port_instance(&graph, port),
+            &BTreeMap::new(),
+            &HashSet::new(),
+            None,
+            cursor,
+            32,
+        );
+
+        assert_eq!(completed_candidate(outcome), None);
+    }
+
+    #[test]
     fn zero_budget_resumes_without_losing_the_candidate() {
         let target_node = NodeId::from_u128(2);
         let target_port = PortId::from_u128(2);
@@ -749,14 +1196,28 @@ mod tests {
         index.upsert(&geometry(target_node, target_port, 100.0, 100.0));
         let cursor = cursor(&index, ViewPoint::new(100.0, 100.0), 12.0, 1.0);
 
-        let InternalProbeOutcome::Incomplete { cursor, work } =
-            index.query_page(&graph, &BTreeMap::new(), &HashSet::new(), cursor, 0)
-        else {
+        let InternalProbeOutcome::Incomplete { cursor, work } = index.query_page(
+            &graph,
+            |port| test_port_instance(&graph, port),
+            &BTreeMap::new(),
+            &HashSet::new(),
+            None,
+            cursor,
+            0,
+        ) else {
             panic!("zero budget must preserve resumable work");
         };
         assert_eq!(work.entries_examined, 0);
 
-        let resumed = index.query_page(&graph, &BTreeMap::new(), &HashSet::new(), cursor, 1);
+        let resumed = index.query_page(
+            &graph,
+            |port| test_port_instance(&graph, port),
+            &BTreeMap::new(),
+            &HashSet::new(),
+            None,
+            *cursor,
+            1,
+        );
         assert_eq!(completed_candidate(resumed), Some(target_port));
     }
 
@@ -800,6 +1261,109 @@ mod tests {
                 32,
             )),
             None
+        );
+    }
+
+    #[test]
+    fn fully_clipped_port_leaves_probe_index_and_returns_with_same_route_geometry() {
+        let target_node = NodeId::from_u128(2);
+        let target_port = PortId::from_u128(2);
+        let graph = graph_with_ports(&[
+            (source_node(), source_port(), PortDirection::Out),
+            (target_node, target_port, PortDirection::In),
+        ]);
+        let visible = geometry(target_node, target_port, 100.0, 100.0);
+        let clipped = visible.clone().with_hit_bounds_for_test(None);
+        let mut index = PortGeometryIndex::default();
+
+        assert!(index.upsert(&visible));
+        assert_eq!(
+            completed_candidate(query(
+                &index,
+                &graph,
+                &BTreeMap::new(),
+                ViewPoint::new(100.0, 100.0),
+                12.0,
+                1.0,
+                32,
+            )),
+            Some(target_port)
+        );
+
+        assert!(index.upsert(&clipped));
+        assert_eq!(clipped.port(), visible.port());
+        assert_eq!(clipped.route_anchor(), visible.route_anchor());
+        assert_eq!(
+            completed_candidate(query(
+                &index,
+                &graph,
+                &BTreeMap::new(),
+                ViewPoint::new(100.0, 100.0),
+                12.0,
+                1.0,
+                32,
+            )),
+            None
+        );
+
+        assert!(index.upsert(&visible));
+        assert_eq!(
+            completed_candidate(query(
+                &index,
+                &graph,
+                &BTreeMap::new(),
+                ViewPoint::new(100.0, 100.0),
+                12.0,
+                1.0,
+                32,
+            )),
+            Some(target_port)
+        );
+    }
+
+    #[test]
+    fn proximity_probe_is_bounded_by_clipped_interaction_region() {
+        let target_node = NodeId::from_u128(2);
+        let target_port = PortId::from_u128(2);
+        let graph = graph_with_ports(&[
+            (source_node(), source_port(), PortDirection::Out),
+            (target_node, target_port, PortDirection::In),
+        ]);
+        let clipped = geometry(target_node, target_port, 100.0, 100.0).with_hit_bounds_for_test(
+            Some(CanvasRect {
+                origin: CanvasPoint { x: 104.0, y: 96.0 },
+                size: CanvasSize {
+                    width: 6.0,
+                    height: 8.0,
+                },
+            }),
+        );
+        let mut index = PortGeometryIndex::default();
+        assert!(index.upsert(&clipped));
+
+        assert_eq!(
+            completed_candidate(query(
+                &index,
+                &graph,
+                &BTreeMap::new(),
+                ViewPoint::new(91.0, 100.0),
+                4.0,
+                1.0,
+                32,
+            )),
+            None
+        );
+        assert_eq!(
+            completed_candidate(query(
+                &index,
+                &graph,
+                &BTreeMap::new(),
+                ViewPoint::new(106.0, 100.0),
+                4.0,
+                1.0,
+                32,
+            )),
+            Some(target_port)
         );
     }
 
@@ -861,11 +1425,52 @@ mod tests {
         zoom: f32,
         budget: usize,
     ) -> InternalProbeOutcome {
-        index.query_page(
+        query_with_targeting(
+            index,
             graph,
             ranks,
+            pointer,
+            ConnectionProbeTargeting::new(radius, radius).expect("valid target radius"),
+            zoom,
+            budget,
+        )
+    }
+
+    fn query_with_targeting(
+        index: &PortGeometryIndex,
+        graph: &Graph,
+        ranks: &BTreeMap<NodeId, usize>,
+        pointer: ViewPoint,
+        targeting: ConnectionProbeTargeting,
+        zoom: f32,
+        budget: usize,
+    ) -> InternalProbeOutcome {
+        let cursor = index
+            .new_cursor(
+                ViewQueryIdentity::new(
+                    ViewId::unavailable(),
+                    ViewGeneration::initial(),
+                    ViewportRevision::initial(),
+                ),
+                0,
+                0,
+                ConnectionGestureBinding::connect_for_test(
+                    test_edge(),
+                    source_port(),
+                    NodeGraphConnectionMode::Strict,
+                ),
+                pointer,
+                targeting,
+                ViewportTransform::new(CanvasPoint::default(), zoom).expect("valid transform"),
+            )
+            .expect("valid query");
+        index.query_page(
+            graph,
+            |port| test_port_instance(graph, port),
+            ranks,
             &HashSet::new(),
-            cursor(index, pointer, radius, zoom),
+            None,
+            cursor,
             budget,
         )
     }
@@ -878,18 +1483,20 @@ mod tests {
     ) -> ConnectionProbeCursor {
         index
             .new_cursor(
-                ViewId::unavailable(),
-                ViewGeneration::initial(),
+                ViewQueryIdentity::new(
+                    ViewId::unavailable(),
+                    ViewGeneration::initial(),
+                    ViewportRevision::initial(),
+                ),
                 0,
                 0,
-                0,
-                ConnectionGestureIntent::connect(
+                ConnectionGestureBinding::connect_for_test(
                     test_edge(),
                     source_port(),
                     NodeGraphConnectionMode::Strict,
                 ),
                 pointer,
-                radius,
+                ConnectionProbeTargeting::new(radius, radius).expect("valid target radius"),
                 ViewportTransform::new(CanvasPoint { x: 0.0, y: 0.0 }, zoom)
                     .expect("valid transform"),
             )
@@ -924,6 +1531,12 @@ mod tests {
             insert_port(&mut builder, node, port, direction);
         }
         builder.build().expect("valid fixture graph")
+    }
+
+    fn test_port_instance(graph: &Graph, port: PortId) -> Option<PortInstanceKey> {
+        graph
+            .port(&port)
+            .map(|model| PortInstanceKey::unavailable(model.node, port))
     }
 
     fn insert_port(
@@ -1000,7 +1613,7 @@ mod tests {
                     height: visual_half * 2.0,
                 },
             },
-            CanvasRect {
+            Some(CanvasRect {
                 origin: CanvasPoint {
                     x: x - hit_half,
                     y: y - hit_half,
@@ -1009,7 +1622,7 @@ mod tests {
                     width: hit_half * 2.0,
                     height: hit_half * 2.0,
                 },
-            },
+            }),
             CanvasPoint { x, y },
             HandlePosition::Left,
         )

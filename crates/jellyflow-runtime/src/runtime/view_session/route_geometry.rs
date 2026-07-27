@@ -9,14 +9,18 @@ use crate::runtime::geometry::{
     EdgeFlattenOptions, EdgePath, EdgePathFlattenError, EdgePathSegment, FlattenedEdgePath,
     edge_path_conservative_bounds, flatten_edge_path,
 };
-use crate::runtime::viewport::ViewportTransform;
+use crate::runtime::graph_runtime::EdgeInstanceKey;
+use crate::runtime::viewport::{ViewportRevision, ViewportTransform};
 
 use super::order::sort_render_order;
 use super::spatial_grid::{
     HierarchicalSpatialIndex, SpatialCell, SpatialQuerySource, bounded_spatial_cells_for_rect,
     max_spatial_cell_level, spatial_cell_coords, spatial_cell_size,
 };
-use super::{ViewGeneration, ViewId, ViewSession, ViewSessionError, ensure_open};
+use super::{
+    ViewGeneration, ViewId, ViewQueryIdentity, ViewQueryIdentityStaleReason, ViewSession,
+    ViewSessionError, ensure_open,
+};
 
 const ROUTE_INDEX_EPSILON: f32 = 0.001;
 const MAX_CELLS_PER_SEGMENT: usize = 128;
@@ -68,9 +72,7 @@ enum VisibleRouteRequest {
 
 #[derive(Debug)]
 pub struct VisibleRouteCursor {
-    view: ViewId,
-    generation: ViewGeneration,
-    transform_revision: u64,
+    identity: ViewQueryIdentity,
     index_epoch: u128,
     canvas_bounds: CanvasRect,
     scan: RouteScan,
@@ -164,7 +166,7 @@ impl RouteGeometryRevision {
 pub struct VisibleRouteQueryRevision {
     view: ViewId,
     generation: ViewGeneration,
-    transform_revision: u64,
+    viewport_revision: ViewportRevision,
     route_facts_revision: u128,
     interaction_order_revision: u128,
 }
@@ -278,6 +280,7 @@ pub(super) struct RouteGeometryIndex {
 
 #[derive(Debug, Clone)]
 struct IndexedRoute {
+    instance: EdgeInstanceKey,
     path_revision: u128,
     path: EdgePath,
     bounds: CanvasRect,
@@ -305,6 +308,12 @@ struct CachedFlatten {
     tolerance_bucket: u32,
     result: Result<Arc<FlattenedEdgePath>, EdgePathFlattenError>,
     access: u64,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct FlattenedRouteApproximation {
+    pub(super) path: Arc<FlattenedEdgePath>,
+    pub(super) max_error_in_canvas: f32,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -422,7 +431,8 @@ impl RouteGeometryIndex {
     #[cfg(test)]
     pub(super) fn matches_route_for_test(&self, route: &PublishedEdgeRoute) -> bool {
         self.indexed.get(&route.edge()).is_some_and(|indexed| {
-            indexed.path == route.facts().path
+            indexed.instance == route.instance()
+                && indexed.path == route.facts().path
                 && indexed.pick == IndexedRoutePickFacts::from(route)
                 && edge_path_conservative_bounds(&route.facts().path)
                     .ok()
@@ -439,6 +449,7 @@ impl RouteGeometryIndex {
     ) -> RouteIndexMutation {
         let pick = IndexedRoutePickFacts::from(route);
         if let Some(indexed) = self.indexed.get(&edge)
+            && indexed.instance == route.instance()
             && indexed.path == route.facts().path
         {
             if indexed.pick == pick {
@@ -479,6 +490,7 @@ impl RouteGeometryIndex {
         self.indexed.insert(
             edge,
             IndexedRoute {
+                instance: route.instance(),
                 path_revision,
                 path: route.facts().path.clone(),
                 bounds,
@@ -491,6 +503,10 @@ impl RouteGeometryIndex {
             index_changed: true,
             cache_invalidations,
         }
+    }
+
+    pub(super) fn edge_instance(&self, edge: EdgeId) -> Option<EdgeInstanceKey> {
+        self.indexed.get(&edge).map(|route| route.instance)
     }
 
     pub(super) fn remove(&mut self, edge: EdgeId) -> RouteIndexMutation {
@@ -568,7 +584,7 @@ impl RouteGeometryIndex {
         edge: EdgeId,
         zoom: f32,
         work: &mut RouteFlattenWork,
-    ) -> Result<Arc<FlattenedEdgePath>, EdgePathFlattenError> {
+    ) -> Result<FlattenedRouteApproximation, EdgePathFlattenError> {
         self.flattened(edge, zoom, work)
     }
 
@@ -601,18 +617,14 @@ impl RouteGeometryIndex {
 
     pub(super) fn new_cursor(
         &self,
-        view: ViewId,
-        generation: ViewGeneration,
-        transform_revision: u64,
+        identity: ViewQueryIdentity,
         canvas_bounds: CanvasRect,
     ) -> VisibleRouteCursor {
         let scan = RouteScan {
             sources: self.spatial.query_sources(canvas_bounds),
         };
         VisibleRouteCursor {
-            view,
-            generation,
-            transform_revision,
+            identity,
             index_epoch: self.index_epoch,
             canvas_bounds,
             scan,
@@ -726,8 +738,13 @@ impl RouteGeometryIndex {
             .flatten_overflows
             .saturating_add(flatten_work.overflows);
         match result {
-            Ok(path) => {
-                if flattened_path_intersects_rect(&path, query) {
+            Ok(approximation) => {
+                let Some(conservative_query) =
+                    inflate_canvas_rect(query, approximation.max_error_in_canvas)
+                else {
+                    return RouteIntersection::Overflow(EdgePathFlattenError::InvalidGeometry);
+                };
+                if flattened_path_intersects_rect(&approximation.path, conservative_query) {
                     RouteIntersection::Visible
                 } else {
                     RouteIntersection::Hidden
@@ -742,7 +759,7 @@ impl RouteGeometryIndex {
         edge: EdgeId,
         zoom: f32,
         work: &mut RouteFlattenWork,
-    ) -> Result<Arc<FlattenedEdgePath>, EdgePathFlattenError> {
+    ) -> Result<FlattenedRouteApproximation, EdgePathFlattenError> {
         let mut options = EdgeFlattenOptions::default()
             .for_zoom(zoom)
             .ok_or(EdgePathFlattenError::InvalidGeometry)?;
@@ -758,7 +775,10 @@ impl RouteGeometryIndex {
             let previous_access = cached.access;
             work.cache_hits = work.cache_hits.saturating_add(1);
             self.touch_cached_flatten(edge, previous_access);
-            return result;
+            return result.map(|path| FlattenedRouteApproximation {
+                path,
+                max_error_in_canvas: tolerance,
+            });
         }
         work.cache_misses = work.cache_misses.saturating_add(1);
         options.max_error = tolerance;
@@ -803,7 +823,10 @@ impl RouteGeometryIndex {
                 access,
             },
         );
-        result
+        result.map(|path| FlattenedRouteApproximation {
+            path,
+            max_error_in_canvas: tolerance,
+        })
     }
 
     fn remove_cached_flatten(&mut self, edge: EdgeId) -> bool {
@@ -872,7 +895,7 @@ pub(super) enum InternalRouteQueryOutcome {
 }
 
 pub(super) fn record_route_query_stats(
-    stats: &mut super::ViewSessionStats,
+    stats: &mut super::DerivedGeometryStats,
     outcome: &InternalRouteQueryOutcome,
 ) {
     let work = match outcome {
@@ -931,7 +954,7 @@ impl ViewSession {
         Ok(VisibleRouteQueryRevision {
             view: state.id,
             generation: state.generation,
-            transform_revision: state.transform_revision,
+            viewport_revision: state.viewport_revision,
             route_facts_revision: state.derived.route_facts_revision(),
             interaction_order_revision: state.interaction_order_revision,
         })
@@ -956,12 +979,9 @@ impl ViewSession {
                     let bounds = expanded_view_rect(bounds, margin)
                         .and_then(|bounds| bounds.to_canvas_rect(transform))
                         .ok_or(VisibleRouteQueryError::InvalidQuery)?;
-                    state.derived.new_visible_route_cursor(
-                        state.id,
-                        state.generation,
-                        state.transform_revision,
-                        bounds,
-                    )
+                    state
+                        .derived
+                        .new_visible_route_cursor(state.query_identity(), bounds)
                 }
                 VisibleRouteRequest::Resume(cursor) => {
                     validate_cursor(&state, &cursor)?;
@@ -990,8 +1010,9 @@ impl ViewSession {
                     sort_render_order(
                         &mut edges,
                         |edge| *edge,
-                        |edge| state.selected_edge_membership.contains(edge),
+                        |edge| state.selected_edge_membership.contains_id(*edge),
                         &state.edge_draw_order_ranks,
+                        None,
                     );
                     edges
                         .iter()
@@ -1035,20 +1056,35 @@ fn validate_cursor(
     state: &super::ViewState,
     cursor: &VisibleRouteCursor,
 ) -> Result<(), VisibleRouteQueryError> {
-    let reason = if cursor.view != state.id {
-        Some(VisibleRouteCursorStaleReason::ForeignView)
-    } else if cursor.generation != state.generation {
-        Some(VisibleRouteCursorStaleReason::ViewGeneration)
-    } else if cursor.transform_revision != state.transform_revision {
-        Some(VisibleRouteCursorStaleReason::ViewportTransform)
-    } else if cursor.index_epoch != state.derived.visible_route_index_epoch() {
-        Some(VisibleRouteCursorStaleReason::RouteGeometry)
-    } else {
-        None
-    };
-    reason
-        .map(VisibleRouteQueryError::StaleCursor)
-        .map_or(Ok(()), Err)
+    visible_route_cursor_stale_reason(
+        state.query_identity(),
+        state.derived.visible_route_index_epoch(),
+        cursor,
+    )
+    .map(VisibleRouteQueryError::StaleCursor)
+    .map_or(Ok(()), Err)
+}
+
+fn visible_route_cursor_stale_reason(
+    identity: ViewQueryIdentity,
+    index_epoch: u128,
+    cursor: &VisibleRouteCursor,
+) -> Option<VisibleRouteCursorStaleReason> {
+    match cursor.identity.stale_reason(identity) {
+        Some(ViewQueryIdentityStaleReason::ForeignView) => {
+            Some(VisibleRouteCursorStaleReason::ForeignView)
+        }
+        Some(ViewQueryIdentityStaleReason::ViewGeneration) => {
+            Some(VisibleRouteCursorStaleReason::ViewGeneration)
+        }
+        Some(ViewQueryIdentityStaleReason::ViewportTransform) => {
+            Some(VisibleRouteCursorStaleReason::ViewportTransform)
+        }
+        None if cursor.index_epoch != index_epoch => {
+            Some(VisibleRouteCursorStaleReason::RouteGeometry)
+        }
+        None => None,
+    }
 }
 
 fn expanded_view_rect(bounds: ViewRect, margin: f32) -> Option<ViewRect> {
@@ -1274,13 +1310,80 @@ fn point_in_rect(point: CanvasPoint, min_x: f32, min_y: f32, max_x: f32, max_y: 
 
 #[cfg(test)]
 mod tests {
-    use jellyflow_core::core::{Edge, EdgeKind, EdgeRouteKind, EdgeViewDescriptor, PortId};
+    use jellyflow_core::core::{Edge, EdgeKind, EdgeRouteSpec, EdgeViewDescriptor, PortId};
 
     use super::*;
     use crate::runtime::adapter_protocol::PublishedEdgeRoute;
     use crate::runtime::geometry::{
-        EdgeEndpointPosition, EdgePosition, HandlePosition, resolve_edge_route_path,
+        EdgeEndpointPosition, EdgePathLabel, EdgePosition, HandlePosition, PathCommand,
+        resolve_edge_route_path,
     };
+
+    #[test]
+    fn visible_route_cursor_identity_and_epoch_staleness_matrix() {
+        let index = RouteGeometryIndex::default();
+        let identity = ViewQueryIdentity::new(
+            ViewId::unavailable(),
+            ViewGeneration::initial(),
+            ViewportRevision::initial(),
+        );
+        let cursor = index.new_cursor(
+            identity,
+            CanvasRect {
+                origin: CanvasPoint::default(),
+                size: CanvasSize {
+                    width: 10.0,
+                    height: 10.0,
+                },
+            },
+        );
+        let foreign_identity = ViewQueryIdentity::new(
+            ViewId {
+                runtime: identity.view.runtime,
+                local: identity.view.local.saturating_add(1),
+            },
+            identity.generation,
+            identity.viewport_revision,
+        );
+        let next_generation = ViewQueryIdentity::new(
+            identity.view,
+            identity.generation.terminal(),
+            identity.viewport_revision,
+        );
+        let next_transform = ViewQueryIdentity::new(
+            identity.view,
+            identity.generation,
+            identity.viewport_revision.checked_next().unwrap(),
+        );
+        for (current_identity, index_epoch, expected) in [
+            (
+                foreign_identity,
+                cursor.index_epoch,
+                Some(VisibleRouteCursorStaleReason::ForeignView),
+            ),
+            (
+                next_generation,
+                cursor.index_epoch,
+                Some(VisibleRouteCursorStaleReason::ViewGeneration),
+            ),
+            (
+                next_transform,
+                cursor.index_epoch,
+                Some(VisibleRouteCursorStaleReason::ViewportTransform),
+            ),
+            (
+                identity,
+                cursor.index_epoch.saturating_add(1),
+                Some(VisibleRouteCursorStaleReason::RouteGeometry),
+            ),
+            (identity, cursor.index_epoch, None),
+        ] {
+            assert_eq!(
+                visible_route_cursor_stale_reason(current_identity, index_epoch, &cursor),
+                expected,
+            );
+        }
+    }
 
     #[test]
     fn route_index_resumes_without_omission_and_updates_atomically() {
@@ -1294,9 +1397,11 @@ mod tests {
 
         let epoch = index.index_epoch;
         let cursor = index.new_cursor(
-            ViewId::unavailable(),
-            ViewGeneration::initial(),
-            0,
+            ViewQueryIdentity::new(
+                ViewId::unavailable(),
+                ViewGeneration::initial(),
+                ViewportRevision::initial(),
+            ),
             CanvasRect {
                 origin: CanvasPoint { x: -10.0, y: -10.0 },
                 size: CanvasSize {
@@ -1317,9 +1422,11 @@ mod tests {
 
         assert!(index.remove(routes[1].edge()).index_changed);
         let cursor = index.new_cursor(
-            ViewId::unavailable(),
-            ViewGeneration::initial(),
-            0,
+            ViewQueryIdentity::new(
+                ViewId::unavailable(),
+                ViewGeneration::initial(),
+                ViewportRevision::initial(),
+            ),
             CanvasRect {
                 origin: CanvasPoint { x: -10.0, y: -10.0 },
                 size: CanvasSize {
@@ -1334,9 +1441,11 @@ mod tests {
 
         assert!(index.clear().index_changed);
         let cursor = index.new_cursor(
-            ViewId::unavailable(),
-            ViewGeneration::initial(),
-            0,
+            ViewQueryIdentity::new(
+                ViewId::unavailable(),
+                ViewGeneration::initial(),
+                ViewportRevision::initial(),
+            ),
             CanvasRect {
                 origin: CanvasPoint { x: -10.0, y: -10.0 },
                 size: CanvasSize {
@@ -1348,6 +1457,110 @@ mod tests {
         let (found, work) = finish_query(&mut index, cursor, 1);
         assert!(found.is_empty());
         assert_eq!(work, 0);
+    }
+
+    #[test]
+    fn visible_route_query_compensates_for_flattening_error_at_curve_boundary() {
+        let edge = EdgeId::from_u128(1);
+        let mut route = test_route(edge, 0.0);
+        let mut facts = route.facts().clone();
+        facts.path = EdgePath {
+            commands: vec![
+                PathCommand::MoveTo(CanvasPoint { x: 0.0, y: 0.0 }),
+                PathCommand::CubicTo {
+                    control1: CanvasPoint { x: 0.0, y: 100.0 },
+                    control2: CanvasPoint { x: 100.0, y: 100.0 },
+                    to: CanvasPoint { x: 100.0, y: 0.0 },
+                },
+            ],
+            label: EdgePathLabel {
+                point: CanvasPoint { x: 50.0, y: 75.0 },
+                offset_x: 0.0,
+                offset_y: 0.0,
+            },
+        };
+        route = PublishedEdgeRoute::new_for_test(edge, facts);
+        let mut index = RouteGeometryIndex::default();
+        assert!(index.upsert(edge, &route).index_changed);
+        let cursor = index.new_cursor(
+            ViewQueryIdentity::new(
+                ViewId::unavailable(),
+                ViewGeneration::initial(),
+                ViewportRevision::initial(),
+            ),
+            CanvasRect {
+                origin: CanvasPoint { x: 21.59, y: 62.99 },
+                size: CanvasSize {
+                    width: 0.02,
+                    height: 0.02,
+                },
+            },
+        );
+
+        let (visible, _) = finish_query(&mut index, cursor, 64);
+
+        assert_eq!(visible, BTreeSet::from([edge]));
+    }
+
+    #[test]
+    fn extreme_finite_cubic_visibility_is_conservative_and_reports_overflow() {
+        let edge = EdgeId::from_u128(1);
+        let extent = 1.0e20;
+        let mut route = test_route(edge, -extent);
+        let mut facts = route.facts().clone();
+        facts.path = EdgePath {
+            commands: vec![
+                PathCommand::MoveTo(CanvasPoint { x: -extent, y: 0.0 }),
+                PathCommand::CubicTo {
+                    control1: CanvasPoint {
+                        x: -extent,
+                        y: extent,
+                    },
+                    control2: CanvasPoint {
+                        x: extent,
+                        y: -extent,
+                    },
+                    to: CanvasPoint { x: extent, y: 0.0 },
+                },
+            ],
+            label: EdgePathLabel {
+                point: CanvasPoint::default(),
+                offset_x: 0.0,
+                offset_y: 0.0,
+            },
+        };
+        route = PublishedEdgeRoute::new_for_test(edge, facts);
+        let mut index = RouteGeometryIndex::default();
+        assert!(index.upsert(edge, &route).index_changed);
+        let cursor = index.new_cursor(
+            ViewQueryIdentity::new(
+                ViewId::unavailable(),
+                ViewGeneration::initial(),
+                ViewportRevision::initial(),
+            ),
+            CanvasRect {
+                origin: CanvasPoint { x: -1.0, y: -1.0 },
+                size: CanvasSize {
+                    width: 2.0,
+                    height: 2.0,
+                },
+            },
+        );
+
+        let InternalRouteQueryOutcome::Complete {
+            edges,
+            overflows,
+            work,
+        } = index.query_page(cursor, 64, 1.0)
+        else {
+            panic!("small conservative visibility query must complete");
+        };
+        assert_eq!(edges, BTreeSet::from([edge]));
+        assert_eq!(
+            overflows.get(&edge),
+            Some(&EdgePathFlattenError::InvalidGeometry)
+        );
+        assert_eq!(work.flatten_overflows, 1);
     }
 
     #[test]
@@ -1388,9 +1601,11 @@ mod tests {
         }
 
         let cursor = index.new_cursor(
-            ViewId::unavailable(),
-            ViewGeneration::initial(),
-            0,
+            ViewQueryIdentity::new(
+                ViewId::unavailable(),
+                ViewGeneration::initial(),
+                ViewportRevision::initial(),
+            ),
             CanvasRect {
                 origin: CanvasPoint { x: -16.0, y: -16.0 },
                 size: CanvasSize {
@@ -1485,7 +1700,7 @@ mod tests {
 
     fn test_route_at(edge: EdgeId, x: f32, y: f32) -> PublishedEdgeRoute {
         let mut model = Edge::new(EdgeKind::Data, PortId::from_u128(1), PortId::from_u128(2));
-        model.view = EdgeViewDescriptor::new().with_route_kind(EdgeRouteKind::Straight);
+        model.view = EdgeViewDescriptor::new().with_route(EdgeRouteSpec::straight());
         let facts = resolve_edge_route_path(
             &model,
             EdgePosition {
@@ -1500,6 +1715,6 @@ mod tests {
             },
         )
         .expect("route");
-        PublishedEdgeRoute::new(edge, facts)
+        PublishedEdgeRoute::new_for_test(edge, facts)
     }
 }

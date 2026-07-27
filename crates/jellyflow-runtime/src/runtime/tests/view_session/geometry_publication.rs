@@ -16,20 +16,27 @@ use crate::runtime::adapter_protocol::{
     side_anchor,
 };
 use crate::runtime::commands::{GraphCommand, IncidentEdgePolicy, TopologyEdit};
-use crate::runtime::geometry::HandlePosition;
+use crate::runtime::geometry::{EdgePathAnchor, HandlePosition};
 use crate::runtime::graph_runtime::GraphRuntime;
 use crate::runtime::interaction::{
-    CanvasInteractionConfig, CanvasInteractionQuery, CanvasInteractionSession,
-    ConnectionGestureIntent, ConnectionProbe, InteractionPosition,
+    CanvasInteractionConfig, CanvasInteractionError, CanvasInteractionPhase,
+    CanvasInteractionQueryKind, CanvasInteractionSession, CanvasPressTarget,
+    ConnectionGestureBinding, ConnectionInteractionStart, ConnectionProbe, SelectionMode,
 };
+use crate::runtime::tests::fixtures::{port_connection_drag_intent_by_id, set_selection_by_id};
 use crate::runtime::view_session::{
-    ConnectionProbeQuery, ConnectionProbeQueryOutcome, EdgePickCursorStaleReason, EdgePickQuery,
-    EdgePickQueryError, EdgePickQueryOutcome, ViewSession, ViewSessionEvent, ViewSessionOptions,
+    ConnectionProbeQuery, ConnectionProbeQueryOutcome, ConnectionProbeTargeting,
+    EdgePickCursorStaleReason, EdgePickQuery, EdgePickQueryError, EdgePickQueryOutcome,
+    ViewSession, ViewSessionError, ViewSessionEvent, ViewSessionOptions,
     VisibleRouteCursorStaleReason, VisibleRouteQuery, VisibleRouteQueryError,
     VisibleRouteQueryOutcome,
 };
+use crate::runtime::viewport::{ViewportPointerSample, ViewportTransform};
 
-use super::fixtures::{RoutedGraphIds, graph_with_nodes, graph_with_routed_edge, node};
+use super::fixtures::{
+    RoutedGraphIds, complete_nodes_intersecting, graph_with_nodes, graph_with_routed_edge, node,
+    publish_node_layouts,
+};
 
 fn root_rect(x: f32) -> ViewRect {
     ViewRect {
@@ -49,6 +56,18 @@ fn port_rect(x: f32) -> ViewRect {
             height: 12.0,
         },
     }
+}
+
+fn connection_binding(view: &ViewSession, port: PortId, edge: EdgeId) -> ConnectionGestureBinding {
+    let drag =
+        port_connection_drag_intent_by_id(view, port).expect("connection facts are readable");
+    ConnectionInteractionStart::binding_from_port_drag(drag, edge, NodeGraphConnectionMode::Strict)
+        .expect("source port can begin a connection")
+}
+
+fn pointer_sample(view: &ViewSession, point: ViewPoint) -> ViewportPointerSample {
+    view.viewport_pointer_sample(point)
+        .expect("fixture pointer is valid")
 }
 
 #[derive(Clone)]
@@ -322,6 +341,31 @@ fn publish_routed_geometry(session: &ViewSession, frame: &AdapterFrame, ids: Rou
         .unwrap();
 }
 
+fn routed_view_with_geometry() -> (GraphRuntime, ViewSession, RoutedGraphIds) {
+    let (graph, ids) = graph_with_routed_edge();
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .unwrap();
+    let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    let frame = view
+        .frame(FrameRequest::new(
+            CanvasRect {
+                origin: CanvasPoint {
+                    x: -100.0,
+                    y: -100.0,
+                },
+                size: CanvasSize {
+                    width: 1_000.0,
+                    height: 600.0,
+                },
+            },
+            RendererStamp::new("test.node", 1),
+        ))
+        .unwrap();
+    publish_routed_geometry(&view, &frame, ids);
+    (runtime, view, ids)
+}
+
 #[test]
 fn frame_node_layout_builder_requires_exact_real_port_coverage() {
     let (graph, ids) = graph_with_routed_edge();
@@ -399,6 +443,592 @@ fn frame_node_layout_builder_requires_exact_real_port_coverage() {
             port: unknown_port,
         }
     );
+}
+
+#[test]
+fn published_routes_are_bound_to_the_exact_issuing_view_generation() {
+    let (graph, ids) = graph_with_routed_edge();
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .unwrap();
+    let issuing = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    let foreign = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    for view in [&issuing, &foreign] {
+        let frame = view
+            .frame(FrameRequest::new(
+                CanvasRect {
+                    origin: CanvasPoint {
+                        x: -100.0,
+                        y: -100.0,
+                    },
+                    size: CanvasSize {
+                        width: 1_000.0,
+                        height: 600.0,
+                    },
+                },
+                RendererStamp::new("test.node", 1),
+            ))
+            .unwrap();
+        publish_routed_geometry(view, &frame, ids);
+    }
+    let geometry = issuing.geometry_snapshot().unwrap();
+    let route = geometry.route(ids.edge).expect("issued route");
+    assert_eq!(geometry.provenance(), route.provenance());
+    assert_eq!(geometry.provenance(), issuing.provenance().unwrap());
+
+    assert!(
+        issuing
+            .connection_start_from_route(
+                route,
+                EdgeEndpoint::From,
+                route.facts().endpoints.target,
+                NodeGraphConnectionMode::Strict,
+                false,
+            )
+            .unwrap()
+            .is_some()
+    );
+    assert!(matches!(
+        foreign.connection_start_from_route(
+            route,
+            EdgeEndpoint::From,
+            route.facts().endpoints.target,
+            NodeGraphConnectionMode::Strict,
+            false,
+        ),
+        Err(ViewSessionError::ForeignInteractionFacts)
+    ));
+
+    let mut foreign_interaction =
+        CanvasInteractionSession::attach(&foreign, CanvasInteractionConfig::default()).unwrap();
+    let issuing_sample = issuing
+        .viewport_pointer_sample(ViewPoint::new(0.0, 0.0))
+        .unwrap();
+    assert!(matches!(
+        foreign_interaction.press(CanvasPressTarget::Pan, issuing_sample),
+        Err(CanvasInteractionError::ForeignInteractionFacts)
+    ));
+    assert!(matches!(
+        foreign_interaction.delete_edge(route),
+        Err(CanvasInteractionError::ForeignInteractionFacts)
+    ));
+    assert_eq!(
+        foreign_interaction.presentation().phase(),
+        CanvasInteractionPhase::Idle,
+        "foreign pointer and route facts must leave the interaction idle"
+    );
+    assert_eq!(foreign_interaction.presentation().active_edge(), None);
+
+    let mut issuing_interaction =
+        CanvasInteractionSession::attach(&issuing, CanvasInteractionConfig::default()).unwrap();
+    assert!(
+        !issuing_interaction
+            .delete_edge(route)
+            .unwrap()
+            .effects()
+            .is_empty()
+    );
+}
+
+#[test]
+fn published_route_reconnect_rejects_an_edge_id_restored_by_undo() {
+    let (graph, ids) = graph_with_routed_edge();
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .unwrap();
+    let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    let frame = view
+        .frame(FrameRequest::new(
+            CanvasRect {
+                origin: CanvasPoint {
+                    x: -100.0,
+                    y: -100.0,
+                },
+                size: CanvasSize {
+                    width: 1_000.0,
+                    height: 600.0,
+                },
+            },
+            RendererStamp::new("test.node", 1),
+        ))
+        .unwrap();
+    publish_routed_geometry(&view, &frame, ids);
+    let old_route = view
+        .geometry_snapshot()
+        .unwrap()
+        .route(ids.edge)
+        .expect("issued route")
+        .clone();
+
+    let initial = runtime.snapshot().unwrap();
+    runtime
+        .execute(GraphCommand::disconnect(initial.version(), ids.edge))
+        .unwrap()
+        .applied()
+        .expect("edge retirement applies");
+    let retired = runtime.snapshot().unwrap();
+    runtime
+        .execute(GraphCommand::undo(retired.version()))
+        .unwrap()
+        .applied()
+        .expect("undo restores the edge id");
+
+    let mut interaction =
+        CanvasInteractionSession::attach(&view, CanvasInteractionConfig::default()).unwrap();
+    let position = pointer_sample(&view, ViewPoint::new(0.0, 0.0));
+    assert!(matches!(
+        interaction.press(
+            CanvasPressTarget::Edge {
+                instance: old_route.instance(),
+                selection_mode: SelectionMode::Replace,
+            },
+            position,
+        ),
+        Err(CanvasInteractionError::StaleInteractionFacts)
+    ));
+    assert_eq!(
+        interaction.presentation().phase(),
+        CanvasInteractionPhase::Idle,
+        "a retired edge capability must not activate the replacement edge"
+    );
+    assert_eq!(interaction.presentation().active_edge(), None);
+    assert!(
+        view.selection().unwrap().edges().is_empty(),
+        "a retired edge capability must not emit a replacement selection effect"
+    );
+
+    assert!(matches!(
+        view.connection_start_from_route(
+            &old_route,
+            EdgeEndpoint::From,
+            old_route.facts().endpoints.target,
+            NodeGraphConnectionMode::Strict,
+            false,
+        ),
+        Err(ViewSessionError::StaleInteractionFacts)
+    ));
+
+    let restored_geometry = view.geometry_snapshot().unwrap();
+    let restored_route = restored_geometry.route(ids.edge).expect("restored route");
+    assert_ne!(
+        restored_route.instance(),
+        old_route.instance(),
+        "the refreshed route must carry the replacement edge lifetime"
+    );
+    assert!(
+        view.connection_start_from_route(
+            restored_route,
+            EdgeEndpoint::From,
+            restored_route.facts().endpoints.target,
+            NodeGraphConnectionMode::Strict,
+            false,
+        )
+        .unwrap()
+        .is_some()
+    );
+}
+
+#[test]
+fn hovered_edge_instance_does_not_alias_an_edge_id_restored_by_undo() {
+    let (runtime, view, ids) = routed_view_with_geometry();
+    let old_route = view
+        .geometry_snapshot()
+        .unwrap()
+        .route(ids.edge)
+        .expect("issued route")
+        .clone();
+    let center = old_route
+        .facts()
+        .path
+        .sample(EdgePathAnchor::Center)
+        .expect("published route center")
+        .point;
+    let transform = view.viewport_transform().unwrap();
+    let screen = transform
+        .screen_point_for_canvas(center)
+        .expect("route center projects into the view");
+    let mut interaction =
+        CanvasInteractionSession::attach(&view, CanvasInteractionConfig::default()).unwrap();
+    let pointer = pointer_sample(&view, ViewPoint::new(screen.x, screen.y));
+    let requested = interaction.request_edge_pick(pointer).unwrap();
+    let mut queries = requested.into_dispatch().queries;
+    let query = queries.remove(0);
+    assert!(matches!(
+        query.kind_for_test(),
+        CanvasInteractionQueryKind::EdgePick { .. }
+    ));
+    assert!(queries.is_empty());
+    interaction.resolve_query(query).unwrap();
+    assert_eq!(
+        interaction.presentation().hovered_edge(),
+        Some(old_route.instance())
+    );
+
+    let initial = runtime.snapshot().unwrap();
+    runtime
+        .execute(GraphCommand::disconnect(initial.version(), ids.edge))
+        .unwrap()
+        .applied()
+        .expect("edge retirement applies");
+    let retired = runtime.snapshot().unwrap();
+    runtime
+        .execute(GraphCommand::undo(retired.version()))
+        .unwrap()
+        .applied()
+        .expect("undo restores the edge id");
+
+    let replacement = view
+        .geometry_snapshot()
+        .unwrap()
+        .route(ids.edge)
+        .expect("replacement route")
+        .instance();
+    assert_ne!(replacement, old_route.instance());
+    assert_eq!(
+        interaction.presentation().hovered_edge(),
+        Some(old_route.instance()),
+        "presentation must retain the lifetime it actually picked"
+    );
+    assert_ne!(
+        interaction.presentation().hovered_edge(),
+        Some(replacement),
+        "a renderer comparing current route instances must not highlight the replacement"
+    );
+}
+
+#[test]
+fn runtime_owned_edge_pick_resolves_against_latest_view_facts() {
+    let (_runtime, view, ids) = routed_view_with_geometry();
+
+    let mut interaction =
+        CanvasInteractionSession::attach(&view, CanvasInteractionConfig::default()).unwrap();
+    let pointer = pointer_sample(&view, ViewPoint::new(210.0, 78.0));
+    let requested = interaction.request_edge_pick(pointer).unwrap();
+    let mut queries = requested.into_dispatch().queries;
+    let query = queries.remove(0);
+    assert!(matches!(
+        query.kind_for_test(),
+        CanvasInteractionQueryKind::EdgePick { .. }
+    ));
+    assert!(queries.is_empty());
+
+    set_selection_by_id(&view, [], [ids.edge], Vec::new()).unwrap();
+    let resolved = interaction.resolve_query(query).unwrap();
+    assert!(resolved.queries().is_empty());
+    assert!(interaction.presentation().hovered_edge().is_some());
+}
+
+#[test]
+fn runtime_owned_connection_probe_resolves_against_latest_graph_revision() {
+    let (runtime, view, ids) = routed_view_with_geometry();
+    let drag_intent = port_connection_drag_intent_by_id(&view, ids.source_port)
+        .expect("source port must admit a reconnect drag");
+    let route = view
+        .geometry_snapshot()
+        .unwrap()
+        .route(ids.edge)
+        .unwrap()
+        .clone();
+    let start = view
+        .connection_start_from_port_drag_intent(
+            drag_intent,
+            EdgeId::from_u128(0xfeed),
+            NodeGraphConnectionMode::Strict,
+            route.facts().endpoints.target.point,
+            HandlePosition::Right,
+            HandlePosition::Left,
+            false,
+        )
+        .unwrap()
+        .expect("source reconnect must produce an interaction start");
+    let source_point = route.facts().endpoints.source.point;
+    let target_point = route.facts().endpoints.target.point;
+    let mut interaction =
+        CanvasInteractionSession::attach(&view, CanvasInteractionConfig::default()).unwrap();
+    let source = pointer_sample(&view, ViewPoint::new(source_point.x, source_point.y));
+    let target = pointer_sample(&view, ViewPoint::new(target_point.x, target_point.y));
+    interaction
+        .press(CanvasPressTarget::Connection(start), source)
+        .unwrap();
+    let moved = interaction.move_to(target).unwrap();
+    let mut queries = moved.into_dispatch().queries;
+    let query = queries.remove(0);
+    assert!(matches!(
+        query.kind_for_test(),
+        CanvasInteractionQueryKind::ConnectionProbe { .. }
+    ));
+    assert!(queries.is_empty());
+
+    let version = runtime.snapshot().unwrap().version();
+    runtime
+        .execute(GraphCommand::set_node_data(
+            version,
+            ids.source,
+            serde_json::json!({ "receipt_epoch": 1 }),
+        ))
+        .unwrap()
+        .applied()
+        .expect("unrelated graph mutation advances the revision");
+    let resolved = interaction.resolve_query(query).unwrap();
+    assert!(resolved.queries().is_empty());
+}
+
+#[test]
+fn runtime_owned_node_intersection_resolves_after_viewport_change() {
+    let (_runtime, view, _ids) = routed_view_with_geometry();
+    let mut interaction =
+        CanvasInteractionSession::attach(&view, CanvasInteractionConfig::default()).unwrap();
+    let start = pointer_sample(&view, ViewPoint::new(0.0, 0.0));
+    let end = pointer_sample(&view, ViewPoint::new(400.0, 240.0));
+    let baseline = view.selection_baseline().unwrap();
+    interaction
+        .press(
+            CanvasPressTarget::Marquee {
+                selection_mode: SelectionMode::Replace,
+                baseline,
+            },
+            start,
+        )
+        .unwrap();
+    let moved = interaction.move_to(end).unwrap();
+    let mut queries = moved.into_dispatch().queries;
+    let query = queries.remove(0);
+    assert!(matches!(
+        query.kind_for_test(),
+        CanvasInteractionQueryKind::NodeIntersection { .. }
+    ));
+    assert!(queries.is_empty());
+
+    view.set_viewport(ViewportTransform::new(CanvasPoint { x: 1.0, y: 0.0 }, 1.0).unwrap())
+        .unwrap();
+    let resolved = interaction.resolve_query(query).unwrap();
+    assert!(resolved.queries().is_empty());
+}
+
+#[test]
+fn runtime_owned_node_intersection_resolves_against_latest_node_index() {
+    let (graph, ids) = graph_with_nodes(2);
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .unwrap();
+    let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    publish_node_layouts(
+        &view,
+        [
+            (
+                ids[0],
+                CanvasRect {
+                    origin: CanvasPoint::default(),
+                    size: CanvasSize {
+                        width: 100.0,
+                        height: 80.0,
+                    },
+                },
+            ),
+            (
+                ids[1],
+                CanvasRect {
+                    origin: CanvasPoint { x: 140.0, y: 0.0 },
+                    size: CanvasSize {
+                        width: 100.0,
+                        height: 80.0,
+                    },
+                },
+            ),
+        ],
+    );
+    let mut interaction =
+        CanvasInteractionSession::attach(&view, CanvasInteractionConfig::default()).unwrap();
+    let start = pointer_sample(&view, ViewPoint::new(0.0, 0.0));
+    let end = pointer_sample(&view, ViewPoint::new(300.0, 160.0));
+    let baseline = view.selection_baseline().unwrap();
+    interaction
+        .press(
+            CanvasPressTarget::Marquee {
+                selection_mode: SelectionMode::Replace,
+                baseline,
+            },
+            start,
+        )
+        .unwrap();
+    let moved = interaction.move_to(end).unwrap();
+    let mut queries = moved.into_dispatch().queries;
+    let query = queries.remove(0);
+    assert!(matches!(
+        query.kind_for_test(),
+        CanvasInteractionQueryKind::NodeIntersection { .. }
+    ));
+    assert!(queries.is_empty());
+
+    publish_node_layouts(
+        &view,
+        [(
+            ids[1],
+            CanvasRect {
+                origin: CanvasPoint { x: 180.0, y: 20.0 },
+                size: CanvasSize {
+                    width: 100.0,
+                    height: 80.0,
+                },
+            },
+        )],
+    );
+    let resolved = interaction.resolve_query(query).unwrap();
+    assert!(resolved.queries().is_empty());
+}
+
+#[test]
+fn clipped_interaction_bounds_preserve_route_geometry_and_restore_probe_membership() {
+    let (graph, ids) = graph_with_routed_edge();
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .unwrap();
+    let session = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    let request = || {
+        FrameRequest::new(
+            CanvasRect {
+                origin: CanvasPoint {
+                    x: -100.0,
+                    y: -100.0,
+                },
+                size: CanvasSize {
+                    width: 1_000.0,
+                    height: 600.0,
+                },
+            },
+            RendererStamp::new("test.node", 1),
+        )
+    };
+    let publish = |frame: &AdapterFrame, target_interaction: Option<ViewRect>| {
+        let collector = frame.collector();
+        for frame_node in frame.nodes() {
+            let node = frame_node.id();
+            let (root_x, visual_x, outward) = if node == ids.source {
+                (0.0, 174.0, HandlePosition::Right)
+            } else if node == ids.target {
+                (240.0, 240.0, HandlePosition::Left)
+            } else if node == ids.alternate_source {
+                (480.0, 654.0, HandlePosition::Right)
+            } else {
+                panic!("unexpected routed fixture node {node:?}");
+            };
+            let frame_port = frame_node.ports().first().expect("fixture port");
+            let visual_bounds = port_rect(visual_x);
+            let hit_bounds = ViewRect::new(
+                ViewPoint::new(visual_x - 6.0, visual_bounds.origin.y - 6.0),
+                ViewSize::new(24.0, 24.0),
+            );
+            let route_anchor =
+                side_anchor(visual_bounds, outward).expect("fixture port bounds are valid");
+            let mut layout = frame_node.begin_layout(root_rect(root_x));
+            if node == ids.target {
+                layout
+                    .port_rendered_with_interaction_bounds(
+                        frame_port.layout_target(),
+                        visual_bounds,
+                        hit_bounds,
+                        target_interaction,
+                        route_anchor,
+                        outward,
+                    )
+                    .unwrap();
+            } else {
+                layout
+                    .port_rendered(
+                        frame_port.layout_target(),
+                        visual_bounds,
+                        hit_bounds,
+                        route_anchor,
+                        outward,
+                    )
+                    .unwrap();
+            }
+            collector.layout(layout.finish().unwrap()).unwrap();
+        }
+        session
+            .submit_feedback(collector.finish().unwrap())
+            .unwrap();
+    };
+
+    let clipped_frame = session.frame(request()).unwrap();
+    let target_instance = clipped_frame
+        .nodes()
+        .iter()
+        .find(|node| node.id() == ids.target)
+        .unwrap()
+        .instance()
+        .clone();
+    publish(&clipped_frame, None);
+
+    let clipped = session.geometry_snapshot().unwrap();
+    let target = clipped
+        .port(ids.target_port)
+        .expect("clipped port keeps published route geometry");
+    assert_eq!(target.hit_bounds(), None);
+    assert_eq!(target.route_anchor(), CanvasPoint { x: 240.0, y: 78.0 });
+    assert_eq!(
+        clipped
+            .route(ids.edge)
+            .unwrap()
+            .facts()
+            .endpoints
+            .target
+            .point,
+        target.route_anchor(),
+    );
+    let intent = connection_binding(
+        &session,
+        ids.alternate_source_port,
+        EdgeId::from_u128(0xfeed),
+    );
+    assert!(matches!(
+        session
+            .connection_probe(ConnectionProbeQuery::new(
+                intent.clone(),
+                ViewPoint::new(240.0, 78.0),
+                ConnectionProbeTargeting::new(12.0, 12.0).unwrap(),
+                64,
+            ))
+            .unwrap(),
+        ConnectionProbeQueryOutcome::Complete {
+            probe: ConnectionProbe::None,
+            ..
+        }
+    ));
+
+    assert!(session.invalidate_node_layout(&target_instance).unwrap());
+    let visible_frame = session.frame(request()).unwrap();
+    let visible_hit = ViewRect::new(ViewPoint::new(234.0, 66.0), ViewSize::new(24.0, 24.0));
+    publish(&visible_frame, Some(visible_hit));
+
+    let restored = session.geometry_snapshot().unwrap();
+    let restored_target = restored.port(ids.target_port).unwrap();
+    assert_eq!(restored_target.port(), target.port());
+    assert_eq!(restored_target.route_anchor(), target.route_anchor());
+    assert_eq!(
+        restored_target.hit_bounds(),
+        Some(CanvasRect {
+            origin: CanvasPoint { x: 234.0, y: 66.0 },
+            size: CanvasSize {
+                width: 24.0,
+                height: 24.0,
+            },
+        })
+    );
+    assert!(matches!(
+        session
+            .connection_probe(ConnectionProbeQuery::new(
+                intent,
+                ViewPoint::new(240.0, 78.0),
+                ConnectionProbeTargeting::new(12.0, 12.0).unwrap(),
+                64,
+            ))
+            .unwrap(),
+        ConnectionProbeQueryOutcome::Complete {
+            probe: ConnectionProbe::Valid { target, .. },
+            ..
+        } if target.port() == ids.target_port
+    ));
 }
 
 #[test]
@@ -538,7 +1168,7 @@ fn complete_port_outcomes_control_hits_routes_culling_and_retirement() {
 
     session
         .execute(GraphCommand::topology(
-            0,
+            session.graph_snapshot().unwrap().version(),
             TopologyEdit::new().remove_node(ids.node, IncidentEdgePolicy::Cascade),
         ))
         .unwrap();
@@ -559,7 +1189,7 @@ fn view_space_layout_uses_the_issued_transform_for_all_canvas_geometry() {
         .unwrap();
     let session = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     session
-        .set_viewport(CanvasPoint { x: 10.0, y: -20.0 }, 2.0)
+        .set_viewport(ViewportTransform::new(CanvasPoint { x: 10.0, y: -20.0 }, 2.0).unwrap())
         .unwrap();
     let frame = session
         .frame(FrameRequest::new(
@@ -636,13 +1266,13 @@ fn view_space_layout_uses_the_issued_transform_for_all_canvas_geometry() {
     );
     assert_eq!(
         geometry.port(ids.source_port).unwrap().hit_bounds(),
-        CanvasRect {
+        Some(CanvasRect {
             origin: CanvasPoint { x: 168.0, y: 66.0 },
             size: CanvasSize {
                 width: 24.0,
                 height: 24.0,
             },
-        }
+        })
     );
     assert_eq!(
         geometry.port(ids.source_port).unwrap().route_anchor(),
@@ -668,16 +1298,16 @@ fn view_space_layout_uses_the_issued_transform_for_all_canvas_geometry() {
     assert!(route.facts().interaction.reconnect_target);
     assert_eq!(route.facts().hit_test.interaction_width, 18.0);
 
-    let intent = ConnectionGestureIntent::connect(
-        EdgeId::from_u128(0xfeed),
+    let intent = connection_binding(
+        &session,
         ids.alternate_source_port,
-        NodeGraphConnectionMode::Strict,
+        EdgeId::from_u128(0xfeed),
     );
     match session
         .connection_probe(ConnectionProbeQuery::new(
-            intent,
+            intent.clone(),
             ViewPoint::new(506.0, 118.0),
-            12.0,
+            ConnectionProbeTargeting::new(12.0, 12.0).unwrap(),
             64,
         ))
         .unwrap()
@@ -695,7 +1325,7 @@ fn view_space_layout_uses_the_issued_transform_for_all_canvas_geometry() {
         .connection_probe(ConnectionProbeQuery::new(
             intent,
             ViewPoint::new(386.0, 118.0),
-            12.0,
+            ConnectionProbeTargeting::new(12.0, 12.0).unwrap(),
             64,
         ))
         .unwrap()
@@ -714,9 +1344,7 @@ fn view_space_layout_uses_the_issued_transform_for_all_canvas_geometry() {
         other => panic!("same-direction port must remain an invalid candidate: {other:?}"),
     }
 
-    session
-        .set_selection(Vec::new(), vec![ids.edge], Vec::new())
-        .unwrap();
+    set_selection_by_id(&session, [], [ids.edge], Vec::new()).unwrap();
     assert!(
         session
             .geometry_snapshot()
@@ -727,9 +1355,7 @@ fn view_space_layout_uses_the_issued_transform_for_all_canvas_geometry() {
             .interaction
             .selected
     );
-    session
-        .set_selection(Vec::new(), Vec::new(), Vec::new())
-        .unwrap();
+    set_selection_by_id(&session, [], [], Vec::new()).unwrap();
     assert!(
         !session
             .geometry_snapshot()
@@ -752,9 +1378,7 @@ fn view_space_layout_uses_the_issued_transform_for_all_canvas_geometry() {
         }
         other => panic!("zero-budget route query must be resumable: {other:?}"),
     };
-    session
-        .set_selection(Vec::new(), vec![ids.edge], Vec::new())
-        .unwrap();
+    set_selection_by_id(&session, [], [ids.edge], Vec::new()).unwrap();
     let routes = match session
         .visible_routes(VisibleRouteQuery::resume(cursor, 64))
         .unwrap()
@@ -776,9 +1400,7 @@ fn view_space_layout_uses_the_issued_transform_for_all_canvas_geometry() {
             .interaction
             .selected
     );
-    session
-        .set_selection(Vec::new(), Vec::new(), Vec::new())
-        .unwrap();
+    set_selection_by_id(&session, [], [], Vec::new()).unwrap();
     match session
         .visible_routes(VisibleRouteQuery::new(crossing_bounds, 64))
         .unwrap()
@@ -801,18 +1423,14 @@ fn view_space_layout_uses_the_issued_transform_for_all_canvas_geometry() {
         }
         other => panic!("zero-budget edge pick must be resumable: {other:?}"),
     };
-    session
-        .set_selection(Vec::new(), vec![ids.edge], Vec::new())
-        .unwrap();
+    set_selection_by_id(&session, [], [ids.edge], Vec::new()).unwrap();
     assert!(matches!(
         session.edge_pick(EdgePickQuery::resume(pick_cursor, 64)),
         Err(EdgePickQueryError::StaleCursor(
             EdgePickCursorStaleReason::PaintOrder
         ))
     ));
-    session
-        .set_selection(Vec::new(), Vec::new(), Vec::new())
-        .unwrap();
+    set_selection_by_id(&session, [], [], Vec::new()).unwrap();
     match session
         .edge_pick(EdgePickQuery::new(ViewPoint::new(440.0, 118.0), 0.0, 64))
         .unwrap()
@@ -828,40 +1446,39 @@ fn view_space_layout_uses_the_issued_transform_for_all_canvas_geometry() {
         }
         other => panic!("published route must be edge-pickable: {other:?}"),
     }
-    let mut interaction = CanvasInteractionSession::new(
-        session.id(),
-        session.generation().unwrap(),
-        CanvasInteractionConfig::default(),
-    )
-    .unwrap();
+    let mut interaction =
+        CanvasInteractionSession::attach(&session, CanvasInteractionConfig::default()).unwrap();
     let pointer_in_view = ViewPoint::new(440.0, 118.0);
-    let pointer =
-        InteractionPosition::from_view(pointer_in_view, session.viewport_transform().unwrap())
-            .unwrap();
+    let pointer = pointer_sample(&session, pointer_in_view);
     let dispatch = interaction
         .request_edge_pick(pointer)
         .unwrap()
         .into_dispatch();
     let mut queries = dispatch.queries;
-    let effects = dispatch.pre_query_effects;
+    let effects = dispatch.effects;
     assert!(effects.is_empty());
-    let CanvasInteractionQuery::EdgePick { id, query } = queries.remove(0) else {
-        panic!("idle pointer movement must request one edge pick");
-    };
+    let query = queries.remove(0);
+    assert!(matches!(
+        query.kind_for_test(),
+        CanvasInteractionQueryKind::EdgePick { .. }
+    ));
     assert!(queries.is_empty());
-    let outcome = session.edge_pick(query).unwrap();
-    interaction.resolve_edge_pick(id, outcome).unwrap();
-    assert_eq!(interaction.presentation().hovered_edge(), Some(ids.edge));
+    interaction.resolve_query(query).unwrap();
     assert_eq!(
-        session
-            .nodes_intersecting(CanvasRect {
+        interaction.presentation().hovered_edge(),
+        session.edge_instance_key(ids.edge).unwrap()
+    );
+    assert_eq!(
+        complete_nodes_intersecting(
+            &session,
+            CanvasRect {
                 origin: CanvasPoint { x: -1.0, y: 19.0 },
                 size: CanvasSize {
                     width: 182.0,
                     height: 122.0,
                 },
-            })
-            .unwrap(),
+            },
+        ),
         vec![ids.source]
     );
 }
@@ -1058,12 +1675,17 @@ fn invalid_port_candidates_do_not_block_the_valid_subset() {
         Duplicate,
         Foreign,
         NonFinite,
+        InteractionOutsideDeclaredHit,
     }
 
     for (case, expected_status) in [
         (InvalidPortCase::Duplicate, LayoutNodeStatus::DuplicatePorts),
         (InvalidPortCase::Foreign, LayoutNodeStatus::ForeignPort),
         (InvalidPortCase::NonFinite, LayoutNodeStatus::InvalidBounds),
+        (
+            InvalidPortCase::InteractionOutsideDeclaredHit,
+            LayoutNodeStatus::InvalidBounds,
+        ),
     ] {
         let (graph, ids) = graph_with_routed_edge();
         let runtime = GraphRuntime::builder(Default::default())
@@ -1138,6 +1760,29 @@ fn invalid_port_candidates_do_not_block_the_valid_subset() {
                         HandlePosition::Right,
                     )],
                 )
+            }
+            InvalidPortCase::InteractionOutsideDeclaredHit => {
+                let visual = port_rect(174.0);
+                let declared_hit =
+                    ViewRect::new(ViewPoint::new(168.0, 66.0), ViewSize::new(24.0, 24.0));
+                let floating_hit =
+                    ViewRect::new(ViewPoint::new(300.0, 66.0), ViewSize::new(8.0, 8.0));
+                let mut layout = NodeLayoutBuilder::new(
+                    &source_target,
+                    root_rect(0.0),
+                    [source_port_target.clone()],
+                );
+                layout
+                    .port_rendered_with_interaction_bounds(
+                        &source_port_target,
+                        visual,
+                        declared_hit,
+                        Some(floating_hit),
+                        side_anchor(visual, HandlePosition::Right).unwrap(),
+                        HandlePosition::Right,
+                    )
+                    .unwrap();
+                layout.finish().unwrap()
             }
         };
         let collector = frame.collector();
@@ -1253,6 +1898,93 @@ fn duplicate_node_candidates_reject_the_entire_node_and_withdraw_old_hits() {
         Some(PublishedPortOutcome::Unavailable)
     ));
     assert!(geometry.route(ids.edge).is_none());
+}
+
+#[test]
+fn node_data_layout_refresh_preserves_last_valid_route_until_atomic_replacement() {
+    let (graph, ids) = graph_with_routed_edge();
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .unwrap();
+    let session = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    let request = || {
+        FrameRequest::new(
+            CanvasRect {
+                origin: CanvasPoint {
+                    x: -100.0,
+                    y: -100.0,
+                },
+                size: CanvasSize {
+                    width: 1_000.0,
+                    height: 600.0,
+                },
+            },
+            RendererStamp::new("test.node", 1),
+        )
+    };
+    let initial = session.frame(request()).unwrap();
+    publish_routed_geometry(&session, &initial, ids);
+    let before = session.geometry_snapshot().unwrap();
+    let before_source = before.node(ids.source).unwrap().clone();
+    let before_route = before.route(ids.edge).unwrap().clone();
+
+    session
+        .execute(GraphCommand::set_node_data(
+            session.graph_snapshot().unwrap().version(),
+            ids.source,
+            serde_json::json!({ "expanded": true }),
+        ))
+        .unwrap();
+
+    let pending = session.geometry_snapshot().unwrap();
+    assert_eq!(pending.node(ids.source), Some(&before_source));
+    assert_eq!(pending.route(ids.edge), Some(&before_route));
+    assert!(pending.port(ids.source_port).is_some());
+
+    let replacement = session.frame(request()).unwrap();
+    let source_target = node_target(&replacement, ids.source);
+    let source_port_target = port_target(&replacement, ids.source_port);
+    assert_eq!(
+        replacement
+            .nodes()
+            .iter()
+            .find(|node| node.id() == ids.source)
+            .unwrap()
+            .bounds_source(),
+        crate::runtime::adapter_protocol::FrameBoundsSource::Published,
+    );
+    let collector = replacement.collector();
+    collector
+        .layout(node_layout(
+            &source_target,
+            root_rect(24.0),
+            [port_layout(
+                &source_port_target,
+                port_rect(198.0),
+                HandlePosition::Right,
+            )],
+        ))
+        .unwrap();
+    let receipt = session
+        .submit_feedback(collector.finish().unwrap())
+        .unwrap();
+
+    assert_eq!(
+        receipt.operations()[0].layout_status(),
+        Some(LayoutNodeStatus::Published),
+    );
+    let after = session.geometry_snapshot().unwrap();
+    assert_eq!(
+        after.node(ids.source).unwrap().bounds(),
+        CanvasRect {
+            origin: CanvasPoint { x: 24.0, y: 20.0 },
+            size: CanvasSize {
+                width: 180.0,
+                height: 120.0,
+            },
+        }
+    );
+    assert_ne!(after.route(ids.edge).unwrap(), &before_route);
 }
 
 #[test]
@@ -1389,7 +2121,7 @@ fn node_instance_invalidation_is_view_local_and_stales_pending_feedback() {
     let collector = pending.collector();
     collector
         .command(GraphCommand::set_node_data(
-            0,
+            pending.graph_version(),
             ids.source,
             serde_json::json!({ "must_not_apply": true }),
         ))
@@ -1696,16 +2428,17 @@ fn renderer_replacement_withdraws_old_instance_ports_before_new_layout() {
     assert!(geometry.port(ids.source_port).is_none());
     assert!(geometry.port_outcome(ids.source_port).is_none());
     assert!(
-        !session
-            .nodes_intersecting(CanvasRect {
+        !complete_nodes_intersecting(
+            &session,
+            CanvasRect {
                 origin: CanvasPoint { x: 0.0, y: 20.0 },
                 size: CanvasSize {
                     width: 180.0,
                     height: 120.0,
                 },
-            })
-            .unwrap()
-            .contains(&ids.source)
+            },
+        )
+        .contains(&ids.source)
     );
     assert!(!session.invalidate_node_layout(&old_instance).unwrap());
 
@@ -1817,7 +2550,7 @@ fn edge_only_reconnect_disconnect_and_restore_each_advance_geometry_revision_onc
 
     session
         .execute(GraphCommand::reconnect(
-            0,
+            session.graph_snapshot().unwrap().version(),
             ids.edge,
             EdgeEndpoint::From,
             ids.alternate_source_port,
@@ -1844,7 +2577,10 @@ fn edge_only_reconnect_disconnect_and_restore_each_advance_geometry_revision_onc
     };
 
     session
-        .execute(GraphCommand::disconnect(1, ids.edge))
+        .execute(GraphCommand::disconnect(
+            session.graph_snapshot().unwrap().version(),
+            ids.edge,
+        ))
         .unwrap()
         .applied()
         .expect("disconnect applies");
@@ -1867,7 +2603,11 @@ fn edge_only_reconnect_disconnect_and_restore_each_advance_geometry_revision_onc
         other => panic!("removed route must leave no indexed entry: {other:?}"),
     }
 
-    session.execute(GraphCommand::undo(2)).unwrap();
+    session
+        .execute(GraphCommand::undo(
+            session.graph_snapshot().unwrap().version(),
+        ))
+        .unwrap();
     let restored = session.geometry_snapshot().unwrap();
     assert_eq!(restored.layout_revision(), 4);
     assert!(restored.route(ids.edge).is_some());
@@ -1956,7 +2696,7 @@ fn command_before_layout_withdraws_frame_routes_after_reconnect_and_disconnect()
     let collector = reconnect_frame.collector();
     collector
         .command(GraphCommand::reconnect(
-            0,
+            reconnect_frame.graph_version(),
             ids.edge,
             EdgeEndpoint::From,
             ids.alternate_source_port,
@@ -1990,7 +2730,10 @@ fn command_before_layout_withdraws_frame_routes_after_reconnect_and_disconnect()
     let disconnect_frame = session.frame(request()).unwrap();
     let collector = disconnect_frame.collector();
     collector
-        .command(GraphCommand::disconnect(1, ids.edge))
+        .command(GraphCommand::disconnect(
+            disconnect_frame.graph_version(),
+            ids.edge,
+        ))
         .unwrap();
     collector
         .layout(node_layout(

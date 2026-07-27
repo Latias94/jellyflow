@@ -1,18 +1,21 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::rc::Rc;
 
 use jellyflow_core::{
     CanvasPoint, CanvasRect, CanvasSize, GraphBuilder, GraphId, Node, NodeId, NodeKindKey,
 };
+use jellyflow_open_gpui::activity::{OpenGpuiActivityKind, OpenGpuiActivityLease};
 use jellyflow_open_gpui::authoring::OpenGpuiNodeBinding;
-use jellyflow_open_gpui::{
-    OpenGpuiActivityKind, OpenGpuiActivityLease, OpenGpuiNodeMountError, OpenGpuiNodeRegistry,
-    OpenGpuiSceneHost, OpenGpuiSceneHostCloseError,
+use jellyflow_open_gpui::host::{
+    OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY, OpenGpuiSceneHost, OpenGpuiSceneHostCloseError,
 };
+use jellyflow_open_gpui::registry::{OpenGpuiNodeMountError, OpenGpuiNodeRegistry};
 use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec};
 use jellyflow_runtime::{
-    GraphCommand, GraphRuntime, ViewCloseReason, ViewCloseRequest, ViewSessionError,
-    ViewSessionOptions,
+    commands::GraphCommand, commands::IncidentEdgePolicy, commands::TopologyEdit,
+    graph::GraphRuntime, view::ViewCloseReason, view::ViewCloseRequest, view::ViewSessionError,
+    view::ViewSessionOptions,
 };
 use open_gpui::{AppContext, Context, Entity, ParentElement, Render, VisualContext, Window, div};
 
@@ -176,6 +179,69 @@ fn factory_failure_recovers_only_after_an_explicit_mount_retry(cx: &mut open_gpu
 }
 
 #[open_gpui::test]
+fn panicking_factory_fallback_retirement_is_diagnosed_and_the_retry_continues(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let runtime = GraphRuntime::builder(catalog()).build(graph()).unwrap();
+    let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    let ready = Rc::new(Cell::new(false));
+    let mount_attempts = Rc::new(Cell::new(0_u32));
+    let leases = Rc::new(RefCell::new(Vec::new()));
+    let factory_ready = Rc::clone(&ready);
+    let factory_attempts = Rc::clone(&mount_attempts);
+    let factory_leases = Rc::clone(&leases);
+    let mut registry = OpenGpuiNodeRegistry::builder();
+    registry.try_register(RENDERER, move |binding, _window, cx| {
+        factory_attempts.set(factory_attempts.get().saturating_add(1));
+        if !factory_ready.get() {
+            let lease = binding
+                .read(cx)
+                .activity()
+                .acquire_with_revocation(OpenGpuiActivityKind::Task, || {
+                    panic!("injected factory fallback retirement panic");
+                })
+                .expect("fallback retirement activity");
+            factory_leases.borrow_mut().push(lease);
+            return Err(OpenGpuiNodeMountError::new("dependency unavailable"));
+        }
+        Ok(cx.new(|_| RetainedProbeNode {
+            _binding: binding,
+            renders: Rc::new(Cell::new(0)),
+        }))
+    });
+    let (host, cx) = cx.add_window_view(move |_, _| {
+        OpenGpuiSceneHost::new(
+            view,
+            registry.seal().expect("valid test registry"),
+            visible_viewport(),
+        )
+    });
+    draw(cx);
+    assert_eq!(mount_attempts.get(), 1);
+
+    ready.set(true);
+    assert!(cx.update_entity(&host, |host, cx| {
+        host.retry_mount(NodeId::from_u128(10), cx)
+    }));
+
+    cx.run_until_parked();
+    assert_eq!(
+        mount_attempts.get(),
+        2,
+        "retry notification must schedule the replacement mount before propagating the panic",
+    );
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(host.stats().active_nodes(), 1);
+        assert_eq!(host.stats().hard_retirements(), 1);
+        assert!(
+            host.last_diagnostic()
+                .is_some_and(|diagnostic| diagnostic.message().contains("retry continued"))
+        );
+    });
+    drop(leases);
+}
+
+#[open_gpui::test]
 fn missing_renderer_fallback_is_not_mount_retryable(cx: &mut open_gpui::TestAppContext) {
     let runtime = GraphRuntime::builder(catalog()).build(graph()).unwrap();
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
@@ -233,12 +299,13 @@ fn explicit_close_drains_final_command_once_then_retires_native_state(
         )
     });
     draw(cx);
+    let close_version = runtime.snapshot().expect("close snapshot").version();
 
     let outcome = cx
         .update_window_entity(&host, |host, window, cx| {
             host.close_with_request_in_window(
                 ViewCloseRequest::new().with_command(GraphCommand::set_node_data(
-                    0,
+                    close_version,
                     NodeId::from_u128(10),
                     serde_json::json!({ "prompt": "saved on close" }),
                 )),
@@ -311,11 +378,217 @@ fn runtime_drop_retires_native_state_on_the_next_host_tick(cx: &mut open_gpui::T
     });
 }
 
+#[open_gpui::test]
+fn runtime_drop_bridge_retires_every_mount_after_the_first_revocation_panics(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let runtime = GraphRuntime::builder(catalog())
+        .build(graph_with_node_ids([10, 20]))
+        .unwrap();
+    let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    let revocations = Rc::new(RefCell::new(Vec::new()));
+    let registry = panicking_retirement_registry(Rc::clone(&revocations), NodeId::from_u128(10));
+    let (host, cx) =
+        cx.add_window_view(move |_, _| OpenGpuiSceneHost::new(view, registry, visible_viewport()));
+    draw(cx);
+
+    drop(runtime);
+    cx.run_until_parked();
+
+    assert_eq!(
+        &*revocations.borrow(),
+        &[NodeId::from_u128(10), NodeId::from_u128(20)],
+        "a terminal bridge must retire every detached mount before exposing a callback panic",
+    );
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(host.close_reason(), Some(ViewCloseReason::RuntimeDropped));
+        assert_eq!(host.stats().active_nodes(), 0);
+        assert_eq!(host.stats().parked_nodes(), 0);
+        assert_eq!(host.stats().strong_instances(), 0);
+        assert_eq!(host.stats().hard_retirements(), 2);
+        assert!(
+            host.last_diagnostic()
+                .is_some_and(|diagnostic| diagnostic.message().contains("completed cleanup"))
+        );
+    });
+
+    draw(cx);
+}
+
+#[open_gpui::test]
+fn nonterminal_retirement_panic_does_not_stop_the_lifecycle_bridge(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let runtime = GraphRuntime::builder(catalog())
+        .build(graph_with_node_ids([10, 20]))
+        .unwrap();
+    let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    let revocations = Rc::new(RefCell::new(Vec::new()));
+    let registry = panicking_retirement_registry(Rc::clone(&revocations), NodeId::from_u128(10));
+    let (host, cx) =
+        cx.add_window_view(move |_, _| OpenGpuiSceneHost::new(view, registry, visible_viewport()));
+    draw(cx);
+
+    runtime
+        .execute(GraphCommand::topology(
+            runtime
+                .snapshot()
+                .expect("first retirement snapshot")
+                .version(),
+            TopologyEdit::new().remove_node(NodeId::from_u128(10), IncidentEdgePolicy::Reject),
+        ))
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(&*revocations.borrow(), &[NodeId::from_u128(10)]);
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(host.stats().active_nodes(), 1);
+        assert!(
+            host.last_diagnostic()
+                .is_some_and(|diagnostic| diagnostic.message().contains("bridge continued"))
+        );
+    });
+
+    runtime
+        .execute(GraphCommand::topology(
+            runtime
+                .snapshot()
+                .expect("second retirement snapshot")
+                .version(),
+            TopologyEdit::new().remove_node(NodeId::from_u128(20), IncidentEdgePolicy::Reject),
+        ))
+        .unwrap();
+    cx.run_until_parked();
+
+    assert_eq!(
+        &*revocations.borrow(),
+        &[NodeId::from_u128(10), NodeId::from_u128(20)],
+        "the bridge must consume later patches after isolating a callback panic",
+    );
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(host.stats().active_nodes(), 0);
+        assert_eq!(host.stats().strong_instances(), 0);
+    });
+}
+
+#[open_gpui::test]
+fn stale_parked_reconciliation_finishes_every_retirement_before_propagating_a_panic(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let runtime = GraphRuntime::builder(catalog())
+        .build(graph_with_node_ids([10, 20]))
+        .unwrap();
+    let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    let revocations = Rc::new(RefCell::new(Vec::new()));
+    let registry = panicking_retirement_registry(Rc::clone(&revocations), NodeId::from_u128(10));
+    let (host, cx) =
+        cx.add_window_view(move |_, _| OpenGpuiSceneHost::new(view, registry, visible_viewport()));
+    draw(cx);
+    cx.update_entity(&host, |host, cx| {
+        host.set_frame_bounds(offscreen_viewport());
+        cx.notify();
+    });
+    draw(cx);
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(host.stats().parked_nodes(), 2);
+    });
+
+    runtime
+        .execute(GraphCommand::topology(
+            runtime
+                .snapshot()
+                .expect("parked retirement snapshot")
+                .version(),
+            TopologyEdit::new()
+                .remove_node(NodeId::from_u128(10), IncidentEdgePolicy::Reject)
+                .remove_node(NodeId::from_u128(20), IncidentEdgePolicy::Reject),
+        ))
+        .unwrap();
+    let panic = catch_unwind(AssertUnwindSafe(|| draw_once(cx)));
+
+    assert!(
+        panic.is_err(),
+        "the first callback panic remains observable"
+    );
+    assert_eq!(
+        &*revocations.borrow(),
+        &[NodeId::from_u128(10), NodeId::from_u128(20)],
+        "stale parked mounts must all retire before the first panic is propagated",
+    );
+}
+
+#[open_gpui::test]
+fn unseen_eviction_retires_every_overflow_mount_before_propagating_a_panic(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let node_count = OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY + 2;
+    let runtime = GraphRuntime::builder(catalog())
+        .build(graph_with_node_ids(
+            (1..=node_count).map(|node| u128::try_from(node).unwrap()),
+        ))
+        .unwrap();
+    let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    let revocations = Rc::new(RefCell::new(Vec::new()));
+    let registry = panicking_retirement_registry(Rc::clone(&revocations), NodeId::from_u128(1));
+    let (host, cx) =
+        cx.add_window_view(move |_, _| OpenGpuiSceneHost::new(view, registry, visible_viewport()));
+    draw(cx);
+
+    cx.update_entity(&host, |host, _| {
+        host.set_frame_bounds(offscreen_viewport());
+    });
+    let panic = catch_unwind(AssertUnwindSafe(|| draw_once(cx)));
+
+    assert!(
+        panic.is_err(),
+        "the first callback panic remains observable"
+    );
+    let expected = (1..=node_count)
+        .map(|node| NodeId::from_u128(u128::try_from(node).unwrap()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        &*revocations.borrow(),
+        &expected,
+        "the evicted prefix and every mount released by host unwind must retire in order",
+    );
+}
+
 fn draw(cx: &mut open_gpui::VisualTestContext) {
+    draw_once(cx);
+    cx.run_until_parked();
+}
+
+fn draw_once(cx: &mut open_gpui::VisualTestContext) {
     cx.update(|window, cx| {
         window.draw(cx).clear();
     });
-    cx.run_until_parked();
+}
+
+fn panicking_retirement_registry(
+    revocations: Rc<RefCell<Vec<NodeId>>>,
+    panic_node: NodeId,
+) -> OpenGpuiNodeRegistry {
+    let mut registry = OpenGpuiNodeRegistry::builder();
+    registry.register(RENDERER, move |binding, _window, cx| {
+        let node = binding
+            .read(cx)
+            .authoring()
+            .expect("live test binding")
+            .node_id();
+        let callback_revocations = Rc::clone(&revocations);
+        let activity = binding
+            .read(cx)
+            .activity()
+            .acquire_with_revocation(OpenGpuiActivityKind::Task, move || {
+                callback_revocations.borrow_mut().push(node);
+                assert_ne!(node, panic_node, "injected mount revocation panic");
+            })
+            .unwrap();
+        cx.new(|_| TerminalProbeNode {
+            _binding: binding,
+            _activity: activity,
+        })
+    });
+    registry.seal().expect("valid retirement test registry")
 }
 
 fn factory_retry_selector(node: NodeId) -> String {
@@ -323,7 +596,19 @@ fn factory_retry_selector(node: NodeId) -> String {
 }
 
 fn graph() -> jellyflow_core::Graph {
-    let node = Node {
+    graph_with_node_ids([10])
+}
+
+fn graph_with_node_ids(node_ids: impl IntoIterator<Item = u128>) -> jellyflow_core::Graph {
+    let mut graph = GraphBuilder::new(GraphId::from_u128(1));
+    for node in node_ids {
+        graph.insert_node(NodeId::from_u128(node), test_node());
+    }
+    graph.build().unwrap()
+}
+
+fn test_node() -> Node {
+    Node {
         kind: NodeKindKey::new(KIND),
         kind_version: 1,
         pos: CanvasPoint { x: 20.0, y: 20.0 },
@@ -343,10 +628,7 @@ fn graph() -> jellyflow_core::Graph {
         collapsed: false,
         ports: Vec::new(),
         data: serde_json::json!({ "prompt": "hello" }),
-    };
-    let mut graph = GraphBuilder::new(GraphId::from_u128(1));
-    graph.insert_node(NodeId::from_u128(10), node);
-    graph.build().unwrap()
+    }
 }
 
 fn catalog() -> NodeCatalog {

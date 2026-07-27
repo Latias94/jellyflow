@@ -7,27 +7,37 @@ use jellyflow_core::{
     NodeGraphConnectionMode, NodeId, NodeKindKey, Port, PortCapacity, PortDirection, PortId,
     PortKey, PortKind,
 };
-use jellyflow_egui::{
-    EguiCanvasInteraction, EguiInteractionError, EguiInteractionOutput, EguiInteractionQueryKind,
-};
-use jellyflow_runtime::runtime::adapter_protocol::conformance::{
+use jellyflow_egui::{EguiCanvasInteraction, EguiInteractionOutput, EguiNativeFrameHost};
+use jellyflow_runtime::adapter::conformance::{
     ConformanceAction as TraceInput, ConformanceCancelReason as TraceCancelReason,
     ConformanceCandidate as TraceCandidate, ConformanceEffect as TraceEffect,
-    ConformanceGeometry as TraceGeometry, ConformanceOwnership as TraceOwnership,
+    ConformanceGeometry as TraceGeometry, ConformanceGraph as TraceGraph,
+    ConformanceIntent as TraceIntent, ConformanceOwnership as TraceOwnership,
     ConformancePhase as TracePhase, ConformanceScenario as CanonicalInteractionTrace,
-    ConformanceScenarioId as TraceScenarioId, ConformanceSettlement as TraceReceipt,
-    ConformanceTarget as TraceTarget, ConformanceTerminal as TraceTerminal,
-    ConformanceTicket as TraceTicket, NormalizedObservation, canonical_scenarios,
+    ConformanceScenarioId as TraceScenarioId, ConformanceSelection as TraceSelection,
+    ConformanceSettlement as TraceReceipt, ConformanceTarget as TraceTarget,
+    ConformanceTerminal as TraceTerminal, ConformanceTicket as TraceTicket,
+    ConformanceViewStatus as TraceViewStatus, NormalizedObservation, canonical_scenarios,
     compare_observations,
 };
-use jellyflow_runtime::{
-    ApplyPipelineError, CanvasInteractionConfig, CanvasInteractionEffect, CanvasInteractionPhase,
-    CanvasPressFallback, CanvasPressTarget, CommandSettlement, ConnectionGestureIntent,
-    ConnectionInteractionStart, ConnectionProbe, ConnectionSearchSelection, EdgeEndpoint,
-    FrameRequest, FreshGraphMutation, GraphCommand, GraphCommandOutcome, GraphRuntime,
-    GraphRuntimeMiddleware, GraphRuntimeMiddlewareSnapshot, HandlePosition,
-    InteractionTerminalReason, InteractionTicketId, RendererStamp, SelectionMode, TopologyEdit,
-    ViewPoint, ViewRect, ViewSession, ViewSessionOptions, ViewSize,
+use jellyflow_runtime::commands::{
+    GraphCommand, GraphCommandOutcome, IncidentEdgePolicy, TopologyEdit,
+};
+use jellyflow_runtime::geometry::{HandlePosition, ViewPoint, ViewRect, ViewSize};
+use jellyflow_runtime::graph::{
+    EdgeEndpoint, GraphRuntime, GraphRuntimeError, GraphRuntimeMiddleware,
+    GraphRuntimeMiddlewareSnapshot,
+};
+use jellyflow_runtime::interaction::{
+    CanvasInteractionConfig, CanvasInteractionEffect, CanvasInteractionPhase, CanvasPressFallback,
+    CanvasPressTarget, CommandSettlement, ConnectionGestureBinding, ConnectionProbe,
+    ConnectionSearchRequest, InteractionGraphSubmission, InteractionTerminalReason,
+    InteractionTicketId, SelectionMode,
+};
+use jellyflow_runtime::profile::ApplyPipelineError;
+use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec, NodePortSpec};
+use jellyflow_runtime::view::{
+    FrameRequest, GeometrySnapshot, RendererStamp, ViewCloseReason, ViewSession, ViewSessionOptions,
 };
 
 #[test]
@@ -84,7 +94,7 @@ fn egui_interaction_selection_remains_local_to_its_view() {
     assert_eq!(runner.release(), TraceEffect::None);
 
     assert_eq!(
-        runner.state().view.selection().unwrap().nodes(),
+        runner.state().view().selection().unwrap().nodes(),
         [runner.state().ids.source_node]
     );
     assert!(untouched.selection().unwrap().nodes().is_empty());
@@ -105,39 +115,48 @@ fn release_at_a_new_position_activates_and_commits_an_armed_drag() {
 }
 
 #[test]
-fn foreign_closed_view_cannot_consume_the_owner_frame() {
-    let mut state = EguiTraceState::new();
-    let foreign = state
-        .runtime
-        .attach_view(ViewSessionOptions::default())
-        .expect("foreign view");
-    foreign.close().expect("close foreign view");
-    let ctx = egui::Context::default();
-    let scene_rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 500.0));
+fn closing_only_the_semantic_interaction_cannot_satisfy_host_closed_conformance() {
+    let trace = canonical_scenarios()
+        .into_iter()
+        .find(|trace| trace.id == TraceScenarioId::HostClosed)
+        .expect("canonical host-close scenario");
+    let mut runner = EguiTraceRunner::for_scenario(trace.id);
+    let mut observations = Vec::new();
+    for step in &trace.steps[..2] {
+        let effect = runner.apply(step.action);
+        observations.push(runner.observation(effect));
+    }
 
-    state
-        .interaction
-        .begin_frame(&state.view, &ctx, scene_rect)
-        .expect("open owner frame");
-    assert!(matches!(
-        state.interaction.end_frame(&foreign, &ctx),
-        Err(EguiInteractionError::ViewMismatch)
-    ));
+    let ctx = runner.harness.ctx.clone();
+    let output = runner.state_mut().interaction.close(&ctx);
+    assert!(output.released_native_ownership());
+    let observation = runner.observation(TraceEffect::ReleaseNativeOwnership);
+    assert_eq!(observation.geometry, TraceGeometry::Baseline);
+    assert_eq!(observation.view_status, TraceViewStatus::Open);
+    observations.push(observation);
+    assert!(compare_observations(&trace, &observations).is_err());
 
-    state
-        .interaction
-        .end_frame(&state.view, &ctx)
-        .expect("owner still completes its frame");
+    runner
+        .state()
+        .host
+        .close()
+        .expect("close the real egui host after the negative assertion");
 }
 
 struct EguiTraceRunner {
     harness: Harness<'static, EguiTraceState>,
     pointer: Pos2,
     ticket: Option<InteractionTicketId>,
-    mutation: Option<FreshGraphMutation>,
+    submission: Option<InteractionGraphSubmission>,
+    search_request: Option<ConnectionSearchRequest>,
     baseline_revision: u64,
     excluded_revision_delta: u64,
     prefix_held: bool,
+    adapter_capture: Option<Id>,
+    successor_capture: Option<Id>,
+    scenario: TraceScenarioId,
+    baseline_source_position: CanvasPoint,
+    baseline_source_bounds: CanvasRect,
 }
 
 impl EguiTraceRunner {
@@ -146,16 +165,54 @@ impl EguiTraceRunner {
     }
 
     fn for_scenario(id: TraceScenarioId) -> Self {
-        Self::for_settlement(scenario_settlement(id))
+        Self::build(scenario_settlement(id), Some(id))
     }
 
     fn for_settlement(settlement: Option<TraceReceipt>) -> Self {
+        Self::build(settlement, None)
+    }
+
+    fn build(settlement: Option<TraceReceipt>, scenario: Option<TraceScenarioId>) -> Self {
         let state = EguiTraceState::for_settlement(settlement);
+        if matches!(
+            scenario,
+            Some(
+                TraceScenarioId::ReconnectSource(_)
+                    | TraceScenarioId::ReconnectTarget(_)
+                    | TraceScenarioId::ReconnectSourcePrefixWait
+                    | TraceScenarioId::ReconnectTargetPrefixWait
+            )
+        ) {
+            let edge = state
+                .view()
+                .edge_instance_key(state.ids.reconnect_edge)
+                .expect("canonical edge identity query")
+                .expect("canonical edge is current");
+            state
+                .view()
+                .set_selection(Vec::new(), vec![edge], Vec::new())
+                .expect("seed canonical egui reconnect selection");
+        }
         let baseline_revision = state
             .runtime
             .snapshot()
             .expect("canonical egui baseline")
             .revision();
+        let baseline_source_position = state
+            .runtime
+            .snapshot()
+            .expect("canonical egui source baseline")
+            .graph()
+            .node(&state.ids.source_node)
+            .expect("canonical egui source node")
+            .pos;
+        let baseline_source_bounds = state
+            .view()
+            .geometry_snapshot()
+            .expect("canonical egui geometry baseline")
+            .node(state.ids.source_node)
+            .expect("canonical egui source geometry")
+            .bounds();
         let pointer = state.anchors.source_pos();
         let harness = Harness::builder()
             .with_size(Vec2::new(900.0, 500.0))
@@ -164,10 +221,16 @@ impl EguiTraceRunner {
             harness,
             pointer,
             ticket: None,
-            mutation: None,
+            submission: None,
+            search_request: None,
             baseline_revision,
             excluded_revision_delta: 0,
             prefix_held: false,
+            adapter_capture: None,
+            successor_capture: None,
+            scenario: scenario.unwrap_or(TraceScenarioId::NewConnection(TraceReceipt::Applied)),
+            baseline_source_position,
+            baseline_source_bounds,
         }
     }
 
@@ -205,8 +268,21 @@ impl EguiTraceRunner {
             TraceInput::Settle(receipt) => self.settle(receipt),
             TraceInput::LoseCapture => self.lose_capture(),
             TraceInput::ReplaceOwner => self.replace_owner(),
+            TraceInput::ReleasePreviousOwner => self.release_previous_owner(),
             TraceInput::Cancel(reason) => self.cancel(reason),
             TraceInput::RetireSource => {
+                let version = self.state().runtime.snapshot().unwrap().version();
+                self.state()
+                    .runtime
+                    .execute(GraphCommand::topology(
+                        version,
+                        TopologyEdit::new()
+                            .remove_node(self.state().ids.source_node, IncidentEdgePolicy::Reject),
+                    ))
+                    .unwrap()
+                    .applied()
+                    .expect("canonical egui source retirement applies");
+                self.excluded_revision_delta = self.excluded_revision_delta.saturating_add(1);
                 self.state_mut().response_visible = false;
                 self.harness.step();
                 let output = self.take_output();
@@ -215,8 +291,15 @@ impl EguiTraceRunner {
             }
             TraceInput::CloseHost => {
                 let ctx = self.harness.ctx.clone();
-                let output = self.state_mut().interaction.close(&ctx);
+                let state = self.state_mut();
+                let output = state.interaction.close(&ctx);
                 assert!(output.released_native_ownership());
+                let outcome = state.host.close().expect("close canonical egui host");
+                assert_eq!(outcome.reason(), ViewCloseReason::HostClosed);
+                assert_eq!(
+                    state.view().close_reason(),
+                    Some(ViewCloseReason::HostClosed)
+                );
                 TraceEffect::ReleaseNativeOwnership
             }
         }
@@ -244,6 +327,12 @@ impl EguiTraceRunner {
         self.harness.drag_at(self.pointer);
         self.harness.step();
         let output = self.take_output();
+        let captured = self.harness.ctx.dragged_id();
+        if target == TraceTarget::NativeControl {
+            assert!(captured.is_none());
+        } else {
+            self.adapter_capture = Some(captured.expect("egui adapter owns native drag"));
+        }
         self.capture_semantic_effect(output, false)
     }
 
@@ -283,28 +372,23 @@ impl EguiTraceRunner {
 
     fn select_search_result(&mut self) -> TraceEffect {
         let ctx = self.harness.ctx.clone();
+        let request = self
+            .search_request
+            .take()
+            .expect("search effect supplies an exact request");
         let state = self.harness.state_mut();
-        let generation = state
-            .interaction
-            .presentation()
-            .generation()
-            .expect("search owns a generation");
         state
             .interaction
-            .search_ready(&state.view, &ctx, generation, 1)
+            .search_ready(&ctx, &request, 1)
             .expect("search result count applies");
-        let selection = ConnectionSearchSelection::new(
-            state.ids.valid_port,
-            state.view.graph_snapshot().unwrap().revision(),
-            TopologyEdit::new().set_node_data(
-                state.ids.valid_node,
-                serde_json::json!({ "created_from_wire": true }),
-            ),
-        )
-        .expect("create-from-wire selection carries topology");
+        let selection = state
+            .interaction
+            .create_search_selection(&request, state.ids.created_port, trace_creation(state.ids))
+            .expect("create-from-wire view remains available")
+            .expect("create-from-wire selection carries topology");
         let output = state
             .interaction
-            .select_search_result(&state.view, &ctx, generation, selection)
+            .select_search_result(&ctx, selection)
             .expect("search selection applies");
         self.capture_semantic_effect(output, false)
     }
@@ -315,13 +399,16 @@ impl EguiTraceRunner {
             "command transport cannot bypass a held prefix"
         );
         let ticket = self.ticket.take().expect("trace submitted one command");
-        let mutation = self.mutation.take().expect("trace captured one mutation");
-        let settlement = self.dispatch_mutation(receipt, mutation);
+        let submission = self
+            .submission
+            .take()
+            .expect("trace captured one graph submission");
+        let settlement = self.dispatch_submission(receipt, submission);
         let ctx = self.harness.ctx.clone();
         let state = self.harness.state_mut();
         state
             .interaction
-            .settle(&state.view, &ctx, ticket, settlement)
+            .settle(&ctx, ticket, settlement)
             .expect("receipt settles");
         match settlement {
             CommandSettlement::Applied | CommandSettlement::Noop => TraceEffect::None,
@@ -331,18 +418,20 @@ impl EguiTraceRunner {
         }
     }
 
-    fn dispatch_mutation(
+    fn dispatch_submission(
         &mut self,
         requested: TraceReceipt,
-        mutation: FreshGraphMutation,
+        submission: InteractionGraphSubmission,
     ) -> CommandSettlement {
         let snapshot = self
             .state()
             .runtime
             .snapshot()
             .expect("fresh egui transport snapshot");
-        let emitted = mutation
-            .into_command(&snapshot)
+        let emitted = self
+            .state()
+            .interaction
+            .bind_submission(submission)
             .expect("egui transport binds the emitted mutation")
             .expect("canonical emitted mutation is not a no-op");
         if requested == TraceReceipt::TransportFailure {
@@ -356,7 +445,7 @@ impl EguiTraceRunner {
         }
         let command = match requested {
             TraceReceipt::Noop => GraphCommand::set_node_data(
-                snapshot.revision(),
+                snapshot.version(),
                 self.state().ids.source_node,
                 snapshot
                     .graph()
@@ -382,6 +471,28 @@ impl EguiTraceRunner {
         );
         self.execute_external_revision("prefix");
         self.prefix_held = false;
+        if let Some(submission) = self.submission.take() {
+            let ticket = submission.ticket();
+            assert_eq!(self.ticket, Some(ticket));
+            let expected = if self
+                .state()
+                .interaction
+                .presentation()
+                .connection()
+                .is_some()
+            {
+                TraceEffect::SubmitConnection
+            } else {
+                TraceEffect::SubmitNodeMove
+            };
+            let ctx = self.harness.ctx.clone();
+            let state = self.harness.state_mut();
+            let output = state
+                .interaction
+                .resume_submission_after_prefix(&ctx, submission)
+                .expect("prefix resumes through the headless session");
+            assert_eq!(self.capture_semantic_effect(output, false), expected);
+        }
         TraceEffect::None
     }
 
@@ -392,7 +503,7 @@ impl EguiTraceRunner {
             .snapshot()
             .expect("external egui transport snapshot");
         let command = GraphCommand::set_node_data(
-            snapshot.revision(),
+            snapshot.version(),
             self.state().ids.invalid_node,
             serde_json::json!({ "external": reason }),
         );
@@ -415,12 +526,28 @@ impl EguiTraceRunner {
 
     fn replace_owner(&mut self) -> TraceEffect {
         let successor = Id::new("foreign-egui-owner");
+        self.successor_capture = Some(successor);
         self.state_mut().steal_capture = true;
         self.harness.step();
         let output = self.take_output();
         assert!(output.released_native_ownership());
         assert_eq!(self.harness.ctx.dragged_id(), Some(successor));
         TraceEffect::ReleaseNativeOwnership
+    }
+
+    fn release_previous_owner(&mut self) -> TraceEffect {
+        let successor = self
+            .successor_capture
+            .expect("owner replacement installs a successor");
+        let ctx = self.harness.ctx.clone();
+        let state = self.harness.state_mut();
+        let output = state
+            .interaction
+            .cancel(&ctx)
+            .expect("late previous-owner release is idempotent");
+        assert!(!output.released_native_ownership());
+        assert_eq!(ctx.dragged_id(), Some(successor));
+        TraceEffect::None
     }
 
     fn cancel(&mut self, reason: TraceCancelReason) -> TraceEffect {
@@ -435,7 +562,7 @@ impl EguiTraceRunner {
                 let state = self.harness.state_mut();
                 state
                     .interaction
-                    .cancel(&state.view, &ctx)
+                    .cancel(&ctx)
                     .expect("outside click cancels")
             }
         };
@@ -476,12 +603,7 @@ impl EguiTraceRunner {
         mut output: EguiInteractionOutput,
         query_is_probe: bool,
     ) -> TraceEffect {
-        let resolved_probe = output
-            .resolved_queries()
-            .contains(&EguiInteractionQueryKind::ConnectionProbe);
-        let resolved_edge = output
-            .resolved_queries()
-            .contains(&EguiInteractionQueryKind::EdgePick);
+        let resolved_query = output.resolved_query_count() != 0;
         let mut effects = output.take_effects().into_iter();
         if let Some(effect) = effects.next() {
             assert!(
@@ -489,28 +611,30 @@ impl EguiTraceRunner {
                 "one interaction transition emitted unordered effects"
             );
             match effect {
-                CanvasInteractionEffect::Search(_) => return TraceEffect::OpenSearch,
-                CanvasInteractionEffect::SubmitGraph { ticket, mutation } => {
-                    self.ticket = Some(ticket);
-                    let effect = match &mutation {
-                        FreshGraphMutation::Connection { .. } => TraceEffect::SubmitConnection,
-                        FreshGraphMutation::MoveNodes(_) => TraceEffect::SubmitNodeMove,
-                        FreshGraphMutation::DeleteEdge(_) => {
-                            panic!("canonical traces do not delete an edge")
-                        }
-                    };
-                    self.mutation = Some(mutation);
-                    return effect;
+                CanvasInteractionEffect::Search(request) => {
+                    self.search_request = Some(request);
+                    return TraceEffect::OpenSearch;
                 }
-                CanvasInteractionEffect::Selection(_) | CanvasInteractionEffect::Viewport(_) => {
-                    panic!("view-local effects must be consumed inside the egui bridge")
+                CanvasInteractionEffect::SubmitGraph { submission } => {
+                    self.ticket = Some(submission.ticket());
+                    let presentation = self.state().interaction.presentation();
+                    let effect = if presentation.connection().is_some() {
+                        TraceEffect::SubmitConnection
+                    } else if presentation.node_drag().is_some() {
+                        TraceEffect::SubmitNodeMove
+                    } else {
+                        panic!("canonical traces only submit connection or node-move work")
+                    };
+                    self.submission = Some(submission);
+                    return effect;
                 }
             }
         }
-        if resolved_edge {
+        let presentation = self.state().interaction.presentation();
+        if resolved_query && presentation.phase() == CanvasInteractionPhase::EdgeActive {
             return TraceEffect::PickEdge;
         }
-        if query_is_probe && resolved_probe {
+        if query_is_probe && resolved_query && presentation.connection().is_some() {
             return TraceEffect::ProbeConnection;
         }
         TraceEffect::None
@@ -541,10 +665,11 @@ impl EguiTraceRunner {
 
     fn observation(&self, effect: TraceEffect) -> NormalizedObservation {
         let presentation = self.state().interaction.presentation();
-        let ownership = if self.state().interaction.owns_native_pointer() {
-            TraceOwnership::Held
-        } else {
-            TraceOwnership::Released
+        let ownership = match self.harness.ctx.dragged_id() {
+            None => TraceOwnership::Released,
+            Some(owner) if self.successor_capture == Some(owner) => TraceOwnership::HeldBySuccessor,
+            Some(owner) if self.adapter_capture == Some(owner) => TraceOwnership::HeldByAdapter,
+            Some(owner) => panic!("unknown egui drag owner: {owner:?}"),
         };
         let ticket = if self.ticket.is_some() {
             TraceTicket::Pending
@@ -559,11 +684,8 @@ impl EguiTraceRunner {
             .revision()
             .saturating_sub(self.baseline_revision)
             .saturating_sub(self.excluded_revision_delta);
-        let geometry = if presentation.phase() == CanvasInteractionPhase::Closed {
-            TraceGeometry::Unavailable
-        } else {
-            TraceGeometry::Available
-        };
+        let graph = self.observed_graph();
+        let geometry = self.observed_geometry(graph);
         let mut observation = NormalizedObservation::new(
             self.observed_phase(),
             effect,
@@ -575,47 +697,218 @@ impl EguiTraceRunner {
         observation.optimistic_presentation = self.ticket.is_some()
             && (presentation.connection().is_some() || presentation.node_drag().is_some());
         observation.terminal = presentation.terminal().map(trace_terminal);
+        observation.intent = presentation
+            .connection_intent()
+            .map_or(TraceIntent::None, trace_intent);
+        observation.graph = graph;
+        observation.selection = match self.state().view().selection() {
+            Ok(selection)
+                if selection.nodes().is_empty()
+                    && selection.edges().is_empty()
+                    && selection.groups().is_empty() =>
+            {
+                TraceSelection::Empty
+            }
+            Ok(selection)
+                if selection.nodes() == [self.state().ids.source_node]
+                    && selection.edges().is_empty()
+                    && selection.groups().is_empty() =>
+            {
+                TraceSelection::SourceNode
+            }
+            Ok(selection)
+                if selection.nodes().is_empty()
+                    && selection.edges() == [self.state().ids.reconnect_edge]
+                    && selection.groups().is_empty() =>
+            {
+                TraceSelection::CanonicalEdge
+            }
+            Ok(selection) => panic!("unexpected canonical egui selection: {selection:?}"),
+            Err(_) => TraceSelection::Unavailable,
+        };
+        observation.view_status = match self.state().view().close_reason() {
+            None => TraceViewStatus::Open,
+            Some(ViewCloseReason::HostClosed) => TraceViewStatus::HostClosed,
+            Some(ViewCloseReason::RuntimeDropped) => TraceViewStatus::RuntimeDropped,
+        };
         observation
     }
 
-    fn invalid_anchor(&self) -> ViewPoint {
-        match self
+    fn observed_graph(&self) -> TraceGraph {
+        let ids = self.state().ids;
+        let snapshot = self
             .state()
-            .interaction
-            .presentation()
-            .connection()
-            .map(|connection| connection.intent())
-        {
-            Some(ConnectionGestureIntent::Reconnect {
-                endpoint: EdgeEndpoint::From,
-                ..
-            }) => self.state().anchors.valid,
-            Some(ConnectionGestureIntent::Reconnect {
-                endpoint: EdgeEndpoint::To,
-                ..
-            })
-            | Some(ConnectionGestureIntent::Connect { .. })
-            | None => self.state().anchors.invalid,
+            .runtime
+            .snapshot()
+            .expect("egui trace graph remains available");
+        let graph = snapshot.graph();
+        if graph.node(&ids.source_node).is_none() {
+            assert!(graph.port(&ids.source_port).is_none());
+            return TraceGraph::SourceRetired;
+        }
+        if let Some(edge) = graph.edge(&EdgeId::from_u128(100)) {
+            return match (edge.from, edge.to) {
+                (from, to) if from == ids.source_port && to == ids.valid_port => {
+                    TraceGraph::NewConnection
+                }
+                (from, to) if from == ids.source_port && to == ids.created_port => {
+                    assert!(graph.node(&ids.created_node).is_some());
+                    assert!(graph.port(&ids.created_port).is_some());
+                    TraceGraph::CreateFromWire
+                }
+                endpoints => panic!("unexpected canonical egui new edge endpoints: {endpoints:?}"),
+            };
+        }
+        let reconnect = graph
+            .edge(&ids.reconnect_edge)
+            .expect("canonical egui reconnect edge remains present");
+        match (reconnect.from, reconnect.to) {
+            (from, to) if from == ids.source_port && to == ids.reconnect_target_port => {
+                TraceGraph::ReconnectSource
+            }
+            (from, to)
+                if from == ids.reconnect_source_port && to == ids.reconnect_alternate_port =>
+            {
+                TraceGraph::ReconnectTarget
+            }
+            (from, to) if from == ids.reconnect_source_port && to == ids.reconnect_target_port => {
+                let source = graph
+                    .node(&ids.source_node)
+                    .expect("canonical egui source node remains present");
+                if source.pos == self.baseline_source_position {
+                    TraceGraph::Baseline
+                } else {
+                    let expected = CanvasPoint {
+                        x: self.baseline_source_position.x + self.state().anchors.empty.x
+                            - self.state().anchors.source.x,
+                        y: self.baseline_source_position.y + self.state().anchors.empty.y
+                            - self.state().anchors.source.y,
+                    };
+                    assert!((source.pos.x - expected.x).abs() < 0.001);
+                    assert!((source.pos.y - expected.y).abs() < 0.001);
+                    TraceGraph::NodeMoved
+                }
+            }
+            endpoints => panic!("unexpected canonical egui reconnect endpoints: {endpoints:?}"),
+        }
+    }
+
+    fn observed_geometry(&self, graph: TraceGraph) -> TraceGeometry {
+        let ids = self.state().ids;
+        let Ok(geometry) = self.state().view().geometry_snapshot() else {
+            return TraceGeometry::Unavailable;
+        };
+        for port in [
+            ids.valid_port,
+            ids.reconnect_source_port,
+            ids.reconnect_target_port,
+            ids.reconnect_alternate_port,
+        ] {
+            let published = geometry
+                .port(port)
+                .unwrap_or_else(|| panic!("canonical egui geometry is missing port {port:?}"));
+            assert!(published.hit_bounds().is_some());
+        }
+        match graph {
+            TraceGraph::Baseline => {
+                self.assert_route_matches(
+                    &geometry,
+                    ids.reconnect_edge,
+                    ids.reconnect_source_port,
+                    ids.reconnect_target_port,
+                );
+                TraceGeometry::Baseline
+            }
+            TraceGraph::SourceRetired => {
+                assert!(geometry.node(ids.source_node).is_none());
+                assert!(geometry.port(ids.source_port).is_none());
+                TraceGeometry::SourceRetired
+            }
+            TraceGraph::NewConnection => {
+                self.assert_route_matches(
+                    &geometry,
+                    EdgeId::from_u128(100),
+                    ids.source_port,
+                    ids.valid_port,
+                );
+                TraceGeometry::NewConnectionRouted
+            }
+            TraceGraph::ReconnectSource => {
+                self.assert_route_matches(
+                    &geometry,
+                    ids.reconnect_edge,
+                    ids.source_port,
+                    ids.reconnect_target_port,
+                );
+                TraceGeometry::ReconnectSourceRouted
+            }
+            TraceGraph::ReconnectTarget => {
+                self.assert_route_matches(
+                    &geometry,
+                    ids.reconnect_edge,
+                    ids.reconnect_source_port,
+                    ids.reconnect_alternate_port,
+                );
+                TraceGeometry::ReconnectTargetRouted
+            }
+            TraceGraph::CreateFromWire => {
+                assert!(geometry.port(ids.created_port).is_none());
+                assert!(geometry.route(EdgeId::from_u128(100)).is_none());
+                TraceGeometry::CreateFromWireAwaitingLayout
+            }
+            TraceGraph::NodeMoved => {
+                let snapshot = self.state().runtime.snapshot().unwrap();
+                let source_position = snapshot.graph().node(&ids.source_node).unwrap().pos;
+                let source_bounds = geometry.node(ids.source_node).unwrap().bounds();
+                let dx = source_position.x - self.baseline_source_position.x;
+                let dy = source_position.y - self.baseline_source_position.y;
+                assert!(
+                    (source_bounds.origin.x - self.baseline_source_bounds.origin.x - dx).abs()
+                        < 0.001
+                );
+                assert!(
+                    (source_bounds.origin.y - self.baseline_source_bounds.origin.y - dy).abs()
+                        < 0.001
+                );
+                TraceGeometry::NodeMoved
+            }
+        }
+    }
+
+    fn assert_route_matches(
+        &self,
+        geometry: &GeometrySnapshot,
+        edge: EdgeId,
+        from: PortId,
+        to: PortId,
+    ) {
+        let route = geometry
+            .route(edge)
+            .unwrap_or_else(|| panic!("canonical egui geometry is missing route {edge:?}"));
+        let source = geometry.port(from).expect("egui route source geometry");
+        let target = geometry.port(to).expect("egui route target geometry");
+        assert_eq!(route.facts().endpoints.source.point, source.route_anchor());
+        assert_eq!(route.facts().endpoints.target.point, target.route_anchor());
+    }
+
+    fn invalid_anchor(&self) -> ViewPoint {
+        match self.scenario {
+            TraceScenarioId::ReconnectSource(_) | TraceScenarioId::ReconnectSourcePrefixWait => {
+                self.state().anchors.valid
+            }
+            _ => self.state().anchors.invalid,
         }
     }
 
     fn valid_anchor(&self) -> ViewPoint {
-        match self
-            .state()
-            .interaction
-            .presentation()
-            .connection()
-            .map(|connection| connection.intent())
-        {
-            Some(ConnectionGestureIntent::Reconnect {
-                endpoint: EdgeEndpoint::From,
-                ..
-            }) => self.state().anchors.source,
-            Some(ConnectionGestureIntent::Reconnect {
-                endpoint: EdgeEndpoint::To,
-                ..
-            }) => self.state().anchors.reconnect_alternate,
-            Some(ConnectionGestureIntent::Connect { .. }) | None => self.state().anchors.valid,
+        match self.scenario {
+            TraceScenarioId::ReconnectSource(_) | TraceScenarioId::ReconnectSourcePrefixWait => {
+                self.state().anchors.source
+            }
+            TraceScenarioId::ReconnectTarget(_) | TraceScenarioId::ReconnectTargetPrefixWait => {
+                self.state().anchors.reconnect_alternate
+            }
+            _ => self.state().anchors.valid,
         }
     }
 
@@ -637,7 +930,7 @@ impl EguiTraceRunner {
 
 struct EguiTraceState {
     runtime: GraphRuntime,
-    view: ViewSession,
+    host: EguiNativeFrameHost,
     interaction: EguiCanvasInteraction,
     ids: TraceGraphIds,
     anchors: TraceAnchors,
@@ -648,10 +941,6 @@ struct EguiTraceState {
 }
 
 impl EguiTraceState {
-    fn new() -> Self {
-        Self::for_settlement(None)
-    }
-
     fn for_settlement(settlement: Option<TraceReceipt>) -> Self {
         let ids = TraceGraphIds::new();
         let anchors = TraceAnchors::new();
@@ -706,9 +995,10 @@ impl EguiTraceState {
         publish_trace_geometry(&view, ids, anchors);
         let interaction = EguiCanvasInteraction::new(&view, CanvasInteractionConfig::default())
             .expect("egui interaction");
+        let host = EguiNativeFrameHost::new(view);
         Self {
             runtime,
-            view,
+            host,
             interaction,
             ids,
             anchors,
@@ -733,6 +1023,10 @@ impl EguiTraceState {
             TraceResponse::Edge => Pos2::new(400.0, 80.0),
         }
     }
+
+    fn view(&self) -> &ViewSession {
+        self.host.view()
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -754,7 +1048,7 @@ fn render_trace(ui: &mut Ui, state: &mut EguiTraceState) {
     let scene_rect = ui.max_rect();
     state
         .interaction
-        .begin_frame(&state.view, ui.ctx(), scene_rect)
+        .begin_frame(ui.ctx(), scene_rect)
         .expect("begin egui interaction frame");
     if let Some(kind) = state.response.filter(|_| state.response_visible) {
         let center = state.response_center(kind);
@@ -769,10 +1063,10 @@ fn render_trace(ui: &mut Ui, state: &mut EguiTraceState) {
                 | TraceResponse::Edge => Sense::drag(),
             },
         );
-        let target = press_target(&state.view, &state.interaction, state.ids, kind);
+        let target = press_target(state.host.view(), &state.interaction, state.ids, kind);
         state
             .interaction
-            .handle_response(&state.view, &response, target)
+            .handle_response(&response, target)
             .expect("egui response maps to semantic input");
         if state.steal_capture {
             ui.ctx().set_dragged_id(Id::new("foreign-egui-owner"));
@@ -783,7 +1077,7 @@ fn render_trace(ui: &mut Ui, state: &mut EguiTraceState) {
     state.last_output = Some(
         state
             .interaction
-            .end_frame(&state.view, ui.ctx())
+            .end_frame(ui.ctx())
             .expect("end egui interaction frame"),
     );
 }
@@ -797,13 +1091,19 @@ fn press_target(
     match response {
         TraceResponse::NativeControl => CanvasPressTarget::NativeControl,
         TraceResponse::NodeDrag => interaction
-            .node_drag_target(view, ids.source_node, SelectionMode::Replace)
+            .node_drag_target(
+                view.node_lifetime_key(ids.source_node)
+                    .expect("node identity query")
+                    .expect("source node is current"),
+                SelectionMode::Replace,
+            )
             .expect("node target query")
             .expect("source node is draggable"),
         TraceResponse::Connection => interaction
             .connection_target(
-                view,
-                ids.source_port,
+                view.port_instance_key(ids.source_port)
+                    .expect("port identity query")
+                    .expect("source port is current"),
                 EdgeId::from_u128(100),
                 NodeGraphConnectionMode::Strict,
                 true,
@@ -811,7 +1111,6 @@ fn press_target(
             .expect("connection target query")
             .expect("source port starts a connection"),
         TraceResponse::Reconnect(endpoint) => {
-            let graph = view.graph_snapshot().expect("reconnect graph");
             let geometry = view.geometry_snapshot().expect("reconnect geometry");
             let route = geometry
                 .route(ids.reconnect_edge)
@@ -820,14 +1119,19 @@ fn press_target(
                 TraceReconnectEndpoint::Source => EdgeEndpoint::From,
                 TraceReconnectEndpoint::Target => EdgeEndpoint::To,
             };
+            let fixed_endpoint = match endpoint {
+                EdgeEndpoint::From => route.facts().endpoints.target,
+                EdgeEndpoint::To => route.facts().endpoints.source,
+            };
             CanvasPressTarget::Connection(
-                ConnectionInteractionStart::reconnect_from_graph_route(
-                    graph.graph(),
+                view.connection_start_from_route(
                     route,
                     endpoint,
+                    fixed_endpoint,
                     NodeGraphConnectionMode::Strict,
                     false,
                 )
+                .expect("reconnect facts belong to this view")
                 .expect("reconnect endpoint is enabled"),
             )
         }
@@ -864,7 +1168,7 @@ fn paint_native_evidence(ui: &Ui, state: &EguiTraceState) {
 }
 
 fn command_settlement(
-    outcome: Result<GraphCommandOutcome, jellyflow_runtime::GraphRuntimeError>,
+    outcome: Result<GraphCommandOutcome, GraphRuntimeError>,
 ) -> CommandSettlement {
     match outcome {
         Ok(GraphCommandOutcome::Applied(_)) => CommandSettlement::Applied,
@@ -882,7 +1186,12 @@ fn scenario_settlement(id: TraceScenarioId) -> Option<TraceReceipt> {
         | TraceScenarioId::ReconnectTarget(settlement)
         | TraceScenarioId::CreateFromWire(settlement)
         | TraceScenarioId::NodeDrag(settlement) => Some(settlement),
-        TraceScenarioId::NodeDragPrefixWait
+        TraceScenarioId::NewConnectionPrefixWait
+        | TraceScenarioId::ReconnectSourcePrefixWait
+        | TraceScenarioId::ReconnectTargetPrefixWait
+        | TraceScenarioId::CreateFromWirePrefixWait
+        | TraceScenarioId::NodeDragPrefixWait => Some(TraceReceipt::Applied),
+        TraceScenarioId::NodePressBelowThreshold
         | TraceScenarioId::NativeControl
         | TraceScenarioId::EdgePick
         | TraceScenarioId::CaptureLost
@@ -912,6 +1221,16 @@ fn trace_terminal(reason: InteractionTerminalReason) -> TraceTerminal {
     }
 }
 
+fn trace_intent(intent: ConnectionGestureBinding) -> TraceIntent {
+    let Some(_) = intent.reconnect_edge() else {
+        return TraceIntent::Connect;
+    };
+    match intent.fixed_endpoint() {
+        EdgeEndpoint::To => TraceIntent::ReconnectSource,
+        EdgeEndpoint::From => TraceIntent::ReconnectTarget,
+    }
+}
+
 fn response_key(response: TraceResponse) -> u8 {
     match response {
         TraceResponse::NativeControl => 0,
@@ -931,6 +1250,8 @@ struct TraceGraphIds {
     invalid_port: PortId,
     valid_node: NodeId,
     valid_port: PortId,
+    created_node: NodeId,
+    created_port: PortId,
     reconnect_source_node: NodeId,
     reconnect_source_port: PortId,
     reconnect_target_node: NodeId,
@@ -949,6 +1270,8 @@ impl TraceGraphIds {
             invalid_port: PortId::from_u128(2),
             valid_node: NodeId::from_u128(3),
             valid_port: PortId::from_u128(3),
+            created_node: NodeId::from_u128(7),
+            created_port: PortId::from_u128(7),
             reconnect_source_node: NodeId::from_u128(4),
             reconnect_source_port: PortId::from_u128(4),
             reconnect_target_node: NodeId::from_u128(5),
@@ -1114,6 +1437,34 @@ fn trace_node(port: PortId) -> Node {
         ports: vec![port],
         data: serde_json::Value::Null,
     }
+}
+
+fn trace_creation(ids: TraceGraphIds) -> jellyflow_runtime::schema::NodeCreation {
+    let mut catalog = NodeCatalog::new();
+    catalog
+        .register(
+            NodeKindSpec::builder("trace.created", "Created", "trace.created")
+                .default_size(CanvasSize {
+                    width: 60.0,
+                    height: 60.0,
+                })
+                .port(NodePortSpec::new(
+                    "port",
+                    PortDirection::In,
+                    PortKind::Data,
+                    PortCapacity::Multi,
+                ))
+                .build(),
+        )
+        .expect("trace node kind registers");
+    catalog
+        .instantiate_node_with_ids(
+            &NodeKindKey::new("trace.created"),
+            ids.created_node,
+            CanvasPoint::default(),
+            [ids.created_port],
+        )
+        .expect("trace node creation uses exact IDs")
 }
 
 fn trace_port(node: NodeId, direction: PortDirection) -> Port {

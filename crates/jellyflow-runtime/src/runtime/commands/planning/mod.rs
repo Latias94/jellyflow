@@ -77,8 +77,6 @@ pub(crate) enum GraphCommandPlanningError {
         expected: NodeId,
         actual: NodeId,
     },
-    #[error("stable port {port:?} changed immutable identity fields")]
-    PortIdentityChanged { port: PortId },
     #[error("port has incident edges and removal policy rejects cascading: {0:?}")]
     PortConnected(PortId),
     #[error("node has incident edges and removal policy rejects cascading: {0:?}")]

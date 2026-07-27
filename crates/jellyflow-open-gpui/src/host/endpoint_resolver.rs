@@ -1,10 +1,10 @@
 use std::fmt;
 
 use jellyflow_core::{CanvasPoint, CanvasRect, EdgeId, PortId};
-use jellyflow_runtime::runtime::geometry::{
+use jellyflow_runtime::geometry::{
     EdgeEndpointPosition, EdgePathAnchor, EdgePathSample, HandlePosition, handle_anchor_position,
 };
-use jellyflow_runtime::{EdgeEndpoint, GeometrySnapshot};
+use jellyflow_runtime::{graph::EdgeEndpoint, view::GeometrySnapshot};
 
 const ENDPOINT_POINT_EPSILON: f32 = 0.001;
 
@@ -427,7 +427,7 @@ fn route_tangent(outward: HandlePosition, endpoint: EdgeEndpoint) -> CanvasPoint
     }
 }
 
-fn outward_tangent(outward: HandlePosition) -> CanvasPoint {
+pub(super) fn outward_tangent(outward: HandlePosition) -> CanvasPoint {
     match outward {
         HandlePosition::Top => CanvasPoint { x: 0.0, y: -1.0 },
         HandlePosition::Right => CanvasPoint { x: 1.0, y: 0.0 },
@@ -438,7 +438,7 @@ fn outward_tangent(outward: HandlePosition) -> CanvasPoint {
 
 #[cfg(test)]
 mod tests {
-    use jellyflow_runtime::runtime::viewport::ViewportTransform;
+    use jellyflow_runtime::viewport::ViewportTransform;
 
     use super::*;
 
@@ -479,7 +479,7 @@ mod tests {
     }
 
     #[test]
-    fn matching_publications_keep_preview_and_commit_endpoints_identical() {
+    fn complete_reconnect_endpoint_matches_preview_and_committed_geometry() {
         let port = port();
         let edge = edge();
         let identity = identity(7, port, edge, EdgeEndpoint::From);
@@ -493,6 +493,14 @@ mod tests {
             None,
         )
         .expect("matching preview endpoint");
+        let reconnect = resolve_candidates(
+            identity,
+            EndpointAuthority::Route,
+            Some(endpoint),
+            Some(route(endpoint)),
+            None,
+        )
+        .expect("matching reconnect endpoint");
         let committed = resolve_candidates(
             identity,
             EndpointAuthority::Route,
@@ -503,6 +511,7 @@ mod tests {
         .expect("matching committed endpoint");
 
         assert_eq!(preview.identity(), committed.identity());
+        assert_eq!(reconnect.identity(), committed.identity());
         assert_eq!(preview.identity().layout_revision(), 7);
         assert_eq!(preview.identity().port(), port);
         assert_eq!(
@@ -513,38 +522,65 @@ mod tests {
             ))
         );
         assert_eq!(preview.position(), committed.position());
+        assert_eq!(reconnect.position(), committed.position());
+        assert_eq!(preview.tangent(), committed.tangent());
+        assert_eq!(reconnect.tangent(), committed.tangent());
         assert_eq!(preview.source(), PublishedEndpointSource::PublishedPort);
+        assert_eq!(reconnect.source(), PublishedEndpointSource::PublishedRoute);
         assert_eq!(committed.source(), PublishedEndpointSource::PublishedRoute);
         assert_eq!(preview.diagnostic(), None);
+        assert_eq!(reconnect.diagnostic(), None);
         assert_eq!(committed.diagnostic(), None);
     }
 
     #[test]
-    fn route_authority_wins_and_diagnoses_a_port_disagreement() {
+    fn disagreed_reconnect_endpoint_uses_same_route_authority_as_preview_and_commit() {
         let identity = identity(9, port(), edge(), EdgeEndpoint::To);
         let published_port = position(10.0, 20.0, HandlePosition::Left);
         let published_route = position(12.0, 20.0, HandlePosition::Left);
 
-        let resolved = resolve_candidates(
+        let preview = resolve_candidates(
             identity,
             EndpointAuthority::Port,
             Some(published_port),
             Some(route(published_route)),
             None,
         )
-        .expect("route-authoritative endpoint");
+        .expect("route-authoritative preview endpoint");
+        let reconnect = resolve_candidates(
+            identity,
+            EndpointAuthority::Route,
+            Some(published_port),
+            Some(route(published_route)),
+            None,
+        )
+        .expect("route-authoritative reconnect endpoint");
+        let committed = resolve_candidates(
+            identity,
+            EndpointAuthority::Route,
+            Some(published_port),
+            Some(route(published_route)),
+            None,
+        )
+        .expect("route-authoritative committed endpoint");
 
-        assert_eq!(resolved.position(), published_route);
-        assert_eq!(resolved.source(), PublishedEndpointSource::PublishedRoute);
-        let diagnostic = resolved.diagnostic().expect("disagreement diagnostic");
-        assert_eq!(
-            diagnostic.kind(),
-            PublishedEndpointDiagnosticKind::PublishedRoutePortDisagreement
-        );
-        assert_eq!(
-            diagnostic.selected_source(),
-            PublishedEndpointSource::PublishedRoute
-        );
+        for resolved in [preview, reconnect, committed] {
+            assert_eq!(resolved.position(), published_route);
+            assert_eq!(resolved.source(), PublishedEndpointSource::PublishedRoute);
+            let diagnostic = resolved.diagnostic().expect("disagreement diagnostic");
+            assert_eq!(
+                diagnostic.kind(),
+                PublishedEndpointDiagnosticKind::PublishedRoutePortDisagreement
+            );
+            assert_eq!(
+                diagnostic.selected_source(),
+                PublishedEndpointSource::PublishedRoute
+            );
+        }
+        assert_eq!(preview.identity(), committed.identity());
+        assert_eq!(reconnect.identity(), committed.identity());
+        assert_eq!(preview.tangent(), committed.tangent());
+        assert_eq!(reconnect.tangent(), committed.tangent());
     }
 
     #[test]
@@ -581,26 +617,57 @@ mod tests {
     }
 
     #[test]
-    fn missing_route_uses_same_revision_port_with_a_diagnostic() {
+    fn missing_route_reconnect_endpoint_matches_same_revision_port_fallback() {
         let identity = identity(13, port(), edge(), EdgeEndpoint::From);
         let published_port = position(18.0, 24.0, HandlePosition::Right);
 
-        let resolved = resolve_candidates(
+        let preview = resolve_candidates(
+            identity,
+            EndpointAuthority::Port,
+            Some(published_port),
+            None,
+            None,
+        )
+        .expect("published preview endpoint");
+        let reconnect = resolve_candidates(
             identity,
             EndpointAuthority::Route,
             Some(published_port),
             None,
             None,
         )
-        .expect("port fallback");
+        .expect("reconnect port fallback");
+        let committed = resolve_candidates(
+            identity,
+            EndpointAuthority::Route,
+            Some(published_port),
+            None,
+            None,
+        )
+        .expect("committed port fallback");
 
-        assert_eq!(resolved.source(), PublishedEndpointSource::PublishedPort);
-        assert_eq!(resolved.position(), published_port);
+        assert_eq!(preview.source(), PublishedEndpointSource::PublishedPort);
+        assert_eq!(preview.position(), published_port);
+        assert_eq!(preview.diagnostic(), None);
+        for resolved in [reconnect, committed] {
+            assert_eq!(resolved.source(), PublishedEndpointSource::PublishedPort);
+            assert_eq!(resolved.position(), published_port);
+            assert_eq!(
+                resolved.diagnostic().map(PublishedEndpointDiagnostic::kind),
+                Some(PublishedEndpointDiagnosticKind::MissingPublishedRoute)
+            );
+        }
+        assert_eq!(preview.identity(), committed.identity());
+        assert_eq!(reconnect.identity(), committed.identity());
+        assert_eq!(preview.tangent(), committed.tangent());
+        assert_eq!(reconnect.tangent(), committed.tangent());
         assert_eq!(
-            resolved.diagnostic().map(PublishedEndpointDiagnostic::kind),
+            reconnect
+                .diagnostic()
+                .map(PublishedEndpointDiagnostic::kind),
             Some(PublishedEndpointDiagnosticKind::MissingPublishedRoute)
         );
-        let message = resolved
+        let message = reconnect
             .diagnostic()
             .expect("fallback diagnostic")
             .to_string();

@@ -15,5 +15,5 @@ pub(crate) use connection::{
 };
 pub(crate) use delete::{validate_delete_edge_policy, validate_delete_node_policy};
 pub use diagnostic::{Diagnostic, DiagnosticSeverity, DiagnosticTarget};
-pub use plans::EdgeEndpoint;
-pub(crate) use plans::{ConnectDecision, ConnectPlan};
+pub(crate) use plans::ConnectPlan;
+pub use plans::{ConnectDecision, EdgeEndpoint};

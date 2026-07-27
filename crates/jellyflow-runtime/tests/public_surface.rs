@@ -6,18 +6,24 @@ use jellyflow_core::core::{
 };
 use jellyflow_core::interaction::NodeGraphConnectionMode;
 use jellyflow_core::types::TypeDesc;
+use jellyflow_runtime::commands::{
+    ConnectionEdit, GraphCommand, IncidentEdgePolicy, TopologyEdit, TopologyPort,
+};
+use jellyflow_runtime::geometry::{HandlePosition, ViewPoint, ViewRect, ViewSize};
+use jellyflow_runtime::graph::{Diagnostic, DiagnosticTarget, GraphRuntime, GraphRuntimePolicy};
+use jellyflow_runtime::interaction::{
+    CanvasInteractionConfig, CanvasInteractionSession, InteractionDamage, InteractionTickDemand,
+};
 use jellyflow_runtime::io::{GraphFile, PersistenceLimits, ViewSessionSeed, ViewSessionSeedFile};
-use jellyflow_runtime::runtime::viewport;
+use jellyflow_runtime::profile::GraphProfile;
 use jellyflow_runtime::schema::{
     NodeCatalog, NodeKindSpec, NodePortSpec, PortPresentationHint, PortSide,
 };
-use jellyflow_runtime::{
-    AdapterEnvironment, CanvasInteractionConfig, CanvasInteractionQuery, CanvasInteractionSession,
-    ConnectionEdit, Diagnostic, DiagnosticTarget, EdgePickQuery, FeedbackCollector, FrameRequest,
-    GraphCommand, GraphProfile, GraphRuntime, GraphRuntimePolicy, HandlePosition,
-    IncidentEdgePolicy, InteractionPosition, NodeLayoutTarget, RendererStamp, TopologyEdit,
-    TopologyPort, ViewPoint, ViewRect, ViewSessionOptions, ViewSize, VisibleRouteQuery,
+use jellyflow_runtime::view::{
+    AdapterEnvironment, EdgePickQuery, FeedbackCollector, FrameRequest, NodeLayoutTarget,
+    RendererStamp, ViewSessionOptions, VisibleRouteQuery,
 };
+use jellyflow_runtime::viewport::ViewportTransform;
 
 fn graph_with_one_port() -> (Graph, NodeId, PortId) {
     let graph_id = GraphId::from_u128(0x501);
@@ -107,7 +113,21 @@ fn graph_runtime_and_view_session_are_the_public_adapter_seam() {
     let view = runtime
         .attach_view(ViewSessionOptions::default())
         .expect("view");
-    assert_eq!(view.graph_snapshot().unwrap().revision(), 0);
+    let initial_snapshot = view.graph_snapshot().unwrap();
+    assert_eq!(initial_snapshot.revision(), 0);
+    let node_lifetime = initial_snapshot
+        .node_lifetime_key(node)
+        .expect("public snapshot exposes exact node lifetime identity");
+    assert_eq!(
+        runtime.node_lifetime_key(node).unwrap(),
+        Some(node_lifetime),
+    );
+    let port_instance = runtime
+        .port_instance_key(port)
+        .unwrap()
+        .expect("public runtime exposes port lifetime identity");
+    assert_eq!(port_instance.owner(), node_lifetime);
+    assert_eq!(port_instance.port(), port);
 
     let frame = view
         .frame(FrameRequest::new(
@@ -126,11 +146,13 @@ fn graph_runtime_and_view_session_are_the_public_adapter_seam() {
         .iter()
         .find(|candidate| candidate.id() == node)
         .expect("node frame");
+    assert_eq!(frame_node.instance().lifetime(), node_lifetime);
     let frame_port = frame_node
         .ports()
         .iter()
         .find(|candidate| candidate.id() == port)
         .expect("port frame");
+    assert_eq!(frame_port.instance(), port_instance);
 
     let node_bounds = ViewRect::new(ViewPoint::new(80.0, 120.0), ViewSize::new(240.0, 144.0));
     let port_bounds = ViewRect::new(ViewPoint::new(308.0, 180.0), ViewSize::new(12.0, 12.0));
@@ -161,30 +183,26 @@ fn graph_runtime_and_view_session_are_the_public_adapter_seam() {
     )
     .with_margin(24.0);
     let _edge_pick = EdgePickQuery::new(ViewPoint::new(160.0, 186.0), 4.0, 64);
-    let mut interaction = CanvasInteractionSession::new(
-        view.id(),
-        view.generation().unwrap(),
-        CanvasInteractionConfig::default(),
-    )
-    .unwrap();
-    let position = InteractionPosition::from_view(
-        ViewPoint::new(160.0, 186.0),
-        view.viewport_transform().unwrap(),
-    )
-    .unwrap();
-    let edge_query = interaction.request_edge_pick(position).unwrap();
+    let mut interaction =
+        CanvasInteractionSession::attach(&view, CanvasInteractionConfig::default()).unwrap();
+    let sample = view
+        .viewport_pointer_sample(ViewPoint::new(160.0, 186.0))
+        .unwrap();
+    let edge_query = interaction.request_edge_pick(sample).unwrap();
     let dispatch = edge_query.into_dispatch();
-    let queries = dispatch.queries;
-    let effects = dispatch.pre_query_effects;
+    let mut queries = dispatch.queries;
+    let effects = dispatch.effects;
     let damage = dispatch.damage;
     let tick_demand = dispatch.tick_demand;
-    assert!(matches!(
-        queries.as_slice(),
-        [CanvasInteractionQuery::EdgePick { .. }]
-    ));
+    assert_eq!(queries.len(), 1, "edge picking emits one opaque query");
     assert!(effects.is_empty());
-    assert_eq!(damage, jellyflow_runtime::InteractionDamage::default());
-    assert_eq!(tick_demand, jellyflow_runtime::InteractionTickDemand::None);
+    assert_eq!(damage, InteractionDamage::default());
+    assert_eq!(tick_demand, InteractionTickDemand::None);
+    let resolved = interaction
+        .resolve_query(queries.pop().expect("one opaque edge query"))
+        .expect("the session resolves its bound query");
+    assert!(resolved.effects().is_empty());
+    assert!(resolved.queries().is_empty());
 
     assert!(
         view.set_adapter_environment(AdapterEnvironment::new(2, 3, 4, 5))
@@ -196,21 +214,22 @@ fn graph_runtime_and_view_session_are_the_public_adapter_seam() {
             .unwrap()
     );
 
+    let version = runtime.snapshot().expect("snapshot").version();
     let outcome = runtime
-        .execute(GraphCommand::topology(
-            0,
-            jellyflow_runtime::TopologyEdit::new(),
-        ))
+        .execute(GraphCommand::topology(version, TopologyEdit::new()))
         .expect("noop command");
     assert!(outcome.applied().is_none());
 }
 
 #[test]
 fn replace_node_ports_declares_retained_and_new_port_ids() {
-    let (_graph, node, retained_port) = graph_with_one_port();
+    let (graph, node, retained_port) = graph_with_one_port();
+    let runtime = GraphRuntime::builder(NodeCatalog::new())
+        .build(graph)
+        .expect("public graph runtime");
     let new_port = PortId::from_u128(0x504);
     let command = GraphCommand::topology(
-        0,
+        runtime.snapshot().expect("snapshot").version(),
         TopologyEdit::new().replace_node_ports(
             node,
             [
@@ -273,7 +292,7 @@ fn graph_profile_keeps_type_policy_and_structured_connection_diagnostics_public(
     ));
 
     let outcome = runtime
-        .execute(GraphCommand::connection(evaluation.revision(), edit))
+        .execute(GraphCommand::connection(evaluation.version(), edit))
         .expect("connection command");
     let rejection = outcome.rejection().expect("profile rejection");
     assert_eq!(
@@ -376,15 +395,16 @@ fn semantic_catalog_and_viewport_planning_are_framework_neutral() {
     let runtime = GraphRuntime::builder(catalog)
         .build(Graph::new(GraphId::from_u128(0x601)))
         .expect("runtime");
+    let version = runtime.snapshot().expect("snapshot").version();
     runtime
-        .execute(creation.into_command(0))
+        .execute(creation.into_command(version))
         .expect("creation command")
         .applied()
         .expect("creation applies");
 
     assert_eq!(runtime.snapshot().unwrap().revision(), 1);
 
-    let transform = viewport::ViewportTransform::new(CanvasPoint::default(), 1.0).unwrap();
+    let transform = ViewportTransform::new(CanvasPoint::default(), 1.0).unwrap();
     assert!(transform.is_valid());
     let _ = std::mem::size_of::<FeedbackCollector>();
     let _ = std::mem::size_of::<NodeLayoutTarget>();

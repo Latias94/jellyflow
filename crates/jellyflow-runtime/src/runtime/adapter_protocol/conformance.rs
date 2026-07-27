@@ -13,7 +13,12 @@ pub enum ConformanceScenarioId {
     ReconnectTarget(ConformanceSettlement),
     CreateFromWire(ConformanceSettlement),
     NodeDrag(ConformanceSettlement),
+    NewConnectionPrefixWait,
+    ReconnectSourcePrefixWait,
+    ReconnectTargetPrefixWait,
+    CreateFromWirePrefixWait,
     NodeDragPrefixWait,
+    NodePressBelowThreshold,
     NativeControl,
     EdgePick,
     CaptureLost,
@@ -81,6 +86,7 @@ pub enum ConformanceAction {
     Settle(ConformanceSettlement),
     LoseCapture,
     ReplaceOwner,
+    ReleasePreviousOwner,
     Cancel(ConformanceCancelReason),
     RetireSource,
     CloseHost,
@@ -129,7 +135,25 @@ pub enum ConformanceTerminal {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ConformanceOwnership {
     Released,
-    Held,
+    HeldByAdapter,
+    HeldBySuccessor,
+}
+
+/// The canonical graph selection visible through the native view capability.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConformanceSelection {
+    Empty,
+    SourceNode,
+    CanonicalEdge,
+    Unavailable,
+}
+
+/// The terminal state of the native view capability.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConformanceViewStatus {
+    Open,
+    HostClosed,
+    RuntimeDropped,
 }
 
 /// Whether one renderer-neutral command ticket remains live.
@@ -139,10 +163,37 @@ pub enum ConformanceTicket {
     Pending,
 }
 
-/// Availability of the view geometry needed by the active native surface.
+/// Connection intent retained by the renderer-neutral presentation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConformanceIntent {
+    None,
+    Connect,
+    ReconnectSource,
+    ReconnectTarget,
+}
+
+/// Authoritative graph result of the canonical mutation under test.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConformanceGraph {
+    Baseline,
+    SourceRetired,
+    NewConnection,
+    ReconnectSource,
+    ReconnectTarget,
+    CreateFromWire,
+    NodeMoved,
+}
+
+/// Structured geometry result required by the active native surface.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ConformanceGeometry {
-    Available,
+    Baseline,
+    SourceRetired,
+    NewConnectionRouted,
+    ReconnectSourceRouted,
+    ReconnectTargetRouted,
+    CreateFromWireAwaitingLayout,
+    NodeMoved,
     Unavailable,
 }
 
@@ -154,9 +205,13 @@ pub struct NormalizedObservation {
     pub terminal: Option<ConformanceTerminal>,
     pub ownership: ConformanceOwnership,
     pub ticket: ConformanceTicket,
+    pub intent: ConformanceIntent,
     pub optimistic_presentation: bool,
     pub graph_revision_delta: u64,
+    pub graph: ConformanceGraph,
     pub geometry: ConformanceGeometry,
+    pub selection: ConformanceSelection,
+    pub view_status: ConformanceViewStatus,
 }
 
 impl NormalizedObservation {
@@ -175,9 +230,13 @@ impl NormalizedObservation {
             terminal: None,
             ownership,
             ticket,
+            intent: ConformanceIntent::None,
             optimistic_presentation: false,
             graph_revision_delta,
+            graph: ConformanceGraph::Baseline,
             geometry,
+            selection: ConformanceSelection::Empty,
+            view_status: ConformanceViewStatus::Open,
         }
     }
 
@@ -190,6 +249,24 @@ impl NormalizedObservation {
     #[must_use]
     pub const fn with_optimistic_presentation(mut self) -> Self {
         self.optimistic_presentation = true;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_graph(mut self, graph: ConformanceGraph) -> Self {
+        self.graph = graph;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_selection(mut self, selection: ConformanceSelection) -> Self {
+        self.selection = selection;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_view_status(mut self, view_status: ConformanceViewStatus) -> Self {
+        self.view_status = view_status;
         self
     }
 }
@@ -205,6 +282,18 @@ impl ConformanceStep {
     #[must_use]
     pub const fn new(action: ConformanceAction, expected: NormalizedObservation) -> Self {
         Self { action, expected }
+    }
+
+    #[must_use]
+    pub const fn with_selection(mut self, selection: ConformanceSelection) -> Self {
+        self.expected.selection = selection;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_intent(mut self, intent: ConformanceIntent) -> Self {
+        self.expected.intent = intent;
+        self
     }
 }
 
@@ -317,7 +406,9 @@ pub fn canonical_scenarios() -> Vec<ConformanceScenario> {
     }
     scenarios.push(native_control_scenario());
     scenarios.push(edge_pick_scenario());
+    scenarios.extend(connection_prefix_wait_scenarios());
     scenarios.push(node_drag_prefix_wait_scenario());
+    scenarios.push(node_press_below_threshold_scenario());
     scenarios.extend(capture_ownership_scenarios());
     scenarios.extend(terminal_ownership_scenarios());
     scenarios
@@ -359,6 +450,26 @@ fn connection_scenario(
     target: ConformanceTarget,
     settlement: ConformanceSettlement,
 ) -> ConformanceScenario {
+    let (selection, intent, applied_graph) = match target {
+        ConformanceTarget::ReconnectSource => (
+            ConformanceSelection::CanonicalEdge,
+            ConformanceIntent::ReconnectSource,
+            ConformanceGraph::ReconnectSource,
+        ),
+        ConformanceTarget::ReconnectTarget => (
+            ConformanceSelection::CanonicalEdge,
+            ConformanceIntent::ReconnectTarget,
+            ConformanceGraph::ReconnectTarget,
+        ),
+        ConformanceTarget::SourcePort => (
+            ConformanceSelection::Empty,
+            ConformanceIntent::Connect,
+            ConformanceGraph::NewConnection,
+        ),
+        ConformanceTarget::NativeControl
+        | ConformanceTarget::NodeDragHandle
+        | ConformanceTarget::Edge => unreachable!("invalid connection scenario target"),
+    };
     ConformanceScenario {
         id,
         display_name,
@@ -367,34 +478,63 @@ fn connection_scenario(
                 ConformanceAction::Press(target),
                 ConformancePhase::Armed,
                 ConformanceEffect::None,
-            ),
+            )
+            .with_intent(intent)
+            .with_selection(selection),
             held_step(
                 ConformanceAction::CrossDragThreshold,
                 ConformancePhase::ConnectionDrag,
                 ConformanceEffect::ProbeConnection,
-            ),
+            )
+            .with_intent(intent)
+            .with_selection(selection),
             held_step(
                 ConformanceAction::MoveToCandidate(ConformanceCandidate::Invalid),
                 ConformancePhase::ConnectionDrag,
                 ConformanceEffect::ProbeConnection,
-            ),
+            )
+            .with_intent(intent)
+            .with_selection(selection),
             held_step(
                 ConformanceAction::MoveToCandidate(ConformanceCandidate::Valid),
                 ConformancePhase::Candidate,
                 ConformanceEffect::ProbeConnection,
-            ),
+            )
+            .with_intent(intent)
+            .with_selection(selection),
             pending_step(
                 ConformanceAction::Release,
                 ConformanceEffect::SubmitConnection,
-            ),
-            pending_step(ConformanceAction::AdvanceFrame, ConformanceEffect::None),
-            settlement_step(settlement, ConformancePhase::Idle),
+            )
+            .with_intent(intent)
+            .with_selection(selection),
+            pending_step(ConformanceAction::AdvanceFrame, ConformanceEffect::None)
+                .with_intent(intent)
+                .with_selection(selection),
+            settlement_step(settlement, ConformancePhase::Idle, applied_graph)
+                .with_selection(selection),
         ],
     }
 }
 
 #[must_use]
 pub fn create_from_wire_scenario(settlement: ConformanceSettlement) -> ConformanceScenario {
+    let settlement_phase = match settlement {
+        ConformanceSettlement::Applied | ConformanceSettlement::Noop => ConformancePhase::Idle,
+        ConformanceSettlement::Rejected
+        | ConformanceSettlement::Conflict
+        | ConformanceSettlement::TransportFailure => ConformancePhase::Searching,
+    };
+    let settlement_step = settlement_step(
+        settlement,
+        settlement_phase,
+        ConformanceGraph::CreateFromWire,
+    );
+    let settlement_step = if settlement_phase == ConformancePhase::Searching {
+        settlement_step.with_intent(ConformanceIntent::Connect)
+    } else {
+        settlement_step
+    };
     ConformanceScenario {
         id: ConformanceScenarioId::CreateFromWire(settlement),
         display_name: "create-from-wire",
@@ -403,38 +543,34 @@ pub fn create_from_wire_scenario(settlement: ConformanceSettlement) -> Conforman
                 ConformanceAction::Press(ConformanceTarget::SourcePort),
                 ConformancePhase::Armed,
                 ConformanceEffect::None,
-            ),
+            )
+            .with_intent(ConformanceIntent::Connect),
             held_step(
                 ConformanceAction::CrossDragThreshold,
                 ConformancePhase::ConnectionDrag,
                 ConformanceEffect::ProbeConnection,
-            ),
+            )
+            .with_intent(ConformanceIntent::Connect),
             held_step(
                 ConformanceAction::MoveToCandidate(ConformanceCandidate::None),
                 ConformancePhase::ConnectionDrag,
                 ConformanceEffect::ProbeConnection,
-            ),
+            )
+            .with_intent(ConformanceIntent::Connect),
             released_step(
                 ConformanceAction::Release,
                 ConformancePhase::Searching,
                 ConformanceEffect::OpenSearch,
-            ),
+            )
+            .with_intent(ConformanceIntent::Connect),
             pending_step(
                 ConformanceAction::SelectSearchCandidate,
                 ConformanceEffect::SubmitConnection,
-            ),
-            pending_step(ConformanceAction::AdvanceFrame, ConformanceEffect::None),
-            settlement_step(
-                settlement,
-                match settlement {
-                    ConformanceSettlement::Applied | ConformanceSettlement::Noop => {
-                        ConformancePhase::Idle
-                    }
-                    ConformanceSettlement::Rejected
-                    | ConformanceSettlement::Conflict
-                    | ConformanceSettlement::TransportFailure => ConformancePhase::Searching,
-                },
-            ),
+            )
+            .with_intent(ConformanceIntent::Connect),
+            pending_step(ConformanceAction::AdvanceFrame, ConformanceEffect::None)
+                .with_intent(ConformanceIntent::Connect),
+            settlement_step,
         ],
     }
 }
@@ -454,15 +590,117 @@ pub fn node_drag_scenario(settlement: ConformanceSettlement) -> ConformanceScena
                 ConformanceAction::CrossDragThreshold,
                 ConformancePhase::NodeDrag,
                 ConformanceEffect::None,
-            ),
+            )
+            .with_selection(ConformanceSelection::SourceNode),
             pending_step(
                 ConformanceAction::Release,
                 ConformanceEffect::SubmitNodeMove,
-            ),
-            pending_step(ConformanceAction::AdvanceFrame, ConformanceEffect::None),
-            settlement_step(settlement, ConformancePhase::Idle),
+            )
+            .with_selection(ConformanceSelection::SourceNode),
+            pending_step(ConformanceAction::AdvanceFrame, ConformanceEffect::None)
+                .with_selection(ConformanceSelection::SourceNode),
+            settlement_step(
+                settlement,
+                ConformancePhase::Idle,
+                ConformanceGraph::NodeMoved,
+            )
+            .with_selection(ConformanceSelection::SourceNode),
         ],
     }
+}
+
+/// Exercises the node-click path without allowing native movement to become a graph drag.
+#[must_use]
+pub fn node_press_below_threshold_scenario() -> ConformanceScenario {
+    ConformanceScenario {
+        id: ConformanceScenarioId::NodePressBelowThreshold,
+        display_name: "node-press-below-threshold",
+        steps: vec![
+            held_step(
+                ConformanceAction::Press(ConformanceTarget::NodeDragHandle),
+                ConformancePhase::Armed,
+                ConformanceEffect::None,
+            ),
+            released_step(
+                ConformanceAction::Release,
+                ConformancePhase::Idle,
+                ConformanceEffect::None,
+            )
+            .with_selection(ConformanceSelection::SourceNode),
+        ],
+    }
+}
+
+/// Exercises application-owned command prefixes for every connection mutation family.
+#[must_use]
+pub fn connection_prefix_wait_scenarios() -> [ConformanceScenario; 4] {
+    [
+        with_prefix_wait(
+            new_connection_scenario(ConformanceSettlement::Applied),
+            ConformanceScenarioId::NewConnectionPrefixWait,
+            "new-connection-prefix-wait",
+            ConformanceSelection::Empty,
+        ),
+        with_prefix_wait(
+            reconnect_scenario(
+                ConformanceReconnectEndpoint::Source,
+                ConformanceSettlement::Applied,
+            ),
+            ConformanceScenarioId::ReconnectSourcePrefixWait,
+            "reconnect-source-prefix-wait",
+            ConformanceSelection::CanonicalEdge,
+        ),
+        with_prefix_wait(
+            reconnect_scenario(
+                ConformanceReconnectEndpoint::Target,
+                ConformanceSettlement::Applied,
+            ),
+            ConformanceScenarioId::ReconnectTargetPrefixWait,
+            "reconnect-target-prefix-wait",
+            ConformanceSelection::CanonicalEdge,
+        ),
+        with_prefix_wait(
+            create_from_wire_scenario(ConformanceSettlement::Applied),
+            ConformanceScenarioId::CreateFromWirePrefixWait,
+            "create-from-wire-prefix-wait",
+            ConformanceSelection::Empty,
+        ),
+    ]
+}
+
+fn with_prefix_wait(
+    mut scenario: ConformanceScenario,
+    id: ConformanceScenarioId,
+    display_name: &'static str,
+    initial_selection: ConformanceSelection,
+) -> ConformanceScenario {
+    scenario.id = id;
+    scenario.display_name = display_name;
+    scenario.steps.insert(
+        0,
+        released_step(
+            ConformanceAction::QueuePrefix,
+            ConformancePhase::Idle,
+            ConformanceEffect::None,
+        )
+        .with_selection(initial_selection),
+    );
+    let settlement_index = scenario.steps.len() - 1;
+    let active_selection = scenario.steps[settlement_index].expected.selection;
+    let active_intent = scenario.steps[settlement_index - 1].expected.intent;
+    scenario.steps.insert(
+        settlement_index,
+        pending_step(ConformanceAction::DrainPrefix, ConformanceEffect::None)
+            .with_intent(active_intent)
+            .with_selection(active_selection),
+    );
+    scenario.steps.insert(
+        settlement_index + 1,
+        pending_step(ConformanceAction::AdvanceFrame, ConformanceEffect::None)
+            .with_intent(active_intent)
+            .with_selection(active_selection),
+    );
+    scenario
 }
 
 /// Exercises an application-owned command prefix without allowing the optimistic drag to jump.
@@ -486,15 +724,25 @@ pub fn node_drag_prefix_wait_scenario() -> ConformanceScenario {
                 ConformanceAction::CrossDragThreshold,
                 ConformancePhase::NodeDrag,
                 ConformanceEffect::None,
-            ),
+            )
+            .with_selection(ConformanceSelection::SourceNode),
             pending_step(
                 ConformanceAction::Release,
                 ConformanceEffect::SubmitNodeMove,
-            ),
-            pending_step(ConformanceAction::AdvanceFrame, ConformanceEffect::None),
-            pending_step(ConformanceAction::DrainPrefix, ConformanceEffect::None),
-            pending_step(ConformanceAction::AdvanceFrame, ConformanceEffect::None),
-            settlement_step(ConformanceSettlement::Applied, ConformancePhase::Idle),
+            )
+            .with_selection(ConformanceSelection::SourceNode),
+            pending_step(ConformanceAction::AdvanceFrame, ConformanceEffect::None)
+                .with_selection(ConformanceSelection::SourceNode),
+            pending_step(ConformanceAction::DrainPrefix, ConformanceEffect::None)
+                .with_selection(ConformanceSelection::SourceNode),
+            pending_step(ConformanceAction::AdvanceFrame, ConformanceEffect::None)
+                .with_selection(ConformanceSelection::SourceNode),
+            settlement_step(
+                ConformanceSettlement::Applied,
+                ConformancePhase::Idle,
+                ConformanceGraph::NodeMoved,
+            )
+            .with_selection(ConformanceSelection::SourceNode),
         ],
     }
 }
@@ -522,12 +770,14 @@ pub fn edge_pick_scenario() -> ConformanceScenario {
                 ConformanceAction::Press(ConformanceTarget::Edge),
                 ConformancePhase::EdgeActive,
                 ConformanceEffect::PickEdge,
-            ),
+            )
+            .with_selection(ConformanceSelection::CanonicalEdge),
             released_step(
                 ConformanceAction::Release,
                 ConformancePhase::Idle,
                 ConformanceEffect::None,
-            ),
+            )
+            .with_selection(ConformanceSelection::CanonicalEdge),
         ],
     }
 }
@@ -536,20 +786,16 @@ pub fn edge_pick_scenario() -> ConformanceScenario {
 #[must_use]
 pub fn capture_ownership_scenarios() -> [ConformanceScenario; 2] {
     [
-        capture_terminal_scenario(
+        capture_lost_scenario(
             ConformanceScenarioId::CaptureLost,
             "capture-lost",
             ConformanceAction::LoseCapture,
         ),
-        capture_terminal_scenario(
-            ConformanceScenarioId::OwnerReplaced,
-            "owner-replaced",
-            ConformanceAction::ReplaceOwner,
-        ),
+        owner_replaced_scenario(),
     ]
 }
 
-fn capture_terminal_scenario(
+fn capture_lost_scenario(
     id: ConformanceScenarioId,
     display_name: &'static str,
     terminal_action: ConformanceAction,
@@ -562,16 +808,19 @@ fn capture_terminal_scenario(
                 ConformanceAction::Press(ConformanceTarget::SourcePort),
                 ConformancePhase::Armed,
                 ConformanceEffect::None,
-            ),
+            )
+            .with_intent(ConformanceIntent::Connect),
             held_step(
                 ConformanceAction::CrossDragThreshold,
                 ConformancePhase::ConnectionDrag,
                 ConformanceEffect::ProbeConnection,
-            ),
+            )
+            .with_intent(ConformanceIntent::Connect),
             terminal_step(
                 terminal_action,
                 ConformanceTerminal::Cancelled,
-                ConformanceGeometry::Available,
+                ConformanceGraph::Baseline,
+                ConformanceGeometry::Baseline,
             ),
             ConformanceStep::new(
                 ConformanceAction::AdvanceFrame,
@@ -581,10 +830,59 @@ fn capture_terminal_scenario(
                     ConformanceOwnership::Released,
                     ConformanceTicket::None,
                     0,
-                    ConformanceGeometry::Available,
+                    ConformanceGeometry::Baseline,
                 )
                 .with_terminal(ConformanceTerminal::Cancelled),
             ),
+        ],
+    }
+}
+
+fn owner_replaced_scenario() -> ConformanceScenario {
+    let successor_observation = || {
+        NormalizedObservation::new(
+            ConformancePhase::Idle,
+            ConformanceEffect::None,
+            ConformanceOwnership::HeldBySuccessor,
+            ConformanceTicket::None,
+            0,
+            ConformanceGeometry::Baseline,
+        )
+        .with_terminal(ConformanceTerminal::Cancelled)
+    };
+    ConformanceScenario {
+        id: ConformanceScenarioId::OwnerReplaced,
+        display_name: "owner-replaced",
+        steps: vec![
+            held_step(
+                ConformanceAction::Press(ConformanceTarget::SourcePort),
+                ConformancePhase::Armed,
+                ConformanceEffect::None,
+            )
+            .with_intent(ConformanceIntent::Connect),
+            held_step(
+                ConformanceAction::CrossDragThreshold,
+                ConformancePhase::ConnectionDrag,
+                ConformanceEffect::ProbeConnection,
+            )
+            .with_intent(ConformanceIntent::Connect),
+            ConformanceStep::new(
+                ConformanceAction::ReplaceOwner,
+                NormalizedObservation::new(
+                    ConformancePhase::Idle,
+                    ConformanceEffect::ReleaseNativeOwnership,
+                    ConformanceOwnership::HeldBySuccessor,
+                    ConformanceTicket::None,
+                    0,
+                    ConformanceGeometry::Baseline,
+                )
+                .with_terminal(ConformanceTerminal::Cancelled),
+            ),
+            ConformanceStep::new(
+                ConformanceAction::ReleasePreviousOwner,
+                successor_observation(),
+            ),
+            ConformanceStep::new(ConformanceAction::AdvanceFrame, successor_observation()),
         ],
     }
 }
@@ -597,27 +895,31 @@ pub fn terminal_ownership_scenarios() -> [ConformanceScenario; 4] {
             "escape",
             ConformanceAction::Cancel(ConformanceCancelReason::Escape),
             ConformanceTerminal::Cancelled,
-            ConformanceGeometry::Available,
+            ConformanceGraph::Baseline,
+            ConformanceGeometry::Baseline,
         ),
         terminal_scenario(
             ConformanceScenarioId::OutsideClick,
             "outside-click",
             ConformanceAction::Cancel(ConformanceCancelReason::OutsideClick),
             ConformanceTerminal::Cancelled,
-            ConformanceGeometry::Available,
+            ConformanceGraph::Baseline,
+            ConformanceGeometry::Baseline,
         ),
         terminal_scenario(
             ConformanceScenarioId::SourceRetired,
             "source-retired",
             ConformanceAction::RetireSource,
             ConformanceTerminal::OwnerRetired,
-            ConformanceGeometry::Available,
+            ConformanceGraph::SourceRetired,
+            ConformanceGeometry::SourceRetired,
         ),
         terminal_scenario(
             ConformanceScenarioId::HostClosed,
             "host-closed",
             ConformanceAction::CloseHost,
             ConformanceTerminal::HostClosed,
+            ConformanceGraph::Baseline,
             ConformanceGeometry::Unavailable,
         ),
     ]
@@ -628,6 +930,7 @@ fn terminal_scenario(
     display_name: &'static str,
     terminal_action: ConformanceAction,
     terminal: ConformanceTerminal,
+    graph: ConformanceGraph,
     geometry: ConformanceGeometry,
 ) -> ConformanceScenario {
     ConformanceScenario {
@@ -638,13 +941,15 @@ fn terminal_scenario(
                 ConformanceAction::Press(ConformanceTarget::SourcePort),
                 ConformancePhase::Armed,
                 ConformanceEffect::None,
-            ),
+            )
+            .with_intent(ConformanceIntent::Connect),
             held_step(
                 ConformanceAction::CrossDragThreshold,
                 ConformancePhase::ConnectionDrag,
                 ConformanceEffect::ProbeConnection,
-            ),
-            terminal_step(terminal_action, terminal, geometry),
+            )
+            .with_intent(ConformanceIntent::Connect),
+            terminal_step(terminal_action, terminal, graph, geometry),
         ],
     }
 }
@@ -652,20 +957,32 @@ fn terminal_scenario(
 const fn terminal_step(
     action: ConformanceAction,
     terminal: ConformanceTerminal,
+    graph: ConformanceGraph,
     geometry: ConformanceGeometry,
 ) -> ConformanceStep {
-    ConformanceStep::new(
-        action,
-        NormalizedObservation::new(
-            ConformancePhase::Idle,
-            ConformanceEffect::ReleaseNativeOwnership,
-            ConformanceOwnership::Released,
-            ConformanceTicket::None,
-            0,
-            geometry,
-        )
-        .with_terminal(terminal),
+    let observation = NormalizedObservation::new(
+        ConformancePhase::Idle,
+        ConformanceEffect::ReleaseNativeOwnership,
+        ConformanceOwnership::Released,
+        ConformanceTicket::None,
+        0,
+        geometry,
     )
+    .with_terminal(terminal)
+    .with_graph(graph);
+    let observation = match terminal {
+        ConformanceTerminal::HostClosed => observation
+            .with_selection(ConformanceSelection::Unavailable)
+            .with_view_status(ConformanceViewStatus::HostClosed),
+        ConformanceTerminal::Applied
+        | ConformanceTerminal::Noop
+        | ConformanceTerminal::Rejected
+        | ConformanceTerminal::Conflict
+        | ConformanceTerminal::TransportFailure
+        | ConformanceTerminal::Cancelled
+        | ConformanceTerminal::OwnerRetired => observation,
+    };
+    ConformanceStep::new(action, observation)
 }
 
 const fn held_step(
@@ -678,10 +995,10 @@ const fn held_step(
         NormalizedObservation::new(
             phase,
             effect,
-            ConformanceOwnership::Held,
+            ConformanceOwnership::HeldByAdapter,
             ConformanceTicket::None,
             0,
-            ConformanceGeometry::Available,
+            ConformanceGeometry::Baseline,
         ),
     )
 }
@@ -699,7 +1016,7 @@ const fn released_step(
             ConformanceOwnership::Released,
             ConformanceTicket::None,
             0,
-            ConformanceGeometry::Available,
+            ConformanceGeometry::Baseline,
         ),
     )
 }
@@ -713,7 +1030,7 @@ const fn pending_step(action: ConformanceAction, effect: ConformanceEffect) -> C
             ConformanceOwnership::Released,
             ConformanceTicket::Pending,
             0,
-            ConformanceGeometry::Available,
+            ConformanceGeometry::Baseline,
         )
         .with_optimistic_presentation(),
     )
@@ -722,26 +1039,43 @@ const fn pending_step(action: ConformanceAction, effect: ConformanceEffect) -> C
 const fn settlement_step(
     settlement: ConformanceSettlement,
     phase: ConformancePhase,
+    applied_graph: ConformanceGraph,
 ) -> ConformanceStep {
-    let (effect, terminal, revision_delta) = match settlement {
-        ConformanceSettlement::Applied => {
-            (ConformanceEffect::None, ConformanceTerminal::Applied, 1)
-        }
-        ConformanceSettlement::Noop => (ConformanceEffect::None, ConformanceTerminal::Noop, 0),
+    let (effect, terminal, revision_delta, graph, geometry) = match settlement {
+        ConformanceSettlement::Applied => (
+            ConformanceEffect::None,
+            ConformanceTerminal::Applied,
+            1,
+            applied_graph,
+            geometry_for_graph(applied_graph),
+        ),
+        ConformanceSettlement::Noop => (
+            ConformanceEffect::None,
+            ConformanceTerminal::Noop,
+            0,
+            ConformanceGraph::Baseline,
+            ConformanceGeometry::Baseline,
+        ),
         ConformanceSettlement::Rejected => (
             ConformanceEffect::RestorePresentation,
             ConformanceTerminal::Rejected,
             0,
+            ConformanceGraph::Baseline,
+            ConformanceGeometry::Baseline,
         ),
         ConformanceSettlement::Conflict => (
             ConformanceEffect::RestorePresentation,
             ConformanceTerminal::Conflict,
             0,
+            ConformanceGraph::Baseline,
+            ConformanceGeometry::Baseline,
         ),
         ConformanceSettlement::TransportFailure => (
             ConformanceEffect::RestorePresentation,
             ConformanceTerminal::TransportFailure,
             0,
+            ConformanceGraph::Baseline,
+            ConformanceGeometry::Baseline,
         ),
     };
     ConformanceStep::new(
@@ -752,8 +1086,21 @@ const fn settlement_step(
             ConformanceOwnership::Released,
             ConformanceTicket::None,
             revision_delta,
-            ConformanceGeometry::Available,
+            geometry,
         )
-        .with_terminal(terminal),
+        .with_terminal(terminal)
+        .with_graph(graph),
     )
+}
+
+const fn geometry_for_graph(graph: ConformanceGraph) -> ConformanceGeometry {
+    match graph {
+        ConformanceGraph::Baseline => ConformanceGeometry::Baseline,
+        ConformanceGraph::SourceRetired => ConformanceGeometry::SourceRetired,
+        ConformanceGraph::NewConnection => ConformanceGeometry::NewConnectionRouted,
+        ConformanceGraph::ReconnectSource => ConformanceGeometry::ReconnectSourceRouted,
+        ConformanceGraph::ReconnectTarget => ConformanceGeometry::ReconnectTargetRouted,
+        ConformanceGraph::CreateFromWire => ConformanceGeometry::CreateFromWireAwaitingLayout,
+        ConformanceGraph::NodeMoved => ConformanceGeometry::NodeMoved,
+    }
 }

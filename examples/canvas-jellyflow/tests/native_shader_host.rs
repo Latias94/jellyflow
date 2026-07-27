@@ -11,17 +11,22 @@ use jellyflow_core::{
     CanvasPoint, CanvasRect, CanvasSize, EdgeId, Graph, GraphBuilder, GraphId,
     NodeGraphConnectionMode, NodeId, NodeKindKey, PortCapacity, PortDirection, PortId, PortKind,
 };
-use jellyflow_open_gpui::{
-    OpenGpuiNodeRegistry, OpenGpuiRendererRegistrationStatus, OpenGpuiSceneHost,
+use jellyflow_open_gpui::host::OpenGpuiSceneHost;
+use jellyflow_open_gpui::registry::{OpenGpuiNodeRegistry, OpenGpuiRendererRegistrationStatus};
+use jellyflow_runtime::commands::{ConnectionEdit, GraphCommand, IncidentEdgePolicy, TopologyEdit};
+use jellyflow_runtime::graph::{
+    CreateFromWireCandidates, Diagnostic, DiagnosticTarget, GraphRuntime, GraphRuntimeError,
 };
-use jellyflow_runtime::{
-    CanvasInteractionPhase, ConnectionEdit, ConnectionGestureIntent, ConnectionSearchRequest,
-    CreateFromWireCandidates, Diagnostic, DiagnosticTarget, GraphCommand, GraphProfile,
-    GraphRuntime, GraphRuntimeError, IncidentEdgePolicy, InteractionTerminalReason, TopologyEdit,
-    ViewSessionOptions,
+use jellyflow_runtime::interaction::{
+    CanvasInteractionPhase, ConnectionSearchRequest, ConnectionSearchStatus,
+    InteractionTerminalReason,
 };
+use jellyflow_runtime::profile::GraphProfile;
+use jellyflow_runtime::view::ViewSessionOptions;
+use jellyflow_runtime::viewport::ViewportTransform;
 use open_gpui::{
-    AppContext, Context, Entity, MouseButton, ParentElement, Render, Styled, Window, div, point, px,
+    AppContext, Bounds, Context, Entity, MouseButton, ParentElement, Pixels, Render, Styled,
+    VisualTestContext, Window, div, point, px, size,
 };
 use open_gpui_canvas_jellyflow::ShaderGraphProfile;
 use open_gpui_canvas_jellyflow::connection_search::{
@@ -39,10 +44,14 @@ use open_gpui_canvas_jellyflow::nodes::{
     SHADER_MULTIPLY_RENDERER, SHADER_NODE_SELECTOR, SHADER_PREVIEW_CONTROL_SELECTOR,
     SHADER_PREVIEW_VALUE_SELECTOR, WORKFLOW_CONDITION_DEFAULT_SIZE, WORKFLOW_CONDITION_KIND,
     WORKFLOW_CONDITION_RENDERER, WORKFLOW_LLM_DEFAULT_SIZE, WORKFLOW_LLM_KIND,
-    WORKFLOW_LLM_RENDERER, blueprint_pin_down_selector, blueprint_pin_remove_selector,
-    blueprint_pin_up_selector, blueprint_pins, blueprint_port_selector, native_node_catalog,
-    native_node_registry, plan_blueprint_pin_action, shader_connected_input_selector,
-    shader_inline_editor_selector, shader_inline_value_selector, shader_port_selector,
+    WORKFLOW_LLM_RENDERER, blueprint_body_selector, blueprint_header_metadata_selector,
+    blueprint_header_title_selector, blueprint_pin_down_selector, blueprint_pin_label_selector,
+    blueprint_pin_remove_selector, blueprint_pin_up_selector, blueprint_pins,
+    blueprint_port_label_selector, blueprint_port_selector, native_node_catalog,
+    native_node_registry, plan_blueprint_pin_action, shader_body_selector,
+    shader_connected_input_selector, shader_header_metadata_selector, shader_header_title_selector,
+    shader_inline_editor_selector, shader_inline_value_selector, shader_port_label_selector,
+    shader_port_selector,
 };
 use open_gpui_ui_components::gpui_adapter::init_text_input;
 
@@ -134,6 +143,18 @@ fn native_shader_entity_mounts_through_scene_host_and_submits_real_port_feedback
 }
 
 #[open_gpui::test]
+fn shader_and_blueprint_layout_contract_holds_in_compact_window(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    assert_shader_layout_contract(cx, 960.0, 640.0);
+}
+
+#[open_gpui::test]
+fn shader_and_blueprint_layout_contract_holds_in_normal_window(cx: &mut open_gpui::TestAppContext) {
+    assert_shader_layout_contract(cx, 1_440.0, 900.0);
+}
+
+#[open_gpui::test]
 fn connected_input_hides_and_restores_retained_inline_state_across_history(
     cx: &mut open_gpui::TestAppContext,
 ) {
@@ -184,7 +205,7 @@ fn connected_input_hides_and_restores_retained_inline_state_across_history(
     runtime
         .execute(
             GraphCommand::topology(
-                1,
+                edited.version(),
                 TopologyEdit::new().connection(ConnectionEdit::connect(
                     edge_id(),
                     source_output_id(),
@@ -212,10 +233,11 @@ fn connected_input_hides_and_restores_retained_inline_state_across_history(
     assert_fresh_input_geometry(&weak_view);
     assert_single_retained_mount(cx, &host);
 
+    let connected = runtime.snapshot().expect("connected shader snapshot");
     runtime
         .execute(
             GraphCommand::topology(
-                2,
+                connected.version(),
                 TopologyEdit::new().connection(ConnectionEdit::disconnect(edge_id())),
             )
             .with_label("disconnect shader input"),
@@ -238,8 +260,9 @@ fn connected_input_hides_and_restores_retained_inline_state_across_history(
     assert_fresh_input_geometry(&weak_view);
     assert_single_retained_mount(cx, &host);
 
+    let disconnected = runtime.snapshot().expect("disconnected shader snapshot");
     runtime
-        .execute(GraphCommand::undo(3))
+        .execute(GraphCommand::undo(disconnected.version()))
         .expect("undo command")
         .applied()
         .expect("undo applies");
@@ -257,8 +280,9 @@ fn connected_input_hides_and_restores_retained_inline_state_across_history(
     assert_fresh_input_geometry(&weak_view);
     assert_single_retained_mount(cx, &host);
 
+    let undone = runtime.snapshot().expect("undone shader snapshot");
     runtime
-        .execute(GraphCommand::redo(4))
+        .execute(GraphCommand::redo(undone.version()))
         .expect("redo command")
         .applied()
         .expect("redo applies");
@@ -349,7 +373,7 @@ fn shader_wire_drop_filters_native_search_and_commits_one_atomic_topology_comman
     assert_eq!(created.pos, CanvasPoint { x: 700.0, y: 500.0 });
 
     runtime
-        .execute(GraphCommand::undo(snapshot.revision()))
+        .execute(GraphCommand::undo(snapshot.version()))
         .expect("undo atomic create-from-wire")
         .applied()
         .expect("undo applies");
@@ -423,6 +447,66 @@ fn shader_native_search_enter_submits_the_active_filtered_identity_once(
             .any(|node| node.kind.0 == BLUEPRINT_CALL_KIND),
     );
     assert!(cx.debug_bounds(NATIVE_CONNECTION_SEARCH_SELECTOR).is_none());
+}
+
+#[open_gpui::test]
+fn shader_native_search_roving_focus_keeps_active_and_enter_target_aligned(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    cx.update(init_text_input);
+    let runtime = native_runtime(shader_graph()).expect("shader roving-search runtime");
+    let before = runtime
+        .snapshot()
+        .expect("shader graph before roving search");
+    let multiply_count_before = before
+        .graph()
+        .nodes()
+        .values()
+        .filter(|node| node.kind.0 == SHADER_MULTIPLY_KIND)
+        .count();
+    let view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("shader roving-search view");
+    let (surface, cx) =
+        cx.add_window_view(move |_, cx| NativeGraphSurface::new(view, native_registry(cx), cx));
+    draw(cx);
+
+    open_shader_output_search(cx);
+    draw(cx);
+    let first = native_connection_search_candidate_selector(BLUEPRINT_CALL_KIND, "value");
+    let second = native_connection_search_candidate_selector(SHADER_MULTIPLY_KIND, "a");
+    assert!(cx.debug_bounds(&first).is_some());
+    assert!(cx.debug_bounds(&second).is_some());
+    assert!(cx.update(|window, cx| { surface.read(cx).connection_search_has_focus(window, cx) }));
+
+    cx.simulate_keystrokes("down");
+    draw(cx);
+    assert_eq!(cx.focused_debug_selector().as_deref(), Some(first.as_str()));
+
+    cx.simulate_keystrokes("down");
+    draw(cx);
+    assert_eq!(
+        cx.focused_debug_selector().as_deref(),
+        Some(second.as_str())
+    );
+
+    cx.simulate_keystrokes("enter");
+    draw(cx);
+
+    assert!(cx.debug_bounds(NATIVE_CONNECTION_SEARCH_SELECTOR).is_none());
+    let after = runtime
+        .snapshot()
+        .expect("shader graph after roving commit");
+    assert_eq!(
+        after
+            .graph()
+            .nodes()
+            .values()
+            .filter(|node| node.kind.0 == SHADER_MULTIPLY_KIND)
+            .count(),
+        multiply_count_before + 1,
+    );
+    assert_eq!(after.graph().edges().len(), 1);
 }
 
 #[open_gpui::test]
@@ -723,7 +807,7 @@ fn shader_native_search_rebinds_a_stale_candidate_before_one_atomic_commit(
     let current = runtime.snapshot().expect("current shader snapshot");
     runtime
         .execute(GraphCommand::set_node_data(
-            current.revision(),
+            current.version(),
             node_id(),
             serde_json::json!({"changed": true}),
         ))
@@ -779,6 +863,37 @@ impl NativeConnectionSearchSource for FailOnceConnectionSearchSource {
             } else {
                 Ok(authoritative)
             }
+        })
+    }
+}
+
+struct PanickingConnectionSearchSource {
+    attempts: AtomicU8,
+}
+
+impl PanickingConnectionSearchSource {
+    fn new() -> Self {
+        Self {
+            attempts: AtomicU8::new(0),
+        }
+    }
+
+    fn attempts(&self) -> u8 {
+        self.attempts.load(Ordering::SeqCst)
+    }
+}
+
+impl NativeConnectionSearchSource for PanickingConnectionSearchSource {
+    fn candidates(
+        &self,
+        _request: ConnectionSearchRequest,
+        authoritative: CreateFromWireCandidates,
+    ) -> NativeConnectionSearchFuture {
+        let attempt = self.attempts.fetch_add(1, Ordering::SeqCst);
+        assert_ne!(attempt, 0, "injected connection-search method panic");
+        Box::pin(async move {
+            assert_ne!(attempt, 1, "injected connection-search future panic");
+            Ok(authoritative)
         })
     }
 }
@@ -853,6 +968,18 @@ impl DeferredConnectionSearchAttempt {
                 .take()
                 .expect("deferred search authoritative candidates");
             state.result = Some(Ok(authoritative));
+            state.waker.take()
+        };
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+    }
+
+    fn complete_with_error(&self, message: impl Into<String>) {
+        let waker = {
+            let mut state = self.state.lock().expect("deferred search attempt lock");
+            state.authoritative = None;
+            state.result = Some(Err(NativeConnectionSearchSourceError::new(message)));
             state.waker.take()
         };
         if let Some(waker) = waker {
@@ -1001,6 +1128,96 @@ fn shader_native_search_recovers_after_candidate_query_failure_without_mutation(
             .history_state()
             .expect("history after recovered query"),
         history_before_failed_query,
+    );
+}
+
+#[open_gpui::test]
+fn shader_native_search_provider_panic_becomes_a_retryable_source_error(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    cx.update(init_text_input);
+    let runtime = native_runtime(shader_graph()).expect("shader panic-recovery runtime");
+    let view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("shader panic-recovery view");
+    let search_source = Arc::new(PanickingConnectionSearchSource::new());
+    let source_observer = Arc::clone(&search_source);
+    let (_surface, cx) = cx.add_window_view(move |_, cx| {
+        NativeGraphSurface::new_with_search_source(view, native_registry(cx), search_source, cx)
+    });
+    draw(cx);
+
+    open_shader_output_search(cx);
+    assert_eq!(source_observer.attempts(), 1);
+    draw(cx);
+
+    assert!(
+        cx.debug_bounds(NATIVE_CONNECTION_SEARCH_DIAGNOSTIC_SELECTOR)
+            .is_some(),
+        "a provider panic must publish an explicit source error",
+    );
+    let retry = cx
+        .debug_bounds(NATIVE_CONNECTION_SEARCH_RETRY_SELECTOR)
+        .expect("provider panic exposes retry");
+    assert!(
+        cx.debug_bounds(NATIVE_CONNECTION_SEARCH_LOADING_SELECTOR)
+            .is_none(),
+        "a provider panic must not leave the search loading forever",
+    );
+    draw(cx);
+    draw(cx);
+    assert_eq!(
+        source_observer.attempts(),
+        1,
+        "paint must not restart a failed provider without explicit retry",
+    );
+
+    cx.simulate_click(retry.center(), Default::default());
+    draw(cx);
+
+    assert_eq!(source_observer.attempts(), 2);
+    assert!(
+        cx.debug_bounds(NATIVE_CONNECTION_SEARCH_DIAGNOSTIC_SELECTOR)
+            .is_some(),
+        "a provider future panic must publish the same retryable error state",
+    );
+    assert!(
+        cx.debug_bounds(NATIVE_CONNECTION_SEARCH_LOADING_SELECTOR)
+            .is_none(),
+    );
+    assert!(
+        cx.debug_bounds(&native_connection_search_candidate_selector(
+            BLUEPRINT_CALL_KIND,
+            "value",
+        ))
+        .is_none(),
+    );
+    draw(cx);
+    draw(cx);
+    assert_eq!(
+        source_observer.attempts(),
+        2,
+        "paint must not restart a panicked provider future",
+    );
+
+    let retry = cx
+        .debug_bounds(NATIVE_CONNECTION_SEARCH_RETRY_SELECTOR)
+        .expect("provider future panic exposes retry");
+    cx.simulate_click(retry.center(), Default::default());
+    draw(cx);
+
+    assert_eq!(source_observer.attempts(), 3);
+    assert!(
+        cx.debug_bounds(&native_connection_search_candidate_selector(
+            BLUEPRINT_CALL_KIND,
+            "value",
+        ))
+        .is_some(),
+        "an explicit retry must start a fresh provider generation",
+    );
+    assert!(
+        cx.debug_bounds(NATIVE_CONNECTION_SEARCH_DIAGNOSTIC_SELECTOR)
+            .is_none(),
     );
 }
 
@@ -1154,7 +1371,7 @@ fn closing_the_host_cancels_a_pending_connection_search_provider(
         let host = surface.host().read(cx);
         assert_eq!(
             host.close_reason(),
-            Some(jellyflow_runtime::ViewCloseReason::HostClosed)
+            Some(jellyflow_runtime::view::ViewCloseReason::HostClosed)
         );
         assert!(host.connection_search_request().is_none());
     });
@@ -1174,7 +1391,7 @@ fn compact_product_canvas_keeps_search_error_retry_ready_and_empty_states_in_bou
     let view = runtime
         .attach_view(ViewSessionOptions::default())
         .expect("compact shader search view");
-    let search_source = Arc::new(FailOnceConnectionSearchSource::new());
+    let search_source = Arc::new(DeferredConnectionSearchSource::default());
     let source_observer = Arc::clone(&search_source);
     let captured_surface = Rc::new(RefCell::new(None));
     let surface_capture = Rc::clone(&captured_surface);
@@ -1211,7 +1428,6 @@ fn compact_product_canvas_keeps_search_error_retry_ready_and_empty_states_in_bou
     cx.update(|window, cx| {
         window.draw(cx).clear();
     });
-    assert_eq!(source_observer.attempts(), 0);
     let loading = cx
         .debug_bounds(NATIVE_CONNECTION_SEARCH_LOADING_SELECTOR)
         .expect("compact loading state paints before candidate resolution");
@@ -1219,6 +1435,10 @@ fn compact_product_canvas_keeps_search_error_retry_ready_and_empty_states_in_bou
     cx.run_until_parked();
     draw(cx);
     assert_eq!(source_observer.attempts(), 1);
+    source_observer
+        .attempt(0)
+        .complete_with_error("application-owned candidate query failed");
+    draw(cx);
 
     for selector in [
         NATIVE_CONNECTION_SEARCH_SELECTOR,
@@ -1235,6 +1455,20 @@ fn compact_product_canvas_keeps_search_error_retry_ready_and_empty_states_in_bou
         .expect("compact retry control");
     cx.simulate_click(retry.center(), Default::default());
     draw(cx);
+    assert_eq!(source_observer.attempts(), 2);
+    let retry_loading = cx
+        .debug_bounds(NATIVE_CONNECTION_SEARCH_LOADING_SELECTOR)
+        .expect("compact retry loading state");
+    assert_bounds_inside_safe_area(retry_loading, graph_bounds, 12.0);
+    source_observer.attempt(1).complete_successfully();
+    draw(cx);
+    for selector in [
+        NATIVE_CONNECTION_SEARCH_SELECTOR,
+        NATIVE_CONNECTION_SEARCH_RESULTS_SELECTOR,
+    ] {
+        let bounds = cx.debug_bounds(selector).expect("compact ready state");
+        assert_bounds_inside_safe_area(bounds, graph_bounds, 12.0);
+    }
     let candidate = cx
         .debug_bounds(&native_connection_search_candidate_selector(
             BLUEPRINT_CALL_KIND,
@@ -1322,7 +1556,7 @@ fn occupied_shader_input_search_reconnects_atomically_and_undo_restores_the_edge
     );
 
     runtime
-        .execute(GraphCommand::undo(reconnected.revision()))
+        .execute(GraphCommand::undo(reconnected.version()))
         .expect("undo reconnect search")
         .applied()
         .expect("undo reconnect search applies");
@@ -1354,7 +1588,7 @@ fn occupied_shader_reconnect_search_rebinds_stale_candidate_atomically(
     let current = runtime.snapshot().expect("current reconnect graph");
     runtime
         .execute(GraphCommand::set_node_data(
-            current.revision(),
+            current.version(),
             node_id(),
             serde_json::json!({"changed": true}),
         ))
@@ -1412,16 +1646,22 @@ fn occupied_shader_reconnect_search_rejection_then_outside_cancel_preserves_edge
         cx.debug_bounds(NATIVE_CONNECTION_SEARCH_DIAGNOSTIC_SELECTOR)
             .is_some()
     );
+    assert!(
+        cx.debug_bounds(NATIVE_CONNECTION_SEARCH_RETRY_SELECTOR)
+            .is_some(),
+        "a rejected commit must require an explicit retry",
+    );
     assert_original_shader_edge(&runtime);
     assert_eq!(runtime.snapshot().unwrap().graph().nodes().len(), 2);
     assert_eq!(runtime.history_state().unwrap(), history_before);
     cx.read_entity(&surface, |surface, cx| {
-        assert!(
-            surface
-                .host()
-                .read(cx)
-                .connection_search_request()
-                .is_some()
+        let host = surface.host().read(cx);
+        assert!(host.connection_search_request().is_some());
+        assert_eq!(
+            host.interaction_presentation()
+                .connection()
+                .and_then(|connection| connection.search()),
+            Some(ConnectionSearchStatus::CommitRejected),
         );
     });
 
@@ -1573,9 +1813,13 @@ fn native_catalog_declares_all_product_kinds_with_renderable_defaults_and_real_p
 fn typed_shader_catalog_ports_accept_compatible_and_reject_incompatible_commands() {
     let compatible =
         native_runtime(two_catalog_shader_nodes(TypeDesc::Float)).expect("compatible shader graph");
+    let compatible_version = compatible
+        .snapshot()
+        .expect("compatible shader snapshot")
+        .version();
     compatible
         .execute(GraphCommand::connect(
-            0,
+            compatible_version,
             typed_edge_id(),
             typed_source_output_id(),
             typed_target_input_id(),
@@ -1592,7 +1836,7 @@ fn typed_shader_catalog_ports_accept_compatible_and_reject_incompatible_commands
         .expect("before incompatible command");
     let outcome = incompatible
         .execute(GraphCommand::connect(
-            0,
+            before.version(),
             typed_edge_id(),
             typed_source_output_id(),
             typed_target_input_id(),
@@ -1614,9 +1858,10 @@ fn shader_profile_rejects_only_the_data_connection_that_closes_a_cycle() {
         Box::new(ShaderGraphProfile),
     )
     .expect("profiled shader graph");
+    let initial = runtime.snapshot().expect("initial profiled shader graph");
     runtime
         .execute(GraphCommand::connect(
-            0,
+            initial.version(),
             typed_edge_id(),
             typed_source_output_id(),
             typed_target_input_id(),
@@ -1630,7 +1875,7 @@ fn shader_profile_rejects_only_the_data_connection_that_closes_a_cycle() {
 
     let outcome = runtime
         .execute(GraphCommand::connect(
-            1,
+            before.version(),
             EdgeId::from_u128(0x6131),
             typed_target_output_id(),
             typed_source_input_a_id(),
@@ -1684,7 +1929,7 @@ fn blueprint_dynamic_pin_keeps_its_port_id_through_one_step_undo_and_redo() {
     assert_eq!(runtime.history_state().unwrap().undo_len(), 1);
 
     runtime
-        .execute(GraphCommand::undo(1))
+        .execute(GraphCommand::undo(added.version()))
         .expect("undo dynamic pin")
         .applied()
         .expect("undo applies");
@@ -1700,7 +1945,7 @@ fn blueprint_dynamic_pin_keeps_its_port_id_through_one_step_undo_and_redo() {
     );
 
     runtime
-        .execute(GraphCommand::redo(2))
+        .execute(GraphCommand::redo(undone.version()))
         .expect("redo dynamic pin")
         .applied()
         .expect("redo applies");
@@ -1729,10 +1974,10 @@ fn blueprint_connected_pin_reorder_and_remove_are_one_atomic_history_step() {
         BlueprintPin::new("metallic", sparse_input_1_id(), "Metallic", TypeDesc::Float).unwrap();
     apply_blueprint_pin_action(&runtime, BlueprintPinAction::Add(roughness.clone()));
     apply_blueprint_pin_action(&runtime, BlueprintPinAction::Add(metallic.clone()));
-    let revision = runtime.snapshot().unwrap().revision();
+    let version = runtime.snapshot().unwrap().version();
     runtime
         .execute(GraphCommand::connect(
-            revision,
+            version,
             blueprint_dynamic_edge_id(),
             source_output_id(),
             roughness.port_id(),
@@ -1801,7 +2046,7 @@ fn blueprint_connected_pin_reorder_and_remove_are_one_atomic_history_step() {
     assert!(removed.graph().edge(&blueprint_dynamic_edge_id()).is_none());
 
     runtime
-        .execute(GraphCommand::undo(removed.revision()))
+        .execute(GraphCommand::undo(removed.version()))
         .unwrap()
         .applied()
         .expect("undo atomic pin removal");
@@ -1820,7 +2065,7 @@ fn blueprint_connected_pin_reorder_and_remove_are_one_atomic_history_step() {
     );
 
     runtime
-        .execute(GraphCommand::redo(restored.revision()))
+        .execute(GraphCommand::redo(restored.version()))
         .unwrap()
         .applied()
         .expect("redo atomic pin removal");
@@ -1931,7 +2176,11 @@ fn blueprint_native_pin_rows_reorder_remove_and_republish_real_geometry(
             .clone();
         assert_eq!(geometry.node(), blueprint_node_id());
         assert!(geometry.visual_bounds().is_positive_finite());
-        assert!(geometry.hit_bounds().is_positive_finite());
+        assert!(
+            geometry
+                .hit_bounds()
+                .is_some_and(CanvasRect::is_positive_finite)
+        );
     }
 
     let up = cx
@@ -2158,7 +2407,7 @@ fn blueprint_add_input_fills_a_sparse_name_without_replacing_stable_ports(
     assert_eq!(runtime.history_state().unwrap().undo_len(), 4);
 
     runtime
-        .execute(GraphCommand::undo(added.revision()))
+        .execute(GraphCommand::undo(added.version()))
         .expect("undo sparse pin fill")
         .applied()
         .expect("sparse pin undo applies");
@@ -2167,7 +2416,7 @@ fn blueprint_add_input_fills_a_sparse_name_without_replacing_stable_ports(
     assert!(undone.graph().port(&sparse_input_2_id()).is_some());
 
     runtime
-        .execute(GraphCommand::redo(undone.revision()))
+        .execute(GraphCommand::redo(undone.version()))
         .expect("redo sparse pin fill")
         .applied()
         .expect("sparse pin redo applies");
@@ -2238,7 +2487,10 @@ fn blueprint_semantic_zoom_preserves_sparse_dynamic_port_geometry_without_remoun
     assert_single_retained_mount(cx, &host);
 
     weak_view
-        .set_viewport(CanvasPoint::default(), 0.05)
+        .set_viewport(
+            ViewportTransform::new(CanvasPoint::default(), 0.05)
+                .expect("valid blueprint overview viewport"),
+        )
         .expect("set blueprint overview zoom");
     draw(cx);
 
@@ -2272,7 +2524,11 @@ fn blueprint_semantic_zoom_preserves_sparse_dynamic_port_geometry_without_remoun
             assert_eq!(geometry.port(), *port_id);
             assert_eq!(geometry.node(), blueprint_node_id());
             assert!(geometry.visual_bounds().is_positive_finite());
-            assert!(geometry.hit_bounds().is_positive_finite());
+            assert!(
+                geometry
+                    .hit_bounds()
+                    .is_some_and(CanvasRect::is_positive_finite)
+            );
             assert!(geometry.route_anchor().is_finite());
             geometry.clone()
         })
@@ -2287,7 +2543,10 @@ fn blueprint_semantic_zoom_preserves_sparse_dynamic_port_geometry_without_remoun
     }
 
     weak_view
-        .set_viewport(CanvasPoint::default(), 1.0)
+        .set_viewport(
+            ViewportTransform::new(CanvasPoint::default(), 1.0)
+                .expect("valid blueprint detail viewport"),
+        )
         .expect("restore blueprint detail zoom");
     draw(cx);
 
@@ -2338,6 +2597,251 @@ fn draw(cx: &mut open_gpui::VisualTestContext) {
         window.draw(cx).clear();
     });
     cx.run_until_parked();
+}
+
+fn assert_shader_layout_contract(
+    cx: &mut open_gpui::TestAppContext,
+    window_width: f32,
+    window_height: f32,
+) {
+    let runtime = native_runtime(shader_layout_graph()).expect("shader layout runtime");
+    let long_pin = BlueprintPin::new(
+        "production-material-parameter",
+        dynamic_pin_id(),
+        "An intentionally long production material parameter name that must stay inside its row",
+        TypeDesc::Float,
+    )
+    .expect("valid long Blueprint layout pin");
+    apply_blueprint_pin_action(&runtime, BlueprintPinAction::Add(long_pin.clone()));
+    let view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("shader layout view");
+    let registry = cx.update(native_registry);
+    let viewport = CanvasRect {
+        origin: CanvasPoint::default(),
+        size: CanvasSize {
+            width: window_width,
+            height: window_height,
+        },
+    };
+    let window = cx.open_window(size(px(window_width), px(window_height)), move |_, _| {
+        OpenGpuiSceneHost::new(view, registry, viewport)
+    });
+    let mut cx = VisualTestContext::from_window(window.into(), cx);
+    for _ in 0..3 {
+        draw(&mut cx);
+    }
+
+    assert_multiply_layout(&mut cx);
+    assert_blueprint_layout(&mut cx, long_pin.port_id());
+}
+
+fn assert_multiply_layout(cx: &mut VisualTestContext) {
+    let node = layout_bounds(cx, SHADER_NODE_SELECTOR, "Multiply node");
+    let title = layout_bounds(
+        cx,
+        shader_header_title_selector(node_id()),
+        "Multiply title",
+    );
+    let metadata = layout_bounds(
+        cx,
+        shader_header_metadata_selector(node_id()),
+        "Multiply metadata",
+    );
+    let body = layout_bounds(cx, shader_body_selector(node_id()), "Multiply body");
+    let preview = layout_bounds(cx, SHADER_PREVIEW_CONTROL_SELECTOR, "preview control");
+    let inline_editor = layout_bounds(
+        cx,
+        shader_inline_editor_selector(node_id(), "a"),
+        "factor editor",
+    );
+    let labels = [
+        layout_bounds(cx, shader_port_label_selector(node_id(), "a"), "A label"),
+        layout_bounds(cx, shader_port_label_selector(node_id(), "b"), "B label"),
+        layout_bounds(
+            cx,
+            shader_port_label_selector(node_id(), "result"),
+            "Result label",
+        ),
+    ];
+    let markers = [
+        layout_bounds(cx, shader_port_selector(input_a_id()), "A marker"),
+        layout_bounds(cx, shader_port_selector(input_b_id()), "B marker"),
+        layout_bounds(cx, shader_port_selector(output_id()), "Result marker"),
+    ];
+
+    for (name, bounds) in [
+        ("title", title),
+        ("metadata", metadata),
+        ("body", body),
+        ("preview", preview),
+        ("factor editor", inline_editor),
+    ] {
+        assert_layout_contained(bounds, node, &format!("Multiply {name}"));
+    }
+    assert_layout_disjoint(title, metadata, "Multiply title and metadata");
+    assert_layout_disjoint(title, body, "Multiply header title and body");
+    assert_layout_disjoint(metadata, body, "Multiply header metadata and body");
+    assert_layout_disjoint(title, preview, "Multiply title and preview control");
+    assert_layout_disjoint(labels[0], inline_editor, "A label and factor editor");
+    assert_layout_disjoint(labels[2], inline_editor, "Result label and factor editor");
+    for (marker_index, marker) in markers.into_iter().enumerate() {
+        for (label_index, label) in labels.into_iter().enumerate() {
+            assert_layout_disjoint(
+                marker,
+                label,
+                &format!("Multiply marker {marker_index} and label {label_index}"),
+            );
+        }
+        assert_layout_disjoint(
+            marker,
+            inline_editor,
+            &format!("Multiply marker {marker_index} and factor editor"),
+        );
+    }
+}
+
+fn assert_blueprint_layout(cx: &mut VisualTestContext, dynamic_pin: PortId) {
+    let node = layout_bounds(cx, BLUEPRINT_NODE_SELECTOR, "Blueprint node");
+    let title = layout_bounds(
+        cx,
+        blueprint_header_title_selector(blueprint_node_id()),
+        "Blueprint title",
+    );
+    let metadata = layout_bounds(
+        cx,
+        blueprint_header_metadata_selector(blueprint_node_id()),
+        "Blueprint metadata",
+    );
+    let body = layout_bounds(
+        cx,
+        blueprint_body_selector(blueprint_node_id()),
+        "Blueprint body",
+    );
+    let add_input = layout_bounds(cx, BLUEPRINT_ADD_INPUT_SELECTOR, "Add input control");
+    let labels = [
+        layout_bounds(
+            cx,
+            blueprint_port_label_selector(blueprint_node_id(), "exec_in"),
+            "Blueprint In label",
+        ),
+        layout_bounds(
+            cx,
+            blueprint_port_label_selector(blueprint_node_id(), "exec_out"),
+            "Blueprint Out label",
+        ),
+        layout_bounds(
+            cx,
+            blueprint_port_label_selector(blueprint_node_id(), "value"),
+            "Blueprint Value label",
+        ),
+    ];
+    let markers = [
+        layout_bounds(
+            cx,
+            blueprint_port_selector(blueprint_exec_input_id()),
+            "Blueprint In marker",
+        ),
+        layout_bounds(
+            cx,
+            blueprint_port_selector(blueprint_exec_output_id()),
+            "Blueprint Out marker",
+        ),
+        layout_bounds(
+            cx,
+            blueprint_port_selector(blueprint_value_input_id()),
+            "Blueprint Value marker",
+        ),
+    ];
+    let dynamic_label = layout_bounds(
+        cx,
+        blueprint_pin_label_selector(blueprint_node_id(), dynamic_pin),
+        "Blueprint dynamic pin label",
+    );
+    let dynamic_actions = layout_bounds(
+        cx,
+        blueprint_pin_remove_selector(blueprint_node_id(), dynamic_pin),
+        "Blueprint dynamic pin actions",
+    );
+    let dynamic_marker = layout_bounds(
+        cx,
+        blueprint_port_selector(dynamic_pin),
+        "Blueprint dynamic pin marker",
+    );
+
+    for (name, bounds) in [
+        ("title", title),
+        ("metadata", metadata),
+        ("body", body),
+        ("Add input", add_input),
+    ] {
+        assert_layout_contained(bounds, node, &format!("Blueprint {name}"));
+    }
+    assert_layout_disjoint(title, metadata, "Blueprint title and metadata");
+    assert_layout_disjoint(title, body, "Blueprint header title and body");
+    assert_layout_disjoint(metadata, body, "Blueprint header metadata and body");
+    assert_layout_contained(dynamic_label, body, "Blueprint dynamic pin label");
+    assert_layout_contained(dynamic_actions, body, "Blueprint dynamic pin actions");
+    assert_layout_disjoint(
+        dynamic_label,
+        dynamic_actions,
+        "Blueprint dynamic pin label and actions",
+    );
+    assert_layout_disjoint(
+        dynamic_marker,
+        dynamic_label,
+        "Blueprint dynamic pin marker and label",
+    );
+    assert_layout_disjoint(
+        dynamic_marker,
+        dynamic_actions,
+        "Blueprint dynamic pin marker and actions",
+    );
+    for (label_index, label) in labels.into_iter().enumerate() {
+        assert_layout_contained(label, body, &format!("Blueprint label {label_index}"));
+        assert_layout_disjoint(
+            label,
+            add_input,
+            &format!("Blueprint label {label_index} and Add input"),
+        );
+    }
+    for (marker_index, marker) in markers.into_iter().enumerate() {
+        for (label_index, label) in labels.into_iter().enumerate() {
+            assert_layout_disjoint(
+                marker,
+                label,
+                &format!("Blueprint marker {marker_index} and label {label_index}"),
+            );
+        }
+        assert_layout_disjoint(
+            marker,
+            add_input,
+            &format!("Blueprint marker {marker_index} and Add input"),
+        );
+    }
+}
+
+fn layout_bounds(
+    cx: &mut VisualTestContext,
+    selector: impl AsRef<str>,
+    name: &str,
+) -> Bounds<Pixels> {
+    cx.debug_bounds(selector.as_ref())
+        .unwrap_or_else(|| panic!("missing layout bounds for {name}"))
+}
+
+fn assert_layout_contained(child: Bounds<Pixels>, parent: Bounds<Pixels>, context: &str) {
+    assert!(
+        child.is_contained_within(&parent),
+        "{context} escaped its owner: child={child:?}, parent={parent:?}",
+    );
+}
+
+fn assert_layout_disjoint(left: Bounds<Pixels>, right: Bounds<Pixels>, context: &str) {
+    assert!(
+        !left.intersects(&right),
+        "{context} overlapped: left={left:?}, right={right:?}",
+    );
 }
 
 fn assert_bounds_inside_safe_area(
@@ -2408,13 +2912,10 @@ impl GraphProfile for RejectBlueprintCreationProfile {
 }
 
 fn connect_shader_fixture_edge(runtime: &GraphRuntime) {
-    let revision = runtime
-        .snapshot()
-        .expect("shader graph snapshot")
-        .revision();
+    let version = runtime.snapshot().expect("shader graph snapshot").version();
     runtime
         .execute(GraphCommand::connect(
-            revision,
+            version,
             edge_id(),
             source_output_id(),
             input_a_id(),
@@ -2478,10 +2979,11 @@ fn open_occupied_shader_input_search(
         "occupied-input activation must open reconnect search: {state:?}"
     );
     assert!(
-        matches!(
-            state.1.map(ConnectionSearchRequest::intent),
-            Some(ConnectionGestureIntent::Reconnect { .. })
-        ),
+        state
+            .0
+            .connection()
+            .and_then(|connection| connection.binding().reconnect_edge())
+            .is_some(),
         "occupied-input activation must preserve reconnect intent: {state:?}"
     );
 }
@@ -2511,6 +3013,44 @@ fn assert_original_shader_edge(runtime: &GraphRuntime) {
         .expect("stable shader edge");
     assert_eq!(edge.from, source_output_id());
     assert_eq!(edge.to, input_a_id());
+}
+
+fn shader_layout_graph() -> jellyflow_core::Graph {
+    let catalog = native_node_catalog().expect("native catalog");
+    let multiply = catalog
+        .instantiate_node_with_ids(
+            &NodeKindKey::new(SHADER_MULTIPLY_KIND),
+            node_id(),
+            CanvasPoint { x: 40.0, y: 40.0 },
+            [input_a_id(), input_b_id(), output_id()],
+        )
+        .expect("layout Multiply node");
+    let blueprint = catalog
+        .instantiate_node_with_ids(
+            &NodeKindKey::new(BLUEPRINT_CALL_KIND),
+            blueprint_node_id(),
+            CanvasPoint { x: 380.0, y: 40.0 },
+            [
+                blueprint_exec_input_id(),
+                blueprint_exec_output_id(),
+                blueprint_value_input_id(),
+            ],
+        )
+        .expect("layout Blueprint node");
+    let mut graph = GraphBuilder::new(GraphId::from_u128(0x61f0));
+    for creation in [multiply, blueprint] {
+        let (node_id, mut node, ports) = creation.into_parts();
+        node.data["title"] = if node.kind.0 == SHADER_MULTIPLY_KIND {
+            "Multiply with an intentionally long operation title".into()
+        } else {
+            "Blueprint function call with an intentionally long title".into()
+        };
+        graph.insert_node(node_id, node);
+        for (port_id, port) in ports {
+            graph.insert_port(port_id, port);
+        }
+    }
+    graph.build().expect("shader layout graph")
 }
 
 fn shader_graph() -> jellyflow_core::Graph {
@@ -2810,7 +3350,7 @@ fn shader_node_data() -> serde_json::Value {
     })
 }
 
-fn assert_fresh_input_geometry(view: &jellyflow_runtime::WeakViewSession) {
+fn assert_fresh_input_geometry(view: &jellyflow_runtime::view::WeakViewSession) {
     let geometry = view.geometry_snapshot().expect("shader geometry");
     let input = geometry.port(input_a_id()).expect("typed input geometry");
     assert_eq!(input.node(), node_id());

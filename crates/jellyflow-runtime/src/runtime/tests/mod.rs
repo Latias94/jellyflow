@@ -1,3 +1,3 @@
 mod commands;
-mod fixtures;
+pub(crate) mod fixtures;
 mod view_session;

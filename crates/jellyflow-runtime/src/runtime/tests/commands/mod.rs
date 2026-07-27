@@ -31,6 +31,7 @@ mod conflict_history;
 mod connection;
 mod geometry;
 mod profile;
+mod provenance;
 mod scale;
 mod symbols;
 mod topology;
@@ -166,18 +167,18 @@ fn topology_ports_with_type(
 }
 
 fn undo(runtime: &GraphRuntime) {
-    let revision = runtime.snapshot().unwrap().revision();
+    let version = runtime.snapshot().unwrap().version();
     runtime
-        .execute(GraphCommand::undo(revision))
+        .execute(GraphCommand::undo(version))
         .unwrap()
         .applied()
         .expect("undo applies");
 }
 
 fn redo(runtime: &GraphRuntime) {
-    let revision = runtime.snapshot().unwrap().revision();
+    let version = runtime.snapshot().unwrap().version();
     runtime
-        .execute(GraphCommand::redo(revision))
+        .execute(GraphCommand::redo(version))
         .unwrap()
         .applied()
         .expect("redo applies");

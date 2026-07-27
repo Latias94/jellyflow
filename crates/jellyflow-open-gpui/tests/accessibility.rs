@@ -11,9 +11,10 @@ use jellyflow_open_gpui::accessibility::{
     OPEN_GPUI_STATIC_PORT_ROLE,
 };
 use jellyflow_open_gpui::authoring::OpenGpuiNodeBinding;
-use jellyflow_open_gpui::{OpenGpuiNodeRegistry, OpenGpuiSceneHost};
+use jellyflow_open_gpui::host::OpenGpuiSceneHost;
+use jellyflow_open_gpui::registry::OpenGpuiNodeRegistry;
 use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec};
-use jellyflow_runtime::{GraphRuntime, ViewSessionOptions};
+use jellyflow_runtime::{graph::GraphRuntime, view::ViewSessionOptions};
 use open_gpui::{AppContext, Context, Entity, ParentElement, Render, Role, Styled, Window, div};
 
 const KIND: &str = "test.accessible-node";

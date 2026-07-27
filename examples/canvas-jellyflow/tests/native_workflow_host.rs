@@ -1,24 +1,32 @@
 use std::rc::Rc;
 
 use jellyflow_core::{
-    CanvasPoint, CanvasRect, CanvasSize, Graph, GraphBuilder, GraphId, NodeGraphConnectionMode,
-    NodeId, NodeKindKey, PortDirection, PortId, PortKind,
+    CanvasPoint, CanvasRect, CanvasSize, EdgeId, Graph, GraphBuilder, GraphId,
+    NodeGraphConnectionMode, NodeId, NodeKindKey, PortDirection, PortId, PortKind,
 };
-use jellyflow_open_gpui::{OpenGpuiNodeRegistry, OpenGpuiSceneHost};
+use jellyflow_open_gpui::host::OpenGpuiSceneHost;
+use jellyflow_open_gpui::registry::OpenGpuiNodeRegistry;
+use jellyflow_runtime::commands::{GraphCommand, IncidentEdgePolicy, TopologyEdit, TopologyPort};
+use jellyflow_runtime::graph::{GraphRuntime, GraphRuntimeError};
 use jellyflow_runtime::io::GraphFile;
-use jellyflow_runtime::{
-    GraphCommand, GraphRuntime, GraphRuntimeError, IncidentEdgePolicy, TopologyEdit, TopologyPort,
-    ViewSessionOptions,
+use jellyflow_runtime::view::ViewSessionOptions;
+use jellyflow_runtime::viewport::ViewportTransform;
+use open_gpui::{
+    AppContext, Bounds, Pixels, ScrollDelta, ScrollWheelEvent, TouchPhase, VisualTestContext,
+    point, px, size,
 };
-use open_gpui::{AppContext, ScrollDelta, ScrollWheelEvent, TouchPhase, point, px};
 use open_gpui_canvas_jellyflow::nodes::{
     ConditionCaseAction, NativeNodeResources, WORKFLOW_CONDITION_KIND, WORKFLOW_LLM_KIND,
     WorkflowCase, WorkflowNodeError, condition_cases, condition_outputs, native_node_catalog,
     native_node_registry, plan_condition_case_action, workflow_condition_add_selector,
-    workflow_condition_case_selector, workflow_condition_else_selector, workflow_condition_node_id,
+    workflow_condition_body_selector, workflow_condition_case_actions_selector,
+    workflow_condition_case_label_selector, workflow_condition_case_selector,
+    workflow_condition_else_label_selector, workflow_condition_else_selector,
+    workflow_condition_node_id, workflow_condition_node_selector,
     workflow_condition_remove_selector, workflow_condition_scroll_selector,
-    workflow_condition_up_selector, workflow_demo_graph, workflow_llm_node_id,
-    workflow_model_conflict_selector, workflow_model_option_selector,
+    workflow_condition_up_selector, workflow_demo_graph, workflow_header_metadata_selector,
+    workflow_header_title_selector, workflow_llm_body_selector, workflow_llm_node_id,
+    workflow_llm_node_selector, workflow_model_conflict_selector, workflow_model_option_selector,
     workflow_model_reapply_selector, workflow_model_selector, workflow_node_status_selector,
     workflow_port_selector, workflow_prompt_accept_remote_selector, workflow_prompt_apply_selector,
     workflow_prompt_conflict_selector, workflow_prompt_reapply_selector, workflow_prompt_selector,
@@ -62,9 +70,23 @@ fn exec_create_from_wire_finds_both_workflow_kinds() {
     let view = runtime
         .attach_view(ViewSessionOptions::default())
         .expect("workflow view");
+    let success = view
+        .port_instance_key(success)
+        .expect("workflow port identity query")
+        .expect("workflow output is current");
+    let intent = view
+        .port_connection_drag_intent(success)
+        .expect("connectable workflow output");
+    let binding =
+        jellyflow_runtime::interaction::ConnectionInteractionStart::binding_from_port_drag(
+            intent,
+            EdgeId::from_u128(0xd1fa_0c01),
+            NodeGraphConnectionMode::Strict,
+        )
+        .expect("workflow connection binding");
 
     let candidates = view
-        .create_from_wire_candidates(success, NodeGraphConnectionMode::Strict)
+        .create_from_wire_candidates(&binding)
         .expect("Exec create-from-wire candidates");
     let keys = candidates
         .candidates()
@@ -142,6 +164,112 @@ fn catalog_default_workflow_nodes_mount_without_product_side_data_repair(
     assert!(
         cx.debug_bounds(&workflow_condition_add_selector(condition))
             .is_some()
+    );
+}
+
+#[open_gpui::test]
+fn workflow_layout_contract_holds_in_compact_window(cx: &mut open_gpui::TestAppContext) {
+    assert_workflow_layout_contract(cx, 960.0, 640.0);
+}
+
+#[open_gpui::test]
+fn workflow_layout_contract_holds_in_normal_window(cx: &mut open_gpui::TestAppContext) {
+    assert_workflow_layout_contract(cx, 1_440.0, 900.0);
+}
+
+#[open_gpui::test]
+fn workflow_llm_content_height_converges_with_conflict_content(cx: &mut open_gpui::TestAppContext) {
+    cx.update(init_text_input);
+    let runtime = Rc::new(native_runtime(workflow_demo_graph().unwrap()).unwrap());
+    let llm = workflow_llm_node_id();
+    let initial_size = runtime
+        .snapshot()
+        .unwrap()
+        .graph()
+        .node(&llm)
+        .and_then(|node| node.size)
+        .expect("catalog LLM size");
+    let host_view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    let weak_view = host_view.downgrade();
+    let remote_view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    let (_host, cx) = cx.add_window_view(move |_, cx| {
+        OpenGpuiSceneHost::new(host_view, native_registry(cx), viewport())
+    });
+
+    draw(cx);
+    let ready_size = runtime
+        .snapshot()
+        .unwrap()
+        .graph()
+        .node(&llm)
+        .and_then(|node| node.size)
+        .expect("converged ready LLM size");
+    assert_eq!(ready_size.width, initial_size.width);
+    assert!(
+        ready_size.height + 100.0 < initial_size.height,
+        "ready LLM content should remove the old document-sized blank area: \
+         initial={initial_size:?}, ready={ready_size:?}",
+    );
+    assert!(
+        (weak_view
+            .geometry_snapshot()
+            .unwrap()
+            .node(llm)
+            .expect("ready LLM geometry")
+            .bounds()
+            .size
+            .height
+            - ready_size.height)
+            .abs()
+            <= 1.0,
+        "published ready geometry must match the converged document size",
+    );
+
+    let model = cx
+        .debug_bounds(&workflow_model_selector(llm))
+        .expect("native model select");
+    cx.simulate_click(model.center(), Default::default());
+    draw(cx);
+    let claude = cx
+        .debug_bounds(&workflow_model_option_selector(llm, "claude-3.7-sonnet"))
+        .expect("native model option");
+    apply_remote_model(&remote_view, "remote-provider-model");
+    cx.simulate_click(claude.center(), Default::default());
+    draw(cx);
+
+    assert!(
+        cx.debug_bounds(&workflow_model_conflict_selector(llm))
+            .is_some()
+    );
+    let conflict_size = runtime
+        .snapshot()
+        .unwrap()
+        .graph()
+        .node(&llm)
+        .and_then(|node| node.size)
+        .expect("converged conflict LLM size");
+    assert!(
+        conflict_size.height > ready_size.height,
+        "visible conflict controls must grow the content-authoritative LLM node: \
+         ready={ready_size:?}, conflict={conflict_size:?}",
+    );
+
+    let reapply = cx
+        .debug_bounds(&workflow_model_reapply_selector(llm))
+        .expect("model conflict reapply action");
+    cx.simulate_click(reapply.center(), Default::default());
+    draw(cx);
+    let restored_size = runtime
+        .snapshot()
+        .unwrap()
+        .graph()
+        .node(&llm)
+        .and_then(|node| node.size)
+        .expect("restored ready LLM size");
+    assert!(
+        (restored_size.height - ready_size.height).abs() <= 1.0,
+        "resolving the conflict must restore the compact ready height: \
+         ready={ready_size:?}, restored={restored_size:?}",
     );
 }
 
@@ -226,7 +354,7 @@ fn condition_header_input_port_stays_clear_of_the_first_branch_row(
         .expect("first condition branch geometry")
         .visual_bounds();
     let input_center_x = input_bounds.origin.x + input_bounds.size.width / 2.0;
-    let first_branch_right = first_branch_bounds.origin.x + first_branch_bounds.size.width;
+    let first_branch_center_x = first_branch_bounds.origin.x + first_branch_bounds.size.width / 2.0;
     assert!(
         (input_center_x - node_bounds.origin.x).abs() <= 1.0,
         "the input marker center {input_center_x} must stay on the node's left boundary {}",
@@ -234,8 +362,8 @@ fn condition_header_input_port_stays_clear_of_the_first_branch_row(
     );
     let node_right = node_bounds.origin.x + node_bounds.size.width;
     assert!(
-        (first_branch_right - node_right).abs() <= 1.0,
-        "the branch marker edge {first_branch_right} must stay on the node's right boundary \
+        (first_branch_center_x - node_right).abs() <= 1.0,
+        "the branch marker center {first_branch_center_x} must stay on the node's right boundary \
          {node_right}"
     );
 }
@@ -287,6 +415,7 @@ fn native_workflow_controls_commit_graph_facts_and_publish_real_case_ports(
 ) {
     cx.update(init_text_input);
     let runtime = Rc::new(native_runtime(workflow_demo_graph().unwrap()).unwrap());
+    let fixture_node_count = runtime.snapshot().unwrap().graph().nodes().len();
     let view = runtime
         .attach_view(ViewSessionOptions::default())
         .expect("workflow view");
@@ -417,8 +546,8 @@ fn native_workflow_controls_commit_graph_facts_and_publish_real_case_ports(
         assert!(layout.visual_bounds().size.is_positive_finite());
     }
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().mounts(), 2);
-        assert_eq!(host.stats().active_nodes(), 2);
+        assert_eq!(host.stats().mounts(), fixture_node_count as u64);
+        assert_eq!(host.stats().active_nodes(), fixture_node_count);
         assert!(host.last_diagnostic().is_none());
     });
 }
@@ -449,6 +578,7 @@ fn native_condition_case_list_scrolls_without_changing_the_canvas_viewport(
 
     let branches = condition_cases(&runtime.snapshot().unwrap(), condition).unwrap();
     let first_branch = branches.first().expect("first condition branch");
+    let first_port = first_branch.port_id();
     let first_selector = workflow_condition_case_selector(condition, first_branch.port_id());
     let first_before = cx
         .debug_bounds(&first_selector)
@@ -457,6 +587,13 @@ fn native_condition_case_list_scrolls_without_changing_the_canvas_viewport(
         .debug_bounds(&workflow_condition_scroll_selector(condition))
         .expect("native condition scroll region");
     let viewport_before = weak_view.viewport_transform().unwrap();
+    let runtime_snapshot = runtime.snapshot().unwrap();
+    let graph_before = frozen_graph_value(runtime_snapshot.graph());
+    let before_geometry = weak_view.geometry_snapshot().unwrap();
+    let first_before_geometry = before_geometry
+        .port(first_port)
+        .expect("first branch geometry before scrolling");
+    assert!(first_before_geometry.hit_bounds().is_some());
 
     cx.simulate_event(ScrollWheelEvent {
         position: scroll.center(),
@@ -471,6 +608,37 @@ fn native_condition_case_list_scrolls_without_changing_the_canvas_viewport(
         .expect("first branch after scrolling");
     assert!(first_after.origin.y < first_before.origin.y);
     assert_eq!(weak_view.viewport_transform().unwrap(), viewport_before);
+    let hidden_geometry = weak_view.geometry_snapshot().unwrap();
+    let hidden_port = hidden_geometry
+        .port(first_port)
+        .expect("fully clipped branch keeps route geometry");
+    assert_eq!(hidden_port.port(), first_port);
+    assert_eq!(hidden_port.hit_bounds(), None);
+    assert_eq!(
+        frozen_graph_value(runtime.snapshot().unwrap().graph()),
+        graph_before,
+        "native scrolling must not mutate ports or existing edges",
+    );
+    for edge in runtime.snapshot().unwrap().graph().edges().keys() {
+        assert!(
+            hidden_geometry.route(*edge).is_some(),
+            "existing edge {edge:?} keeps a published route while branch ports are clipped",
+        );
+    }
+
+    cx.simulate_event(ScrollWheelEvent {
+        position: scroll.center(),
+        delta: ScrollDelta::Lines(point(0.0, 3.0)),
+        modifiers: Default::default(),
+        touch_phase: TouchPhase::Moved,
+    });
+    draw(cx);
+
+    let restored_geometry = weak_view.geometry_snapshot().unwrap();
+    let restored_port = restored_geometry
+        .port(first_port)
+        .expect("scrolled-back branch keeps the same port id");
+    assert!(restored_port.hit_bounds().is_some());
 }
 
 #[open_gpui::test]
@@ -530,7 +698,7 @@ fn native_condition_up_and_remove_buttons_preserve_atomic_topology_history(
     }
 
     runtime
-        .execute(GraphCommand::undo(after_up.revision()))
+        .execute(GraphCommand::undo(after_up.version()))
         .unwrap()
         .applied()
         .expect("Up undo applies");
@@ -541,7 +709,7 @@ fn native_condition_up_and_remove_buttons_preserve_atomic_topology_history(
     assert_eq!(runtime.history_state().unwrap().redo_len(), 1);
 
     runtime
-        .execute(GraphCommand::redo(undone_up.revision()))
+        .execute(GraphCommand::redo(undone_up.version()))
         .unwrap()
         .applied()
         .expect("Up redo applies");
@@ -600,7 +768,7 @@ fn native_condition_up_and_remove_buttons_preserve_atomic_topology_history(
     );
 
     runtime
-        .execute(GraphCommand::undo(after_remove.revision()))
+        .execute(GraphCommand::undo(after_remove.version()))
         .unwrap()
         .applied()
         .expect("Remove undo applies");
@@ -619,7 +787,7 @@ fn native_condition_up_and_remove_buttons_preserve_atomic_topology_history(
     );
 
     runtime
-        .execute(GraphCommand::redo(undone_remove.revision()))
+        .execute(GraphCommand::redo(undone_remove.version()))
         .unwrap()
         .applied()
         .expect("Remove redo applies");
@@ -645,14 +813,13 @@ fn prompt_conflict_can_explicitly_reapply_local_text_after_another_view_wins(
 ) {
     cx.update(init_text_input);
     let runtime = Rc::new(native_runtime(workflow_demo_graph().unwrap()).unwrap());
+    let fixture_node_count = runtime.snapshot().unwrap().graph().nodes().len();
     let host_view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     let remote_view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     let (host, cx) = cx.add_window_view(move |_, cx| {
         OpenGpuiSceneHost::new(host_view, native_registry(cx), viewport())
     });
     draw(cx);
-    let mounted_revision = runtime.snapshot().unwrap().revision();
-
     let llm = workflow_llm_node_id();
     let prompt = cx
         .debug_bounds(&workflow_prompt_selector(llm))
@@ -671,19 +838,25 @@ fn prompt_conflict_can_explicitly_reapply_local_text_after_another_view_wins(
         cx.debug_bounds(&workflow_prompt_accept_remote_selector(llm))
             .is_some()
     );
+    assert_eq!(runtime.history_state().unwrap().undo_len(), 1);
     let reapply = cx
         .debug_bounds(&workflow_prompt_reapply_selector(llm))
         .expect("explicit local reapply action");
+    let before_reapply_revision = runtime.snapshot().unwrap().revision();
     cx.simulate_click(reapply.center(), Default::default());
 
     assert_eq!(prompt_value(&runtime), "local prompt");
-    assert_eq!(runtime.snapshot().unwrap().revision(), mounted_revision + 2);
+    assert!(runtime.snapshot().unwrap().revision() > before_reapply_revision);
+    assert_eq!(runtime.history_state().unwrap().undo_len(), 2);
     draw(cx);
     assert!(
         cx.debug_bounds(&workflow_prompt_conflict_selector(llm))
             .is_none()
     );
-    cx.read_entity(&host, |host, _| assert_eq!(host.stats().mounts(), 2));
+    assert_eq!(runtime.history_state().unwrap().undo_len(), 2);
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(host.stats().mounts(), fixture_node_count as u64)
+    });
 }
 
 #[open_gpui::test]
@@ -692,14 +865,13 @@ fn prompt_conflict_can_discard_local_text_without_writing_the_graph(
 ) {
     cx.update(init_text_input);
     let runtime = Rc::new(native_runtime(workflow_demo_graph().unwrap()).unwrap());
+    let fixture_node_count = runtime.snapshot().unwrap().graph().nodes().len();
     let host_view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     let remote_view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     let (host, cx) = cx.add_window_view(move |_, cx| {
         OpenGpuiSceneHost::new(host_view, native_registry(cx), viewport())
     });
     draw(cx);
-    let mounted_revision = runtime.snapshot().unwrap().revision();
-
     let llm = workflow_llm_node_id();
     let prompt = cx
         .debug_bounds(&workflow_prompt_selector(llm))
@@ -708,6 +880,15 @@ fn prompt_conflict_can_discard_local_text_without_writing_the_graph(
     cx.simulate_input("discard me");
     apply_remote_prompt(&remote_view, "authoritative prompt");
     draw(cx);
+    assert_eq!(runtime.history_state().unwrap().undo_len(), 1);
+    let data_before_accept = runtime
+        .snapshot()
+        .unwrap()
+        .graph()
+        .node(&llm)
+        .unwrap()
+        .data
+        .clone();
     let accept = cx
         .debug_bounds(&workflow_prompt_accept_remote_selector(llm))
         .expect("explicit remote acceptance action");
@@ -715,12 +896,18 @@ fn prompt_conflict_can_discard_local_text_without_writing_the_graph(
     draw(cx);
 
     assert_eq!(prompt_value(&runtime), "authoritative prompt");
-    assert_eq!(runtime.snapshot().unwrap().revision(), mounted_revision + 1);
+    assert_eq!(
+        runtime.snapshot().unwrap().graph().node(&llm).unwrap().data,
+        data_before_accept
+    );
+    assert_eq!(runtime.history_state().unwrap().undo_len(), 1);
     assert!(
         cx.debug_bounds(&workflow_prompt_conflict_selector(llm))
             .is_none()
     );
-    cx.read_entity(&host, |host, _| assert_eq!(host.stats().mounts(), 2));
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(host.stats().mounts(), fixture_node_count as u64)
+    });
 }
 
 #[open_gpui::test]
@@ -735,8 +922,6 @@ fn model_selection_requires_explicit_reapply_after_a_remote_change_arrives_while
         OpenGpuiSceneHost::new(host_view, native_registry(cx), viewport())
     });
     draw(cx);
-    let mounted_revision = runtime.snapshot().unwrap().revision();
-
     let llm = workflow_llm_node_id();
     let model = cx
         .debug_bounds(&workflow_model_selector(llm))
@@ -751,7 +936,6 @@ fn model_selection_requires_explicit_reapply_after_a_remote_change_arrives_while
     draw(cx);
 
     assert_eq!(model_value(&runtime), "remote-provider-model");
-    assert_eq!(runtime.snapshot().unwrap().revision(), mounted_revision + 1);
     assert_eq!(runtime.history_state().unwrap().undo_len(), 1);
     assert!(
         cx.debug_bounds(&workflow_model_conflict_selector(llm))
@@ -760,16 +944,18 @@ fn model_selection_requires_explicit_reapply_after_a_remote_change_arrives_while
     let reapply = cx
         .debug_bounds(&workflow_model_reapply_selector(llm))
         .expect("explicit model reapply action");
+    let before_reapply_revision = runtime.snapshot().unwrap().revision();
     cx.simulate_click(reapply.center(), Default::default());
 
     assert_eq!(model_value(&runtime), "claude-3.7-sonnet");
-    assert_eq!(runtime.snapshot().unwrap().revision(), mounted_revision + 2);
+    assert!(runtime.snapshot().unwrap().revision() > before_reapply_revision);
     assert_eq!(runtime.history_state().unwrap().undo_len(), 2);
     draw(cx);
     assert!(
         cx.debug_bounds(&workflow_model_conflict_selector(llm))
             .is_none()
     );
+    assert_eq!(runtime.history_state().unwrap().undo_len(), 2);
 }
 
 #[open_gpui::test]
@@ -967,6 +1153,7 @@ fn model_overlay_lease_protects_culling_and_releases_on_every_close_path(
 ) {
     cx.update(init_text_input);
     let runtime = Rc::new(native_runtime(workflow_demo_graph().unwrap()).unwrap());
+    let fixture_node_count = runtime.snapshot().unwrap().graph().nodes().len();
     let view = runtime
         .attach_view(ViewSessionOptions::default())
         .expect("workflow view");
@@ -996,7 +1183,7 @@ fn model_overlay_lease_protects_culling_and_releases_on_every_close_path(
     draw(cx);
     cx.read_entity(&host, |host, _| {
         assert_eq!(host.stats().active_nodes(), 1);
-        assert_eq!(host.stats().parked_nodes(), 1);
+        assert_eq!(host.stats().parked_nodes(), fixture_node_count - 1);
         assert_eq!(host.stats().protected_instances(), 1);
         assert_eq!(host.stats().protected_leases(), 1);
     });
@@ -1024,7 +1211,7 @@ fn model_overlay_lease_protects_culling_and_releases_on_every_close_path(
     draw(cx);
     cx.read_entity(&host, |host, _| {
         assert_eq!(host.stats().active_nodes(), 0);
-        assert_eq!(host.stats().parked_nodes(), 2);
+        assert_eq!(host.stats().parked_nodes(), fixture_node_count);
     });
 
     cx.update_entity(&host, |host, cx| {
@@ -1057,10 +1244,10 @@ fn model_overlay_lease_protects_culling_and_releases_on_every_close_path(
         assert_eq!(host.stats().protected_instances(), 1);
         assert_eq!(host.stats().protected_leases(), 1);
     });
-    let revision = runtime.snapshot().unwrap().revision();
+    let version = runtime.snapshot().unwrap().version();
     runtime
         .execute(GraphCommand::topology(
-            revision,
+            version,
             TopologyEdit::new().remove_node(llm, IncidentEdgePolicy::Cascade),
         ))
         .unwrap()
@@ -1083,6 +1270,7 @@ fn model_overlay_lease_preserves_native_workflow_across_semantic_zoom(
 ) {
     cx.update(init_text_input);
     let runtime = Rc::new(native_runtime(workflow_demo_graph().unwrap()).unwrap());
+    let fixture_node_count = runtime.snapshot().unwrap().graph().nodes().len();
     let view = runtime
         .attach_view(ViewSessionOptions::default())
         .expect("workflow view");
@@ -1123,12 +1311,17 @@ fn model_overlay_lease_preserves_native_workflow_across_semantic_zoom(
     draw(cx);
     assert!(cx.debug_bounds(&option_selector).is_some());
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().mounts(), 2);
+        assert_eq!(host.stats().mounts(), fixture_node_count as u64);
         assert_eq!(host.stats().protected_instances(), 1);
         assert_eq!(host.stats().protected_leases(), 1);
     });
 
-    weak_view.set_viewport(CanvasPoint::default(), 0.5).unwrap();
+    weak_view
+        .set_viewport(
+            ViewportTransform::new(CanvasPoint::default(), 0.5)
+                .expect("valid workflow overview viewport"),
+        )
+        .unwrap();
     draw(cx);
     assert!(cx.debug_bounds(&model_selector).is_some());
     assert!(cx.debug_bounds(&prompt_selector).is_some());
@@ -1144,7 +1337,7 @@ fn model_overlay_lease_preserves_native_workflow_across_semantic_zoom(
     assert!(cx.debug_bounds(OVERVIEW_NODE_SELECTOR).is_some());
     assert_graph_unchanged();
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().mounts(), 2);
+        assert_eq!(host.stats().mounts(), fixture_node_count as u64);
         assert_eq!(host.stats().protected_instances(), 1);
         assert_eq!(host.stats().protected_leases(), 1);
     });
@@ -1168,13 +1361,18 @@ fn model_overlay_lease_preserves_native_workflow_across_semantic_zoom(
         assert!(geometry.visual_bounds().size.is_positive_finite());
     }
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().mounts(), 2);
+        assert_eq!(host.stats().mounts(), fixture_node_count as u64);
         assert_eq!(host.stats().protected_instances(), 0);
         assert_eq!(host.stats().protected_leases(), 0);
-        assert_eq!(host.stats().strong_instances(), 2);
+        assert_eq!(host.stats().strong_instances(), fixture_node_count);
     });
 
-    weak_view.set_viewport(CanvasPoint::default(), 1.0).unwrap();
+    weak_view
+        .set_viewport(
+            ViewportTransform::new(CanvasPoint::default(), 1.0)
+                .expect("valid workflow detail viewport"),
+        )
+        .unwrap();
     draw(cx);
     assert!(cx.debug_bounds(&model_selector).is_some());
     assert!(cx.debug_bounds(&prompt_selector).is_some());
@@ -1200,10 +1398,10 @@ fn model_overlay_lease_preserves_native_workflow_across_semantic_zoom(
         assert!(restored_geometry.port(port).is_some());
     }
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().mounts(), 2);
+        assert_eq!(host.stats().mounts(), fixture_node_count as u64);
         assert_eq!(host.stats().protected_instances(), 0);
         assert_eq!(host.stats().protected_leases(), 0);
-        assert_eq!(host.stats().strong_instances(), 2);
+        assert_eq!(host.stats().strong_instances(), fixture_node_count);
         assert!(host.last_diagnostic().is_none());
     });
 }
@@ -1260,7 +1458,7 @@ fn condition_topology_transaction_rolls_back_data_when_port_replacement_is_rejec
     let mut changed_data = before.graph().node(&condition).unwrap().data.clone();
     changed_data["title"] = serde_json::json!("must roll back");
     let invalid = GraphCommand::topology(
-        before.revision(),
+        before.version(),
         TopologyEdit::new()
             .set_node_data(condition, changed_data)
             .replace_node_ports(
@@ -1392,7 +1590,7 @@ fn condition_case_actions_are_atomic_stable_and_exactly_undoable() {
     );
 
     runtime
-        .execute(GraphCommand::undo(after_remove.revision()))
+        .execute(GraphCommand::undo(after_remove.version()))
         .unwrap()
         .applied()
         .expect("remove undo applies");
@@ -1402,9 +1600,9 @@ fn condition_case_actions_are_atomic_stable_and_exactly_undoable() {
         "one undo must restore payload, order, ports, and incident edges exactly"
     );
 
-    let undo_revision = runtime.snapshot().unwrap().revision();
+    let undo_version = runtime.snapshot().unwrap().version();
     runtime
-        .execute(GraphCommand::redo(undo_revision))
+        .execute(GraphCommand::redo(undo_version))
         .unwrap()
         .applied()
         .expect("remove redo applies");
@@ -1513,23 +1711,278 @@ fn draw(cx: &mut open_gpui::VisualTestContext) {
     cx.run_until_parked();
 }
 
-fn apply_remote_prompt(view: &jellyflow_runtime::ViewSession, value: &str) {
+fn assert_workflow_layout_contract(
+    cx: &mut open_gpui::TestAppContext,
+    window_width: f32,
+    window_height: f32,
+) {
+    let runtime = native_runtime(workflow_layout_graph()).expect("workflow layout runtime");
+    let llm = workflow_llm_node_id();
+    let condition = workflow_condition_node_id();
+    let snapshot = runtime.snapshot().expect("workflow layout snapshot");
+    let llm_input = workflow_port_by_key(&snapshot, llm, "input");
+    let llm_output = workflow_port_by_key(&snapshot, llm, "success");
+    let condition_input = workflow_port_by_key(&snapshot, condition, "input");
+    let cases = condition_cases(&snapshot, condition).expect("layout condition cases");
+    let else_port = condition_outputs(&snapshot, condition)
+        .expect("layout condition outputs")
+        .else_branch()
+        .port_id();
+    drop(snapshot);
+
+    let view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("workflow layout view");
+    let registry = cx.update(native_registry);
+    let viewport = CanvasRect {
+        origin: CanvasPoint::default(),
+        size: CanvasSize {
+            width: window_width,
+            height: window_height,
+        },
+    };
+    let window = cx.open_window(size(px(window_width), px(window_height)), move |_, _| {
+        OpenGpuiSceneHost::new(view, registry, viewport)
+    });
+    let mut cx = VisualTestContext::from_window(window.into(), cx);
+    for _ in 0..3 {
+        draw(&mut cx);
+    }
+
+    assert_llm_layout(&mut cx, llm, [llm_input, llm_output]);
+    assert_condition_layout(&mut cx, condition, condition_input, &cases, else_port);
+}
+
+fn workflow_layout_graph() -> Graph {
+    let graph = workflow_demo_graph().expect("workflow layout graph");
+    let mut builder = GraphBuilder::from_detached_graph(graph);
+    let label = "Customer intent matches an intentionally long production routing condition label";
+    let first_case_port = {
+        let condition = builder
+            .node_mut(&workflow_condition_node_id())
+            .expect("workflow layout condition");
+        let port = serde_json::from_value(condition.data["cases"][0]["port_id"].clone())
+            .expect("workflow layout case port id");
+        condition.data["cases"][0]["label"] = serde_json::json!(label);
+        port
+    };
+    builder
+        .port_mut(&first_case_port)
+        .expect("workflow layout case port")
+        .data["label"] = serde_json::json!(label);
+    builder.build().expect("valid workflow layout graph")
+}
+
+fn assert_llm_layout(cx: &mut VisualTestContext, node_id: NodeId, ports: [PortId; 2]) {
+    let node = workflow_layout_bounds(cx, workflow_llm_node_selector(node_id), "LLM node");
+    let title = workflow_layout_bounds(
+        cx,
+        workflow_header_title_selector(node_id),
+        "LLM header title",
+    );
+    let metadata = workflow_layout_bounds(
+        cx,
+        workflow_header_metadata_selector(node_id),
+        "LLM header metadata",
+    );
+    let body = workflow_layout_bounds(cx, workflow_llm_body_selector(node_id), "LLM body");
+    let prompt = workflow_layout_bounds(cx, workflow_prompt_selector(node_id), "prompt control");
+    let apply = workflow_layout_bounds(
+        cx,
+        workflow_prompt_apply_selector(node_id),
+        "Apply prompt control",
+    );
+    let model = workflow_layout_bounds(cx, workflow_model_selector(node_id), "model control");
+    let markers = ports.map(|port| {
+        workflow_layout_bounds(cx, workflow_port_selector(port), "LLM header port marker")
+    });
+
+    for (name, bounds) in [
+        ("title", title),
+        ("metadata", metadata),
+        ("body", body),
+        ("prompt", prompt),
+        ("Apply prompt", apply),
+        ("model", model),
+    ] {
+        assert_workflow_layout_contained(bounds, node, &format!("LLM {name}"));
+    }
+    assert_workflow_layout_disjoint(title, metadata, "LLM title and metadata");
+    assert_workflow_layout_disjoint(title, body, "LLM header title and body");
+    assert_workflow_layout_disjoint(metadata, body, "LLM header metadata and body");
+    assert_workflow_layout_disjoint(prompt, apply, "LLM prompt and Apply prompt");
+    assert_workflow_layout_disjoint(prompt, model, "LLM prompt and model");
+    assert_workflow_layout_disjoint(apply, model, "LLM Apply prompt and model");
+    for (index, marker) in markers.into_iter().enumerate() {
+        assert_workflow_layout_disjoint(marker, title, &format!("LLM port {index} and title"));
+        assert_workflow_layout_disjoint(
+            marker,
+            metadata,
+            &format!("LLM port {index} and metadata"),
+        );
+        assert_workflow_layout_disjoint(marker, body, &format!("LLM port {index} and body"));
+    }
+}
+
+fn assert_condition_layout(
+    cx: &mut VisualTestContext,
+    node_id: NodeId,
+    input: PortId,
+    cases: &[WorkflowCase],
+    else_port: PortId,
+) {
+    let node = workflow_layout_bounds(
+        cx,
+        workflow_condition_node_selector(node_id),
+        "Condition node",
+    );
+    let title = workflow_layout_bounds(
+        cx,
+        workflow_header_title_selector(node_id),
+        "Condition header title",
+    );
+    let metadata = workflow_layout_bounds(
+        cx,
+        workflow_header_metadata_selector(node_id),
+        "Condition header metadata",
+    );
+    let body = workflow_layout_bounds(
+        cx,
+        workflow_condition_body_selector(node_id),
+        "Condition body",
+    );
+    let input_marker =
+        workflow_layout_bounds(cx, workflow_port_selector(input), "Condition input marker");
+    let add_case = workflow_layout_bounds(
+        cx,
+        workflow_condition_add_selector(node_id),
+        "Add case control",
+    );
+
+    for (name, bounds) in [
+        ("title", title),
+        ("metadata", metadata),
+        ("body", body),
+        ("Add case", add_case),
+    ] {
+        assert_workflow_layout_contained(bounds, node, &format!("Condition {name}"));
+    }
+    assert_workflow_layout_disjoint(title, metadata, "Condition title and metadata");
+    assert_workflow_layout_disjoint(title, body, "Condition header title and body");
+    assert_workflow_layout_disjoint(metadata, body, "Condition header metadata and body");
+    assert_workflow_layout_disjoint(input_marker, title, "Condition input and title");
+    assert_workflow_layout_disjoint(input_marker, metadata, "Condition input and metadata");
+    assert_workflow_layout_disjoint(input_marker, body, "Condition input and body");
+
+    let mut previous_label = None;
+    for case in cases {
+        let marker = workflow_layout_bounds(
+            cx,
+            workflow_condition_case_selector(node_id, case.port_id()),
+            "Condition case marker",
+        );
+        let label = workflow_layout_bounds(
+            cx,
+            workflow_condition_case_label_selector(node_id, case.port_id()),
+            "Condition case label",
+        );
+        let actions = workflow_layout_bounds(
+            cx,
+            workflow_condition_case_actions_selector(node_id, case.port_id()),
+            "Condition case actions",
+        );
+        assert_workflow_layout_contained(label, body, "Condition case label");
+        assert_workflow_layout_contained(actions, body, "Condition case actions");
+        assert_workflow_layout_disjoint(marker, label, "Condition case marker and label");
+        assert_workflow_layout_disjoint(marker, actions, "Condition case marker and actions");
+        assert_workflow_layout_disjoint(label, actions, "Condition case label and actions");
+        assert_workflow_layout_disjoint(label, add_case, "Condition case label and Add case");
+        assert_workflow_layout_disjoint(actions, add_case, "Condition case actions and Add case");
+        if let Some(previous) = previous_label {
+            assert_workflow_layout_disjoint(previous, label, "adjacent Condition case labels");
+        }
+        previous_label = Some(label);
+    }
+
+    let else_marker = workflow_layout_bounds(
+        cx,
+        workflow_condition_else_selector(node_id, else_port),
+        "Condition Else marker",
+    );
+    let else_label = workflow_layout_bounds(
+        cx,
+        workflow_condition_else_label_selector(node_id, else_port),
+        "Condition Else label",
+    );
+    assert_workflow_layout_contained(else_label, body, "Condition Else label");
+    assert_workflow_layout_disjoint(else_marker, else_label, "Condition Else marker and label");
+    assert_workflow_layout_disjoint(else_label, add_case, "Condition Else label and Add case");
+    if let Some(previous) = previous_label {
+        assert_workflow_layout_disjoint(previous, else_label, "last case and Else labels");
+    }
+}
+
+fn workflow_port_by_key(
+    snapshot: &jellyflow_runtime::graph::GraphSnapshot,
+    node: NodeId,
+    key: &str,
+) -> PortId {
+    snapshot
+        .graph()
+        .node(&node)
+        .expect("layout node")
+        .ports
+        .iter()
+        .copied()
+        .find(|port| {
+            snapshot
+                .graph()
+                .port(port)
+                .is_some_and(|port| port.key.0 == key)
+        })
+        .unwrap_or_else(|| panic!("missing {key} port on {node:?}"))
+}
+
+fn workflow_layout_bounds(
+    cx: &mut VisualTestContext,
+    selector: impl AsRef<str>,
+    name: &str,
+) -> Bounds<Pixels> {
+    cx.debug_bounds(selector.as_ref())
+        .unwrap_or_else(|| panic!("missing layout bounds for {name}"))
+}
+
+fn assert_workflow_layout_contained(child: Bounds<Pixels>, parent: Bounds<Pixels>, context: &str) {
+    assert!(
+        child.is_contained_within(&parent),
+        "{context} escaped its owner: child={child:?}, parent={parent:?}",
+    );
+}
+
+fn assert_workflow_layout_disjoint(left: Bounds<Pixels>, right: Bounds<Pixels>, context: &str) {
+    assert!(
+        !left.intersects(&right),
+        "{context} overlapped: left={left:?}, right={right:?}",
+    );
+}
+
+fn apply_remote_prompt(view: &jellyflow_runtime::view::ViewSession, value: &str) {
     let snapshot = view.graph_snapshot().unwrap();
     let llm = workflow_llm_node_id();
     let mut data = snapshot.graph().node(&llm).unwrap().data.clone();
     data["prompt"] = value.into();
-    view.execute(GraphCommand::set_node_data(snapshot.revision(), llm, data))
+    view.execute(GraphCommand::set_node_data(snapshot.version(), llm, data))
         .unwrap()
         .applied()
         .expect("remote prompt update applies");
 }
 
-fn apply_remote_model(view: &jellyflow_runtime::ViewSession, value: &str) {
+fn apply_remote_model(view: &jellyflow_runtime::view::ViewSession, value: &str) {
     let snapshot = view.graph_snapshot().unwrap();
     let llm = workflow_llm_node_id();
     let mut data = snapshot.graph().node(&llm).unwrap().data.clone();
     data["model"] = value.into();
-    view.execute(GraphCommand::set_node_data(snapshot.revision(), llm, data))
+    view.execute(GraphCommand::set_node_data(snapshot.version(), llm, data))
         .unwrap()
         .applied()
         .expect("remote model update applies");

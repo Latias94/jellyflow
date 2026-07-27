@@ -20,12 +20,43 @@ matrix = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(matrix)
 
 
+NODE_IDS = (
+    "00000000-0000-0000-0000-000000007100",
+    "00000000-0000-0000-0000-000000007200",
+)
+PORT_IDS = (
+    "00000000-0000-0000-0000-000000008000",
+    "00000000-0000-0000-0000-000000008001",
+    "00000000-0000-0000-0000-000000008002",
+    "00000000-0000-0000-0000-000000008003",
+)
+INITIAL_EDGE_ID = "00000000-0000-0000-0000-000000009000"
+CURRENT_EDGE_ID = "00000000-0000-0000-0000-000000009001"
+FOREIGN_NODE_ID = "ffffffff-ffff-ffff-ffff-ffffffffffff"
+
+
 FAKE_SMOKE_SOURCE = r'''from __future__ import annotations
 
 import os
 import sys
 import time
+from pathlib import Path
 
+sys.path.insert(0, os.environ["JELLYFLOW_SMOKE_TOOLS"])
+import run_real_window_smoke_matrix as contract
+
+NODE_IDS = (
+    "00000000-0000-0000-0000-000000007100",
+    "00000000-0000-0000-0000-000000007200",
+)
+PORT_IDS = (
+    "00000000-0000-0000-0000-000000008000",
+    "00000000-0000-0000-0000-000000008001",
+    "00000000-0000-0000-0000-000000008002",
+    "00000000-0000-0000-0000-000000008003",
+)
+INITIAL_EDGE_ID = "00000000-0000-0000-0000-000000009000"
+CURRENT_EDGE_ID = "00000000-0000-0000-0000-000000009001"
 
 demo = "workflow" if "--workflow" in sys.argv else "shader"
 bounds = os.environ["JELLYFLOW_SMOKE_BOUNDS"]
@@ -41,10 +72,104 @@ if active_mode == "timeout":
     time.sleep(5)
 elif active_mode != "missing":
     marker_demo = "workflow" if active_mode == "mismatch" and demo == "shader" else demo
-    marker = (
-        "JELLYFLOW_REAL_WINDOW_SMOKE "
-        f"status=pass demo={marker_demo} bounds={bounds} scenario={scenario} "
-        f"target_zoom={zoom} diagnostic=None"
+    logical_width, logical_height = contract.EXPECTED_SURFACE_SIZES[bounds]
+    image_width = int(logical_width + 280)
+    image_height = int(logical_height)
+    fields = {field: "missing" for field in contract.MARKER_FIELDS}
+    fields.update(
+        status="pass",
+        demo=marker_demo,
+        bounds=bounds,
+        scenario=scenario,
+        target_zoom=zoom,
+        reason="complete_frame",
+        initial_nodes="2",
+        initial_ports="4",
+        initial_edges="1",
+        initial_node_ids=",".join(NODE_IDS),
+        initial_port_ids=",".join(PORT_IDS),
+        initial_edge_ids=INITIAL_EDGE_ID,
+        surface_width=str(logical_width),
+        surface_height=str(logical_height),
+        visible_expected_nodes="2",
+        active_nodes="2",
+        parked_nodes="0",
+        mounts="2",
+        restores="0",
+        evictions="0",
+        hard_retirements="0",
+        protected_instances="0",
+        protected_leases="0",
+        protected_overflows="0",
+        eligible_parked_nodes="0",
+        strong_instances="2",
+        frame_materialization_overflows="0",
+        feedback_submissions="2",
+        feedback_failures="0",
+        layout_rejections="0",
+        measurement_failures="0",
+        geometry_layout_revision="7",
+        current_geometry_nodes="2",
+        current_geometry_ports="4",
+        current_geometry_edges="1",
+        current_geometry_node_ids=",".join(NODE_IDS),
+        current_geometry_port_ids=",".join(PORT_IDS),
+        current_geometry_edge_ids=CURRENT_EDGE_ID,
+        geometry_fresh_nodes="2",
+        geometry_rendered_ports="4",
+        geometry_routed_edges="1",
+        geometry_node_regions=(
+            f"{NODE_IDS[0]}:40:40:240:180,{NODE_IDS[1]}:300:220:520:380"
+        ),
+        paint_image_width=str(image_width),
+        paint_image_height=str(image_height),
+        paint_canvas_width=str(int(logical_width)),
+        paint_non_background_pixels="400",
+        paint_distinct_colors="4",
+        paint_nodes=(
+            f"{NODE_IDS[0]}:100/16/200,{NODE_IDS[1]}:120/16/220"
+        ),
+        input_evidence=scenario,
+        input_final_frame_validated="true",
+        input_bounds=bounds,
+        input_bounds_verified="true",
+        native_probe_failure="none",
+        native_probe_phase="Complete",
+        native_probe_wait_ticks="0",
+        diagnostic="none",
+    )
+    if scenario == "interaction":
+        fields.update(
+            input_dispatched_events="36",
+            input_autopan_steering_events="0",
+            input_target_zoom_events="36",
+            input_target_zoom_captures="9",
+            input_autopan_frames="3",
+            input_selection_chrome_sides="4",
+            input_selection_chrome_detached_run="0",
+            input_connection_autopan_frames="3",
+            **{key: "true" for key in contract.INTERACTION_TRUE_FIELDS},
+        )
+    else:
+        fields.update(
+            input_lod_samples="3",
+            input_lod_continuous="true",
+            input_lod_max_jump_in_view="1.25",
+        )
+    if active_mode == "minimal":
+        fields = {
+            "status": "pass",
+            "demo": marker_demo,
+            "bounds": bounds,
+            "scenario": scenario,
+            "target_zoom": zoom,
+        }
+    elif active_mode == "zero-paint":
+        fields["paint_non_background_pixels"] = "0"
+    elif active_mode == "false-input":
+        fields["input_node_dragged"] = "false"
+    marker = "JELLYFLOW_REAL_WINDOW_SMOKE " + " ".join(
+        f"{key}={value}" for key, value in sorted(fields.items())
     )
     print(marker)
     if active_mode == "duplicate":
@@ -75,6 +200,7 @@ class RealWindowSmokeMatrixTests(unittest.TestCase):
         environment = dict(os.environ)
         environment["FAKE_SMOKE_MODE"] = mode
         environment["FAKE_SMOKE_TARGET"] = target
+        environment["JELLYFLOW_SMOKE_TOOLS"] = str(SCRIPT_PATH.parent)
         return environment
 
     def execute(
@@ -97,6 +223,19 @@ class RealWindowSmokeMatrixTests(unittest.TestCase):
                 timeout_seconds=timeout_seconds,
                 base_environment=self.environment(mode=mode, target=spec.run_id),
             )
+
+    def marker_errors(
+        self, spec: matrix.RunSpec, fields: dict[str, str]
+    ) -> list[str]:
+        marker = "JELLYFLOW_REAL_WINDOW_SMOKE " + " ".join(
+            f"{key}={value}" for key, value in sorted(fields.items())
+        )
+        return matrix.marker_contract_errors(
+            spec,
+            exit_code=0,
+            timed_out=False,
+            marker_lines=[marker],
+        )
 
     def test_complete_matrix_writes_nine_pass_receipts_in_a_unique_child(self) -> None:
         output_file = self.root / "nested" / "step-output.txt"
@@ -153,6 +292,203 @@ class RealWindowSmokeMatrixTests(unittest.TestCase):
             [f"capture_dir={first_dir}", f"capture_dir={second_dir}"],
         )
         self.assertEqual(list(first_dir.glob(".results.json.*.tmp")), [])
+
+    def test_canonical_uuid_identity_schema_is_accepted(self) -> None:
+        spec = matrix.RUN_SPECS[-1]
+
+        run = self.execute(spec, mode="pass")
+        fields = matrix.parse_marker_line(str(run["marker"]))
+
+        self.assertEqual(run["status"], "pass")
+        self.assertEqual(run["errors"], [])
+        self.assertEqual(set(fields["initial_node_ids"].split(",")), set(NODE_IDS))
+        self.assertEqual(set(fields["initial_port_ids"].split(",")), set(PORT_IDS))
+        self.assertEqual(fields["initial_edge_ids"], INITIAL_EDGE_ID)
+        self.assertEqual(fields["current_geometry_edge_ids"], CURRENT_EDGE_ID)
+
+    def test_interaction_event_receipt_includes_discrete_autopan_steering(self) -> None:
+        spec = matrix.RUN_SPECS[0]
+        run = self.execute(spec, mode="pass")
+        fields = matrix.parse_marker_line(str(run["marker"]))
+        fields.update(
+            input_autopan_steering_events="2",
+            input_dispatched_events="38",
+            input_target_zoom_events="38",
+        )
+
+        self.assertEqual(self.marker_errors(spec, fields), [])
+
+        fields["input_dispatched_events"] = "37"
+        self.assertIn(
+            "marker input_dispatched_events does not equal the scripted event count "
+            "plus input_autopan_steering_events",
+            self.marker_errors(spec, fields),
+        )
+
+        fields["input_dispatched_events"] = "38"
+        fields["input_target_zoom_events"] = "37"
+        self.assertIn(
+            "marker input_target_zoom_events differs from input_dispatched_events",
+            self.marker_errors(spec, fields),
+        )
+
+    def test_malformed_or_noncanonical_uuid_identity_is_rejected(self) -> None:
+        spec = matrix.RUN_SPECS[-1]
+        run = self.execute(spec, mode="pass")
+        valid_fields = matrix.parse_marker_line(str(run["marker"]))
+
+        for invalid_identity in (
+            "not-a-uuid",
+            "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF",
+        ):
+            with self.subTest(invalid_identity=invalid_identity):
+                fields = dict(valid_fields)
+                fields["initial_node_ids"] = f"{invalid_identity},{NODE_IDS[1]}"
+
+                self.assertIn(
+                    "marker initial_node_ids identity is not a canonical UUID: "
+                    f"{invalid_identity!r}",
+                    self.marker_errors(spec, fields),
+                )
+
+    def test_uuid_keyed_regions_and_paint_nodes_reject_invalid_or_foreign_keys(
+        self,
+    ) -> None:
+        spec = matrix.RUN_SPECS[-1]
+        run = self.execute(spec, mode="pass")
+        valid_fields = matrix.parse_marker_line(str(run["marker"]))
+
+        cases = (
+            (
+                "geometry_node_regions",
+                f"not-a-uuid:40:40:240:180,{NODE_IDS[1]}:300:220:520:380",
+                "marker geometry_node_regions node identity is not a canonical UUID: "
+                "'not-a-uuid'",
+            ),
+            (
+                "paint_nodes",
+                f"not-a-uuid:100/16/200,{NODE_IDS[1]}:120/16/220",
+                "marker paint_nodes node identity is not a canonical UUID: "
+                "'not-a-uuid'",
+            ),
+            (
+                "geometry_node_regions",
+                f"{FOREIGN_NODE_ID}:40:40:240:180,{NODE_IDS[1]}:300:220:520:380",
+                "marker node-region identities differ from current geometry",
+            ),
+            (
+                "paint_nodes",
+                f"{FOREIGN_NODE_ID}:100/16/200,{NODE_IDS[1]}:120/16/220",
+                "marker paint-node identities differ from current geometry",
+            ),
+        )
+        for field, value, expected_error in cases:
+            with self.subTest(field=field, value=value):
+                fields = dict(valid_fields)
+                fields[field] = value
+
+                self.assertIn(expected_error, self.marker_errors(spec, fields))
+
+    def test_virtualized_final_frame_accepts_only_the_visible_node_evidence(
+        self,
+    ) -> None:
+        spec = matrix.RUN_SPECS[0]
+        run = self.execute(spec, mode="pass")
+        fields = matrix.parse_marker_line(str(run["marker"]))
+        fields.update(
+            visible_expected_nodes="1",
+            active_nodes="1",
+            parked_nodes="1",
+            restores="3",
+            eligible_parked_nodes="1",
+            geometry_fresh_nodes="1",
+            geometry_rendered_ports="2",
+            geometry_node_regions=f"{NODE_IDS[0]}:40:40:240:180",
+            paint_nodes=f"{NODE_IDS[0]}:100/16/200",
+        )
+
+        self.assertEqual(self.marker_errors(spec, fields), [])
+
+    def test_route_only_final_frame_accepts_empty_node_regions_and_paint_nodes(
+        self,
+    ) -> None:
+        spec = matrix.RUN_SPECS[0]
+        run = self.execute(spec, mode="pass")
+        fields = matrix.parse_marker_line(str(run["marker"]))
+        fields.update(
+            visible_expected_nodes="0",
+            active_nodes="0",
+            parked_nodes="2",
+            restores="3",
+            eligible_parked_nodes="2",
+            geometry_fresh_nodes="0",
+            geometry_rendered_ports="0",
+            geometry_routed_edges="1",
+            geometry_node_regions="none",
+            paint_nodes="none",
+        )
+
+        self.assertEqual(self.marker_errors(spec, fields), [])
+
+        fields["geometry_routed_edges"] = "0"
+        self.assertIn(
+            "marker final geometry contains no visible node or routed edge",
+            self.marker_errors(spec, fields),
+        )
+
+    def test_virtualized_final_frame_rejects_resource_and_visible_set_drift(
+        self,
+    ) -> None:
+        spec = matrix.RUN_SPECS[0]
+        run = self.execute(spec, mode="pass")
+        valid_fields = matrix.parse_marker_line(str(run["marker"]))
+        valid_fields.update(
+            visible_expected_nodes="1",
+            active_nodes="1",
+            parked_nodes="1",
+            restores="3",
+            eligible_parked_nodes="1",
+            geometry_fresh_nodes="1",
+            geometry_rendered_ports="2",
+            geometry_node_regions=f"{NODE_IDS[0]}:40:40:240:180",
+            paint_nodes=f"{NODE_IDS[0]}:100/16/200",
+        )
+        cases = (
+            (
+                {"active_nodes": "2", "parked_nodes": "1"},
+                "marker retained node count is 3, expected 2",
+            ),
+            (
+                {"restores": "-1"},
+                "marker restores is -1, expected at least 0",
+            ),
+            (
+                {"eligible_parked_nodes": "2"},
+                "marker eligible_parked_nodes exceeds parked_nodes",
+            ),
+            (
+                {"active_nodes": "0", "parked_nodes": "2"},
+                "marker active_nodes is 0, expected at least 1 visible nodes",
+            ),
+            (
+                {"geometry_fresh_nodes": "0"},
+                "marker geometry_fresh_nodes is 0, expected at least 1 visible nodes",
+            ),
+            (
+                {"geometry_node_regions": "none"},
+                "marker geometry_node_regions contains 0 nodes, expected 1",
+            ),
+            (
+                {"paint_nodes": f"{NODE_IDS[1]}:120/16/220"},
+                "marker paint-node identities differ from visible node regions",
+            ),
+        )
+        for changes, expected_error in cases:
+            with self.subTest(changes=changes):
+                fields = dict(valid_fields)
+                fields.update(changes)
+
+                self.assertIn(expected_error, self.marker_errors(spec, fields))
 
     def test_timeout_and_nonzero_exit_are_named_failures(self) -> None:
         spec = matrix.RUN_SPECS[0]
@@ -214,6 +550,26 @@ class RealWindowSmokeMatrixTests(unittest.TestCase):
             "marker demo is 'workflow', expected 'shader'", mismatch["errors"]
         )
 
+    def test_minimal_marker_and_false_or_zero_evidence_are_rejected(self) -> None:
+        spec = matrix.RUN_SPECS[0]
+
+        minimal = self.execute(spec, mode="minimal")
+        zero_paint = self.execute(spec, mode="zero-paint")
+        false_input = self.execute(spec, mode="false-input")
+
+        self.assertEqual(minimal["status"], "fail")
+        self.assertIn("marker fields mismatch", minimal["errors"][0])
+        self.assertEqual(zero_paint["status"], "fail")
+        self.assertIn(
+            "marker paint_non_background_pixels is 0, expected at least 256",
+            zero_paint["errors"],
+        )
+        self.assertEqual(false_input["status"], "fail")
+        self.assertIn(
+            "marker input_node_dragged is 'false', expected 'true'",
+            false_input["errors"],
+        )
+
     def test_only_whole_final_marker_lines_are_counted(self) -> None:
         final = (
             "JELLYFLOW_REAL_WINDOW_SMOKE status=pass demo=shader bounds=compact "
@@ -265,6 +621,12 @@ class RealWindowSmokeMatrixTests(unittest.TestCase):
             self.assertIn("/results.json", workflow)
             self.assertNotIn("run_smoke()", workflow)
         self.assertIn("Archived Open GPUI package consumer", workflows["release"])
+        self.assertRegex(
+            workflows["release"],
+            r"(?s)- name: Archived Open GPUI package consumer\s+run: >-\s+"
+            r"python3 tools/check_external_consumer_smoke\.py\s+"
+            r"--packages-only\s+--package-consumer open-gpui",
+        )
         self.assertIn("timeout-minutes: 60", workflows["release"])
 
 

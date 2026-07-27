@@ -6,12 +6,16 @@ use jellyflow_core::{
     PortCapacity, PortDirection, PortId, PortKey, PortKind,
 };
 use jellyflow_open_gpui::authoring::OpenGpuiNodeBinding;
-use jellyflow_open_gpui::{
-    OpenGpuiConnectionOptions, OpenGpuiNodeRegistry, OpenGpuiPortDragCancelReason,
-    OpenGpuiPortDragPhase, OpenGpuiPortEvent, OpenGpuiSceneHost,
+use jellyflow_open_gpui::host::{OpenGpuiConnectionOptions, OpenGpuiSceneHost};
+use jellyflow_open_gpui::interaction::{
+    OpenGpuiPortDragCancelReason, OpenGpuiPortDragPhase, OpenGpuiPortEvent,
 };
+use jellyflow_open_gpui::registry::OpenGpuiNodeRegistry;
 use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec};
-use jellyflow_runtime::{CanvasInteractionPhase, GraphRuntime, ViewSessionOptions};
+use jellyflow_runtime::{
+    graph::GraphRuntime, interaction::CanvasInteractionPhase, view::ViewSessionOptions,
+    view::WeakViewSession, viewport::ViewportTransform,
+};
 use open_gpui::{
     AppContext, Context, Entity, MouseButton, ParentElement, Render, Styled, Window, deferred, div,
     point, prelude::*, px,
@@ -176,7 +180,7 @@ impl Render for OverlayScene {
 fn overlay_control_and_blank_space_own_events_before_port_node_and_canvas(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    let (runtime, host, scene, cx, overlay_open, events) = mount_scene(cx);
+    let (runtime, host, scene, cx, overlay_open, events, view) = mount_scene(cx);
     draw(cx);
     let node = cx
         .debug_bounds(NODE_SELECTOR)
@@ -195,7 +199,6 @@ fn overlay_control_and_blank_space_own_events_before_port_node_and_canvas(
     let history_before = runtime
         .history_state()
         .expect("history before overlay interactions");
-    let view = cx.read_entity(&host, |host, _| host.view_handle());
     let selection_before = view
         .selection()
         .expect("selection before overlay interactions");
@@ -461,20 +464,22 @@ fn overlay_control_and_blank_space_own_events_before_port_node_and_canvas(
 fn open_overlay_blocks_graph_shortcuts_until_its_owner_leaves_the_frame(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    let (_runtime, host, scene, cx, overlay_open, _events) = mount_scene(cx);
+    let (_runtime, _host, scene, cx, overlay_open, _events, view) = mount_scene(cx);
     draw(cx);
     let node = cx
         .debug_bounds(NODE_SELECTOR)
         .expect("underlay node drag bounds");
     cx.simulate_click(node.center(), Default::default());
 
-    let view = cx.read_entity(&host, |host, _| host.view_handle());
     view.set_viewport(
-        CanvasPoint {
-            x: 240.0,
-            y: -160.0,
-        },
-        2.0,
+        ViewportTransform::new(
+            CanvasPoint {
+                x: 240.0,
+                y: -160.0,
+            },
+            2.0,
+        )
+        .expect("valid non-fit viewport"),
     )
     .expect("set a non-fit viewport");
     draw(cx);
@@ -505,7 +510,7 @@ fn open_overlay_blocks_graph_shortcuts_until_its_owner_leaves_the_frame(
 fn active_port_capture_precedes_a_new_overlay_until_explicit_release(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    let (_runtime, host, scene, cx, overlay_open, events) = mount_scene(cx);
+    let (_runtime, host, scene, cx, overlay_open, events, _view) = mount_scene(cx);
     draw(cx);
     let port = cx
         .debug_bounds(PORT_SELECTOR)
@@ -561,7 +566,7 @@ fn active_port_capture_precedes_a_new_overlay_until_explicit_release(
 fn escape_cancels_capture_before_the_overlay_becomes_the_pointer_owner(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    let (_runtime, host, scene, cx, overlay_open, events) = mount_scene(cx);
+    let (_runtime, host, scene, cx, overlay_open, events, _view) = mount_scene(cx);
     draw(cx);
     let port = cx
         .debug_bounds(PORT_SELECTOR)
@@ -600,6 +605,7 @@ fn mount_scene(
     &mut open_gpui::VisualTestContext,
     Rc<Cell<bool>>,
     EventLog,
+    WeakViewSession,
 ) {
     let runtime = Rc::new(
         GraphRuntime::builder(catalog())
@@ -609,6 +615,7 @@ fn mount_scene(
     let view = runtime
         .attach_view(ViewSessionOptions::default())
         .expect("attach overlay ownership view");
+    let view_handle = view.downgrade();
     let events = Rc::new(RefCell::new(Vec::new()));
     let factory_events = events.clone();
     let mut registry = OpenGpuiNodeRegistry::builder();
@@ -644,7 +651,7 @@ fn mount_scene(
         }
     });
     let host = captured_host.borrow().clone().expect("captured scene host");
-    (runtime, host, scene, cx, overlay_open, events)
+    (runtime, host, scene, cx, overlay_open, events, view_handle)
 }
 
 fn open_overlay(

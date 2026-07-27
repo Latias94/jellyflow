@@ -1,29 +1,46 @@
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize, EdgeId, Graph, NodeId, PortId};
+use jellyflow_core::core::{
+    CanvasPoint, CanvasRect, CanvasSize, EdgeId, NodeId, PortDirection, PortId,
+};
 use jellyflow_core::interaction::NodeGraphConnectionMode;
 
-use crate::rules::EdgeEndpoint;
+use crate::rules::{Diagnostic, EdgeEndpoint};
 use crate::runtime::adapter_protocol::{PublishedEdgeRoute, ViewDelta, ViewPoint, ViewSize};
-use crate::runtime::commands::TopologyEdit;
-use crate::runtime::geometry::HandlePosition;
-use crate::runtime::graph_runtime::{GraphRevision, PortConnectionDragIntent};
-use crate::runtime::view_session::{
-    ConnectionProbeQuery, ConnectionProbeQueryOutcome, EdgePickQuery, EdgePickQueryOutcome,
-    ViewGeneration, ViewId,
+use crate::runtime::geometry::{EdgeEndpointPosition, HandlePosition};
+use crate::runtime::graph_runtime::{
+    CreateFromWireCandidates, CreateFromWireQueryError, EdgeInstanceKey, GraphRuntimePolicy,
+    GraphSnapshot, GraphVersion, NodeLifetimeKey, PortConnectionDragIntent, PortInstanceKey,
 };
-use crate::runtime::viewport::{ViewportPanRequest, ViewportTransform, pan_viewport};
+use crate::runtime::unwind::{PanicPayload, resume};
+use crate::runtime::view_session::{
+    ConnectionProbeCursorStaleReason, ConnectionProbeQuery, ConnectionProbeQueryError,
+    ConnectionProbeQueryOutcome, ConnectionProbeTargeting, EdgePickCursorStaleReason,
+    EdgePickQuery, EdgePickQueryError, EdgePickQueryOutcome, InteractionQueryBinding,
+    NodeIntersectionCursorStaleReason, NodeIntersectionQuery, NodeIntersectionQueryError,
+    NodeIntersectionQueryOutcome, ViewCreateFromWireQueryError, ViewGeneration, ViewId,
+    ViewProvenance, ViewSession, ViewSessionError, WeakViewSession,
+};
+use crate::runtime::viewport::{
+    ViewportIntent, ViewportPanRequest, ViewportPointerSample, ViewportSnapshot,
+};
+#[cfg(test)]
+use crate::runtime::viewport::{ViewportRevision, ViewportTransform};
+use crate::schema::NodeCreation;
 
 use super::intent::{
-    ConnectionTopology, EdgeDeletionIntent, FreshGraphMutation, RelativeNodeMoveIntent,
-    SelectionBaseline,
+    ConnectionCommitTarget, EdgeDeletionIntent, FreshGraphMutation, FreshGraphMutationBindError,
+    NodeMoveCohort, RelativeNodeMoveIntent, SelectionBaseline, SelectionDeletionIntent,
+    feasible_cohort_delta,
 };
 use super::navigation::{AlignmentSnapLocks, AlignmentSnapQuery, AlignmentSnapQueryOutcome};
 use super::presentation::{
     AlignmentGuide, CanvasInteractionPhase, CanvasInteractionPresentation, ConnectionPresentation,
     ConnectionSearchStatus, InteractionPosition, InteractionTerminalReason, NodeDragPresentation,
 };
-use super::{ConnectionGestureIntent, ConnectionProbe};
+use super::{ConnectionGestureBinding, ConnectionProbe, ConnectionProbeTargetIdentity};
 
 const MAX_AUTO_PAN_ELAPSED_SECONDS: f32 = 0.05;
 // A mutable view may invalidate a cursor, but one logical query must still terminate.
@@ -64,8 +81,11 @@ pub struct CanvasInteractionConfig {
     pub connection_drag_threshold_in_view: f32,
     pub canvas_click_tolerance_in_view: f32,
     pub canvas_drag_threshold_in_view: f32,
-    pub connection_radius_in_view: f32,
+    pub connection_acquire_radius_in_view: f32,
+    pub connection_release_radius_in_view: f32,
     pub edge_pick_radius_in_view: f32,
+    pub keyboard_nudge_step_in_canvas: f32,
+    pub keyboard_nudge_accelerated_multiplier: f32,
     pub grid_size_in_canvas: Option<CanvasSize>,
     pub alignment_snap: Option<AlignmentSnapConfig>,
     pub auto_pan_band_in_view: f32,
@@ -81,8 +101,11 @@ impl Default for CanvasInteractionConfig {
             connection_drag_threshold_in_view: 3.0,
             canvas_click_tolerance_in_view: 2.0,
             canvas_drag_threshold_in_view: 3.0,
-            connection_radius_in_view: 12.0,
+            connection_acquire_radius_in_view: 12.0,
+            connection_release_radius_in_view: 18.0,
             edge_pick_radius_in_view: 10.0,
+            keyboard_nudge_step_in_canvas: 10.0,
+            keyboard_nudge_accelerated_multiplier: 5.0,
             grid_size_in_canvas: None,
             alignment_snap: None,
             auto_pan_band_in_view: 36.0,
@@ -104,10 +127,16 @@ impl CanvasInteractionConfig {
             && self.canvas_click_tolerance_in_view >= 0.0
             && self.canvas_drag_threshold_in_view.is_finite()
             && self.canvas_drag_threshold_in_view >= 0.0
-            && self.connection_radius_in_view.is_finite()
-            && self.connection_radius_in_view > 0.0
+            && self.connection_acquire_radius_in_view.is_finite()
+            && self.connection_acquire_radius_in_view > 0.0
+            && self.connection_release_radius_in_view.is_finite()
+            && self.connection_release_radius_in_view >= self.connection_acquire_radius_in_view
             && self.edge_pick_radius_in_view.is_finite()
             && self.edge_pick_radius_in_view > 0.0
+            && self.keyboard_nudge_step_in_canvas.is_finite()
+            && self.keyboard_nudge_step_in_canvas > 0.0
+            && self.keyboard_nudge_accelerated_multiplier.is_finite()
+            && self.keyboard_nudge_accelerated_multiplier >= 1.0
             && self.auto_pan_band_in_view.is_finite()
             && self.auto_pan_band_in_view > 0.0
             && self.auto_pan_speed_in_view_per_second.is_finite()
@@ -126,29 +155,47 @@ impl CanvasInteractionConfig {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct InteractionGeneration(u64);
+pub struct InteractionSessionId(u64);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct InteractionIdentity {
+    session: InteractionSessionId,
+    sequence: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ConnectionSearchAttemptId(InteractionIdentity);
+
+impl InteractionIdentity {
+    const fn new(session: InteractionSessionId, sequence: u64) -> Self {
+        Self { session, sequence }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct InteractionGeneration(InteractionIdentity);
 
 impl InteractionGeneration {
-    pub fn get(self) -> u64 {
-        self.0
+    pub const fn session(self) -> InteractionSessionId {
+        self.0.session
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct InteractionQueryId(u64);
+pub struct InteractionQueryId(InteractionIdentity);
 
 impl InteractionQueryId {
-    pub fn get(self) -> u64 {
-        self.0
+    pub const fn session(self) -> InteractionSessionId {
+        self.0.session
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct InteractionTicketId(u64);
+pub struct InteractionTicketId(InteractionIdentity);
 
 impl InteractionTicketId {
-    pub fn get(self) -> u64 {
-        self.0
+    pub const fn session(self) -> InteractionSessionId {
+        self.0.session
     }
 }
 
@@ -159,10 +206,31 @@ pub enum SelectionMode {
     Toggle,
 }
 
+/// Direction for one runtime-owned keyboard movement of the exact selected node cohort.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodeNudgeDirection {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+impl NodeNudgeDirection {
+    fn delta(self, step: f32) -> CanvasPoint {
+        match self {
+            Self::Left => CanvasPoint { x: -step, y: 0.0 },
+            Self::Right => CanvasPoint { x: step, y: 0.0 },
+            Self::Up => CanvasPoint { x: 0.0, y: -step },
+            Self::Down => CanvasPoint { x: 0.0, y: step },
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct NodeDragStart {
-    clicked: NodeId,
-    nodes: Arc<[NodeId]>,
+    provenance: ViewProvenance,
+    clicked: NodeLifetimeKey,
+    cohort: NodeMoveCohort,
     snap_origin: CanvasPoint,
     selection_mode: SelectionMode,
     clicked_was_selected: bool,
@@ -170,37 +238,40 @@ pub struct NodeDragStart {
 
 impl NodeDragStart {
     pub(crate) fn new(
-        clicked: NodeId,
-        nodes: impl IntoIterator<Item = NodeId>,
+        provenance: ViewProvenance,
+        clicked: NodeLifetimeKey,
+        members: impl IntoIterator<Item = NodeLifetimeKey>,
         snap_origin: CanvasPoint,
         selection_mode: SelectionMode,
     ) -> Option<Self> {
         if !snap_origin.is_finite() {
             return None;
         }
-        let mut nodes = nodes.into_iter().collect::<Vec<_>>();
-        let clicked_was_selected = nodes.contains(&clicked);
-        nodes.sort_unstable();
-        nodes.dedup();
-        if !nodes.contains(&clicked) {
-            nodes.push(clicked);
-            nodes.sort_unstable();
+        let mut members = members.into_iter().collect::<Vec<_>>();
+        let clicked_was_selected = members.contains(&clicked);
+        if !clicked_was_selected {
+            members.push(clicked);
         }
         Some(Self {
+            provenance,
             clicked,
-            nodes: nodes.into(),
+            cohort: NodeMoveCohort::new(members)?,
             snap_origin,
             selection_mode,
             clicked_was_selected,
         })
     }
 
-    pub fn clicked(&self) -> NodeId {
+    pub fn provenance(&self) -> ViewProvenance {
+        self.provenance
+    }
+
+    pub fn clicked_lifetime(&self) -> NodeLifetimeKey {
         self.clicked
     }
 
-    pub fn nodes(&self) -> &[NodeId] {
-        &self.nodes
+    pub fn members(&self) -> &[NodeLifetimeKey] {
+        self.cohort.members()
     }
 
     pub fn snap_origin(&self) -> CanvasPoint {
@@ -216,84 +287,239 @@ impl NodeDragStart {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+const fn opposite_edge_endpoint(endpoint: EdgeEndpoint) -> EdgeEndpoint {
+    match endpoint {
+        EdgeEndpoint::From => EdgeEndpoint::To,
+        EdgeEndpoint::To => EdgeEndpoint::From,
+    }
+}
+
+#[cfg(test)]
+const fn opposite_handle_position(position: HandlePosition) -> HandlePosition {
+    match position {
+        HandlePosition::Top => HandlePosition::Bottom,
+        HandlePosition::Right => HandlePosition::Left,
+        HandlePosition::Bottom => HandlePosition::Top,
+        HandlePosition::Left => HandlePosition::Right,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct ConnectionInteractionStart {
-    owner_node: NodeId,
-    intent: ConnectionGestureIntent,
+    provenance: ViewProvenance,
+    validated_version: GraphVersion,
+    binding: ConnectionGestureBinding,
+    fixed_endpoint: EdgeEndpoint,
     fixed_anchor: CanvasPoint,
     fixed_outward: HandlePosition,
+    moving_outward: HandlePosition,
     allow_create_from_wire: bool,
 }
 
+/// Exact view-scoped capability for one real graph port used by keyboard connection flows.
+///
+/// Native adapters obtain this capability from the owning [`ViewSession`] and can only hand it
+/// back to the bound [`CanvasInteractionSession`]. It intentionally carries no pointer position
+/// or published geometry: keyboard connection admission is entirely graph- and policy-driven.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct KeyboardConnectionPort {
+    provenance: ViewProvenance,
+    instance: PortInstanceKey,
+}
+
+impl KeyboardConnectionPort {
+    fn new(provenance: ViewProvenance, instance: PortInstanceKey) -> Self {
+        Self {
+            provenance,
+            instance,
+        }
+    }
+
+    /// Returns the stable document port identifier for semantic labels and focus restoration.
+    pub fn port(self) -> PortId {
+        self.instance.port()
+    }
+
+    /// Returns the owning node for semantic labels and focus restoration.
+    pub fn node(self) -> NodeId {
+        self.instance.node()
+    }
+
+    fn belongs_to(self, provenance: ViewProvenance) -> bool {
+        self.provenance == provenance
+    }
+
+    fn instance(self) -> PortInstanceKey {
+        self.instance
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct KeyboardConnectionStart {
+    source: KeyboardConnectionPort,
+    binding: ConnectionGestureBinding,
+}
+
+impl KeyboardConnectionStart {
+    fn new(source: KeyboardConnectionPort, binding: ConnectionGestureBinding) -> Self {
+        Self { source, binding }
+    }
+}
+
+/// Structured policy feedback retained after a keyboard target activation is rejected.
+///
+/// The active source remains armed so focus can continue through real ports. Calling
+/// [`CanvasInteractionSession::cancel`] releases that source without a graph mutation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyboardConnectionFeedback {
+    source: PortId,
+    target: PortId,
+    diagnostics: Arc<[Diagnostic]>,
+}
+
+impl KeyboardConnectionFeedback {
+    fn rejected(source: PortId, target: PortId, diagnostics: Vec<Diagnostic>) -> Self {
+        Self {
+            source,
+            target,
+            diagnostics: diagnostics.into(),
+        }
+    }
+
+    pub fn source(&self) -> PortId {
+        self.source
+    }
+
+    pub fn target(&self) -> PortId {
+        self.target
+    }
+
+    pub fn diagnostics(&self) -> &[Diagnostic] {
+        &self.diagnostics
+    }
+}
+
 impl ConnectionInteractionStart {
+    #[cfg(test)]
     pub(crate) fn new(
-        owner_node: NodeId,
-        intent: ConnectionGestureIntent,
+        binding: ConnectionGestureBinding,
+        validated_version: GraphVersion,
         fixed_anchor: CanvasPoint,
         fixed_outward: HandlePosition,
         allow_create_from_wire: bool,
     ) -> Option<Self> {
-        fixed_anchor.is_finite().then_some(Self {
-            owner_node,
-            intent,
+        let start = Self::new_with_provenance(
+            ViewProvenance::unavailable(),
+            validated_version,
+            binding,
+            EdgeEndpoint::From,
             fixed_anchor,
             fixed_outward,
+            opposite_handle_position(fixed_outward),
+            allow_create_from_wire,
+        )?;
+        Some(start)
+    }
+
+    fn new_with_provenance(
+        provenance: ViewProvenance,
+        validated_version: GraphVersion,
+        binding: ConnectionGestureBinding,
+        fixed_endpoint: EdgeEndpoint,
+        fixed_anchor: CanvasPoint,
+        fixed_outward: HandlePosition,
+        moving_outward: HandlePosition,
+        allow_create_from_wire: bool,
+    ) -> Option<Self> {
+        fixed_anchor.is_finite().then_some(Self {
+            provenance,
+            validated_version,
+            binding,
+            fixed_endpoint,
+            fixed_anchor,
+            fixed_outward,
+            moving_outward,
             allow_create_from_wire,
         })
     }
 
     /// Resolves a connection start from revision-bound runtime port policy facts.
-    pub fn from_port_drag_intent(
+    fn from_port_drag_intent(
+        provenance: ViewProvenance,
         drag_intent: PortConnectionDragIntent,
         new_edge: EdgeId,
         mode: NodeGraphConnectionMode,
         fixed_anchor: CanvasPoint,
         fixed_outward: HandlePosition,
+        moving_outward: HandlePosition,
         allow_create_from_wire: bool,
     ) -> Option<Self> {
-        let intent = Self::intent_from_port_drag(drag_intent, new_edge, mode)?;
-        Self::new(
-            drag_intent.node(),
-            intent,
+        let binding = Self::binding_from_port_drag(drag_intent, new_edge, mode)?;
+        let fixed_endpoint = match drag_intent {
+            PortConnectionDragIntent::Connect { .. } => match drag_intent.direction() {
+                PortDirection::Out => EdgeEndpoint::From,
+                PortDirection::In => EdgeEndpoint::To,
+            },
+            PortConnectionDragIntent::Reconnect { candidate, .. } => {
+                opposite_edge_endpoint(candidate.endpoint())
+            }
+            PortConnectionDragIntent::BlockedOccupied { .. } => return None,
+        };
+        Self::new_with_provenance(
+            provenance,
+            drag_intent.version(),
+            binding,
+            fixed_endpoint,
             fixed_anchor,
             fixed_outward,
+            moving_outward,
             allow_create_from_wire,
         )
     }
 
     /// Resolves the renderer-neutral gesture intent carried by runtime-issued port drag facts.
-    pub fn intent_from_port_drag(
+    pub fn binding_from_port_drag(
         drag_intent: PortConnectionDragIntent,
         new_edge: EdgeId,
         mode: NodeGraphConnectionMode,
-    ) -> Option<ConnectionGestureIntent> {
+    ) -> Option<ConnectionGestureBinding> {
         if !drag_intent.can_begin_connection() {
             return None;
         }
         match drag_intent {
-            PortConnectionDragIntent::Connect { facts } => Some(ConnectionGestureIntent::connect(
-                new_edge,
-                facts.port(),
-                mode,
-            )),
-            PortConnectionDragIntent::Reconnect { facts, candidate } => {
-                Some(ConnectionGestureIntent::reconnect(
-                    candidate.edge(),
-                    candidate.endpoint(),
-                    facts.port(),
-                    candidate.opposite_port(),
+            PortConnectionDragIntent::Connect { facts } => {
+                let endpoint = match facts.direction() {
+                    PortDirection::Out => EdgeEndpoint::From,
+                    PortDirection::In => EdgeEndpoint::To,
+                };
+                Some(ConnectionGestureBinding::connect(
+                    facts.instance(),
+                    endpoint,
+                    new_edge,
                     mode,
                 ))
+            }
+            PortConnectionDragIntent::Reconnect { facts, candidate } => {
+                ConnectionGestureBinding::reconnect(
+                    candidate.edge_instance(),
+                    candidate.endpoint(),
+                    facts.instance(),
+                    candidate.opposite_port_instance(),
+                    mode,
+                )
             }
             PortConnectionDragIntent::BlockedOccupied { .. } => None,
         }
     }
 
-    /// Resolves an endpoint reconnect from authoritative graph topology and published route facts.
-    pub fn reconnect_from_graph_route(
-        graph: &Graph,
+    /// Resolves an endpoint reconnect from authoritative graph topology and published route
+    /// policy, using geometry selected by the adapter for the endpoint that remains fixed.
+    fn reconnect_from_graph_route(
+        provenance: ViewProvenance,
+        snapshot: &GraphSnapshot,
         route: &PublishedEdgeRoute,
         endpoint: EdgeEndpoint,
+        fixed_endpoint: EdgeEndpointPosition,
         mode: NodeGraphConnectionMode,
         allow_create_from_wire: bool,
     ) -> Option<Self> {
@@ -306,38 +532,346 @@ impl ConnectionInteractionStart {
         if !endpoint_allowed {
             return None;
         }
+        let graph = snapshot.graph();
         let graph_edge = graph.edge(&edge)?;
-        let (detached_port, fixed_port, fixed_endpoint) = match endpoint {
-            EdgeEndpoint::From => (
-                graph_edge.from,
-                graph_edge.to,
-                route.facts().endpoints.target,
-            ),
-            EdgeEndpoint::To => (
-                graph_edge.to,
-                graph_edge.from,
-                route.facts().endpoints.source,
-            ),
+        let (detached_port, fixed_port) = match endpoint {
+            EdgeEndpoint::From => (graph_edge.from, graph_edge.to),
+            EdgeEndpoint::To => (graph_edge.to, graph_edge.from),
         };
-        let owner_node = graph.port(&detached_port)?.node;
-        let intent =
-            ConnectionGestureIntent::reconnect(edge, endpoint, detached_port, fixed_port, mode);
-        Self::new(
-            owner_node,
-            intent,
+        let detached = snapshot.port_instance_key(detached_port)?;
+        let fixed = snapshot.port_instance_key(fixed_port)?;
+        let moving_endpoint = match endpoint {
+            EdgeEndpoint::From => route.facts().endpoints.source,
+            EdgeEndpoint::To => route.facts().endpoints.target,
+        };
+        let binding =
+            ConnectionGestureBinding::reconnect(route.instance(), endpoint, detached, fixed, mode)?;
+        Self::new_with_provenance(
+            provenance,
+            snapshot.version(),
+            binding,
+            opposite_edge_endpoint(endpoint),
             fixed_endpoint.point,
             fixed_endpoint.position,
+            moving_endpoint.position,
             allow_create_from_wire,
         )
     }
 
-    pub fn owner_node(self) -> NodeId {
-        self.owner_node
+    pub fn owner_node(&self) -> NodeId {
+        self.binding.owner().node()
     }
 
-    pub fn intent(self) -> ConnectionGestureIntent {
-        self.intent
+    pub fn binding(&self) -> ConnectionGestureBinding {
+        self.binding.clone()
     }
+
+    fn belongs_to(&self, provenance: ViewProvenance) -> bool {
+        self.provenance == provenance
+    }
+}
+
+impl ViewSession {
+    /// Validates one runtime-issued connection capability against current graph and policy facts.
+    pub fn validate_connection_binding(
+        &self,
+        binding: &ConnectionGestureBinding,
+    ) -> Result<(), ViewSessionError> {
+        let snapshot = self.graph_snapshot()?;
+        if binding.provenance() != snapshot.provenance() {
+            return Err(ViewSessionError::ForeignInteractionFacts);
+        }
+        let policy = self.graph_policy()?;
+        if !binding.is_interactive(&snapshot, policy) {
+            return Err(ViewSessionError::StaleInteractionFacts);
+        }
+        Ok(())
+    }
+
+    /// Issues a connection start only when port facts came from this view's runtime.
+    pub fn connection_start_from_port_drag_intent(
+        &self,
+        drag_intent: PortConnectionDragIntent,
+        new_edge: EdgeId,
+        mode: NodeGraphConnectionMode,
+        fixed_anchor: CanvasPoint,
+        fixed_outward: HandlePosition,
+        moving_outward: HandlePosition,
+        allow_create_from_wire: bool,
+    ) -> Result<Option<ConnectionInteractionStart>, ViewSessionError> {
+        let provenance = self.provenance()?;
+        let snapshot = self.graph_snapshot()?;
+        let policy = self.graph_policy()?;
+        connection_start_from_port_drag_facts(
+            provenance,
+            &snapshot,
+            policy,
+            drag_intent,
+            new_edge,
+            mode,
+            fixed_anchor,
+            fixed_outward,
+            moving_outward,
+            allow_create_from_wire,
+        )
+    }
+
+    /// Resolves reconnect topology from this runtime instead of accepting a caller-supplied graph.
+    pub fn connection_start_from_route(
+        &self,
+        route: &PublishedEdgeRoute,
+        endpoint: EdgeEndpoint,
+        fixed_endpoint: EdgeEndpointPosition,
+        mode: NodeGraphConnectionMode,
+        allow_create_from_wire: bool,
+    ) -> Result<Option<ConnectionInteractionStart>, ViewSessionError> {
+        let provenance = self.provenance()?;
+        if route.provenance() != provenance {
+            return Err(ViewSessionError::ForeignInteractionFacts);
+        }
+        let snapshot = self.validate_published_edge_route(route)?;
+        let start = ConnectionInteractionStart::reconnect_from_graph_route(
+            provenance,
+            &snapshot,
+            route,
+            endpoint,
+            fixed_endpoint,
+            mode,
+            allow_create_from_wire,
+        );
+        if let Some(start) = start {
+            self.validate_connection_binding(&start.binding)?;
+            return Ok(Some(start));
+        }
+        Ok(None)
+    }
+
+    fn validate_published_edge_route(
+        &self,
+        route: &PublishedEdgeRoute,
+    ) -> Result<GraphSnapshot, ViewSessionError> {
+        let provenance = self.provenance()?;
+        if route.provenance() != provenance {
+            return Err(ViewSessionError::ForeignInteractionFacts);
+        }
+        let geometry = self.geometry_snapshot()?;
+        let current = geometry
+            .route(route.edge())
+            .ok_or(ViewSessionError::StaleInteractionFacts)?;
+        if !current.same_publication(route) {
+            return Err(ViewSessionError::StaleInteractionFacts);
+        }
+        let snapshot = self.graph_snapshot()?;
+        if !snapshot.edge_instance_is_current(route.instance()) {
+            return Err(ViewSessionError::StaleInteractionFacts);
+        }
+        Ok(snapshot)
+    }
+
+    /// Binds one exact real-port instance to this view generation for keyboard connection input.
+    ///
+    /// This is the only keyboard connection input accepted by
+    /// [`CanvasInteractionSession::activate_keyboard_connection`] and
+    /// [`CanvasInteractionSession::activate_keyboard_connection_target`].
+    ///
+    /// ```compile_fail
+    /// use jellyflow_core::core::PortId;
+    /// use jellyflow_runtime::view::ViewSession;
+    ///
+    /// fn bind_stale_frame_id(view: &ViewSession, port: PortId) {
+    ///     let _ = view.keyboard_connection_port(port);
+    /// }
+    /// ```
+    pub fn keyboard_connection_port(
+        &self,
+        port: PortInstanceKey,
+    ) -> Result<KeyboardConnectionPort, ViewSessionError> {
+        let provenance = self.provenance()?;
+        let snapshot = self.graph_snapshot()?;
+        ensure_keyboard_port_is_current(&snapshot, port)?;
+        Ok(KeyboardConnectionPort::new(provenance, port))
+    }
+}
+
+impl WeakViewSession {
+    /// Issues a non-owning view-scoped capability for one currently live real port.
+    pub fn keyboard_connection_port(
+        &self,
+        port: PortInstanceKey,
+    ) -> Result<KeyboardConnectionPort, ViewSessionError> {
+        let provenance = self.provenance()?;
+        let snapshot = self.graph_snapshot()?;
+        ensure_keyboard_port_is_current(&snapshot, port)?;
+        Ok(KeyboardConnectionPort::new(provenance, port))
+    }
+
+    fn validate_connection_binding(
+        &self,
+        binding: &ConnectionGestureBinding,
+    ) -> Result<(), ViewSessionError> {
+        let snapshot = self.graph_snapshot()?;
+        if binding.provenance() != snapshot.provenance() {
+            return Err(ViewSessionError::ForeignInteractionFacts);
+        }
+        let policy = self.graph_policy()?;
+        if !binding.is_interactive(&snapshot, policy) {
+            return Err(ViewSessionError::StaleInteractionFacts);
+        }
+        Ok(())
+    }
+
+    fn validate_published_edge_route(
+        &self,
+        route: &PublishedEdgeRoute,
+    ) -> Result<GraphSnapshot, ViewSessionError> {
+        let provenance = self.provenance()?;
+        if route.provenance() != provenance {
+            return Err(ViewSessionError::ForeignInteractionFacts);
+        }
+        let geometry = self.geometry_snapshot()?;
+        let current = geometry
+            .route(route.edge())
+            .ok_or(ViewSessionError::StaleInteractionFacts)?;
+        if !current.same_publication(route) {
+            return Err(ViewSessionError::StaleInteractionFacts);
+        }
+        let snapshot = self.graph_snapshot()?;
+        if !snapshot.edge_instance_is_current(route.instance()) {
+            return Err(ViewSessionError::StaleInteractionFacts);
+        }
+        Ok(snapshot)
+    }
+
+    /// Issues a connection start without owning or reviving the view session.
+    pub fn connection_start_from_port_drag_intent(
+        &self,
+        drag_intent: PortConnectionDragIntent,
+        new_edge: EdgeId,
+        mode: NodeGraphConnectionMode,
+        fixed_anchor: CanvasPoint,
+        fixed_outward: HandlePosition,
+        moving_outward: HandlePosition,
+        allow_create_from_wire: bool,
+    ) -> Result<Option<ConnectionInteractionStart>, ViewSessionError> {
+        let provenance = self.provenance()?;
+        let snapshot = self.graph_snapshot()?;
+        let policy = self.graph_policy()?;
+        connection_start_from_port_drag_facts(
+            provenance,
+            &snapshot,
+            policy,
+            drag_intent,
+            new_edge,
+            mode,
+            fixed_anchor,
+            fixed_outward,
+            moving_outward,
+            allow_create_from_wire,
+        )
+    }
+
+    fn keyboard_connection_start(
+        &self,
+        source: KeyboardConnectionPort,
+        prospective_edge: EdgeId,
+        mode: NodeGraphConnectionMode,
+    ) -> Result<Option<KeyboardConnectionStart>, ViewSessionError> {
+        let provenance = self.provenance()?;
+        let snapshot = self.graph_snapshot()?;
+        let policy = self.graph_policy()?;
+        let drag_intent = self.port_connection_drag_intent(source.instance())?;
+        keyboard_connection_start_from_facts(
+            provenance,
+            &snapshot,
+            policy,
+            source,
+            drag_intent,
+            prospective_edge,
+            mode,
+        )
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn connection_start_from_port_drag_facts(
+    provenance: ViewProvenance,
+    snapshot: &GraphSnapshot,
+    policy: GraphRuntimePolicy,
+    drag_intent: PortConnectionDragIntent,
+    new_edge: EdgeId,
+    mode: NodeGraphConnectionMode,
+    fixed_anchor: CanvasPoint,
+    fixed_outward: HandlePosition,
+    moving_outward: HandlePosition,
+    allow_create_from_wire: bool,
+) -> Result<Option<ConnectionInteractionStart>, ViewSessionError> {
+    if drag_intent.provenance() != provenance.runtime() {
+        return Err(ViewSessionError::ForeignInteractionFacts);
+    }
+    if drag_intent.revision() != snapshot.revision()
+        || !snapshot.port_instance_is_current(drag_intent.instance())
+    {
+        return Err(ViewSessionError::StaleInteractionFacts);
+    }
+    let start = ConnectionInteractionStart::from_port_drag_intent(
+        provenance,
+        drag_intent,
+        new_edge,
+        mode,
+        fixed_anchor,
+        fixed_outward,
+        moving_outward,
+        allow_create_from_wire,
+    );
+    if let Some(start) = start {
+        if !start.binding.is_interactive(snapshot, policy) {
+            return Err(ViewSessionError::StaleInteractionFacts);
+        }
+        return Ok(Some(start));
+    }
+    Ok(None)
+}
+
+fn keyboard_connection_start_from_facts(
+    provenance: ViewProvenance,
+    snapshot: &GraphSnapshot,
+    policy: GraphRuntimePolicy,
+    source: KeyboardConnectionPort,
+    drag_intent: PortConnectionDragIntent,
+    prospective_edge: EdgeId,
+    mode: NodeGraphConnectionMode,
+) -> Result<Option<KeyboardConnectionStart>, ViewSessionError> {
+    if !source.belongs_to(provenance) || source.instance().provenance() != snapshot.provenance() {
+        return Err(ViewSessionError::ForeignInteractionFacts);
+    }
+    if !snapshot.port_instance_is_current(source.instance()) {
+        return Err(ViewSessionError::StaleInteractionFacts);
+    }
+    if drag_intent.version() != snapshot.version() || drag_intent.instance() != source.instance() {
+        return Err(ViewSessionError::StaleInteractionFacts);
+    }
+    let Some(binding) =
+        ConnectionInteractionStart::binding_from_port_drag(drag_intent, prospective_edge, mode)
+    else {
+        return Ok(None);
+    };
+    if !binding.is_interactive(snapshot, policy) {
+        return Err(ViewSessionError::StaleInteractionFacts);
+    }
+    Ok(Some(KeyboardConnectionStart::new(source, binding)))
+}
+
+fn ensure_keyboard_port_is_current(
+    snapshot: &GraphSnapshot,
+    port: PortInstanceKey,
+) -> Result<(), ViewSessionError> {
+    if port.provenance() != snapshot.provenance() {
+        return Err(ViewSessionError::ForeignInteractionFacts);
+    }
+    if !snapshot.port_instance_is_current(port) {
+        return Err(ViewSessionError::StaleInteractionFacts);
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -351,7 +885,7 @@ pub enum CanvasPressTarget {
     },
     Connection(ConnectionInteractionStart),
     Edge {
-        edge: EdgeId,
+        instance: EdgeInstanceKey,
         selection_mode: SelectionMode,
     },
     /// Resolves an exact edge at the press position before activating the canvas fallback.
@@ -399,115 +933,183 @@ impl CanvasPressFallback {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InteractionOwner {
-    Node(NodeId),
-    Port(PortId),
-    Edge(EdgeId),
+    Node(NodeLifetimeKey),
+    Port(PortInstanceKey),
+    Edge(EdgeInstanceKey),
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum SelectionMutation {
+pub(crate) enum SelectionMutation {
     Node {
-        node: NodeId,
+        provenance: ViewProvenance,
+        node: NodeLifetimeKey,
         mode: SelectionMode,
     },
     Edge {
-        edge: EdgeId,
+        provenance: ViewProvenance,
+        instance: EdgeInstanceKey,
         mode: SelectionMode,
     },
     Marquee {
-        bounds: CanvasRect,
+        provenance: ViewProvenance,
+        nodes: Arc<[NodeLifetimeKey]>,
         mode: SelectionMode,
         baseline: SelectionBaseline,
     },
-    Clear,
+    Clear {
+        provenance: ViewProvenance,
+    },
     Restore(SelectionBaseline),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ViewportMutation {
-    PanByView(ViewDelta),
+#[derive(Debug, Clone, PartialEq)]
+struct ConnectionSearchToken {
+    provenance: ViewProvenance,
+    session: InteractionSessionId,
+    generation: InteractionGeneration,
+    attempt: ConnectionSearchAttemptId,
+    binding: ConnectionGestureBinding,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ConnectionSearchRequest {
-    generation: InteractionGeneration,
-    intent: ConnectionGestureIntent,
+    token: ConnectionSearchToken,
     position: InteractionPosition,
 }
 
 impl ConnectionSearchRequest {
-    pub fn generation(self) -> InteractionGeneration {
-        self.generation
+    pub fn generation(&self) -> InteractionGeneration {
+        self.token.generation
     }
 
-    pub fn source(self) -> PortId {
-        self.intent.fixed_port()
+    pub fn view_position(&self) -> ViewPoint {
+        self.position.view()
     }
 
-    pub fn mode(self) -> NodeGraphConnectionMode {
-        self.intent.mode()
-    }
-
-    pub fn intent(self) -> ConnectionGestureIntent {
-        self.intent
-    }
-
-    pub fn position(self) -> InteractionPosition {
-        self.position
+    pub fn canvas_position(&self) -> CanvasPoint {
+        self.position.canvas()
     }
 }
 
 /// One create-from-wire selection that must add topology and its connection atomically.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ConnectionSearchSelection {
-    target: PortId,
-    validated_revision: GraphRevision,
-    topology: ConnectionTopology,
+    token: ConnectionSearchToken,
+    validated_version: GraphVersion,
+    target: ConnectionCommitTarget,
 }
 
 impl ConnectionSearchSelection {
-    /// Creates a selection from application-owned node topology.
-    ///
-    /// Empty topology is rejected because an existing graph port must use the ordinary connection
-    /// probe path rather than bypassing geometry revalidation through create-from-wire.
-    pub fn new(
+    fn from_snapshot(
+        token: ConnectionSearchToken,
+        snapshot: &GraphSnapshot,
         target: PortId,
-        validated_revision: GraphRevision,
-        topology: TopologyEdit,
+        creation: NodeCreation,
     ) -> Option<Self> {
-        (!topology.is_empty()).then(|| Self {
+        let target = ConnectionCommitTarget::from_node_creation(snapshot, target, creation)?;
+        Some(Self {
+            token,
+            validated_version: snapshot.version(),
             target,
-            validated_revision,
-            topology: ConnectionTopology::new(topology),
         })
     }
+}
 
-    pub fn target(&self) -> PortId {
-        self.target
+/// Opaque, single-use authority to bind one interaction mutation to a fresh graph snapshot.
+///
+/// The ticket and mutation deliberately cannot be separated. Adapters may wait for their command
+/// prefix, return the submission to [`CanvasInteractionSession::resume_submission_after_prefix`],
+/// and finally return a re-emitted submission to
+/// [`CanvasInteractionSession::bind_submission`]. Mutation semantics, session authority, and
+/// revalidation policy remain owned by the interaction session.
+#[derive(Debug)]
+pub struct InteractionGraphSubmission {
+    ticket: InteractionTicketId,
+    mutation: FreshGraphMutation,
+}
+
+impl InteractionGraphSubmission {
+    fn new(ticket: InteractionTicketId, mutation: FreshGraphMutation) -> Self {
+        Self { ticket, mutation }
     }
 
-    pub fn validated_revision(&self) -> GraphRevision {
-        self.validated_revision
+    pub const fn ticket(&self) -> InteractionTicketId {
+        self.ticket
     }
 
-    pub fn topology(&self) -> &TopologyEdit {
-        self.topology.edit()
+    fn requires_connection_revalidation(&self) -> bool {
+        self.mutation.requires_connection_revalidation()
     }
+
+    #[cfg(test)]
+    fn connection_facts_for_test(
+        &self,
+    ) -> Option<(ConnectionGestureBinding, PortId, GraphVersion, bool)> {
+        self.mutation.connection_facts_for_test()
+    }
+
+    #[cfg(test)]
+    fn move_nodes_for_test(&self) -> Option<&RelativeNodeMoveIntent> {
+        self.mutation.move_nodes_for_test()
+    }
+
+    #[cfg(test)]
+    fn delete_edge_for_test(&self) -> Option<EdgeDeletionIntent> {
+        self.mutation.delete_edge_for_test()
+    }
+}
+
+/// Why an opaque interaction submission could not cross its transport-acceptance boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum InteractionGraphSubmissionBindError {
+    #[error("the interaction session is closed")]
+    Closed,
+    #[error("the graph submission belongs to another canvas interaction session")]
+    ForeignInteractionSession {
+        expected: InteractionSessionId,
+        actual: InteractionSessionId,
+    },
+    #[error("graph submission ticket {ticket:?} is no longer current; current ticket: {current:?}")]
+    Superseded {
+        ticket: InteractionTicketId,
+        current: Option<InteractionTicketId>,
+    },
+    #[error("the interaction view cannot validate graph submission authority")]
+    ViewUnavailable,
+    #[error("the interaction session belongs to another runtime or view generation")]
+    ForeignInteractionFacts,
+    #[error(transparent)]
+    Mutation(#[from] FreshGraphMutationBindError),
 }
 
 #[derive(Debug)]
 pub enum CanvasInteractionEffect {
     SubmitGraph {
-        ticket: InteractionTicketId,
-        mutation: FreshGraphMutation,
+        submission: InteractionGraphSubmission,
     },
-    Selection(SelectionMutation),
-    Viewport(ViewportMutation),
     Search(ConnectionSearchRequest),
 }
 
+impl CanvasInteractionEffect {
+    fn submit_graph(ticket: InteractionTicketId, mutation: FreshGraphMutation) -> Self {
+        Self::SubmitGraph {
+            submission: InteractionGraphSubmission::new(ticket, mutation),
+        }
+    }
+}
+
+/// One runtime-owned, single-page query continuation.
+///
+/// The payload is intentionally opaque: adapters may only return this work to
+/// [`CanvasInteractionSession::resolve_query`]. The session owns its bound view capability,
+/// cursor freshness policy, and result dispatch so renderer backends cannot diverge.
 #[derive(Debug)]
-pub enum CanvasInteractionQuery {
+pub struct CanvasInteractionQuery {
+    kind: CanvasInteractionQueryKind,
+}
+
+#[derive(Debug)]
+pub(crate) enum CanvasInteractionQueryKind {
     AlignmentSnap {
         id: InteractionQueryId,
         generation: InteractionGeneration,
@@ -522,6 +1124,80 @@ pub enum CanvasInteractionQuery {
         id: InteractionQueryId,
         query: EdgePickQuery,
     },
+    NodeIntersection {
+        id: InteractionQueryId,
+        generation: InteractionGeneration,
+        query: NodeIntersectionQuery,
+    },
+}
+
+impl CanvasInteractionQuery {
+    fn alignment_snap(
+        id: InteractionQueryId,
+        generation: InteractionGeneration,
+        query: AlignmentSnapQuery,
+    ) -> Self {
+        Self {
+            kind: CanvasInteractionQueryKind::AlignmentSnap {
+                id,
+                generation,
+                query,
+            },
+        }
+    }
+
+    fn connection_probe(
+        id: InteractionQueryId,
+        generation: InteractionGeneration,
+        query: ConnectionProbeQuery,
+    ) -> Self {
+        Self {
+            kind: CanvasInteractionQueryKind::ConnectionProbe {
+                id,
+                generation,
+                query,
+            },
+        }
+    }
+
+    fn edge_pick(id: InteractionQueryId, query: EdgePickQuery) -> Self {
+        Self {
+            kind: CanvasInteractionQueryKind::EdgePick { id, query },
+        }
+    }
+
+    fn node_intersection(
+        id: InteractionQueryId,
+        generation: InteractionGeneration,
+        query: NodeIntersectionQuery,
+    ) -> Self {
+        Self {
+            kind: CanvasInteractionQueryKind::NodeIntersection {
+                id,
+                generation,
+                query,
+            },
+        }
+    }
+
+    fn id(&self) -> InteractionQueryId {
+        match &self.kind {
+            CanvasInteractionQueryKind::AlignmentSnap { id, .. }
+            | CanvasInteractionQueryKind::ConnectionProbe { id, .. }
+            | CanvasInteractionQueryKind::EdgePick { id, .. }
+            | CanvasInteractionQueryKind::NodeIntersection { id, .. } => *id,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn kind_for_test(&self) -> &CanvasInteractionQueryKind {
+        &self.kind
+    }
+
+    #[cfg(test)]
+    pub(crate) fn into_kind_for_test(self) -> CanvasInteractionQueryKind {
+        self.kind
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -582,17 +1258,21 @@ pub enum InteractionTickDemand {
 pub struct CanvasInteractionUpdate {
     queries: Vec<CanvasInteractionQuery>,
     effects: Vec<CanvasInteractionEffect>,
+    pending_selection: Option<SelectionMutation>,
+    #[cfg(test)]
+    selection_mutations: Vec<SelectionMutation>,
     damage: InteractionDamage,
     tick_demand: InteractionTickDemand,
 }
 
-/// Ordered adapter work emitted by one semantic interaction transition.
+/// Adapter work emitted by one semantic interaction transition.
 ///
-/// Adapters must apply every `pre_query_effects` entry before executing `queries`. A query may be
-/// normalized against the viewport produced by an earlier effect in the same transition.
+/// View-owned selection and viewport changes are already committed before this dispatch is
+/// returned. Effects are application work such as graph submission or native search; queries are
+/// opaque renderer work that must be returned to the same interaction session.
 #[derive(Debug)]
 pub struct CanvasInteractionDispatch {
-    pub pre_query_effects: Vec<CanvasInteractionEffect>,
+    pub effects: Vec<CanvasInteractionEffect>,
     pub queries: Vec<CanvasInteractionQuery>,
     pub damage: InteractionDamage,
     pub tick_demand: InteractionTickDemand,
@@ -609,11 +1289,16 @@ impl CanvasInteractionUpdate {
 
     pub fn into_dispatch(self) -> CanvasInteractionDispatch {
         CanvasInteractionDispatch {
-            pre_query_effects: self.effects,
+            effects: self.effects,
             queries: self.queries,
             damage: self.damage,
             tick_demand: self.tick_demand,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn selection_mutations_for_test(&self) -> &[SelectionMutation] {
+        &self.selection_mutations
     }
 
     pub fn damage(&self) -> InteractionDamage {
@@ -622,11 +1307,6 @@ impl CanvasInteractionUpdate {
 
     pub fn tick_demand(&self) -> InteractionTickDemand {
         self.tick_demand
-    }
-
-    fn active(mut self) -> Self {
-        self.tick_demand = InteractionTickDemand::WhileActive;
-        self
     }
 
     fn with_damage(mut self, damage: InteractionDamage) -> Self {
@@ -650,37 +1330,96 @@ pub enum CanvasInteractionError {
     InvalidConfiguration,
     #[error("the normalized interaction position is invalid")]
     InvalidPosition,
+    #[error("the reveal viewport or padding is invalid")]
+    InvalidRevealRequest,
+    #[error("no keyboard connection source is active")]
+    KeyboardConnectionInactive,
     #[error("another semantic canvas interaction is active")]
     AlreadyActive,
     #[error("canvas interaction identity space is exhausted")]
     IdentityExhausted,
     #[error("the interaction session is closed")]
     Closed,
+    #[error("the interaction identity belongs to another canvas session")]
+    ForeignInteractionSession {
+        expected: InteractionSessionId,
+        actual: InteractionSessionId,
+    },
+    #[error("interaction query {query:?} has no runtime receipt")]
+    MissingInteractionQueryReceipt { query: InteractionQueryId },
+    #[error("interaction query receipt belongs to {actual:?}, expected {expected:?}")]
+    MismatchedInteractionQueryReceipt {
+        expected: InteractionQueryId,
+        actual: InteractionQueryId,
+    },
     #[error("ordinary connection commits require a fresh target probe")]
     ConnectionCommitRequiresProbe,
     #[error("create-from-wire commits require a fresh graph revision")]
     ConnectionCommitRequiresFreshRevision,
+    #[error("create-from-wire target {target:?} already exists in the fresh graph snapshot")]
+    ConnectionCommitTargetNoLongerProspective { target: PortId },
     #[error("this connection interaction does not allow create-from-wire search")]
     ConnectionSearchUnavailable,
     #[error("no connection search is active")]
     ConnectionSearchInactive,
     #[error("the connection search generation is stale")]
     ConnectionSearchStaleGeneration,
+    #[error("the interaction operation belongs to another view")]
+    ViewMismatch,
+    #[error("the interaction operation belongs to another view generation")]
+    ViewGenerationMismatch,
+    #[error("interaction facts belong to another runtime or view generation")]
+    ForeignInteractionFacts,
+    #[error("interaction facts have been superseded in the bound view")]
+    StaleInteractionFacts,
+    #[error("the interaction view cannot provide an authoritative graph snapshot")]
+    ViewUnavailable,
 }
 
-#[derive(Debug)]
+static NEXT_INTERACTION_SESSION_ID: AtomicU64 = AtomicU64::new(1);
+
+fn allocate_interaction_session_id() -> Option<InteractionSessionId> {
+    NEXT_INTERACTION_SESSION_ID
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            current.checked_add(1)
+        })
+        .ok()
+        .map(InteractionSessionId)
+}
+
 pub struct CanvasInteractionSession {
-    view: ViewId,
-    view_generation: ViewGeneration,
+    bound_view: WeakViewSession,
+    provenance: ViewProvenance,
+    id: InteractionSessionId,
     config: CanvasInteractionConfig,
     next_generation: Option<u64>,
     next_query: Option<u64>,
     next_ticket: Option<u64>,
+    next_search_attempt: Option<u64>,
     state: InteractionState,
     pending_edge_pick: Option<PendingHoverEdgePick>,
-    hovered_edge: Option<EdgeId>,
+    hovered_edge: Option<EdgeInstanceKey>,
     terminal: Option<InteractionTerminalReason>,
     closed: bool,
+    #[cfg(test)]
+    test_authority_bypass: bool,
+    #[cfg(test)]
+    test_viewport: ViewportSnapshot,
+    #[cfg(test)]
+    selection_commit_failure: Option<CanvasInteractionError>,
+}
+
+impl std::fmt::Debug for CanvasInteractionSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CanvasInteractionSession")
+            .field("provenance", &self.provenance)
+            .field("id", &self.id)
+            .field("config", &self.config)
+            .field("state", &self.state)
+            .field("terminal", &self.terminal)
+            .field("closed", &self.closed)
+            .finish()
+    }
 }
 
 #[derive(Debug, Default)]
@@ -692,12 +1431,19 @@ enum InteractionState {
     Pan(PanInteraction),
     Marquee(MarqueeInteraction),
     Connection(ConnectionInteraction),
+    KeyboardConnection(KeyboardConnectionInteraction),
     Committing(CommitInteraction),
     EdgeActive(EdgeInteraction),
     EdgePickPending(CanvasEdgePickInteraction),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CallbackAuthority {
+    Current,
+    Stale,
+}
+
+#[derive(Debug, Clone)]
 struct ArmedInteraction {
     generation: InteractionGeneration,
     target: ArmedTarget,
@@ -705,7 +1451,7 @@ struct ArmedInteraction {
     max_view_distance_squared: f32,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum ArmedTarget {
     NodeDrag(NodeDragStart),
     Pan {
@@ -721,7 +1467,7 @@ enum ArmedTarget {
 #[derive(Debug)]
 struct NodeDragInteraction {
     generation: InteractionGeneration,
-    nodes: Arc<[NodeId]>,
+    cohort: NodeMoveCohort,
     snap_origin: CanvasPoint,
     start: InteractionPosition,
     pointer: InteractionPosition,
@@ -730,6 +1476,7 @@ struct NodeDragInteraction {
     guides: Arc<[AlignmentGuide]>,
     alignment_locks: AlignmentSnapLocks,
     pending_alignment_query: Option<InteractionQueryId>,
+    stale_query_restarts: u8,
     release_pending: bool,
 }
 
@@ -739,13 +1486,16 @@ struct PanInteraction {
     pointer: InteractionPosition,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct MarqueeInteraction {
     generation: InteractionGeneration,
     start: InteractionPosition,
     pointer: InteractionPosition,
     selection_mode: SelectionMode,
     baseline: SelectionBaseline,
+    pending_query: Option<InteractionQueryId>,
+    stale_query_restarts: u8,
+    release_pending: bool,
 }
 
 #[derive(Debug)]
@@ -755,11 +1505,19 @@ enum ConnectionInteraction {
 }
 
 #[derive(Debug)]
+struct KeyboardConnectionInteraction {
+    generation: InteractionGeneration,
+    start: KeyboardConnectionStart,
+    feedback: Option<KeyboardConnectionFeedback>,
+}
+
+#[derive(Debug)]
 struct ConnectionDragInteraction {
     generation: InteractionGeneration,
     start: ConnectionInteractionStart,
     pointer: InteractionPosition,
     probe: ConnectionProbe,
+    target_lock: Option<ConnectionProbeTargetIdentity>,
     pending_query: Option<InteractionQueryId>,
     stale_query_restarts: u8,
     release_pending: bool,
@@ -768,6 +1526,7 @@ struct ConnectionDragInteraction {
 #[derive(Debug)]
 struct ConnectionSearchInteraction {
     generation: InteractionGeneration,
+    attempt: ConnectionSearchAttemptId,
     start: ConnectionInteractionStart,
     pointer: InteractionPosition,
     probe: ConnectionProbe,
@@ -776,23 +1535,33 @@ struct ConnectionSearchInteraction {
 
 #[derive(Debug)]
 enum CommitInteraction {
-    Connection(ConnectionCommitInteraction),
-    NodeDrag(NodeCommitInteraction),
+    Connection(Box<ConnectionCommitInteraction>),
+    KeyboardConnection(KeyboardConnectionCommitInteraction),
+    NodeMove(NodeMoveCommitInteraction),
     EdgeDelete(EdgeDeleteCommitInteraction),
+    SelectionDelete(SelectionDeleteCommitInteraction),
 }
 
 #[derive(Debug)]
 struct ConnectionCommitInteraction {
     generation: InteractionGeneration,
+    search_attempt: Option<ConnectionSearchAttemptId>,
     start: ConnectionInteractionStart,
     pointer: InteractionPosition,
     probe: ConnectionProbe,
     ticket: InteractionTicketId,
-    target: PortId,
+    target: ConnectionCommitTarget,
     return_to_search: bool,
-    topology: ConnectionTopology,
     freshness: ConnectionCommitFreshness,
     stale_query_restarts: u8,
+}
+
+#[derive(Debug)]
+struct KeyboardConnectionCommitInteraction {
+    generation: InteractionGeneration,
+    start: KeyboardConnectionStart,
+    target: KeyboardConnectionPort,
+    ticket: InteractionTicketId,
 }
 
 #[derive(Debug, Default)]
@@ -804,9 +1573,9 @@ enum ConnectionCommitFreshness {
 }
 
 #[derive(Debug)]
-struct NodeCommitInteraction {
+struct NodeMoveCommitInteraction {
     generation: InteractionGeneration,
-    nodes: Arc<[NodeId]>,
+    cohort: NodeMoveCohort,
     delta: CanvasPoint,
     guides: Arc<[AlignmentGuide]>,
     ticket: InteractionTicketId,
@@ -815,14 +1584,20 @@ struct NodeCommitInteraction {
 #[derive(Debug)]
 struct EdgeDeleteCommitInteraction {
     generation: InteractionGeneration,
-    edge: EdgeId,
+    instance: EdgeInstanceKey,
+    ticket: InteractionTicketId,
+}
+
+#[derive(Debug)]
+struct SelectionDeleteCommitInteraction {
+    generation: InteractionGeneration,
     ticket: InteractionTicketId,
 }
 
 #[derive(Debug)]
 struct EdgeInteraction {
     generation: InteractionGeneration,
-    edge: EdgeId,
+    instance: EdgeInstanceKey,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -847,45 +1622,103 @@ struct CanvasEdgePickInteraction {
 #[derive(Debug)]
 enum CanvasEdgePickResolution {
     Continue(EdgePickQuery),
-    Complete(Option<EdgeId>),
+    Complete(Option<EdgeInstanceKey>),
     BudgetExhausted,
     GeometryIndeterminate,
 }
 
 impl CanvasInteractionSession {
-    pub fn new(
-        view: ViewId,
-        view_generation: ViewGeneration,
+    pub fn attach(
+        view: &ViewSession,
+        config: CanvasInteractionConfig,
+    ) -> Result<Self, CanvasInteractionError> {
+        let provenance = view
+            .provenance()
+            .map_err(|_| CanvasInteractionError::ViewUnavailable)?;
+        Self::from_binding(view.downgrade(), provenance, config)
+    }
+
+    fn from_binding(
+        bound_view: WeakViewSession,
+        provenance: ViewProvenance,
         config: CanvasInteractionConfig,
     ) -> Result<Self, CanvasInteractionError> {
         if !config.is_valid() {
             return Err(CanvasInteractionError::InvalidConfiguration);
         }
+        let id =
+            allocate_interaction_session_id().ok_or(CanvasInteractionError::IdentityExhausted)?;
         Ok(Self {
-            view,
-            view_generation,
+            bound_view,
+            provenance,
+            id,
             config,
             next_generation: Some(1),
             next_query: Some(1),
             next_ticket: Some(1),
+            next_search_attempt: Some(1),
             state: InteractionState::Idle,
             pending_edge_pick: None,
             hovered_edge: None,
             terminal: None,
             closed: false,
+            #[cfg(test)]
+            test_authority_bypass: false,
+            #[cfg(test)]
+            test_viewport: ViewportSnapshot::new(
+                provenance,
+                ViewportRevision::initial(),
+                ViewportTransform::new(CanvasPoint::default(), 1.0)
+                    .expect("the identity viewport is valid"),
+            ),
+            #[cfg(test)]
+            selection_commit_failure: None,
         })
     }
 
+    #[cfg(test)]
+    pub(crate) fn new_for_test(
+        view: ViewId,
+        view_generation: ViewGeneration,
+        config: CanvasInteractionConfig,
+    ) -> Result<Self, CanvasInteractionError> {
+        let mut session = Self::from_binding(
+            WeakViewSession::unavailable_for_test(),
+            ViewProvenance::new(view, view_generation),
+            config,
+        )?;
+        session.test_authority_bypass = true;
+        Ok(session)
+    }
+
     pub fn view(&self) -> ViewId {
-        self.view
+        self.provenance.view()
+    }
+
+    pub fn id(&self) -> InteractionSessionId {
+        self.id
     }
 
     pub fn view_generation(&self) -> ViewGeneration {
-        self.view_generation
+        self.provenance.generation()
     }
 
     pub fn config(&self) -> CanvasInteractionConfig {
         self.config
+    }
+
+    /// Reports whether the current semantic interaction needs continuous native frame ticks.
+    ///
+    /// Adapters use this as the scheduling authority so duplicate callbacks and stale redraws cannot
+    /// keep an idle, release-pending, or terminal interaction alive.
+    pub fn tick_demand(&self) -> InteractionTickDemand {
+        if self.closed || self.terminal.is_some() {
+            InteractionTickDemand::None
+        } else if state_needs_tick(&self.state) {
+            InteractionTickDemand::WhileActive
+        } else {
+            InteractionTickDemand::None
+        }
     }
 
     /// Replaces interaction thresholds and renderer-neutral navigation policy while idle.
@@ -922,7 +1755,7 @@ impl CanvasInteractionSession {
             )
             .with_node_drag(node_drag_presentation(
                 drag.generation,
-                Arc::clone(&drag.nodes),
+                drag.cohort.clone(),
                 drag.delta,
                 Arc::clone(&drag.guides),
                 drag.release_pending,
@@ -946,16 +1779,22 @@ impl CanvasInteractionSession {
                         .with_connection(connection_presentation_from_search(search))
                 }
             },
+            InteractionState::KeyboardConnection(_) => {
+                CanvasInteractionPresentation::new(CanvasInteractionPhase::ConnectionDrag)
+            }
             InteractionState::Committing(commit) => match commit {
                 CommitInteraction::Connection(connection) => {
                     CanvasInteractionPresentation::new(CanvasInteractionPhase::Committing)
                         .with_connection(connection_presentation_from_commit(connection))
                 }
-                CommitInteraction::NodeDrag(node) => {
+                CommitInteraction::KeyboardConnection(_) => {
+                    CanvasInteractionPresentation::new(CanvasInteractionPhase::Committing)
+                }
+                CommitInteraction::NodeMove(node) => {
                     CanvasInteractionPresentation::new(CanvasInteractionPhase::Committing)
                         .with_node_drag(node_drag_presentation(
                             node.generation,
-                            Arc::clone(&node.nodes),
+                            node.cohort.clone(),
                             node.delta,
                             Arc::clone(&node.guides),
                             false,
@@ -964,12 +1803,15 @@ impl CanvasInteractionSession {
                 }
                 CommitInteraction::EdgeDelete(edge) => {
                     CanvasInteractionPresentation::new(CanvasInteractionPhase::Committing)
-                        .with_active_edge(edge.edge)
+                        .with_active_edge(edge.instance)
+                }
+                CommitInteraction::SelectionDelete(_) => {
+                    CanvasInteractionPresentation::new(CanvasInteractionPhase::Committing)
                 }
             },
             InteractionState::EdgeActive(edge) => {
                 CanvasInteractionPresentation::new(CanvasInteractionPhase::EdgeActive)
-                    .with_active_edge(edge.edge)
+                    .with_active_edge(edge.instance)
             }
             InteractionState::EdgePickPending(_) => {
                 CanvasInteractionPresentation::new(CanvasInteractionPhase::Armed)
@@ -977,23 +1819,48 @@ impl CanvasInteractionSession {
         };
         presentation = presentation
             .with_generation(state_generation(&self.state))
+            .with_connection_intent(state_connection_intent(&self.state))
             .with_hovered_edge(self.hovered_edge)
             .with_terminal(self.terminal);
         presentation
+    }
+
+    /// Returns the exact source capability while a keyboard connection is active or committing.
+    pub fn keyboard_connection_source(&self) -> Option<KeyboardConnectionPort> {
+        match &self.state {
+            InteractionState::KeyboardConnection(connection) => Some(connection.start.source),
+            InteractionState::Committing(CommitInteraction::KeyboardConnection(commit)) => {
+                Some(commit.start.source)
+            }
+            _ => None,
+        }
+    }
+
+    /// Returns the latest structured invalid-target feedback for the active keyboard source.
+    pub fn keyboard_connection_feedback(&self) -> Option<&KeyboardConnectionFeedback> {
+        match &self.state {
+            InteractionState::KeyboardConnection(connection) => connection.feedback.as_ref(),
+            _ => None,
+        }
     }
 
     /// Returns the authoritative create-from-wire request for the active search generation.
     pub fn search_request(&self) -> Option<ConnectionSearchRequest> {
         match &self.state {
             InteractionState::Connection(ConnectionInteraction::Searching(search)) => {
-                Some(search_request(search))
+                Some(search_request(self.id, self.provenance, search))
             }
             InteractionState::Committing(CommitInteraction::Connection(commit))
                 if commit.return_to_search =>
             {
                 Some(connection_search_request(
+                    self.id,
+                    self.provenance,
                     commit.generation,
-                    commit.start,
+                    commit
+                        .search_attempt
+                        .expect("return-to-search commits retain their request attempt"),
+                    &commit.start,
                     commit.pointer,
                 ))
             }
@@ -1001,7 +1868,167 @@ impl CanvasInteractionSession {
         }
     }
 
+    /// Resolves create-from-wire candidates through this session's exact active search request.
+    pub fn search_candidates(
+        &self,
+        request: &ConnectionSearchRequest,
+    ) -> Result<CreateFromWireCandidates, CanvasInteractionError> {
+        self.validate_search_request(request)?;
+        self.bound_view
+            .create_from_wire_candidates(&request.token.binding)
+            .map_err(map_create_from_wire_query_error)
+    }
+
+    /// Seals application-owned topology to this session's exact active search request.
+    pub fn create_search_selection(
+        &self,
+        request: &ConnectionSearchRequest,
+        target: PortId,
+        creation: NodeCreation,
+    ) -> Result<Option<ConnectionSearchSelection>, CanvasInteractionError> {
+        self.validate_search_request(request)?;
+        self.bound_view
+            .validate_connection_binding(&request.token.binding)
+            .map_err(map_connection_binding_error)?;
+        let snapshot = self
+            .bound_view
+            .graph_snapshot()
+            .map_err(|_| CanvasInteractionError::ViewUnavailable)?;
+        Ok(ConnectionSearchSelection::from_snapshot(
+            request.token.clone(),
+            &snapshot,
+            target,
+            creation,
+        ))
+    }
+
     pub fn press(
+        &mut self,
+        target: CanvasPressTarget,
+        sample: ViewportPointerSample,
+    ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
+        let (position, _) = self.normalize_pointer_sample(sample)?;
+        let view = self.authoritative_view()?;
+        self.validate_press_target(&view, &target)?;
+        self.press_current(target, position)
+    }
+
+    #[cfg(test)]
+    fn press_for_test(
+        &mut self,
+        target: CanvasPressTarget,
+        sample: ViewportPointerSample,
+    ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
+        let (position, _) = self.normalize_pointer_sample(sample)?;
+        self.validate_press_target_provenance(&target)?;
+        self.press_current(target, position)
+    }
+
+    fn validate_press_target(
+        &self,
+        view: &WeakViewSession,
+        target: &CanvasPressTarget,
+    ) -> Result<(), CanvasInteractionError> {
+        self.validate_press_target_provenance(target)?;
+        match target {
+            CanvasPressTarget::Connection(start) => {
+                let snapshot = view
+                    .graph_snapshot()
+                    .map_err(|_| CanvasInteractionError::ViewUnavailable)?;
+                if start.validated_version != snapshot.version() {
+                    return Err(CanvasInteractionError::StaleInteractionFacts);
+                }
+                view.validate_connection_binding(&start.binding)
+                    .map_err(map_connection_binding_error)
+            }
+            CanvasPressTarget::NodeDrag(start) => self.validate_node_drag_start(view, start),
+            CanvasPressTarget::Edge { instance, .. } => {
+                let snapshot = view
+                    .graph_snapshot()
+                    .map_err(|_| CanvasInteractionError::ViewUnavailable)?;
+                match snapshot.edge_instance_key(instance.edge()) {
+                    Some(current) if current == *instance => Ok(()),
+                    _ => Err(CanvasInteractionError::StaleInteractionFacts),
+                }
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn validate_node_drag_start(
+        &self,
+        view: &WeakViewSession,
+        start: &NodeDragStart,
+    ) -> Result<(), CanvasInteractionError> {
+        if start.provenance() != self.provenance {
+            return Err(CanvasInteractionError::ForeignInteractionFacts);
+        }
+        let snapshot = view
+            .graph_snapshot()
+            .map_err(|_| CanvasInteractionError::ViewUnavailable)?;
+        if start
+            .members()
+            .iter()
+            .any(|member| member.provenance() != snapshot.provenance())
+        {
+            return Err(CanvasInteractionError::ForeignInteractionFacts);
+        }
+        if !start.members().contains(&start.clicked_lifetime())
+            || start.members().iter().any(|member| {
+                !snapshot.node_lifetime_is_current(*member)
+                    || snapshot.graph().node(&member.node()).is_none_or(|node| {
+                        node.hidden
+                            || !node.selectable.unwrap_or(true)
+                            || !node.draggable.unwrap_or(true)
+                    })
+            })
+        {
+            return Err(CanvasInteractionError::StaleInteractionFacts);
+        }
+        Ok(())
+    }
+
+    fn validate_node_drag_activation(
+        &self,
+        start: &NodeDragStart,
+    ) -> Result<(), CanvasInteractionError> {
+        #[cfg(test)]
+        if self.test_authority_bypass {
+            return Ok(());
+        }
+        let view = self.authoritative_view()?;
+        self.validate_node_drag_start(&view, start)
+    }
+
+    fn validate_press_target_provenance(
+        &self,
+        target: &CanvasPressTarget,
+    ) -> Result<(), CanvasInteractionError> {
+        self.ensure_available()?;
+        if let CanvasPressTarget::Connection(start) = &target
+            && !start.belongs_to(self.provenance)
+        {
+            return Err(CanvasInteractionError::ForeignInteractionFacts);
+        }
+        if let CanvasPressTarget::NodeDrag(start) = &target
+            && start.provenance() != self.provenance
+        {
+            return Err(CanvasInteractionError::ForeignInteractionFacts);
+        }
+        if let CanvasPressTarget::Edge { instance, .. } = &target
+            && instance.provenance() != self.provenance.runtime()
+        {
+            return Err(CanvasInteractionError::ForeignInteractionFacts);
+        }
+        if let CanvasPressTarget::Marquee { baseline, .. } = &target
+            && baseline.provenance() != self.provenance
+        {
+            return Err(CanvasInteractionError::ForeignInteractionFacts);
+        }
+        Ok(())
+    }
+
+    fn press_current(
         &mut self,
         target: CanvasPressTarget,
         position: InteractionPosition,
@@ -1014,19 +2041,21 @@ impl CanvasInteractionSession {
         self.pending_edge_pick = None;
         let mut update = CanvasInteractionUpdate::default();
         match target {
-            CanvasPressTarget::NativeControl => return Ok(update),
+            CanvasPressTarget::NativeControl => return Ok(self.finalize_update(update)),
             CanvasPressTarget::Edge {
-                edge,
+                instance,
                 selection_mode,
             } => {
                 let generation = self.allocate_generation()?;
-                self.state = InteractionState::EdgeActive(EdgeInteraction { generation, edge });
-                update.effects.push(CanvasInteractionEffect::Selection(
-                    SelectionMutation::Edge {
-                        edge,
-                        mode: selection_mode,
-                    },
-                ));
+                self.state = InteractionState::EdgeActive(EdgeInteraction {
+                    generation,
+                    instance,
+                });
+                update.pending_selection = Some(SelectionMutation::Edge {
+                    provenance: self.provenance,
+                    instance,
+                    mode: selection_mode,
+                });
                 update.damage = InteractionDamage {
                     presentation: true,
                     edges: true,
@@ -1038,19 +2067,22 @@ impl CanvasInteractionSession {
                 let generation = self.allocate_generation()?;
                 let Some(query) = self.allocate_query() else {
                     self.terminal = Some(InteractionTerminalReason::IdentityExhausted);
-                    return Ok(update.with_damage(InteractionDamage::presentation()));
+                    return Ok(
+                        self.finalize_update(update.with_damage(InteractionDamage::presentation()))
+                    );
                 };
                 if self.hovered_edge.take().is_some() {
                     update.damage.edges = true;
                 }
-                update.queries.push(CanvasInteractionQuery::EdgePick {
-                    id: query,
-                    query: EdgePickQuery::new(
+                update.queries.push(CanvasInteractionQuery::edge_pick(
+                    query,
+                    EdgePickQuery::new(
                         position.view(),
                         self.config.edge_pick_radius_in_view,
                         self.config.query_entry_budget,
-                    ),
-                });
+                    )
+                    .bind_interaction(self.interaction_query_binding(query)),
+                ));
                 update.damage.presentation = true;
                 self.state = InteractionState::EdgePickPending(CanvasEdgePickInteraction {
                     generation,
@@ -1065,6 +2097,7 @@ impl CanvasInteractionSession {
             }
             CanvasPressTarget::NodeDrag(start) => {
                 let generation = self.allocate_generation()?;
+                let promoted = self.promote_node_interaction(start.clicked_lifetime())?;
                 self.state = InteractionState::Armed(ArmedInteraction {
                     generation,
                     target: ArmedTarget::NodeDrag(start),
@@ -1072,6 +2105,10 @@ impl CanvasInteractionSession {
                     max_view_distance_squared: 0.0,
                 });
                 update.damage.merge(InteractionDamage::presentation());
+                if promoted {
+                    update.damage.nodes = true;
+                    update.damage.ports = true;
+                }
             }
             CanvasPressTarget::Pan => {
                 self.arm(
@@ -1100,7 +2137,8 @@ impl CanvasInteractionSession {
                 update.damage = InteractionDamage::connection();
             }
         }
-        Ok(update)
+        self.commit_selection_transition(&mut update, None)?;
+        Ok(self.finalize_update(update))
     }
 
     /// Selects one actionable node without synthesizing a pointer drag or arming movement.
@@ -1109,29 +2147,356 @@ impl CanvasInteractionSession {
     /// remains activatable and native child controls do not inherit drag semantics.
     pub fn activate_node(
         &mut self,
-        node: NodeId,
+        node: NodeLifetimeKey,
         selection_mode: SelectionMode,
     ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
-        self.ensure_available()?;
+        let view = self.authoritative_view()?;
+        let snapshot = view
+            .graph_snapshot()
+            .map_err(|_| CanvasInteractionError::ViewUnavailable)?;
+        if node.provenance() != snapshot.provenance() {
+            return Err(CanvasInteractionError::ForeignInteractionFacts);
+        }
+        if !snapshot.node_lifetime_is_current(node)
+            || snapshot
+                .graph()
+                .node(&node.node())
+                .is_none_or(|record| record.hidden || !record.selectable.unwrap_or(true))
+        {
+            return Err(CanvasInteractionError::StaleInteractionFacts);
+        }
         if !matches!(self.state, InteractionState::Idle) {
             return Err(CanvasInteractionError::AlreadyActive);
         }
+        let promoted = self.promote_node_interaction(node)?;
         self.terminal = None;
         self.pending_edge_pick = None;
-        Ok(CanvasInteractionUpdate {
-            effects: vec![CanvasInteractionEffect::Selection(
-                SelectionMutation::Node {
-                    node,
-                    mode: selection_mode,
-                },
-            )],
+        let mut update = CanvasInteractionUpdate {
+            pending_selection: Some(SelectionMutation::Node {
+                provenance: self.provenance,
+                node,
+                mode: selection_mode,
+            }),
             damage: InteractionDamage {
                 presentation: true,
+                nodes: promoted,
+                ports: promoted,
                 selection: true,
                 ..InteractionDamage::default()
             },
             ..CanvasInteractionUpdate::default()
-        })
+        };
+        self.commit_selection_transition(&mut update, None)?;
+        Ok(self.finalize_update(update))
+    }
+
+    /// Moves the exact current node selection through the ordinary graph-command pipeline.
+    ///
+    /// This deliberately accepts only a direction and a modifier state. The session derives the
+    /// selected lifetime cohort, grid-adjusted step, shared extent-clamped delta, and fresh command
+    /// authority; native adapters do not synthesize pointer motion or geometry mutations.
+    pub fn nudge_selection(
+        &mut self,
+        direction: NodeNudgeDirection,
+        accelerated: bool,
+    ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
+        let view = self.authoritative_view()?;
+        if !matches!(self.state, InteractionState::Idle) {
+            return Err(CanvasInteractionError::AlreadyActive);
+        }
+        let (selected_nodes, _, _) = view
+            .live_selection()
+            .map_err(|_| CanvasInteractionError::ViewUnavailable)?;
+        let Some(cohort) = NodeMoveCohort::new(selected_nodes) else {
+            return Ok(self.finalize_update(CanvasInteractionUpdate::default()));
+        };
+        let snapshot = view
+            .graph_snapshot()
+            .map_err(|_| CanvasInteractionError::ViewUnavailable)?;
+        let multiplier = if accelerated {
+            self.config.keyboard_nudge_accelerated_multiplier
+        } else {
+            1.0
+        };
+        let requested = direction.delta(self.config.keyboard_nudge_step_in_canvas * multiplier);
+        let requested = nudge_delta_for_grid(
+            &snapshot,
+            &cohort,
+            requested,
+            self.config.grid_size_in_canvas,
+        )
+        .ok_or(CanvasInteractionError::StaleInteractionFacts)?;
+        let Some(delta) = feasible_cohort_delta(&snapshot, &cohort, requested)
+            .map_err(map_node_move_bind_error)?
+        else {
+            return Ok(self.finalize_update(CanvasInteractionUpdate::default()));
+        };
+        let Some(intent) = RelativeNodeMoveIntent::from_cohort(cohort.clone(), delta) else {
+            return Ok(self.finalize_update(CanvasInteractionUpdate::default()));
+        };
+        let generation = self.allocate_generation()?;
+        let Some(ticket) = self.allocate_ticket() else {
+            self.terminal = Some(InteractionTerminalReason::IdentityExhausted);
+            return Ok(self.finalize_update(
+                CanvasInteractionUpdate::default().with_damage(InteractionDamage::node_drag()),
+            ));
+        };
+        self.terminal = None;
+        self.pending_edge_pick = None;
+        let mut update =
+            CanvasInteractionUpdate::default().with_damage(InteractionDamage::node_drag());
+        update.effects.push(CanvasInteractionEffect::submit_graph(
+            ticket,
+            FreshGraphMutation::move_nodes(intent),
+        ));
+        self.state =
+            InteractionState::Committing(CommitInteraction::NodeMove(NodeMoveCommitInteraction {
+                generation,
+                cohort,
+                delta,
+                guides: Arc::default(),
+                ticket,
+            }));
+        Ok(self.finalize_update(update))
+    }
+
+    /// Minimally pans this view's owned viewport until one exact live node is visible.
+    ///
+    /// The caller supplies only the focused lifetime capability, actual native view dimensions,
+    /// and a screen-space padding. Zoom is preserved exactly; stale or unmeasured nodes fail
+    /// closed instead of guessing an adapter-local rectangle.
+    pub fn reveal_node(
+        &mut self,
+        node: NodeLifetimeKey,
+        viewport: ViewSize,
+        padding_in_view: f32,
+    ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
+        let view = self.authoritative_view()?;
+        if !matches!(self.state, InteractionState::Idle) {
+            return Err(CanvasInteractionError::AlreadyActive);
+        }
+        if !viewport.is_positive_finite()
+            || !padding_in_view.is_finite()
+            || padding_in_view < 0.0
+            || padding_in_view * 2.0 >= viewport.width
+            || padding_in_view * 2.0 >= viewport.height
+        {
+            return Err(CanvasInteractionError::InvalidRevealRequest);
+        }
+        let snapshot = view
+            .graph_snapshot()
+            .map_err(|_| CanvasInteractionError::ViewUnavailable)?;
+        if node.provenance() != snapshot.provenance() {
+            return Err(CanvasInteractionError::ForeignInteractionFacts);
+        }
+        if !snapshot.node_lifetime_is_current(node) {
+            return Err(CanvasInteractionError::StaleInteractionFacts);
+        }
+        let geometry = view
+            .geometry_snapshot()
+            .map_err(|_| CanvasInteractionError::ViewUnavailable)?;
+        if geometry.provenance() != self.provenance {
+            return Err(CanvasInteractionError::ForeignInteractionFacts);
+        }
+        let Some(geometry) = geometry.node(node.node()) else {
+            return Err(CanvasInteractionError::StaleInteractionFacts);
+        };
+        if !geometry.is_fresh() || geometry.lifetime() != node {
+            return Err(CanvasInteractionError::StaleInteractionFacts);
+        }
+        let current = self.current_viewport_snapshot()?;
+        let delta = reveal_pan_delta(
+            geometry.bounds(),
+            current.transform(),
+            viewport,
+            padding_in_view,
+        )
+        .ok_or(CanvasInteractionError::InvalidRevealRequest)?;
+        if delta.is_zero() {
+            return Ok(self.finalize_update(CanvasInteractionUpdate::default()));
+        }
+        let (committed, panic) = self.commit_pan(delta)?;
+        let mut update = CanvasInteractionUpdate::default();
+        if committed.revision() != current.revision() {
+            update.damage.viewport = true;
+        }
+        let update = self.finalize_update(update);
+        resume(panic);
+        Ok(update)
+    }
+
+    /// Activates one exact real port through the renderer-neutral non-drag connection authority.
+    ///
+    /// The first activation arms `port` as the source. While that source remains armed, the next
+    /// activation is evaluated as a target. Adapters therefore do not need to mirror source/target
+    /// state when mapping keyboard, accessibility, or click-to-connect input.
+    pub fn activate_connection_port(
+        &mut self,
+        port: KeyboardConnectionPort,
+        prospective_edge: EdgeId,
+        mode: NodeGraphConnectionMode,
+    ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
+        if matches!(self.state, InteractionState::KeyboardConnection(_)) {
+            self.activate_keyboard_connection_target(port)
+        } else {
+            self.activate_keyboard_connection(port, prospective_edge, mode)
+        }
+    }
+
+    /// Releases an armed pointer connection, promoting only a true click to non-drag activation.
+    ///
+    /// The final release sample participates in the runtime drag-threshold decision even when the
+    /// adapter did not observe an intermediate move event. Adapters therefore cannot accidentally
+    /// turn a fast drag release into click-to-connect.
+    pub fn release_connection_or_activate_port(
+        &mut self,
+        source: KeyboardConnectionPort,
+        prospective_edge: EdgeId,
+        mode: NodeGraphConnectionMode,
+        sample: ViewportPointerSample,
+    ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
+        let (position, current) = self.normalize_pointer_sample(sample)?;
+        self.rebase_interaction_positions(current)?;
+        let is_click = match &self.state {
+            InteractionState::Armed(armed)
+                if matches!(armed.target, ArmedTarget::Connection(_)) =>
+            {
+                let distance = armed
+                    .max_view_distance_squared
+                    .max(view_distance_squared(armed.start.view(), position.view()));
+                !threshold_crossed_distance(distance, self.config.connection_drag_threshold_in_view)
+            }
+            _ => false,
+        };
+        if !is_click {
+            return self.release(sample);
+        }
+        let released = self.release(sample)?;
+        debug_assert!(released.effects.is_empty());
+        debug_assert!(released.queries.is_empty());
+        self.activate_connection_port(source, prospective_edge, mode)
+    }
+
+    /// Arms one exact real port as the source of a keyboard connection interaction.
+    ///
+    /// The bound view resolves current port policy and reconnect semantics. Re-activating the
+    /// already armed source is an intentional no-op; another active semantic interaction remains
+    /// exclusive. No pointer sample or adapter-owned geometry participates in this transition.
+    pub fn activate_keyboard_connection(
+        &mut self,
+        source: KeyboardConnectionPort,
+        prospective_edge: EdgeId,
+        mode: NodeGraphConnectionMode,
+    ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
+        self.ensure_open()?;
+        if let InteractionState::KeyboardConnection(connection) = &self.state
+            && connection.start.source == source
+        {
+            let binding = connection.start.binding.clone();
+            self.authoritative_view()?
+                .validate_connection_binding(&binding)
+                .map_err(map_connection_binding_error)?;
+            return Ok(self.finalize_update(CanvasInteractionUpdate::default()));
+        }
+        if !matches!(self.state, InteractionState::Idle) {
+            return Err(CanvasInteractionError::AlreadyActive);
+        }
+        let view = self.authoritative_view()?;
+        let Some(start) = view
+            .keyboard_connection_start(source, prospective_edge, mode)
+            .map_err(map_connection_binding_error)?
+        else {
+            return Ok(self.finalize_update(CanvasInteractionUpdate::default()));
+        };
+        let generation = self.allocate_generation()?;
+        self.terminal = None;
+        self.pending_edge_pick = None;
+        self.state = InteractionState::KeyboardConnection(KeyboardConnectionInteraction {
+            generation,
+            start,
+            feedback: None,
+        });
+        Ok(self.finalize_update(
+            CanvasInteractionUpdate::default().with_damage(InteractionDamage::connection()),
+        ))
+    }
+
+    /// Activates one exact real target port for the currently armed keyboard source.
+    ///
+    /// Rejected policy decisions retain the active source and expose diagnostics through
+    /// [`Self::keyboard_connection_feedback`]. Accepted decisions use the same fresh connection
+    /// evaluation and `FreshGraphMutation` binder as pointer connection commits.
+    pub fn activate_keyboard_connection_target(
+        &mut self,
+        target: KeyboardConnectionPort,
+    ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
+        self.ensure_open()?;
+        let (generation, start) = match &self.state {
+            InteractionState::KeyboardConnection(connection) => {
+                (connection.generation, connection.start.clone())
+            }
+            _ => return Err(CanvasInteractionError::KeyboardConnectionInactive),
+        };
+        if target == start.source {
+            return Ok(self.finalize_update(CanvasInteractionUpdate::default()));
+        }
+        if !target.belongs_to(self.provenance) {
+            return Err(CanvasInteractionError::ForeignInteractionFacts);
+        }
+        let view = self.authoritative_view()?;
+        let snapshot = view
+            .graph_snapshot()
+            .map_err(|_| CanvasInteractionError::ViewUnavailable)?;
+        if target.instance().provenance() != snapshot.provenance() {
+            return Err(CanvasInteractionError::ForeignInteractionFacts);
+        }
+        if !snapshot.port_instance_is_current(target.instance()) {
+            return Err(CanvasInteractionError::StaleInteractionFacts);
+        }
+        view.validate_connection_binding(&start.binding)
+            .map_err(map_connection_binding_error)?;
+        let evaluation = view
+            .evaluate_connection(start.binding.edit_for_target(target.port()))
+            .map_err(|_| CanvasInteractionError::ViewUnavailable)?;
+        if !evaluation.is_accept() {
+            let feedback = KeyboardConnectionFeedback::rejected(
+                start.source.port(),
+                target.port(),
+                evaluation.diagnostics().to_vec(),
+            );
+            if let InteractionState::KeyboardConnection(connection) = &mut self.state {
+                connection.feedback = Some(feedback);
+            }
+            return Ok(self.finalize_update(
+                CanvasInteractionUpdate::default().with_damage(InteractionDamage::connection()),
+            ));
+        }
+        let Some(ticket) = self.allocate_ticket() else {
+            self.terminal = Some(InteractionTerminalReason::IdentityExhausted);
+            self.state = InteractionState::Idle;
+            return Ok(self.finalize_update(
+                CanvasInteractionUpdate::default().with_damage(InteractionDamage::connection()),
+            ));
+        };
+        let mut update =
+            CanvasInteractionUpdate::default().with_damage(InteractionDamage::connection());
+        update.effects.push(CanvasInteractionEffect::submit_graph(
+            ticket,
+            FreshGraphMutation::connection(
+                start.binding.clone(),
+                ConnectionCommitTarget::existing(target.instance()),
+                evaluation.version(),
+            ),
+        ));
+        self.state = InteractionState::Committing(CommitInteraction::KeyboardConnection(
+            KeyboardConnectionCommitInteraction {
+                generation,
+                start,
+                target,
+                ticket,
+            },
+        ));
+        Ok(self.finalize_update(update))
     }
 
     /// Activates create-from-wire search without synthesizing a pointer drag.
@@ -1142,9 +2507,42 @@ impl CanvasInteractionSession {
     pub fn activate_connection_search(
         &mut self,
         start: ConnectionInteractionStart,
+        sample: ViewportPointerSample,
+    ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
+        let (position, _) = self.normalize_pointer_sample(sample)?;
+        let view = self.authoritative_view()?;
+        if !start.belongs_to(self.provenance) {
+            return Err(CanvasInteractionError::ForeignInteractionFacts);
+        }
+        let snapshot = view
+            .graph_snapshot()
+            .map_err(|_| CanvasInteractionError::ViewUnavailable)?;
+        if start.validated_version != snapshot.version() {
+            return Err(CanvasInteractionError::StaleInteractionFacts);
+        }
+        view.validate_connection_binding(&start.binding)
+            .map_err(map_connection_binding_error)?;
+        self.activate_connection_search_current(start, position)
+    }
+
+    #[cfg(test)]
+    fn activate_connection_search_for_test(
+        &mut self,
+        start: ConnectionInteractionStart,
+        sample: ViewportPointerSample,
+    ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
+        let (position, _) = self.normalize_pointer_sample(sample)?;
+        if !start.belongs_to(self.provenance) {
+            return Err(CanvasInteractionError::ForeignInteractionFacts);
+        }
+        self.activate_connection_search_current(start, position)
+    }
+
+    fn activate_connection_search_current(
+        &mut self,
+        start: ConnectionInteractionStart,
         position: InteractionPosition,
     ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
-        self.ensure_available()?;
         if !matches!(self.state, InteractionState::Idle) {
             return Err(CanvasInteractionError::AlreadyActive);
         }
@@ -1152,10 +2550,15 @@ impl CanvasInteractionSession {
             return Err(CanvasInteractionError::ConnectionSearchUnavailable);
         }
         let generation = self.allocate_generation()?;
+        let Some(attempt) = self.allocate_search_attempt() else {
+            self.terminal = Some(InteractionTerminalReason::IdentityExhausted);
+            return Err(CanvasInteractionError::IdentityExhausted);
+        };
         self.terminal = None;
         self.pending_edge_pick = None;
         let search = ConnectionSearchInteraction {
             generation,
+            attempt,
             start,
             pointer: position,
             probe: ConnectionProbe::None,
@@ -1164,10 +2567,14 @@ impl CanvasInteractionSession {
         let mut update = CanvasInteractionUpdate::default();
         update
             .effects
-            .push(CanvasInteractionEffect::Search(search_request(&search)));
+            .push(CanvasInteractionEffect::Search(search_request(
+                self.id,
+                self.provenance,
+                &search,
+            )));
         update.damage.merge(InteractionDamage::connection());
         self.state = InteractionState::Connection(ConnectionInteraction::Searching(search));
-        Ok(update)
+        Ok(self.finalize_update(update))
     }
 
     /// Requests deletion through the authoritative interaction and command-settlement pipeline.
@@ -1179,49 +2586,128 @@ impl CanvasInteractionSession {
         &mut self,
         route: &PublishedEdgeRoute,
     ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
+        let view = self.authoritative_view()?;
+        let snapshot = view
+            .validate_published_edge_route(route)
+            .map_err(|error| match error {
+                ViewSessionError::ForeignInteractionFacts => {
+                    CanvasInteractionError::ForeignInteractionFacts
+                }
+                ViewSessionError::StaleInteractionFacts => {
+                    CanvasInteractionError::StaleInteractionFacts
+                }
+                _ => CanvasInteractionError::ViewUnavailable,
+            })?;
+        self.delete_edge_at_version(route, snapshot.version())
+    }
+
+    fn delete_edge_at_version(
+        &mut self,
+        route: &PublishedEdgeRoute,
+        validated_version: GraphVersion,
+    ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
         self.ensure_available()?;
         if !matches!(self.state, InteractionState::Idle) {
             return Err(CanvasInteractionError::AlreadyActive);
         }
-        let Some(intent) = EdgeDeletionIntent::from_route(route) else {
-            return Ok(CanvasInteractionUpdate::default());
+        let Some(intent) = EdgeDeletionIntent::from_route(route, validated_version) else {
+            return Ok(self.finalize_update(CanvasInteractionUpdate::default()));
         };
         self.terminal = None;
         self.pending_edge_pick = None;
         let generation = self.allocate_generation()?;
         let Some(ticket) = self.allocate_ticket() else {
             self.terminal = Some(InteractionTerminalReason::IdentityExhausted);
-            return Ok(CanvasInteractionUpdate::default().with_damage(edge_action_damage()));
+            return Ok(self.finalize_update(
+                CanvasInteractionUpdate::default().with_damage(edge_action_damage()),
+            ));
         };
-        if self.hovered_edge == Some(intent.edge()) {
+        if self
+            .hovered_edge
+            .is_some_and(|hovered| hovered.edge() == intent.edge())
+        {
             self.hovered_edge = None;
         }
         let mut update = CanvasInteractionUpdate::default().with_damage(edge_action_damage());
-        update.effects.push(CanvasInteractionEffect::SubmitGraph {
+        update.effects.push(CanvasInteractionEffect::submit_graph(
             ticket,
-            mutation: FreshGraphMutation::DeleteEdge(intent),
-        });
+            FreshGraphMutation::delete_edge(intent),
+        ));
         self.state = InteractionState::Committing(CommitInteraction::EdgeDelete(
             EdgeDeleteCommitInteraction {
                 generation,
-                edge: intent.edge(),
+                instance: route.instance(),
                 ticket,
             },
         ));
-        Ok(update)
+        Ok(self.finalize_update(update))
+    }
+
+    /// Deletes every currently selected node and edge admitted by the effective runtime policy.
+    ///
+    /// The complete deletion is retained as one revision-bound intent and submitted as one topology
+    /// command. Selected groups are preserved. Selected edges that will already be removed by a
+    /// selected node's cascade are omitted from the explicit disconnect set.
+    pub fn delete_selection(&mut self) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
+        let view = self.authoritative_view()?;
+        if !matches!(self.state, InteractionState::Idle) {
+            return Err(CanvasInteractionError::AlreadyActive);
+        }
+        let (selected_nodes, selected_edges, _) = view
+            .live_selection()
+            .map_err(|_| CanvasInteractionError::ViewUnavailable)?;
+        let snapshot = view
+            .graph_snapshot()
+            .map_err(|_| CanvasInteractionError::ViewUnavailable)?;
+        let policy = view
+            .graph_policy()
+            .map_err(|_| CanvasInteractionError::ViewUnavailable)?;
+        let Some(intent) = SelectionDeletionIntent::from_selection(
+            &snapshot,
+            policy,
+            &selected_nodes,
+            &selected_edges,
+        ) else {
+            return Ok(self.finalize_update(CanvasInteractionUpdate::default()));
+        };
+
+        self.terminal = None;
+        self.pending_edge_pick = None;
+        let generation = self.allocate_generation()?;
+        let Some(ticket) = self.allocate_ticket() else {
+            self.terminal = Some(InteractionTerminalReason::IdentityExhausted);
+            return Ok(self.finalize_update(
+                CanvasInteractionUpdate::default().with_damage(selection_delete_damage()),
+            ));
+        };
+        if self
+            .hovered_edge
+            .is_some_and(|hovered| intent.edges().any(|edge| edge == hovered.edge()))
+        {
+            self.hovered_edge = None;
+        }
+        let mut update = CanvasInteractionUpdate::default().with_damage(selection_delete_damage());
+        update.effects.push(CanvasInteractionEffect::submit_graph(
+            ticket,
+            FreshGraphMutation::delete_selection(intent),
+        ));
+        self.state = InteractionState::Committing(CommitInteraction::SelectionDelete(
+            SelectionDeleteCommitInteraction { generation, ticket },
+        ));
+        Ok(self.finalize_update(update))
     }
 
     pub fn request_edge_pick(
         &mut self,
-        position: InteractionPosition,
+        sample: ViewportPointerSample,
     ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
-        self.ensure_open()?;
+        let (position, _) = self.normalize_pointer_sample(sample)?;
         if !matches!(self.state, InteractionState::Idle) {
             return Err(CanvasInteractionError::AlreadyActive);
         }
         let Some(id) = self.allocate_query() else {
             self.terminal = Some(InteractionTerminalReason::IdentityExhausted);
-            return Ok(CanvasInteractionUpdate::default());
+            return Ok(self.finalize_update(CanvasInteractionUpdate::default()));
         };
         self.pending_edge_pick = Some(PendingHoverEdgePick {
             id,
@@ -1229,34 +2715,231 @@ impl CanvasInteractionSession {
             stale_query_restarts: 0,
         });
         let mut update = CanvasInteractionUpdate::default();
-        update.queries.push(CanvasInteractionQuery::EdgePick {
+        update.queries.push(CanvasInteractionQuery::edge_pick(
             id,
-            query: EdgePickQuery::new(
+            EdgePickQuery::new(
                 position.view(),
                 self.config.edge_pick_radius_in_view,
                 self.config.query_entry_budget,
-            ),
-        });
-        Ok(update)
+            )
+            .bind_interaction(self.interaction_query_binding(id)),
+        ));
+        Ok(self.finalize_update(update))
     }
 
     /// Clears adapter-local edge hover when the pointer leaves the graph-interactive surface.
     pub fn clear_edge_hover(&mut self) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
         self.ensure_open()?;
         self.pending_edge_pick = None;
-        if self.hovered_edge.take().is_none() {
-            return Ok(CanvasInteractionUpdate::default());
-        }
-        Ok(
+        let update = if self.hovered_edge.take().is_none() {
+            CanvasInteractionUpdate::default()
+        } else {
             CanvasInteractionUpdate::default().with_damage(InteractionDamage {
                 presentation: true,
                 edges: true,
                 ..InteractionDamage::default()
-            }),
-        )
+            })
+        };
+        Ok(self.finalize_update(update))
     }
 
-    pub fn resolve_edge_pick(
+    /// Executes exactly one runtime-issued query page and applies its outcome to this session.
+    ///
+    /// Query payloads are opaque to adapters: the bound view capability, cursor freshness policy,
+    /// continuation, stale restart, and connection target-lock policy all remain inside this
+    /// method. A superseded query is a no-op; a query issued by another interaction session is
+    /// rejected before the bound view is touched.
+    pub fn resolve_query(
+        &mut self,
+        query: CanvasInteractionQuery,
+    ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
+        let id = query.id();
+        if self.callback_authority(id.session(), None, self.query_is_current(&query))?
+            == CallbackAuthority::Stale
+        {
+            return Ok(self.finalize_update(CanvasInteractionUpdate::default()));
+        }
+        let view = self.bound_view.clone();
+        match query.kind {
+            CanvasInteractionQueryKind::EdgePick { id, query } => match view.edge_pick(query) {
+                Ok(outcome) => self.resolve_edge_pick_outcome(id, outcome),
+                Err(error) => self.resolve_edge_pick_query_error(id, error),
+            },
+            CanvasInteractionQueryKind::ConnectionProbe { id, query, .. } => {
+                match view.connection_probe(query) {
+                    Ok(outcome) => self.resolve_connection_probe_outcome(id, outcome),
+                    Err(error) => self.resolve_connection_probe_query_error(id, error),
+                }
+            }
+            CanvasInteractionQueryKind::NodeIntersection { id, query, .. } => {
+                match view.nodes_intersecting(query) {
+                    Ok(outcome) => self.resolve_node_intersection_outcome(id, outcome),
+                    Err(error) => self.resolve_node_intersection_query_error(id, error),
+                }
+            }
+            CanvasInteractionQueryKind::AlignmentSnap { id, query, .. } => {
+                match view.alignment_snap(query) {
+                    Ok(outcome) => self.resolve_alignment_snap_outcome(id, outcome),
+                    Err(error) => self.resolve_alignment_query_error(id, error),
+                }
+            }
+        }
+    }
+
+    fn query_is_current(&self, query: &CanvasInteractionQuery) -> bool {
+        match &query.kind {
+            CanvasInteractionQueryKind::EdgePick { id, .. } => {
+                matches!(&self.state, InteractionState::EdgePickPending(pending) if pending.query == *id)
+                    || self
+                        .pending_edge_pick
+                        .is_some_and(|pending| pending.id == *id)
+            }
+            CanvasInteractionQueryKind::ConnectionProbe { id, generation, .. } => match &self.state
+            {
+                InteractionState::Connection(ConnectionInteraction::Dragging(drag)) => {
+                    drag.generation == *generation && drag.pending_query == Some(*id)
+                }
+                InteractionState::Committing(CommitInteraction::Connection(commit)) => {
+                    commit.generation == *generation
+                        && matches!(
+                            commit.freshness,
+                            ConnectionCommitFreshness::Probing(pending) if pending == *id
+                        )
+                }
+                _ => false,
+            },
+            CanvasInteractionQueryKind::NodeIntersection { id, generation, .. } => matches!(
+                &self.state,
+                InteractionState::Marquee(marquee)
+                    if marquee.generation == *generation && marquee.pending_query == Some(*id)
+            ),
+            CanvasInteractionQueryKind::AlignmentSnap { id, generation, .. } => matches!(
+                &self.state,
+                InteractionState::NodeDrag(drag)
+                    if drag.generation == *generation
+                        && drag.pending_alignment_query == Some(*id)
+            ),
+        }
+    }
+
+    fn resolve_edge_pick_query_error(
+        &mut self,
+        id: InteractionQueryId,
+        error: EdgePickQueryError,
+    ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
+        match error {
+            EdgePickQueryError::StaleCursor(reason) if reason.is_restartable() => {
+                self.restart_stale_query(id)
+            }
+            EdgePickQueryError::StaleCursor(EdgePickCursorStaleReason::ForeignView) => {
+                Err(CanvasInteractionError::ForeignInteractionFacts)
+            }
+            EdgePickQueryError::StaleCursor(EdgePickCursorStaleReason::ViewGeneration) => {
+                Err(CanvasInteractionError::StaleInteractionFacts)
+            }
+            EdgePickQueryError::StaleCursor(_) => {
+                Err(CanvasInteractionError::StaleInteractionFacts)
+            }
+            EdgePickQueryError::Session(error) => Err(map_connection_binding_error(error)),
+            EdgePickQueryError::InvalidQuery => Err(CanvasInteractionError::InvalidPosition),
+        }
+    }
+
+    fn resolve_connection_probe_query_error(
+        &mut self,
+        id: InteractionQueryId,
+        error: ConnectionProbeQueryError,
+    ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
+        match error {
+            ConnectionProbeQueryError::StaleCursor(reason) if reason.is_restartable() => {
+                self.restart_stale_connection_query(id, reason)
+            }
+            ConnectionProbeQueryError::StaleCursor(
+                ConnectionProbeCursorStaleReason::ForeignView,
+            ) => Err(CanvasInteractionError::ForeignInteractionFacts),
+            ConnectionProbeQueryError::StaleCursor(
+                ConnectionProbeCursorStaleReason::ViewGeneration,
+            ) => Err(CanvasInteractionError::StaleInteractionFacts),
+            ConnectionProbeQueryError::StaleCursor(_) => {
+                Err(CanvasInteractionError::StaleInteractionFacts)
+            }
+            ConnectionProbeQueryError::Session(error) => Err(map_connection_binding_error(error)),
+            ConnectionProbeQueryError::InvalidQuery => Err(CanvasInteractionError::InvalidPosition),
+        }
+    }
+
+    fn resolve_node_intersection_query_error(
+        &mut self,
+        id: InteractionQueryId,
+        error: NodeIntersectionQueryError,
+    ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
+        match error {
+            NodeIntersectionQueryError::StaleCursor(reason) if reason.is_restartable() => {
+                self.restart_stale_query(id)
+            }
+            NodeIntersectionQueryError::StaleCursor(
+                NodeIntersectionCursorStaleReason::ForeignView,
+            ) => Err(CanvasInteractionError::ForeignInteractionFacts),
+            NodeIntersectionQueryError::StaleCursor(
+                NodeIntersectionCursorStaleReason::ViewGeneration,
+            ) => Err(CanvasInteractionError::StaleInteractionFacts),
+            NodeIntersectionQueryError::StaleCursor(_) => {
+                Err(CanvasInteractionError::StaleInteractionFacts)
+            }
+            NodeIntersectionQueryError::View(error) => Err(map_connection_binding_error(error)),
+            NodeIntersectionQueryError::InvalidQuery => {
+                Err(CanvasInteractionError::InvalidPosition)
+            }
+        }
+    }
+
+    fn resolve_alignment_query_error(
+        &mut self,
+        id: InteractionQueryId,
+        error: ViewSessionError,
+    ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
+        match error {
+            ViewSessionError::StaleInteractionFacts => self.restart_stale_query(id),
+            ViewSessionError::ForeignInteractionFacts => {
+                Err(CanvasInteractionError::ForeignInteractionFacts)
+            }
+            error => Err(map_connection_binding_error(error)),
+        }
+    }
+
+    fn resolve_edge_pick_outcome(
+        &mut self,
+        id: InteractionQueryId,
+        outcome: EdgePickQueryOutcome,
+    ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
+        self.ensure_open()?;
+        self.ensure_interaction_session(id.session())?;
+        let view = self.authoritative_view()?;
+        let Some(receipt) = outcome.receipt() else {
+            return Err(CanvasInteractionError::MissingInteractionQueryReceipt { query: id });
+        };
+        if receipt.query_id() != id {
+            return Err(CanvasInteractionError::MismatchedInteractionQueryReceipt {
+                expected: id,
+                actual: receipt.query_id(),
+            });
+        }
+        if !receipt.authenticates(self.interaction_query_binding(id)) {
+            return Err(CanvasInteractionError::ForeignInteractionFacts);
+        }
+        match view.edge_pick_receipt_is_current(receipt) {
+            Ok(true) => self.resolve_edge_pick_current(id, outcome),
+            Ok(false) | Err(ViewSessionError::StaleInteractionFacts) => {
+                self.restart_stale_query(id)
+            }
+            Err(ViewSessionError::ForeignInteractionFacts) => {
+                Err(CanvasInteractionError::ForeignInteractionFacts)
+            }
+            Err(_) => Err(CanvasInteractionError::ViewUnavailable),
+        }
+    }
+
+    fn resolve_edge_pick_current(
         &mut self,
         id: InteractionQueryId,
         outcome: EdgePickQueryOutcome,
@@ -1274,18 +2957,19 @@ impl CanvasInteractionSession {
             .pending_edge_pick
             .is_some_and(|pending| pending.id == id)
         {
-            return Ok(update);
+            return Ok(self.finalize_update(update));
         }
         match outcome {
             EdgePickQueryOutcome::Incomplete { cursor, .. } => {
-                update.queries.push(CanvasInteractionQuery::EdgePick {
+                update.queries.push(CanvasInteractionQuery::edge_pick(
                     id,
-                    query: EdgePickQuery::resume(cursor, self.config.query_entry_budget),
-                });
+                    EdgePickQuery::resume(cursor, self.config.query_entry_budget)
+                        .bind_interaction(self.interaction_query_binding(id)),
+                ));
             }
             EdgePickQueryOutcome::Complete { pick, .. } => {
                 self.pending_edge_pick = None;
-                let edge = pick.map(|pick| pick.edge());
+                let edge = pick.map(|pick| pick.instance());
                 if self.hovered_edge != edge {
                     self.hovered_edge = edge;
                     update.damage = InteractionDamage {
@@ -1316,7 +3000,7 @@ impl CanvasInteractionSession {
                 };
             }
         }
-        Ok(update)
+        Ok(self.finalize_update(update))
     }
 
     fn resolve_canvas_press_edge_pick(
@@ -1326,10 +3010,11 @@ impl CanvasInteractionSession {
     ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
         let resolution = match outcome {
             EdgePickQueryOutcome::Incomplete { cursor, .. } => CanvasEdgePickResolution::Continue(
-                EdgePickQuery::resume(cursor, self.config.query_entry_budget),
+                EdgePickQuery::resume(cursor, self.config.query_entry_budget)
+                    .bind_interaction(self.interaction_query_binding(id)),
             ),
             EdgePickQueryOutcome::Complete { pick, .. } => {
-                CanvasEdgePickResolution::Complete(pick.map(|pick| pick.edge()))
+                CanvasEdgePickResolution::Complete(pick.map(|pick| pick.instance()))
             }
             EdgePickQueryOutcome::BudgetExhausted { .. } => {
                 CanvasEdgePickResolution::BudgetExhausted
@@ -1346,14 +3031,17 @@ impl CanvasInteractionSession {
         id: InteractionQueryId,
         resolution: CanvasEdgePickResolution,
     ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
+        if let Some(update) = self.try_finish_canvas_pan_fallback(id, &resolution)? {
+            return Ok(update);
+        }
         let state = std::mem::take(&mut self.state);
         let InteractionState::EdgePickPending(pending) = state else {
             self.state = state;
-            return Ok(CanvasInteractionUpdate::default());
+            return Ok(self.finalize_update(CanvasInteractionUpdate::default()));
         };
         if pending.query != id {
             self.state = InteractionState::EdgePickPending(pending);
-            return Ok(CanvasInteractionUpdate::default());
+            return Ok(self.finalize_update(CanvasInteractionUpdate::default()));
         }
 
         let mut update = CanvasInteractionUpdate::default();
@@ -1361,7 +3049,7 @@ impl CanvasInteractionSession {
             CanvasEdgePickResolution::Continue(query) => {
                 update
                     .queries
-                    .push(CanvasInteractionQuery::EdgePick { id, query });
+                    .push(CanvasInteractionQuery::edge_pick(id, query));
                 InteractionState::EdgePickPending(pending)
             }
             CanvasEdgePickResolution::Complete(edge) => {
@@ -1380,20 +3068,99 @@ impl CanvasInteractionSession {
                 InteractionState::Idle
             }
         };
-        if state_needs_tick(&self.state) {
-            update = update.active();
+        self.commit_selection_transition(&mut update, None)?;
+        Ok(self.finalize_update(update))
+    }
+
+    fn try_finish_canvas_pan_fallback(
+        &mut self,
+        id: InteractionQueryId,
+        resolution: &CanvasEdgePickResolution,
+    ) -> Result<Option<CanvasInteractionUpdate>, CanvasInteractionError> {
+        if !matches!(resolution, CanvasEdgePickResolution::Complete(None)) {
+            return Ok(None);
         }
-        Ok(update)
+        let Some((generation, press, pointer, release_pending)) = (match &self.state {
+            InteractionState::EdgePickPending(pending)
+                if pending.query == id
+                    && matches!(pending.fallback, CanvasPressFallback::Pan { .. })
+                    && threshold_crossed_distance(
+                        pending.max_view_distance_squared,
+                        self.config.canvas_drag_threshold_in_view,
+                    ) =>
+            {
+                Some((
+                    pending.generation,
+                    pending.press,
+                    pending.pointer,
+                    pending.release_pending,
+                ))
+            }
+            _ => None,
+        }) else {
+            return Ok(None);
+        };
+
+        let current = self.current_viewport_snapshot()?;
+        if current.provenance() != self.provenance {
+            return Err(CanvasInteractionError::ForeignInteractionFacts);
+        }
+        validate_position_reprojection(press, current)?;
+        validate_position_reprojection(pointer, current)?;
+        let press = press
+            .reproject(current)
+            .expect("the canvas press was validated against this viewport");
+        let pointer = pointer
+            .reproject(current)
+            .expect("the canvas pointer was validated against this viewport");
+        let delta = view_delta(press.view(), pointer.view());
+
+        let (committed, panic) = if delta.x == 0.0 && delta.y == 0.0 {
+            (current, None)
+        } else {
+            let preview = ViewportIntent::pan(ViewportPanRequest::new(delta))
+                .resolve(current.transform())
+                .ok_or(CanvasInteractionError::InvalidPosition)?;
+            let preview = ViewportSnapshot::new(self.provenance, current.revision(), preview);
+            pointer
+                .reproject(preview)
+                .ok_or(CanvasInteractionError::InvalidPosition)?;
+            self.commit_pan(delta)?
+        };
+        let pointer = pointer
+            .reproject(committed)
+            .expect("the committed canvas pan was previewed before mutation");
+
+        let state = std::mem::take(&mut self.state);
+        let InteractionState::EdgePickPending(pending) = state else {
+            unreachable!("canvas pan fallback state cannot change during a synchronous commit");
+        };
+        debug_assert_eq!(pending.query, id);
+        self.hovered_edge = None;
+        self.state = if release_pending {
+            InteractionState::Idle
+        } else {
+            InteractionState::Pan(PanInteraction {
+                generation,
+                pointer,
+            })
+        };
+        let mut update = CanvasInteractionUpdate::default();
+        update.damage.presentation = true;
+        update.damage.viewport = committed.revision() != current.revision();
+        let update = self.finalize_update(update);
+        resume(panic);
+        Ok(Some(update))
     }
 
     fn finish_canvas_press_edge_pick(
         &mut self,
         pending: CanvasEdgePickInteraction,
-        edge: Option<EdgeId>,
+        instance: Option<EdgeInstanceKey>,
         update: &mut CanvasInteractionUpdate,
     ) -> Result<InteractionState, CanvasInteractionError> {
-        self.hovered_edge = edge;
-        let Some(edge) = edge else {
+        self.hovered_edge = instance;
+        let Some(instance) = instance else {
             return self.activate_canvas_press_fallback(pending, update);
         };
 
@@ -1409,12 +3176,11 @@ impl CanvasInteractionSession {
             return Ok(InteractionState::Idle);
         }
 
-        update.effects.push(CanvasInteractionEffect::Selection(
-            SelectionMutation::Edge {
-                edge,
-                mode: pending.fallback.selection_mode(),
-            },
-        ));
+        update.pending_selection = Some(SelectionMutation::Edge {
+            provenance: self.provenance,
+            instance,
+            mode: pending.fallback.selection_mode(),
+        });
         update.damage = InteractionDamage {
             presentation: true,
             edges: true,
@@ -1426,7 +3192,7 @@ impl CanvasInteractionSession {
         } else {
             InteractionState::EdgeActive(EdgeInteraction {
                 generation: pending.generation,
-                edge,
+                instance,
             })
         })
     }
@@ -1448,7 +3214,11 @@ impl CanvasInteractionSession {
         );
         if pending.release_pending {
             if crossed {
-                let _ = self.activate_armed(armed, pending.pointer, update)?;
+                let activated = self.activate_armed(armed, pending.pointer, update)?;
+                if let InteractionState::Marquee(mut marquee) = activated {
+                    marquee.release_pending = true;
+                    return Ok(InteractionState::Marquee(marquee));
+                }
             } else {
                 self.finish_armed_click(&armed, update);
             }
@@ -1468,9 +3238,42 @@ impl CanvasInteractionSession {
     /// emitting a first-page query. Adapters must call this only for a restartable stale-cursor
     /// error reported by their view query transport. Late errors for superseded query identities
     /// are ignored.
-    pub fn restart_stale_query(
+    fn restart_stale_query(
         &mut self,
         id: InteractionQueryId,
+    ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
+        self.ensure_open()?;
+        self.ensure_interaction_session(id.session())?;
+        self.restart_stale_query_with_connection_lock(id, false)
+    }
+
+    /// Restarts one connection probe while applying invalidation-specific target-lock policy.
+    ///
+    /// Viewport and paint-order changes may retain the same target lifetime. Graph or published
+    /// port-geometry changes clear it before the replacement first page is issued, forcing every
+    /// target to satisfy the acquire radius again.
+    fn restart_stale_connection_query(
+        &mut self,
+        id: InteractionQueryId,
+        reason: ConnectionProbeCursorStaleReason,
+    ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
+        self.ensure_open()?;
+        self.ensure_interaction_session(id.session())?;
+        if !reason.is_restartable() {
+            return Ok(self.finalize_update(CanvasInteractionUpdate::default()));
+        }
+        let preserve_lock = matches!(
+            reason,
+            ConnectionProbeCursorStaleReason::ViewportTransform
+                | ConnectionProbeCursorStaleReason::PaintOrder
+        );
+        self.restart_stale_query_with_connection_lock(id, preserve_lock)
+    }
+
+    fn restart_stale_query_with_connection_lock(
+        &mut self,
+        id: InteractionQueryId,
+        preserve_connection_lock: bool,
     ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
         self.ensure_open()?;
         if matches!(
@@ -1484,29 +3287,30 @@ impl CanvasInteractionSession {
             if !reserve_stale_query_restart(&mut pending.stale_query_restarts) {
                 self.hovered_edge = None;
                 self.terminal = Some(InteractionTerminalReason::BudgetExhausted);
-                return Ok(
-                    CanvasInteractionUpdate::default().with_damage(edge_pick_terminal_damage())
-                );
+                return Ok(self.finalize_update(
+                    CanvasInteractionUpdate::default().with_damage(edge_pick_terminal_damage()),
+                ));
             }
             let Some(next) = self.allocate_query() else {
                 self.hovered_edge = None;
                 self.terminal = Some(InteractionTerminalReason::IdentityExhausted);
-                return Ok(
-                    CanvasInteractionUpdate::default().with_damage(edge_pick_terminal_damage())
-                );
+                return Ok(self.finalize_update(
+                    CanvasInteractionUpdate::default().with_damage(edge_pick_terminal_damage()),
+                ));
             };
             pending.query = next;
             let mut update = CanvasInteractionUpdate::default();
-            update.queries.push(CanvasInteractionQuery::EdgePick {
-                id: next,
-                query: EdgePickQuery::new(
+            update.queries.push(CanvasInteractionQuery::edge_pick(
+                next,
+                EdgePickQuery::new(
                     pending.press.view(),
                     self.config.edge_pick_radius_in_view,
                     self.config.query_entry_budget,
-                ),
-            });
+                )
+                .bind_interaction(self.interaction_query_binding(next)),
+            ));
             self.state = InteractionState::EdgePickPending(pending);
-            return Ok(update);
+            return Ok(self.finalize_update(update));
         }
 
         if self
@@ -1521,19 +3325,21 @@ impl CanvasInteractionSession {
             if !reserve_stale_query_restart(&mut stale_query_restarts) {
                 self.hovered_edge = None;
                 self.terminal = Some(InteractionTerminalReason::BudgetExhausted);
-                return Ok(
-                    CanvasInteractionUpdate::default().with_damage(edge_pick_terminal_damage())
-                );
+                return Ok(self.finalize_update(
+                    CanvasInteractionUpdate::default().with_damage(edge_pick_terminal_damage()),
+                ));
             }
             let Some(next) = self.allocate_query() else {
                 self.hovered_edge = None;
                 self.terminal = Some(InteractionTerminalReason::IdentityExhausted);
                 return Ok(
-                    CanvasInteractionUpdate::default().with_damage(InteractionDamage {
-                        presentation: true,
-                        edges: true,
-                        ..InteractionDamage::default()
-                    }),
+                    self.finalize_update(CanvasInteractionUpdate::default().with_damage(
+                        InteractionDamage {
+                            presentation: true,
+                            edges: true,
+                            ..InteractionDamage::default()
+                        },
+                    )),
                 );
             };
             self.pending_edge_pick = Some(PendingHoverEdgePick {
@@ -1542,20 +3348,56 @@ impl CanvasInteractionSession {
                 stale_query_restarts,
             });
             let mut update = CanvasInteractionUpdate::default();
-            update.queries.push(CanvasInteractionQuery::EdgePick {
-                id: next,
-                query: EdgePickQuery::new(
+            update.queries.push(CanvasInteractionQuery::edge_pick(
+                next,
+                EdgePickQuery::new(
                     pending.position.view(),
                     self.config.edge_pick_radius_in_view,
                     self.config.query_entry_budget,
-                ),
-            });
-            return Ok(update);
+                )
+                .bind_interaction(self.interaction_query_binding(next)),
+            ));
+            return Ok(self.finalize_update(update));
         }
 
         let state = std::mem::take(&mut self.state);
         let mut update = CanvasInteractionUpdate::default();
         self.state = match state {
+            InteractionState::NodeDrag(mut drag) if drag.pending_alignment_query == Some(id) => {
+                drag.pending_alignment_query = None;
+                if !reserve_stale_query_restart(&mut drag.stale_query_restarts) {
+                    drag.delta = drag.raw_delta;
+                    drag.guides = Arc::default();
+                    drag.alignment_locks = AlignmentSnapLocks::default();
+                    update.damage.merge(InteractionDamage::node_drag());
+                    if drag.release_pending {
+                        self.commit_node_drag(drag, &mut update)
+                    } else {
+                        InteractionState::NodeDrag(drag)
+                    }
+                } else if self.queue_alignment_snap(&mut drag, &mut update) {
+                    InteractionState::NodeDrag(drag)
+                } else if drag.release_pending {
+                    self.commit_node_drag(drag, &mut update)
+                } else {
+                    InteractionState::NodeDrag(drag)
+                }
+            }
+            InteractionState::Marquee(mut marquee) if marquee.pending_query == Some(id) => {
+                if !reserve_stale_query_restart(&mut marquee.stale_query_restarts) {
+                    self.terminal = Some(InteractionTerminalReason::BudgetExhausted);
+                    update.damage.merge(InteractionDamage::presentation());
+                    InteractionState::Idle
+                } else {
+                    marquee.pending_query = None;
+                    if self.queue_marquee_query(&mut marquee, &mut update) {
+                        InteractionState::Marquee(marquee)
+                    } else {
+                        update.damage.merge(InteractionDamage::presentation());
+                        InteractionState::Idle
+                    }
+                }
+            }
             InteractionState::Connection(ConnectionInteraction::Dragging(mut drag))
                 if drag.pending_query == Some(id) =>
             {
@@ -1565,10 +3407,14 @@ impl CanvasInteractionSession {
                     InteractionState::Idle
                 } else {
                     drag.pending_query = None;
-                    self.queue_connection_probe(&mut drag, &mut update)?;
+                    if !preserve_connection_lock {
+                        drag.target_lock = None;
+                        drag.probe = ConnectionProbe::None;
+                    }
+                    self.queue_connection_probe(&mut drag, &mut update);
                     if drag.pending_query.is_none() {
                         update.damage.merge(InteractionDamage::connection());
-                        return Ok(update);
+                        return Ok(self.finalize_update(update));
                     }
                     InteractionState::Connection(ConnectionInteraction::Dragging(drag))
                 }
@@ -1581,45 +3427,54 @@ impl CanvasInteractionSession {
                         InteractionTerminalReason::BudgetExhausted,
                     )
                 } else {
+                    if !preserve_connection_lock {
+                        commit.probe = ConnectionProbe::None;
+                    }
                     let Some(next) = self.allocate_query() else {
                         update.damage.merge(InteractionDamage::connection());
                         self.state = self.reject_connection_commit(
                             commit,
                             InteractionTerminalReason::IdentityExhausted,
                         );
-                        return Ok(update);
+                        return Ok(self.finalize_update(update));
                     };
                     commit.freshness = ConnectionCommitFreshness::Probing(next);
                     update
                         .queries
-                        .push(CanvasInteractionQuery::ConnectionProbe {
-                            id: next,
-                            generation: commit.generation,
-                            query: ConnectionProbeQuery::new(
-                                commit.start.intent,
+                        .push(CanvasInteractionQuery::connection_probe(
+                            next,
+                            commit.generation,
+                            ConnectionProbeQuery::new(
+                                commit.start.binding.clone(),
                                 commit.pointer.view(),
-                                self.config.connection_radius_in_view,
+                                connection_probe_targeting(
+                                    self.config,
+                                    commit.probe.target().map(|target| target.identity()),
+                                ),
                                 self.config.query_entry_budget,
-                            ),
-                        });
+                            )
+                            .bind_interaction(self.interaction_query_binding(next)),
+                        ));
                     InteractionState::Committing(CommitInteraction::Connection(commit))
                 }
             }
             other => other,
         };
-        if state_needs_tick(&self.state) {
-            update = update.active();
-        }
-        Ok(update)
+        Ok(self.finalize_update(update))
     }
 
     pub fn move_to(
         &mut self,
-        position: InteractionPosition,
+        sample: ViewportPointerSample,
     ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
-        self.ensure_open()?;
+        let (position, current) = self.normalize_pointer_sample(sample)?;
+        if let Some(update) = self.move_pan_if_active(position, current)? {
+            return Ok(update);
+        }
+        self.rebase_interaction_positions(current)?;
         let state = std::mem::take(&mut self.state);
         let mut update = CanvasInteractionUpdate::default();
+        let mut selection_rollback = None;
         self.state = match state {
             InteractionState::Armed(mut armed) => {
                 armed.max_view_distance_squared = armed
@@ -1631,6 +3486,7 @@ impl CanvasInteractionSession {
                 ) {
                     InteractionState::Armed(armed)
                 } else {
+                    selection_rollback = Some(InteractionState::Armed(armed.clone()));
                     self.activate_armed(armed, position, &mut update)?
                 }
             }
@@ -1650,36 +3506,23 @@ impl CanvasInteractionSession {
                 InteractionState::NodeDrag(drag)
             }
             InteractionState::Pan(mut pan) => {
-                let delta = view_delta(pan.pointer.view(), position.view());
                 pan.pointer = position;
-                if delta.x != 0.0 || delta.y != 0.0 {
-                    update.effects.push(CanvasInteractionEffect::Viewport(
-                        ViewportMutation::PanByView(delta),
-                    ));
-                    update.damage.viewport = true;
-                }
                 InteractionState::Pan(pan)
             }
             InteractionState::Marquee(mut marquee) => {
                 marquee.pointer = position;
-                update.effects.push(CanvasInteractionEffect::Selection(
-                    SelectionMutation::Marquee {
-                        bounds: rect_between(marquee.start.canvas(), position.canvas()),
-                        mode: marquee.selection_mode,
-                        baseline: marquee.baseline.clone(),
-                    },
-                ));
-                update.damage = InteractionDamage {
-                    presentation: true,
-                    selection: true,
-                    ..InteractionDamage::default()
-                };
-                InteractionState::Marquee(marquee)
+                marquee.release_pending = false;
+                update.damage.merge(InteractionDamage::presentation());
+                if self.start_marquee_query(&mut marquee, &mut update) {
+                    InteractionState::Marquee(marquee)
+                } else {
+                    InteractionState::Idle
+                }
             }
             InteractionState::Connection(ConnectionInteraction::Dragging(mut drag)) => {
                 drag.pointer = position;
                 drag.release_pending = false;
-                self.start_connection_probe(&mut drag, &mut update)?;
+                self.start_connection_probe(&mut drag, &mut update);
                 update.damage.merge(InteractionDamage::connection());
                 InteractionState::Connection(ConnectionInteraction::Dragging(drag))
             }
@@ -1692,27 +3535,41 @@ impl CanvasInteractionSession {
             }
             other => other,
         };
-        if state_needs_tick(&self.state) {
-            update = update.active();
-        }
-        Ok(update)
+        self.commit_selection_transition(&mut update, selection_rollback)?;
+        Ok(self.finalize_update(update))
     }
 
     pub fn release(
         &mut self,
-        position: InteractionPosition,
+        sample: ViewportPointerSample,
     ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
-        self.ensure_open()?;
+        let (position, current) = self.normalize_pointer_sample(sample)?;
+        if let Some(mut update) = self.move_pan_if_active(position, current)? {
+            self.state = InteractionState::Idle;
+            update.damage.merge(InteractionDamage::presentation());
+            return Ok(self.finalize_update(update));
+        }
+        self.rebase_interaction_positions(current)?;
         let state = std::mem::take(&mut self.state);
         let mut update = CanvasInteractionUpdate::default();
+        let mut selection_rollback = None;
         self.state = match state {
             InteractionState::Armed(mut armed) => {
+                selection_rollback = Some(InteractionState::Armed(armed.clone()));
                 armed.max_view_distance_squared = armed
                     .max_view_distance_squared
                     .max(view_distance_squared(armed.start.view(), position.view()));
-                self.finish_armed_click(&armed, &mut update);
-                update.damage.merge(InteractionDamage::presentation());
-                InteractionState::Idle
+                if threshold_crossed_distance(
+                    armed.max_view_distance_squared,
+                    self.threshold_for(&armed.target),
+                ) {
+                    let activated = self.activate_armed(armed, position, &mut update)?;
+                    self.finish_activated_release(activated, &mut update)
+                } else {
+                    self.finish_armed_click(&armed, &mut update);
+                    update.damage.merge(InteractionDamage::presentation());
+                    InteractionState::Idle
+                }
             }
             InteractionState::NodeDrag(mut drag) => {
                 drag.pointer = position;
@@ -1735,7 +3592,7 @@ impl CanvasInteractionSession {
             InteractionState::Connection(ConnectionInteraction::Dragging(mut drag)) => {
                 drag.pointer = position;
                 drag.release_pending = true;
-                self.start_connection_probe(&mut drag, &mut update)?;
+                self.start_connection_probe(&mut drag, &mut update);
                 update.damage.merge(InteractionDamage::connection());
                 InteractionState::Connection(ConnectionInteraction::Dragging(drag))
             }
@@ -1747,21 +3604,66 @@ impl CanvasInteractionSession {
                 pending.release_pending = true;
                 InteractionState::EdgePickPending(pending)
             }
-            InteractionState::Pan(_)
-            | InteractionState::Marquee(_)
-            | InteractionState::EdgeActive(_) => {
+            InteractionState::Marquee(mut marquee) => {
+                marquee.pointer = position;
+                marquee.release_pending = true;
+                update.damage.merge(InteractionDamage::presentation());
+                if self.start_marquee_query(&mut marquee, &mut update) {
+                    InteractionState::Marquee(marquee)
+                } else {
+                    InteractionState::Idle
+                }
+            }
+            InteractionState::Pan(_) | InteractionState::EdgeActive(_) => {
                 update.damage.merge(InteractionDamage::presentation());
                 InteractionState::Idle
             }
             other => other,
         };
-        if state_needs_tick(&self.state) {
-            update = update.active();
-        }
-        Ok(update)
+        self.commit_selection_transition(&mut update, selection_rollback)?;
+        Ok(self.finalize_update(update))
     }
 
-    pub fn resolve_connection_probe(
+    fn resolve_connection_probe_outcome(
+        &mut self,
+        id: InteractionQueryId,
+        outcome: ConnectionProbeQueryOutcome,
+    ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
+        self.ensure_open()?;
+        self.ensure_interaction_session(id.session())?;
+        let view = self.authoritative_view()?;
+        let Some(receipt) = outcome.receipt() else {
+            return Err(CanvasInteractionError::MissingInteractionQueryReceipt { query: id });
+        };
+        if receipt.query_id() != id {
+            return Err(CanvasInteractionError::MismatchedInteractionQueryReceipt {
+                expected: id,
+                actual: receipt.query_id(),
+            });
+        }
+        if !receipt.authenticates(self.interaction_query_binding(id)) {
+            return Err(CanvasInteractionError::ForeignInteractionFacts);
+        }
+        match view.connection_probe_receipt_stale_reason(receipt) {
+            Ok(None) => self.resolve_connection_probe_current(id, outcome),
+            Ok(Some(reason)) if reason.is_restartable() => {
+                self.restart_stale_connection_query(id, reason)
+            }
+            Ok(Some(ConnectionProbeCursorStaleReason::ForeignView)) => {
+                Err(CanvasInteractionError::ForeignInteractionFacts)
+            }
+            Ok(Some(ConnectionProbeCursorStaleReason::ViewGeneration)) => {
+                Err(CanvasInteractionError::StaleInteractionFacts)
+            }
+            Ok(Some(_)) => Err(CanvasInteractionError::StaleInteractionFacts),
+            Err(ViewSessionError::ForeignInteractionFacts) => {
+                Err(CanvasInteractionError::ForeignInteractionFacts)
+            }
+            Err(_) => Err(CanvasInteractionError::ViewUnavailable),
+        }
+    }
+
+    fn resolve_connection_probe_current(
         &mut self,
         id: InteractionQueryId,
         outcome: ConnectionProbeQueryOutcome,
@@ -1777,14 +3679,15 @@ impl CanvasInteractionSession {
                     ConnectionProbeQueryOutcome::Incomplete { cursor, .. } => {
                         update
                             .queries
-                            .push(CanvasInteractionQuery::ConnectionProbe {
+                            .push(CanvasInteractionQuery::connection_probe(
                                 id,
-                                generation: drag.generation,
-                                query: ConnectionProbeQuery::resume(
+                                drag.generation,
+                                ConnectionProbeQuery::resume(
                                     cursor,
                                     self.config.query_entry_budget,
-                                ),
-                            });
+                                )
+                                .bind_interaction(self.interaction_query_binding(id)),
+                            ));
                         InteractionState::Connection(ConnectionInteraction::Dragging(drag))
                     }
                     ConnectionProbeQueryOutcome::BudgetExhausted { .. } => {
@@ -1794,6 +3697,7 @@ impl CanvasInteractionSession {
                     }
                     ConnectionProbeQueryOutcome::Complete { probe, .. } => {
                         drag.pending_query = None;
+                        drag.target_lock = probe.target().map(|target| target.identity());
                         drag.probe = probe;
                         update.damage.merge(InteractionDamage::connection());
                         if drag.release_pending {
@@ -1809,14 +3713,15 @@ impl CanvasInteractionSession {
                     ConnectionProbeQueryOutcome::Incomplete { cursor, .. } => {
                         update
                             .queries
-                            .push(CanvasInteractionQuery::ConnectionProbe {
+                            .push(CanvasInteractionQuery::connection_probe(
                                 id,
-                                generation: commit.generation,
-                                query: ConnectionProbeQuery::resume(
+                                commit.generation,
+                                ConnectionProbeQuery::resume(
                                     cursor,
                                     self.config.query_entry_budget,
-                                ),
-                            });
+                                )
+                                .bind_interaction(self.interaction_query_binding(id)),
+                            ));
                         InteractionState::Committing(CommitInteraction::Connection(commit))
                     }
                     ConnectionProbeQueryOutcome::BudgetExhausted { .. } => {
@@ -1829,19 +3734,19 @@ impl CanvasInteractionSession {
                     ConnectionProbeQueryOutcome::Complete { probe, .. } => {
                         update.damage.merge(InteractionDamage::connection());
                         match probe {
-                            valid @ ConnectionProbe::Valid { revision, target } => {
+                            valid @ ConnectionProbe::Valid { version, target } => {
                                 commit.probe = valid;
-                                commit.target = target.port();
+                                commit.target =
+                                    ConnectionCommitTarget::existing(target.identity().instance());
                                 commit.freshness = ConnectionCommitFreshness::Revalidated;
-                                update.effects.push(CanvasInteractionEffect::SubmitGraph {
-                                    ticket: commit.ticket,
-                                    mutation: FreshGraphMutation::Connection {
-                                        intent: commit.start.intent,
-                                        target: commit.target,
-                                        validated_revision: revision,
-                                        topology: commit.topology.clone(),
-                                    },
-                                });
+                                update.effects.push(CanvasInteractionEffect::submit_graph(
+                                    commit.ticket,
+                                    FreshGraphMutation::connection(
+                                        commit.start.binding.clone(),
+                                        commit.target.clone(),
+                                        version,
+                                    ),
+                                ));
                                 InteractionState::Committing(CommitInteraction::Connection(commit))
                             }
                             invalid @ (ConnectionProbe::None | ConnectionProbe::Invalid { .. }) => {
@@ -1857,19 +3762,131 @@ impl CanvasInteractionSession {
             }
             other => other,
         };
-        if state_needs_tick(&self.state) {
-            update = update.active();
+        Ok(self.finalize_update(update))
+    }
+
+    fn resolve_node_intersection_outcome(
+        &mut self,
+        id: InteractionQueryId,
+        outcome: NodeIntersectionQueryOutcome,
+    ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
+        self.ensure_open()?;
+        self.ensure_interaction_session(id.session())?;
+        let view = self.authoritative_view()?;
+        let Some(receipt) = outcome.receipt() else {
+            return Err(CanvasInteractionError::MissingInteractionQueryReceipt { query: id });
+        };
+        if receipt.query_id() != id {
+            return Err(CanvasInteractionError::MismatchedInteractionQueryReceipt {
+                expected: id,
+                actual: receipt.query_id(),
+            });
         }
-        Ok(update)
+        if !receipt.authenticates(self.interaction_query_binding(id)) {
+            return Err(CanvasInteractionError::ForeignInteractionFacts);
+        }
+        match view.node_intersection_receipt_is_current(receipt) {
+            Ok(true) => {
+                let snapshot = view
+                    .graph_snapshot()
+                    .map_err(|_| CanvasInteractionError::ViewUnavailable)?;
+                self.resolve_node_intersection_current(id, outcome, Some(&snapshot))
+            }
+            Ok(false) | Err(ViewSessionError::StaleInteractionFacts) => {
+                self.restart_stale_query(id)
+            }
+            Err(ViewSessionError::ForeignInteractionFacts) => {
+                Err(CanvasInteractionError::ForeignInteractionFacts)
+            }
+            Err(_) => Err(CanvasInteractionError::ViewUnavailable),
+        }
+    }
+
+    fn resolve_node_intersection_current(
+        &mut self,
+        id: InteractionQueryId,
+        outcome: NodeIntersectionQueryOutcome,
+        snapshot: Option<&GraphSnapshot>,
+    ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
+        self.ensure_open()?;
+        let state = std::mem::take(&mut self.state);
+        let mut update = CanvasInteractionUpdate::default();
+        let mut selection_rollback = None;
+        self.state = match state {
+            InteractionState::Marquee(mut marquee) if marquee.pending_query == Some(id) => {
+                selection_rollback = Some(InteractionState::Marquee(marquee.clone()));
+                match outcome {
+                    NodeIntersectionQueryOutcome::Incomplete { cursor, .. } => {
+                        update
+                            .queries
+                            .push(CanvasInteractionQuery::node_intersection(
+                                id,
+                                marquee.generation,
+                                NodeIntersectionQuery::resume(
+                                    cursor,
+                                    self.config.query_entry_budget,
+                                )
+                                .bind_interaction(self.interaction_query_binding(id)),
+                            ));
+                        InteractionState::Marquee(marquee)
+                    }
+                    NodeIntersectionQueryOutcome::BudgetExhausted { .. } => {
+                        self.terminal = Some(InteractionTerminalReason::BudgetExhausted);
+                        update.damage.merge(InteractionDamage::presentation());
+                        InteractionState::Idle
+                    }
+                    NodeIntersectionQueryOutcome::Complete { nodes, .. } => {
+                        marquee.pending_query = None;
+                        let nodes = nodes
+                            .into_iter()
+                            .filter_map(|node| {
+                                snapshot.map_or_else(
+                                    || {
+                                        #[cfg(test)]
+                                        {
+                                            Some(NodeLifetimeKey::unavailable(node))
+                                        }
+                                        #[cfg(not(test))]
+                                        {
+                                            None
+                                        }
+                                    },
+                                    |snapshot| snapshot.node_lifetime_key(node),
+                                )
+                            })
+                            .collect::<Arc<[_]>>();
+                        update.pending_selection = Some(SelectionMutation::Marquee {
+                            provenance: marquee.baseline.provenance(),
+                            nodes,
+                            mode: marquee.selection_mode,
+                            baseline: marquee.baseline.clone(),
+                        });
+                        update.damage = InteractionDamage {
+                            presentation: true,
+                            selection: true,
+                            ..InteractionDamage::default()
+                        };
+                        if marquee.release_pending {
+                            InteractionState::Idle
+                        } else {
+                            InteractionState::Marquee(marquee)
+                        }
+                    }
+                }
+            }
+            other => other,
+        };
+        self.commit_selection_transition(&mut update, selection_rollback)?;
+        Ok(self.finalize_update(update))
     }
 
     pub fn search_ready(
         &mut self,
-        generation: InteractionGeneration,
+        request: &ConnectionSearchRequest,
         result_count: usize,
     ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
         self.set_search_status(
-            generation,
+            request,
             if result_count == 0 {
                 ConnectionSearchStatus::Empty
             } else {
@@ -1880,19 +3897,25 @@ impl CanvasInteractionSession {
 
     pub fn search_failed(
         &mut self,
-        generation: InteractionGeneration,
+        request: &ConnectionSearchRequest,
     ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
-        self.set_search_status(generation, ConnectionSearchStatus::Error)
+        self.set_search_status(request, ConnectionSearchStatus::Error)
     }
 
     pub fn retry_search(
         &mut self,
-        generation: InteractionGeneration,
+        request: &ConnectionSearchRequest,
     ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
-        self.ensure_open()?;
+        self.validate_search_request(request)?;
+        let session = self.id;
+        let provenance = self.provenance;
+        let Some(attempt) = self.allocate_search_attempt() else {
+            self.terminal = Some(InteractionTerminalReason::IdentityExhausted);
+            return Err(CanvasInteractionError::IdentityExhausted);
+        };
         let search = match &mut self.state {
             InteractionState::Connection(ConnectionInteraction::Searching(search))
-                if search.generation == generation =>
+                if search_token_matches(&request.token, search) =>
             {
                 search
             }
@@ -1902,34 +3925,41 @@ impl CanvasInteractionSession {
             _ => return Err(CanvasInteractionError::ConnectionSearchInactive),
         };
         let mut update = CanvasInteractionUpdate::default();
+        search.attempt = attempt;
         search.status = ConnectionSearchStatus::Loading;
         update
             .effects
-            .push(CanvasInteractionEffect::Search(search_request(search)));
+            .push(CanvasInteractionEffect::Search(search_request(
+                session, provenance, search,
+            )));
         update.damage.merge(InteractionDamage::connection());
-        Ok(update)
+        Ok(self.finalize_update(update))
     }
 
     pub fn select_search_result(
         &mut self,
-        generation: InteractionGeneration,
         selection: ConnectionSearchSelection,
     ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
-        self.ensure_open()?;
+        self.validate_search_token(&selection.token)?;
+        let ConnectionSearchSelection {
+            token,
+            validated_version,
+            target,
+        } = selection;
         let state = std::mem::take(&mut self.state);
         let mut update = CanvasInteractionUpdate::default();
         self.state = match state {
             InteractionState::Connection(ConnectionInteraction::Searching(search))
-                if search.generation == generation =>
+                if search_token_matches(&token, &search) =>
             {
                 self.begin_connection_commit(
                     search.generation,
                     search.start,
                     search.pointer,
                     ConnectionProbe::None,
-                    selection.target,
-                    selection.validated_revision,
-                    selection.topology,
+                    target,
+                    validated_version,
+                    Some(token.attempt),
                     true,
                     &mut update,
                 )
@@ -1943,10 +3973,50 @@ impl CanvasInteractionSession {
                 return Err(CanvasInteractionError::ConnectionSearchInactive);
             }
         };
-        if state_needs_tick(&self.state) {
-            update = update.active();
+        Ok(self.finalize_update(update))
+    }
+
+    /// Consumes one current submission at the transport-acceptance linearization point.
+    ///
+    /// Before this call succeeds, cancellation, close, ticket supersession, view retirement, and
+    /// entity replacement revoke the submission. After it succeeds, the adapter owns the returned
+    /// command and must enqueue or execute it immediately before reporting its settlement.
+    pub fn bind_submission(
+        &self,
+        submission: InteractionGraphSubmission,
+    ) -> Result<Option<crate::runtime::commands::GraphCommand>, InteractionGraphSubmissionBindError>
+    {
+        if self.closed {
+            return Err(InteractionGraphSubmissionBindError::Closed);
         }
-        Ok(update)
+        let ticket = submission.ticket;
+        if ticket.session() != self.id {
+            return Err(
+                InteractionGraphSubmissionBindError::ForeignInteractionSession {
+                    expected: self.id,
+                    actual: ticket.session(),
+                },
+            );
+        }
+        let current = interaction_state_submission_ticket(&self.state);
+        if current != Some(ticket) {
+            return Err(InteractionGraphSubmissionBindError::Superseded { ticket, current });
+        }
+        let actual = self
+            .bound_view
+            .provenance()
+            .map_err(|_| InteractionGraphSubmissionBindError::ViewUnavailable)?;
+        if actual != self.provenance {
+            return Err(InteractionGraphSubmissionBindError::ForeignInteractionFacts);
+        }
+        let snapshot = self
+            .bound_view
+            .graph_snapshot()
+            .map_err(|_| InteractionGraphSubmissionBindError::ViewUnavailable)?;
+        submission
+            .mutation
+            .into_command(&snapshot)
+            .map_err(Into::into)
     }
 
     pub fn settle(
@@ -1954,7 +4024,14 @@ impl CanvasInteractionSession {
         ticket: InteractionTicketId,
         settlement: CommandSettlement,
     ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
-        self.ensure_open()?;
+        if self.callback_authority(
+            ticket.session(),
+            None,
+            interaction_state_submission_ticket(&self.state) == Some(ticket),
+        )? == CallbackAuthority::Stale
+        {
+            return Ok(self.finalize_update(CanvasInteractionUpdate::default()));
+        }
         let state = std::mem::take(&mut self.state);
         let mut update = CanvasInteractionUpdate::default();
         self.state = match state {
@@ -1964,7 +4041,14 @@ impl CanvasInteractionSession {
                 update.damage.merge(InteractionDamage::connection());
                 self.finish_connection_commit(commit, settlement)
             }
-            InteractionState::Committing(CommitInteraction::NodeDrag(commit))
+            InteractionState::Committing(CommitInteraction::KeyboardConnection(commit))
+                if commit.ticket == ticket =>
+            {
+                self.terminal = Some(settlement_terminal(settlement));
+                update.damage.merge(InteractionDamage::connection());
+                InteractionState::Idle
+            }
+            InteractionState::Committing(CommitInteraction::NodeMove(commit))
                 if commit.ticket == ticket =>
             {
                 self.terminal = Some(settlement_terminal(settlement));
@@ -1978,12 +4062,140 @@ impl CanvasInteractionSession {
                 update.damage.merge(edge_action_damage());
                 InteractionState::Idle
             }
+            InteractionState::Committing(CommitInteraction::SelectionDelete(commit))
+                if commit.ticket == ticket =>
+            {
+                self.terminal = Some(settlement_terminal(settlement));
+                update.damage.merge(selection_delete_damage());
+                InteractionState::Idle
+            }
             other => other,
         };
-        if state_needs_tick(&self.state) {
-            update = update.active();
+        Ok(self.finalize_update(update))
+    }
+
+    /// Resumes an opaque graph submission after an adapter-owned command prefix settles.
+    ///
+    /// Direct mutations are reconciled and re-emitted unchanged. Connection mutations are
+    /// consumed and revalidated by the session before a replacement submission is emitted.
+    /// Adapters neither inspect the mutation nor choose the continuation protocol.
+    pub fn resume_submission_after_prefix(
+        &mut self,
+        submission: InteractionGraphSubmission,
+    ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
+        let ticket = submission.ticket();
+        if self.callback_authority(
+            ticket.session(),
+            None,
+            interaction_state_submission_ticket(&self.state) == Some(ticket),
+        )? == CallbackAuthority::Stale
+        {
+            return Ok(self.finalize_update(CanvasInteractionUpdate::default()));
+        }
+        if submission.requires_connection_revalidation() {
+            return self.resume_connection_commit_after_prefix(ticket);
+        }
+
+        let mut update = self.reconcile_graph()?;
+        if interaction_state_submission_ticket(&self.state) == Some(ticket) {
+            update
+                .effects
+                .push(CanvasInteractionEffect::SubmitGraph { submission });
         }
         Ok(update)
+    }
+
+    fn resume_connection_commit_after_prefix(
+        &mut self,
+        ticket: InteractionTicketId,
+    ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
+        let view = self.authoritative_view()?;
+        let is_current_connection_commit = matches!(
+            &self.state,
+            InteractionState::Committing(CommitInteraction::Connection(commit))
+                if commit.ticket == ticket
+        ) || matches!(
+            &self.state,
+            InteractionState::Committing(CommitInteraction::KeyboardConnection(commit))
+                if commit.ticket == ticket
+        );
+        if !is_current_connection_commit {
+            return Ok(self.finalize_update(CanvasInteractionUpdate::default()));
+        }
+        let mut update = self.reconcile_graph()?;
+        let keyboard_connection = matches!(
+            &self.state,
+            InteractionState::Committing(CommitInteraction::KeyboardConnection(commit))
+                if commit.ticket == ticket
+        );
+        let create_from_wire = matches!(
+            &self.state,
+            InteractionState::Committing(CommitInteraction::Connection(commit))
+                if commit.ticket == ticket && commit.target.is_create_from_wire()
+        );
+        let resumed = if keyboard_connection {
+            self.refresh_keyboard_connection_commit(ticket)?
+        } else if create_from_wire {
+            let snapshot = view
+                .graph_snapshot()
+                .map_err(|_| CanvasInteractionError::ViewUnavailable)?;
+            self.refresh_create_from_wire_commit_from_snapshot(ticket, &snapshot)?
+        } else {
+            self.request_connection_commit_revalidation(ticket)?
+        };
+        update.queries.extend(resumed.queries);
+        update.effects.extend(resumed.effects);
+        update.damage.merge(resumed.damage);
+        update.tick_demand = resumed.tick_demand;
+        Ok(update)
+    }
+
+    fn refresh_keyboard_connection_commit(
+        &mut self,
+        ticket: InteractionTicketId,
+    ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
+        let (start, target) = match &self.state {
+            InteractionState::Committing(CommitInteraction::KeyboardConnection(commit))
+                if commit.ticket == ticket =>
+            {
+                (commit.start.clone(), commit.target)
+            }
+            _ => return Ok(self.finalize_update(CanvasInteractionUpdate::default())),
+        };
+        let view = self.authoritative_view()?;
+        let snapshot = view
+            .graph_snapshot()
+            .map_err(|_| CanvasInteractionError::ViewUnavailable)?;
+        if !snapshot.port_instance_is_current(target.instance()) {
+            self.state = InteractionState::Idle;
+            self.terminal = Some(InteractionTerminalReason::OwnerRetired);
+            return Ok(self.finalize_update(
+                CanvasInteractionUpdate::default().with_damage(InteractionDamage::connection()),
+            ));
+        }
+        view.validate_connection_binding(&start.binding)
+            .map_err(map_connection_binding_error)?;
+        let evaluation = view
+            .evaluate_connection(start.binding.edit_for_target(target.port()))
+            .map_err(|_| CanvasInteractionError::ViewUnavailable)?;
+        if !evaluation.is_accept() {
+            self.state = InteractionState::Idle;
+            self.terminal = Some(InteractionTerminalReason::Rejected);
+            return Ok(self.finalize_update(
+                CanvasInteractionUpdate::default().with_damage(InteractionDamage::connection()),
+            ));
+        }
+        let mut update =
+            CanvasInteractionUpdate::default().with_damage(InteractionDamage::connection());
+        update.effects.push(CanvasInteractionEffect::submit_graph(
+            ticket,
+            FreshGraphMutation::connection(
+                start.binding,
+                ConnectionCommitTarget::existing(target.instance()),
+                evaluation.version(),
+            ),
+        ));
+        Ok(self.finalize_update(update))
     }
 
     /// Starts the fresh target probe for an ordinary connection held behind a command prefix.
@@ -1991,7 +4203,7 @@ impl CanvasInteractionSession {
     /// The session owns the query identity and resumes incomplete work through
     /// [`Self::resolve_connection_probe`]. A matching create-from-wire commit is rejected because
     /// its prospective target has no published view geometry yet. Stale tickets are ignored.
-    pub fn request_connection_commit_revalidation(
+    fn request_connection_commit_revalidation(
         &mut self,
         ticket: InteractionTicketId,
     ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
@@ -2003,7 +4215,7 @@ impl CanvasInteractionSession {
             InteractionState::Committing(CommitInteraction::Connection(mut commit))
                 if commit.ticket == ticket =>
             {
-                if !commit.topology.is_empty() {
+                if !commit.target.is_existing() {
                     error = Some(CanvasInteractionError::ConnectionCommitRequiresFreshRevision);
                     InteractionState::Committing(CommitInteraction::Connection(commit))
                 } else if !matches!(commit.freshness, ConnectionCommitFreshness::Initial) {
@@ -2013,16 +4225,20 @@ impl CanvasInteractionSession {
                     commit.freshness = ConnectionCommitFreshness::Probing(id);
                     update
                         .queries
-                        .push(CanvasInteractionQuery::ConnectionProbe {
+                        .push(CanvasInteractionQuery::connection_probe(
                             id,
-                            generation: commit.generation,
-                            query: ConnectionProbeQuery::new(
-                                commit.start.intent,
+                            commit.generation,
+                            ConnectionProbeQuery::new(
+                                commit.start.binding.clone(),
                                 commit.pointer.view(),
-                                self.config.connection_radius_in_view,
+                                connection_probe_targeting(
+                                    self.config,
+                                    commit.probe.target().map(|target| target.identity()),
+                                ),
                                 self.config.query_entry_budget,
-                            ),
-                        });
+                            )
+                            .bind_interaction(self.interaction_query_binding(id)),
+                        ));
                     InteractionState::Committing(CommitInteraction::Connection(commit))
                 } else {
                     update.damage.merge(InteractionDamage::connection());
@@ -2037,22 +4253,13 @@ impl CanvasInteractionSession {
         if let Some(error) = error {
             return Err(error);
         }
-        if state_needs_tick(&self.state) {
-            update = update.active();
-        }
-        Ok(update)
+        Ok(self.finalize_update(update))
     }
 
-    /// Refreshes a create-from-wire commit after its adapter-owned command prefix settles.
-    ///
-    /// The selected port belongs to prospective topology and therefore cannot be re-probed through
-    /// current view geometry. This method only accepts a matching commit that retained non-empty
-    /// topology, updates its one fresh revision, and re-emits the same atomic topology plus
-    /// connection under the original ticket. Ordinary connections must use the probe API.
-    pub fn refresh_create_from_wire_commit_revision(
+    fn refresh_create_from_wire_commit_from_snapshot(
         &mut self,
         ticket: InteractionTicketId,
-        revision: GraphRevision,
+        snapshot: &GraphSnapshot,
     ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
         self.ensure_open()?;
         let state = std::mem::take(&mut self.state);
@@ -2062,19 +4269,26 @@ impl CanvasInteractionSession {
             InteractionState::Committing(CommitInteraction::Connection(mut commit))
                 if commit.ticket == ticket =>
             {
-                if commit.topology.is_empty() {
+                if commit.target.is_existing() {
                     error = Some(CanvasInteractionError::ConnectionCommitRequiresProbe);
                 } else if matches!(commit.freshness, ConnectionCommitFreshness::Initial) {
-                    commit.freshness = ConnectionCommitFreshness::Revalidated;
-                    update.effects.push(CanvasInteractionEffect::SubmitGraph {
-                        ticket,
-                        mutation: FreshGraphMutation::Connection {
-                            intent: commit.start.intent,
-                            target: commit.target,
-                            validated_revision: revision,
-                            topology: commit.topology.clone(),
-                        },
-                    });
+                    if !commit.target.is_current(snapshot) {
+                        error = Some(
+                            CanvasInteractionError::ConnectionCommitTargetNoLongerProspective {
+                                target: commit.target.port(),
+                            },
+                        );
+                    } else {
+                        commit.freshness = ConnectionCommitFreshness::Revalidated;
+                        update.effects.push(CanvasInteractionEffect::submit_graph(
+                            ticket,
+                            FreshGraphMutation::connection(
+                                commit.start.binding.clone(),
+                                commit.target.clone(),
+                                snapshot.version(),
+                            ),
+                        ));
+                    }
                 }
                 InteractionState::Committing(CommitInteraction::Connection(commit))
             }
@@ -2083,13 +4297,42 @@ impl CanvasInteractionSession {
         if let Some(error) = error {
             return Err(error);
         }
-        if state_needs_tick(&self.state) {
-            update = update.active();
-        }
-        Ok(update)
+        Ok(self.finalize_update(update))
     }
 
-    pub fn resolve_alignment_snap(
+    fn resolve_alignment_snap_outcome(
+        &mut self,
+        id: InteractionQueryId,
+        outcome: AlignmentSnapQueryOutcome,
+    ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
+        self.ensure_open()?;
+        self.ensure_interaction_session(id.session())?;
+        let view = self.authoritative_view()?;
+        let Some(receipt) = outcome.receipt() else {
+            return Err(CanvasInteractionError::MissingInteractionQueryReceipt { query: id });
+        };
+        if receipt.query_id() != id {
+            return Err(CanvasInteractionError::MismatchedInteractionQueryReceipt {
+                expected: id,
+                actual: receipt.query_id(),
+            });
+        }
+        if !receipt.authenticates(self.interaction_query_binding(id)) {
+            return Err(CanvasInteractionError::ForeignInteractionFacts);
+        }
+        match view.alignment_snap_receipt_is_current(receipt) {
+            Ok(true) => self.resolve_alignment_snap_current(id, outcome),
+            Ok(false) | Err(ViewSessionError::StaleInteractionFacts) => {
+                self.restart_stale_query(id)
+            }
+            Err(ViewSessionError::ForeignInteractionFacts) => {
+                Err(CanvasInteractionError::ForeignInteractionFacts)
+            }
+            Err(_) => Err(CanvasInteractionError::ViewUnavailable),
+        }
+    }
+
+    fn resolve_alignment_snap_current(
         &mut self,
         id: InteractionQueryId,
         outcome: AlignmentSnapQueryOutcome,
@@ -2126,24 +4369,31 @@ impl CanvasInteractionSession {
             }
             other => other,
         };
-        if state_needs_tick(&self.state) {
-            update = update.active();
-        }
-        Ok(update)
+        Ok(self.finalize_update(update))
     }
 
     pub fn tick(
         &mut self,
         elapsed_seconds: f32,
         viewport: ViewSize,
-        transform: ViewportTransform,
     ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
         self.ensure_open()?;
         if !elapsed_seconds.is_finite() || elapsed_seconds <= 0.0 || !viewport.is_positive_finite()
         {
-            return Ok(CanvasInteractionUpdate::default());
+            return Ok(self.finalize_update(CanvasInteractionUpdate::default()));
         }
-        let pointer = active_pointer(&self.state);
+        let current = self.current_viewport_snapshot()?;
+        if current.provenance() != self.provenance {
+            return Err(CanvasInteractionError::ForeignInteractionFacts);
+        }
+        self.validate_interaction_reprojection(current)?;
+        let rebase_required =
+            interaction_positions_need_rebase(&self.state, self.pending_edge_pick, current);
+        let pointer = active_pointer(&self.state).map(|pointer| {
+            pointer
+                .reproject(current)
+                .expect("the active pointer was validated against this viewport")
+        });
         let mut update = CanvasInteractionUpdate::default();
         if let Some(pointer) = pointer {
             let elapsed_seconds = elapsed_seconds.min(MAX_AUTO_PAN_ELAPSED_SECONDS);
@@ -2155,32 +4405,51 @@ impl CanvasInteractionSession {
                 elapsed_seconds,
             );
             if delta.x != 0.0 || delta.y != 0.0 {
-                update.effects.push(CanvasInteractionEffect::Viewport(
-                    ViewportMutation::PanByView(delta),
-                ));
-                update.damage.viewport = true;
-                if let Some(next_transform) =
-                    pan_viewport(transform, ViewportPanRequest::new(delta))
-                {
-                    self.reproject_active_pointer(next_transform, &mut update)?;
+                let preview = ViewportIntent::pan(ViewportPanRequest::new(delta))
+                    .resolve(current.transform())
+                    .ok_or(CanvasInteractionError::InvalidPosition)?;
+                let preview = ViewportSnapshot::new(self.provenance, current.revision(), preview);
+                pointer
+                    .reproject(preview)
+                    .ok_or(CanvasInteractionError::InvalidPosition)?;
+
+                let (snapshot, panic) = self.commit_pan(delta)?;
+                // External drift rebases the complete gesture first. The session's own pan then
+                // advances only the live pointer so drag anchors stay fixed in canvas space.
+                self.rebase_interaction_positions(current)?;
+                if snapshot.revision() != current.revision() {
+                    update.damage.viewport = true;
                 }
+                self.reproject_active_pointer(snapshot, &mut update)?;
+                let update = self.finalize_update(update);
+                resume(panic);
+                return Ok(update);
             }
-            update = update.active();
         }
-        Ok(update)
+        if rebase_required {
+            self.rebase_interaction_positions(current)?;
+            self.reproject_active_pointer(current, &mut update)?;
+        }
+        Ok(self.finalize_update(update))
     }
 
     fn reproject_active_pointer(
         &mut self,
-        transform: ViewportTransform,
+        snapshot: ViewportSnapshot,
         update: &mut CanvasInteractionUpdate,
     ) -> Result<(), CanvasInteractionError> {
+        // A valid transform can still overflow during inverse projection. Validate it before
+        // taking ownership of the active state so an error leaves the interaction untouched.
+        let Some(pointer) = active_pointer(&self.state) else {
+            return Ok(());
+        };
+        let pointer = pointer
+            .reproject(snapshot)
+            .ok_or(CanvasInteractionError::InvalidPosition)?;
         let state = std::mem::take(&mut self.state);
         self.state = match state {
             InteractionState::NodeDrag(mut drag) => {
-                let view = drag.pointer.view();
-                drag.pointer = InteractionPosition::from_view(view, transform)
-                    .ok_or(CanvasInteractionError::InvalidPosition)?;
+                drag.pointer = pointer;
                 drag.raw_delta = snapped_delta(
                     drag.start.canvas(),
                     drag.pointer.canvas(),
@@ -2196,38 +4465,45 @@ impl CanvasInteractionSession {
             InteractionState::Connection(ConnectionInteraction::Dragging(mut drag))
                 if !drag.release_pending =>
             {
-                let view = drag.pointer.view();
-                drag.pointer = InteractionPosition::from_view(view, transform)
-                    .ok_or(CanvasInteractionError::InvalidPosition)?;
-                self.start_connection_probe(&mut drag, update)?;
+                drag.pointer = pointer;
+                self.start_connection_probe(&mut drag, update);
                 update.damage.merge(InteractionDamage::connection());
                 InteractionState::Connection(ConnectionInteraction::Dragging(drag))
+            }
+            InteractionState::Marquee(mut marquee) if !marquee.release_pending => {
+                marquee.pointer = pointer;
+                update.damage.merge(InteractionDamage::presentation());
+                if self.start_marquee_query(&mut marquee, update) {
+                    InteractionState::Marquee(marquee)
+                } else {
+                    InteractionState::Idle
+                }
             }
             other => other,
         };
         Ok(())
     }
 
-    pub fn cancel(&mut self) -> CanvasInteractionUpdate {
-        self.pending_edge_pick = None;
+    pub fn cancel(&mut self) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
         if matches!(self.state, InteractionState::Idle) {
-            return CanvasInteractionUpdate::default();
+            return Ok(self.finalize_update(CanvasInteractionUpdate::default()));
         }
         let baseline = match &self.state {
             InteractionState::Marquee(marquee) => Some(marquee.baseline.clone()),
             _ => None,
         };
         let mut damage = damage_for_state(&self.state);
-        self.state = InteractionState::Idle;
-        self.terminal = Some(InteractionTerminalReason::Cancelled);
         let mut update = CanvasInteractionUpdate::default();
         if let Some(baseline) = baseline {
-            update.effects.push(CanvasInteractionEffect::Selection(
-                SelectionMutation::Restore(baseline),
-            ));
+            update.pending_selection = Some(SelectionMutation::Restore(baseline));
             damage.selection = true;
         }
-        update.with_damage(damage)
+        let mut update = update.with_damage(damage);
+        self.commit_update_selection(&mut update)?;
+        self.pending_edge_pick = None;
+        self.state = InteractionState::Idle;
+        self.terminal = Some(InteractionTerminalReason::Cancelled);
+        Ok(self.finalize_update(update))
     }
 
     pub fn owner_retired(&mut self, owner: InteractionOwner) -> CanvasInteractionUpdate {
@@ -2242,13 +4518,24 @@ impl CanvasInteractionSession {
                 ..InteractionDamage::default()
             };
         }
+        if let InteractionOwner::Port(port) = owner
+            && let InteractionState::Connection(ConnectionInteraction::Dragging(drag)) =
+                &mut self.state
+            && drag
+                .target_lock
+                .is_some_and(|target| target.instance() == port)
+        {
+            drag.target_lock = None;
+            drag.probe = ConnectionProbe::None;
+            update.damage.merge(InteractionDamage::connection());
+        }
         if !state_uses_owner(&self.state, owner) {
-            return update;
+            return self.finalize_update(update);
         }
         let damage = damage_for_state(&self.state);
         self.state = InteractionState::Idle;
         self.terminal = Some(InteractionTerminalReason::OwnerRetired);
-        update.with_damage(damage)
+        self.finalize_update(update.with_damage(damage))
     }
 
     /// Reports whether the active semantic interaction still references an owner.
@@ -2261,9 +4548,56 @@ impl CanvasInteractionSession {
         state_uses_owner(&self.state, owner)
     }
 
+    /// Reconciles retained interaction capabilities against the authoritative graph.
+    ///
+    /// Adapters should call this after applying a runtime patch. The session validates exact
+    /// lifetimes itself, so adapters never need to translate raw changed IDs into retirement
+    /// notifications and cannot accidentally retire a same-ID successor.
+    pub fn reconcile_graph(&mut self) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
+        let view = self.authoritative_view()?;
+        let snapshot = view
+            .graph_snapshot()
+            .map_err(|_| CanvasInteractionError::ViewUnavailable)?;
+        let policy = view
+            .graph_policy()
+            .map_err(|_| CanvasInteractionError::ViewUnavailable)?;
+        let mut update = CanvasInteractionUpdate::default();
+
+        if self
+            .hovered_edge
+            .is_some_and(|edge| !snapshot.edge_instance_is_current(edge))
+        {
+            self.hovered_edge = None;
+            update.damage.merge(InteractionDamage {
+                presentation: true,
+                edges: true,
+                ..InteractionDamage::default()
+            });
+        }
+
+        if let InteractionState::Connection(ConnectionInteraction::Dragging(drag)) = &mut self.state
+            && drag
+                .target_lock
+                .is_some_and(|target| !snapshot.port_instance_is_current(target.instance()))
+        {
+            drag.target_lock = None;
+            drag.probe = ConnectionProbe::None;
+            update.damage.merge(InteractionDamage::connection());
+        }
+
+        if state_is_current(&self.state, &snapshot, policy) {
+            return Ok(self.finalize_update(update));
+        }
+
+        let damage = damage_for_state(&self.state);
+        self.state = InteractionState::Idle;
+        self.terminal = Some(InteractionTerminalReason::OwnerRetired);
+        Ok(self.finalize_update(update.with_damage(damage)))
+    }
+
     pub fn close(&mut self) -> CanvasInteractionUpdate {
         if self.closed {
-            return CanvasInteractionUpdate::default();
+            return self.finalize_update(CanvasInteractionUpdate::default());
         }
         let damage = damage_for_state(&self.state);
         self.pending_edge_pick = None;
@@ -2271,19 +4605,336 @@ impl CanvasInteractionSession {
         self.state = InteractionState::Idle;
         self.closed = true;
         self.terminal = Some(InteractionTerminalReason::ViewClosed);
-        CanvasInteractionUpdate::default().with_damage(damage)
+        self.finalize_update(CanvasInteractionUpdate::default().with_damage(damage))
     }
 
     fn ensure_available(&self) -> Result<(), CanvasInteractionError> {
         self.ensure_open()
     }
 
-    fn ensure_open(&self) -> Result<(), CanvasInteractionError> {
+    fn ensure_session_open(&self) -> Result<(), CanvasInteractionError> {
         if self.closed {
             Err(CanvasInteractionError::Closed)
         } else {
             Ok(())
         }
+    }
+
+    fn ensure_open(&self) -> Result<(), CanvasInteractionError> {
+        self.ensure_session_open()?;
+        self.ensure_bound_view()
+    }
+
+    fn ensure_bound_view(&self) -> Result<(), CanvasInteractionError> {
+        #[cfg(test)]
+        if self.test_authority_bypass {
+            return Ok(());
+        }
+        let actual = self
+            .bound_view
+            .provenance()
+            .map_err(|_| CanvasInteractionError::ViewUnavailable)?;
+        if actual != self.provenance {
+            return Err(CanvasInteractionError::ForeignInteractionFacts);
+        }
+        Ok(())
+    }
+
+    fn ensure_interaction_session(
+        &self,
+        actual: InteractionSessionId,
+    ) -> Result<(), CanvasInteractionError> {
+        if actual != self.id {
+            return Err(CanvasInteractionError::ForeignInteractionSession {
+                expected: self.id,
+                actual,
+            });
+        }
+        Ok(())
+    }
+
+    fn callback_authority(
+        &self,
+        actual_session: InteractionSessionId,
+        facts_provenance: Option<ViewProvenance>,
+        current: bool,
+    ) -> Result<CallbackAuthority, CanvasInteractionError> {
+        self.ensure_interaction_session(actual_session)?;
+        if facts_provenance.is_some_and(|actual| actual != self.provenance) {
+            return Err(CanvasInteractionError::ForeignInteractionFacts);
+        }
+        if !current {
+            return Ok(CallbackAuthority::Stale);
+        }
+        self.ensure_session_open()?;
+        self.ensure_bound_view()?;
+        Ok(CallbackAuthority::Current)
+    }
+
+    fn authoritative_view(&self) -> Result<WeakViewSession, CanvasInteractionError> {
+        self.ensure_open()?;
+        Ok(self.bound_view.clone())
+    }
+
+    fn promote_node_interaction(
+        &self,
+        node: NodeLifetimeKey,
+    ) -> Result<bool, CanvasInteractionError> {
+        #[cfg(test)]
+        if self.test_authority_bypass {
+            return Ok(false);
+        }
+        self.bound_view
+            .promote_node_interaction(node)
+            .map_err(map_connection_binding_error)
+    }
+
+    fn current_viewport_snapshot(&self) -> Result<ViewportSnapshot, CanvasInteractionError> {
+        #[cfg(test)]
+        if self.test_authority_bypass {
+            return Ok(self.test_viewport);
+        }
+        self.bound_view
+            .viewport_snapshot()
+            .map_err(|_| CanvasInteractionError::ViewUnavailable)
+    }
+
+    /// Converts a sample into the exact current viewport coordinate system.
+    ///
+    /// Provenance is checked before resolving the bound view so a foreign sample never observes
+    /// or perturbs another view's state. Same-view samples may be queued behind a viewport change;
+    /// their raw native point remains meaningful and is reprojected instead of rejected.
+    fn normalize_pointer_sample(
+        &self,
+        sample: ViewportPointerSample,
+    ) -> Result<(InteractionPosition, ViewportSnapshot), CanvasInteractionError> {
+        self.ensure_session_open()?;
+        if sample.snapshot().provenance() != self.provenance {
+            return Err(CanvasInteractionError::ForeignInteractionFacts);
+        }
+        let current = self.current_viewport_snapshot()?;
+        if current.provenance() != self.provenance {
+            return Err(CanvasInteractionError::ForeignInteractionFacts);
+        }
+        let position = InteractionPosition::from_sample(sample)
+            .and_then(|position| position.reproject(current))
+            .ok_or(CanvasInteractionError::InvalidPosition)?;
+        Ok((position, current))
+    }
+
+    fn validate_interaction_reprojection(
+        &self,
+        snapshot: ViewportSnapshot,
+    ) -> Result<(), CanvasInteractionError> {
+        let mut error = None;
+        visit_interaction_positions(&self.state, |position| {
+            if error.is_none() {
+                error = validate_position_reprojection(position, snapshot).err();
+            }
+        });
+        if error.is_none()
+            && let Some(pending) = self.pending_edge_pick
+        {
+            error = validate_position_reprojection(pending.position, snapshot).err();
+        }
+        error.map_or(Ok(()), Err)
+    }
+
+    /// Rebases retained pointer positions after an external viewport change. Callers validate
+    /// first so inverse-projection failure cannot leave a half-rebased interaction behind.
+    fn rebase_interaction_positions(
+        &mut self,
+        snapshot: ViewportSnapshot,
+    ) -> Result<(), CanvasInteractionError> {
+        self.validate_interaction_reprojection(snapshot)?;
+        visit_interaction_positions_mut(&mut self.state, |position| {
+            *position = position
+                .reproject(snapshot)
+                .expect("positions were validated against this exact viewport snapshot");
+        });
+        if let Some(pending) = &mut self.pending_edge_pick {
+            pending.position = pending
+                .position
+                .reproject(snapshot)
+                .expect("pending hover was validated against this exact viewport snapshot");
+        }
+        Ok(())
+    }
+
+    fn commit_pan(
+        &mut self,
+        delta: ViewDelta,
+    ) -> Result<(ViewportSnapshot, Option<PanicPayload>), CanvasInteractionError> {
+        let request = ViewportPanRequest::new(delta);
+        #[cfg(test)]
+        if self.test_authority_bypass {
+            let current = self.test_viewport;
+            let next = ViewportIntent::pan(request)
+                .resolve(current.transform())
+                .ok_or(CanvasInteractionError::InvalidPosition)?;
+            let snapshot = if next == current.transform() {
+                current
+            } else {
+                let revision = current
+                    .revision()
+                    .checked_next()
+                    .ok_or(CanvasInteractionError::IdentityExhausted)?;
+                ViewportSnapshot::new(self.provenance, revision, next)
+            };
+            self.test_viewport = snapshot;
+            return Ok((snapshot, None));
+        }
+
+        match catch_unwind(AssertUnwindSafe(|| {
+            self.bound_view
+                .apply_viewport_intent(ViewportIntent::pan(request))
+        })) {
+            Ok(Ok(snapshot)) => Ok((snapshot, None)),
+            Ok(Err(_)) => Err(CanvasInteractionError::ViewUnavailable),
+            Err(panic) => match self.bound_view.viewport_snapshot() {
+                Ok(snapshot) => Ok((snapshot, Some(panic))),
+                Err(_) => {
+                    resume(Some(panic));
+                    Err(CanvasInteractionError::ViewUnavailable)
+                }
+            },
+        }
+    }
+
+    fn move_pan_if_active(
+        &mut self,
+        position: InteractionPosition,
+        current: ViewportSnapshot,
+    ) -> Result<Option<CanvasInteractionUpdate>, CanvasInteractionError> {
+        enum PanMove {
+            Active {
+                generation: InteractionGeneration,
+                delta: ViewDelta,
+            },
+            Armed {
+                generation: InteractionGeneration,
+                delta: ViewDelta,
+            },
+        }
+
+        self.validate_interaction_reprojection(current)?;
+        let plan = match &self.state {
+            InteractionState::Pan(pan) => {
+                let pointer = pan
+                    .pointer
+                    .reproject(current)
+                    .expect("the pan pointer was validated against this viewport");
+                Some(PanMove::Active {
+                    generation: pan.generation,
+                    delta: view_delta(pointer.view(), position.view()),
+                })
+            }
+            InteractionState::Armed(armed) if matches!(armed.target, ArmedTarget::Pan { .. }) => {
+                let start = armed
+                    .start
+                    .reproject(current)
+                    .expect("the armed press was validated against this viewport");
+                let distance = armed
+                    .max_view_distance_squared
+                    .max(view_distance_squared(start.view(), position.view()));
+                threshold_crossed_distance(distance, self.threshold_for(&armed.target)).then_some(
+                    PanMove::Armed {
+                        generation: armed.generation,
+                        delta: view_delta(start.view(), position.view()),
+                    },
+                )
+            }
+            _ => None,
+        };
+        let Some(plan) = plan else {
+            return Ok(None);
+        };
+
+        let (generation, delta) = match plan {
+            PanMove::Active { generation, delta } | PanMove::Armed { generation, delta } => {
+                (generation, delta)
+            }
+        };
+        if delta.x == 0.0 && delta.y == 0.0 {
+            self.rebase_interaction_positions(current)?;
+            let InteractionState::Pan(pan) = &mut self.state else {
+                unreachable!("only an active pan can retain a zero pan delta");
+            };
+            pan.pointer = position;
+            return Ok(Some(
+                self.finalize_update(CanvasInteractionUpdate::default()),
+            ));
+        }
+
+        let preview = ViewportIntent::pan(ViewportPanRequest::new(delta))
+            .resolve(current.transform())
+            .ok_or(CanvasInteractionError::InvalidPosition)?;
+        let preview = ViewportSnapshot::new(self.provenance, current.revision(), preview);
+        position
+            .reproject(preview)
+            .ok_or(CanvasInteractionError::InvalidPosition)?;
+
+        let (committed, panic) = self.commit_pan(delta)?;
+        let pointer = position
+            .reproject(committed)
+            .expect("the committed pan transform was previewed before the atomic commit");
+        self.state = InteractionState::Pan(PanInteraction {
+            generation,
+            pointer,
+        });
+        let mut update = CanvasInteractionUpdate::default();
+        if committed.revision() != current.revision() {
+            update.damage.viewport = true;
+        }
+        let update = self.finalize_update(update);
+        resume(panic);
+        Ok(Some(update))
+    }
+
+    fn finalize_update(&self, mut update: CanvasInteractionUpdate) -> CanvasInteractionUpdate {
+        update.tick_demand = self.tick_demand();
+        update
+    }
+
+    fn commit_update_selection(
+        &mut self,
+        update: &mut CanvasInteractionUpdate,
+    ) -> Result<(), CanvasInteractionError> {
+        let Some(mutation) = update.pending_selection.as_ref().cloned() else {
+            return Ok(());
+        };
+        #[cfg(test)]
+        if let Some(error) = self.selection_commit_failure.take() {
+            return Err(error);
+        }
+        #[cfg(test)]
+        if self.test_authority_bypass {
+            update.selection_mutations.push(mutation);
+            update.pending_selection = None;
+            return Ok(());
+        }
+        self.bound_view
+            .apply_selection_mutation(mutation)
+            .map_err(map_connection_binding_error)?;
+        update.pending_selection = None;
+        Ok(())
+    }
+
+    fn commit_selection_transition(
+        &mut self,
+        update: &mut CanvasInteractionUpdate,
+        rollback: Option<InteractionState>,
+    ) -> Result<(), CanvasInteractionError> {
+        if let Err(error) = self.commit_update_selection(update) {
+            // Selection and the active interaction phase fail atomically. Monotonic identities and
+            // view-owned effects from an earlier press (such as recent-node promotion) are not
+            // rolled back; hover work is explicitly failed closed.
+            self.state = rollback.unwrap_or_default();
+            self.pending_edge_pick = None;
+            self.hovered_edge = None;
+            return Err(error);
+        }
+        Ok(())
     }
 
     fn allocate_generation(&mut self) -> Result<InteractionGeneration, CanvasInteractionError> {
@@ -2292,19 +4943,106 @@ impl CanvasInteractionSession {
             return Err(CanvasInteractionError::IdentityExhausted);
         };
         self.next_generation = next.checked_add(1);
-        Ok(InteractionGeneration(next))
+        Ok(InteractionGeneration(InteractionIdentity::new(
+            self.id, next,
+        )))
     }
 
     fn allocate_query(&mut self) -> Option<InteractionQueryId> {
         let next = self.next_query?;
         self.next_query = next.checked_add(1);
-        Some(InteractionQueryId(next))
+        Some(InteractionQueryId(InteractionIdentity::new(self.id, next)))
+    }
+
+    fn allocate_search_attempt(&mut self) -> Option<ConnectionSearchAttemptId> {
+        let next = self.next_search_attempt?;
+        self.next_search_attempt = next.checked_add(1);
+        Some(ConnectionSearchAttemptId(InteractionIdentity::new(
+            self.id, next,
+        )))
+    }
+
+    fn interaction_query_binding(&self, id: InteractionQueryId) -> InteractionQueryBinding {
+        InteractionQueryBinding::new(self.provenance, id)
+    }
+
+    #[cfg(test)]
+    fn accepts_unsigned_query_outcomes_for_test(&self) -> bool {
+        self.provenance.view()
+            == ViewId::new(
+                crate::runtime::graph_runtime::RuntimeId::UNAVAILABLE,
+                self.provenance.view().get(),
+            )
+    }
+
+    #[cfg(test)]
+    fn resolve_edge_pick_for_test(
+        &mut self,
+        id: InteractionQueryId,
+        outcome: EdgePickQueryOutcome,
+    ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
+        if !outcome
+            .receipt()
+            .is_some_and(|receipt| receipt.authenticates(self.interaction_query_binding(id)))
+            && !self.accepts_unsigned_query_outcomes_for_test()
+        {
+            return Ok(self.finalize_update(CanvasInteractionUpdate::default()));
+        }
+        self.resolve_edge_pick_current(id, outcome)
+    }
+
+    #[cfg(test)]
+    fn resolve_connection_probe_for_test(
+        &mut self,
+        id: InteractionQueryId,
+        outcome: ConnectionProbeQueryOutcome,
+    ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
+        if !outcome
+            .receipt()
+            .is_some_and(|receipt| receipt.authenticates(self.interaction_query_binding(id)))
+            && !self.accepts_unsigned_query_outcomes_for_test()
+        {
+            return Ok(self.finalize_update(CanvasInteractionUpdate::default()));
+        }
+        self.resolve_connection_probe_current(id, outcome)
+    }
+
+    #[cfg(test)]
+    fn resolve_node_intersection_for_test(
+        &mut self,
+        id: InteractionQueryId,
+        outcome: NodeIntersectionQueryOutcome,
+    ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
+        if !outcome
+            .receipt()
+            .is_some_and(|receipt| receipt.authenticates(self.interaction_query_binding(id)))
+            && !self.accepts_unsigned_query_outcomes_for_test()
+        {
+            return Ok(self.finalize_update(CanvasInteractionUpdate::default()));
+        }
+        self.resolve_node_intersection_current(id, outcome, None)
+    }
+
+    #[cfg(test)]
+    fn resolve_alignment_snap_for_test(
+        &mut self,
+        id: InteractionQueryId,
+        outcome: AlignmentSnapQueryOutcome,
+    ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
+        if !outcome
+            .receipt()
+            .is_some_and(|receipt| receipt.authenticates(self.interaction_query_binding(id)))
+            && !self.accepts_unsigned_query_outcomes_for_test()
+        {
+            return Ok(self.finalize_update(CanvasInteractionUpdate::default()));
+        }
+        self.resolve_alignment_snap_current(id, outcome)
     }
 
     fn allocate_ticket(&mut self) -> Option<InteractionTicketId> {
         let next = self.next_ticket?;
         self.next_ticket = next.checked_add(1);
-        Some(InteractionTicketId(next))
+        Some(InteractionTicketId(InteractionIdentity::new(self.id, next)))
     }
 
     fn arm(
@@ -2330,16 +5068,16 @@ impl CanvasInteractionSession {
     ) -> Result<InteractionState, CanvasInteractionError> {
         Ok(match armed.target {
             ArmedTarget::NodeDrag(start) => {
+                self.validate_node_drag_activation(&start)?;
                 if !start.clicked_was_selected {
-                    update.effects.push(CanvasInteractionEffect::Selection(
-                        SelectionMutation::Node {
-                            node: start.clicked,
-                            mode: match start.selection_mode {
-                                SelectionMode::Replace => SelectionMode::Replace,
-                                SelectionMode::Add | SelectionMode::Toggle => SelectionMode::Add,
-                            },
+                    update.pending_selection = Some(SelectionMutation::Node {
+                        provenance: start.provenance,
+                        node: start.clicked,
+                        mode: match start.selection_mode {
+                            SelectionMode::Replace => SelectionMode::Replace,
+                            SelectionMode::Add | SelectionMode::Toggle => SelectionMode::Add,
                         },
-                    ));
+                    });
                     update.damage.selection = true;
                 }
                 let raw_delta = snapped_delta(
@@ -2351,7 +5089,7 @@ impl CanvasInteractionSession {
                 update.damage.merge(InteractionDamage::node_drag());
                 let mut drag = NodeDragInteraction {
                     generation: armed.generation,
-                    nodes: start.nodes,
+                    cohort: start.cohort,
                     snap_origin: start.snap_origin,
                     start: armed.start,
                     pointer: position,
@@ -2360,46 +5098,35 @@ impl CanvasInteractionSession {
                     guides: Arc::default(),
                     alignment_locks: AlignmentSnapLocks::default(),
                     pending_alignment_query: None,
+                    stale_query_restarts: 0,
                     release_pending: false,
                 };
                 self.start_alignment_snap(&mut drag, update);
                 InteractionState::NodeDrag(drag)
             }
-            ArmedTarget::Pan { .. } => {
-                let delta = view_delta(armed.start.view(), position.view());
-                update.effects.push(CanvasInteractionEffect::Viewport(
-                    ViewportMutation::PanByView(delta),
-                ));
-                update.damage.viewport = true;
-                InteractionState::Pan(PanInteraction {
-                    generation: armed.generation,
-                    pointer: position,
-                })
-            }
+            ArmedTarget::Pan { .. } => unreachable!(
+                "pan activation commits the bound viewport before interaction state is taken"
+            ),
             ArmedTarget::Marquee {
                 selection_mode,
                 baseline,
             } => {
-                let bounds = rect_between(armed.start.canvas(), position.canvas());
-                update.effects.push(CanvasInteractionEffect::Selection(
-                    SelectionMutation::Marquee {
-                        bounds,
-                        mode: selection_mode,
-                        baseline: baseline.clone(),
-                    },
-                ));
-                update.damage = InteractionDamage {
-                    presentation: true,
-                    selection: true,
-                    ..InteractionDamage::default()
-                };
-                InteractionState::Marquee(MarqueeInteraction {
+                let mut marquee = MarqueeInteraction {
                     generation: armed.generation,
                     start: armed.start,
                     pointer: position,
                     selection_mode,
                     baseline,
-                })
+                    pending_query: None,
+                    stale_query_restarts: 0,
+                    release_pending: false,
+                };
+                update.damage.merge(InteractionDamage::presentation());
+                if self.start_marquee_query(&mut marquee, update) {
+                    InteractionState::Marquee(marquee)
+                } else {
+                    InteractionState::Idle
+                }
             }
             ArmedTarget::Connection(start) => {
                 let mut drag = ConnectionDragInteraction {
@@ -2407,15 +5134,42 @@ impl CanvasInteractionSession {
                     start,
                     pointer: position,
                     probe: ConnectionProbe::None,
+                    target_lock: None,
                     pending_query: None,
                     stale_query_restarts: 0,
                     release_pending: false,
                 };
-                self.start_connection_probe(&mut drag, update)?;
+                self.start_connection_probe(&mut drag, update);
                 update.damage.merge(InteractionDamage::connection());
                 InteractionState::Connection(ConnectionInteraction::Dragging(drag))
             }
         })
+    }
+
+    fn finish_activated_release(
+        &mut self,
+        state: InteractionState,
+        update: &mut CanvasInteractionUpdate,
+    ) -> InteractionState {
+        match state {
+            InteractionState::NodeDrag(mut drag) => {
+                drag.release_pending = true;
+                if drag.pending_alignment_query.is_some() {
+                    InteractionState::NodeDrag(drag)
+                } else {
+                    self.commit_node_drag(drag, update)
+                }
+            }
+            InteractionState::Connection(ConnectionInteraction::Dragging(mut drag)) => {
+                drag.release_pending = true;
+                InteractionState::Connection(ConnectionInteraction::Dragging(drag))
+            }
+            InteractionState::Marquee(mut marquee) => {
+                marquee.release_pending = true;
+                InteractionState::Marquee(marquee)
+            }
+            other => other,
+        }
     }
 
     fn finish_armed_click(&self, armed: &ArmedInteraction, update: &mut CanvasInteractionUpdate) {
@@ -2431,6 +5185,7 @@ impl CanvasInteractionSession {
         }
         let mutation = match &armed.target {
             ArmedTarget::NodeDrag(start) => Some(SelectionMutation::Node {
+                provenance: start.provenance,
                 node: start.clicked,
                 mode: start.selection_mode,
             }),
@@ -2440,15 +5195,15 @@ impl CanvasInteractionSession {
             | ArmedTarget::Marquee {
                 selection_mode: SelectionMode::Replace,
                 ..
-            } => Some(SelectionMutation::Clear),
+            } => Some(SelectionMutation::Clear {
+                provenance: self.provenance,
+            }),
             ArmedTarget::Pan { .. } | ArmedTarget::Marquee { .. } | ArmedTarget::Connection(_) => {
                 None
             }
         };
         if let Some(mutation) = mutation {
-            update
-                .effects
-                .push(CanvasInteractionEffect::Selection(mutation));
+            update.pending_selection = Some(mutation);
             update.damage.selection = true;
         }
     }
@@ -2468,6 +5223,15 @@ impl CanvasInteractionSession {
         drag: &mut NodeDragInteraction,
         update: &mut CanvasInteractionUpdate,
     ) -> bool {
+        drag.stale_query_restarts = 0;
+        self.queue_alignment_snap(drag, update)
+    }
+
+    fn queue_alignment_snap(
+        &mut self,
+        drag: &mut NodeDragInteraction,
+        update: &mut CanvasInteractionUpdate,
+    ) -> bool {
         let Some(config) = self.config.alignment_snap else {
             drag.pending_alignment_query = None;
             drag.alignment_locks = AlignmentSnapLocks::default();
@@ -2478,21 +5242,56 @@ impl CanvasInteractionSession {
             return false;
         };
         drag.pending_alignment_query = Some(id);
-        update.queries.push(CanvasInteractionQuery::AlignmentSnap {
+        update.queries.push(CanvasInteractionQuery::alignment_snap(
             id,
-            generation: drag.generation,
-            query: AlignmentSnapQuery::new(
-                self.view,
-                self.view_generation,
+            drag.generation,
+            AlignmentSnapQuery::new(
+                self.provenance.view(),
+                self.provenance.generation(),
                 drag.generation,
-                Arc::clone(&drag.nodes),
+                drag.cohort.nodes_arc(),
                 drag.raw_delta,
                 config.acquire_tolerance_in_view(),
                 config.release_tolerance_in_view(),
                 self.config.query_entry_budget,
                 drag.alignment_locks,
+                self.interaction_query_binding(id),
             ),
-        });
+        ));
+        true
+    }
+
+    fn start_marquee_query(
+        &mut self,
+        marquee: &mut MarqueeInteraction,
+        update: &mut CanvasInteractionUpdate,
+    ) -> bool {
+        marquee.stale_query_restarts = 0;
+        self.queue_marquee_query(marquee, update)
+    }
+
+    fn queue_marquee_query(
+        &mut self,
+        marquee: &mut MarqueeInteraction,
+        update: &mut CanvasInteractionUpdate,
+    ) -> bool {
+        let Some(id) = self.allocate_query() else {
+            marquee.pending_query = None;
+            self.terminal = Some(InteractionTerminalReason::IdentityExhausted);
+            return false;
+        };
+        marquee.pending_query = Some(id);
+        update
+            .queries
+            .push(CanvasInteractionQuery::node_intersection(
+                id,
+                marquee.generation,
+                NodeIntersectionQuery::new(
+                    rect_between(marquee.start.canvas(), marquee.pointer.canvas()),
+                    self.config.query_entry_budget,
+                )
+                .bind_interaction(self.interaction_query_binding(id)),
+            ));
         true
     }
 
@@ -2501,7 +5300,7 @@ impl CanvasInteractionSession {
         drag: NodeDragInteraction,
         update: &mut CanvasInteractionUpdate,
     ) -> InteractionState {
-        let Some(intent) = RelativeNodeMoveIntent::new(drag.nodes.iter().copied(), drag.delta)
+        let Some(intent) = RelativeNodeMoveIntent::from_cohort(drag.cohort.clone(), drag.delta)
         else {
             return InteractionState::Idle;
         };
@@ -2509,13 +5308,13 @@ impl CanvasInteractionSession {
             self.terminal = Some(InteractionTerminalReason::IdentityExhausted);
             return InteractionState::Idle;
         };
-        update.effects.push(CanvasInteractionEffect::SubmitGraph {
+        update.effects.push(CanvasInteractionEffect::submit_graph(
             ticket,
-            mutation: FreshGraphMutation::MoveNodes(intent),
-        });
-        InteractionState::Committing(CommitInteraction::NodeDrag(NodeCommitInteraction {
+            FreshGraphMutation::move_nodes(intent),
+        ));
+        InteractionState::Committing(CommitInteraction::NodeMove(NodeMoveCommitInteraction {
             generation: drag.generation,
-            nodes: drag.nodes,
+            cohort: drag.cohort,
             delta: drag.delta,
             guides: drag.guides,
             ticket,
@@ -2526,34 +5325,34 @@ impl CanvasInteractionSession {
         &mut self,
         drag: &mut ConnectionDragInteraction,
         update: &mut CanvasInteractionUpdate,
-    ) -> Result<(), CanvasInteractionError> {
+    ) {
         drag.stale_query_restarts = 0;
-        self.queue_connection_probe(drag, update)
+        self.queue_connection_probe(drag, update);
     }
 
     fn queue_connection_probe(
         &mut self,
         drag: &mut ConnectionDragInteraction,
         update: &mut CanvasInteractionUpdate,
-    ) -> Result<(), CanvasInteractionError> {
+    ) {
         let Some(id) = self.allocate_query() else {
             self.terminal = Some(InteractionTerminalReason::IdentityExhausted);
-            return Ok(());
+            return;
         };
         drag.pending_query = Some(id);
         update
             .queries
-            .push(CanvasInteractionQuery::ConnectionProbe {
+            .push(CanvasInteractionQuery::connection_probe(
                 id,
-                generation: drag.generation,
-                query: ConnectionProbeQuery::new(
-                    drag.start.intent,
+                drag.generation,
+                ConnectionProbeQuery::new(
+                    drag.start.binding.clone(),
                     drag.pointer.view(),
-                    self.config.connection_radius_in_view,
+                    connection_probe_targeting(self.config, drag.target_lock),
                     self.config.query_entry_budget,
-                ),
-            });
-        Ok(())
+                )
+                .bind_interaction(self.interaction_query_binding(id)),
+            ));
     }
 
     fn finish_connection_release(
@@ -2563,25 +5362,30 @@ impl CanvasInteractionSession {
     ) -> InteractionState {
         match drag.probe.target() {
             Some(target) if drag.probe.is_valid() => {
-                let validated_revision = drag
+                let validated_version = drag
                     .probe
-                    .revision()
-                    .expect("a valid connection probe always carries its graph revision");
+                    .version()
+                    .expect("a valid connection probe always carries its graph version");
                 self.begin_connection_commit(
                     drag.generation,
                     drag.start,
                     drag.pointer,
                     drag.probe,
-                    target.port(),
-                    validated_revision,
-                    ConnectionTopology::ordinary(),
+                    ConnectionCommitTarget::existing(target.identity().instance()),
+                    validated_version,
+                    None,
                     false,
                     update,
                 )
             }
             None if drag.start.allow_create_from_wire => {
+                let Some(attempt) = self.allocate_search_attempt() else {
+                    self.terminal = Some(InteractionTerminalReason::IdentityExhausted);
+                    return InteractionState::Idle;
+                };
                 let search = ConnectionSearchInteraction {
                     generation: drag.generation,
+                    attempt,
                     start: drag.start,
                     pointer: drag.pointer,
                     probe: drag.probe,
@@ -2589,7 +5393,11 @@ impl CanvasInteractionSession {
                 };
                 update
                     .effects
-                    .push(CanvasInteractionEffect::Search(search_request(&search)));
+                    .push(CanvasInteractionEffect::Search(search_request(
+                        self.id,
+                        self.provenance,
+                        &search,
+                    )));
                 InteractionState::Connection(ConnectionInteraction::Searching(search))
             }
             Some(_) | None => {
@@ -2606,9 +5414,9 @@ impl CanvasInteractionSession {
         start: ConnectionInteractionStart,
         pointer: InteractionPosition,
         probe: ConnectionProbe,
-        target: PortId,
-        validated_revision: GraphRevision,
-        topology: ConnectionTopology,
+        target: ConnectionCommitTarget,
+        validated_version: GraphVersion,
+        search_attempt: Option<ConnectionSearchAttemptId>,
         return_to_search: bool,
         update: &mut CanvasInteractionUpdate,
     ) -> InteractionState {
@@ -2616,32 +5424,33 @@ impl CanvasInteractionSession {
             self.terminal = Some(InteractionTerminalReason::IdentityExhausted);
             return InteractionState::Idle;
         };
-        update.effects.push(CanvasInteractionEffect::SubmitGraph {
+        update.effects.push(CanvasInteractionEffect::submit_graph(
             ticket,
-            mutation: FreshGraphMutation::Connection {
-                intent: start.intent,
+            FreshGraphMutation::connection(
+                start.binding.clone(),
+                target.clone(),
+                validated_version,
+            ),
+        ));
+        InteractionState::Committing(CommitInteraction::Connection(Box::new(
+            ConnectionCommitInteraction {
+                generation,
+                search_attempt,
+                start,
+                pointer,
+                probe,
+                ticket,
                 target,
-                validated_revision,
-                topology: topology.clone(),
+                return_to_search,
+                freshness: ConnectionCommitFreshness::Initial,
+                stale_query_restarts: 0,
             },
-        });
-        InteractionState::Committing(CommitInteraction::Connection(ConnectionCommitInteraction {
-            generation,
-            start,
-            pointer,
-            probe,
-            ticket,
-            target,
-            return_to_search,
-            topology,
-            freshness: ConnectionCommitFreshness::Initial,
-            stale_query_restarts: 0,
-        }))
+        )))
     }
 
     fn finish_connection_commit(
         &mut self,
-        commit: ConnectionCommitInteraction,
+        commit: Box<ConnectionCommitInteraction>,
         settlement: CommandSettlement,
     ) -> InteractionState {
         match settlement {
@@ -2659,14 +5468,20 @@ impl CanvasInteractionSession {
 
     fn reject_connection_commit(
         &mut self,
-        commit: ConnectionCommitInteraction,
+        commit: Box<ConnectionCommitInteraction>,
         reason: InteractionTerminalReason,
     ) -> InteractionState {
+        let commit = *commit;
         self.terminal = Some(reason);
         if commit.return_to_search {
+            let Some(attempt) = self.allocate_search_attempt() else {
+                self.terminal = Some(InteractionTerminalReason::IdentityExhausted);
+                return InteractionState::Idle;
+            };
             InteractionState::Connection(ConnectionInteraction::Searching(
                 ConnectionSearchInteraction {
                     generation: commit.generation,
+                    attempt,
                     start: commit.start,
                     pointer: commit.pointer,
                     probe: commit.probe,
@@ -2680,13 +5495,13 @@ impl CanvasInteractionSession {
 
     fn set_search_status(
         &mut self,
-        generation: InteractionGeneration,
+        request: &ConnectionSearchRequest,
         status: ConnectionSearchStatus,
     ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
-        self.ensure_open()?;
+        self.validate_search_request(request)?;
         let search = match &mut self.state {
             InteractionState::Connection(ConnectionInteraction::Searching(search))
-                if search.generation == generation =>
+                if search_token_matches(&request.token, search) =>
             {
                 search
             }
@@ -2698,18 +5513,62 @@ impl CanvasInteractionSession {
         let mut update = CanvasInteractionUpdate::default();
         search.status = status;
         update.damage.merge(InteractionDamage::connection());
-        Ok(update)
+        Ok(self.finalize_update(update))
     }
+
+    fn validate_search_request(
+        &self,
+        request: &ConnectionSearchRequest,
+    ) -> Result<(), CanvasInteractionError> {
+        self.validate_search_token(&request.token)
+    }
+
+    fn validate_search_token(
+        &self,
+        token: &ConnectionSearchToken,
+    ) -> Result<(), CanvasInteractionError> {
+        let (current, stale_error) = match &self.state {
+            InteractionState::Connection(ConnectionInteraction::Searching(search))
+                if search_token_matches(token, search) =>
+            {
+                (
+                    true,
+                    CanvasInteractionError::ConnectionSearchStaleGeneration,
+                )
+            }
+            InteractionState::Connection(ConnectionInteraction::Searching(_)) => (
+                false,
+                CanvasInteractionError::ConnectionSearchStaleGeneration,
+            ),
+            _ => (false, CanvasInteractionError::ConnectionSearchInactive),
+        };
+        match self.callback_authority(token.session, Some(token.provenance), current)? {
+            CallbackAuthority::Current => Ok(()),
+            CallbackAuthority::Stale => Err(stale_error),
+        }
+    }
+}
+
+fn search_token_matches(
+    token: &ConnectionSearchToken,
+    search: &ConnectionSearchInteraction,
+) -> bool {
+    token.generation == search.generation
+        && token.attempt == search.attempt
+        && token.binding == search.start.binding
 }
 
 fn connection_presentation_from_drag(drag: &ConnectionDragInteraction) -> ConnectionPresentation {
     ConnectionPresentation::new(
         drag.generation,
-        drag.start.intent,
+        drag.start.binding.clone(),
+        drag.start.fixed_endpoint,
         drag.start.fixed_anchor,
         drag.start.fixed_outward,
+        drag.start.moving_outward,
         drag.pointer,
         drag.probe.clone(),
+        drag.start.binding.reconnect_edge(),
         None,
         drag.release_pending,
         None,
@@ -2721,11 +5580,14 @@ fn connection_presentation_from_search(
 ) -> ConnectionPresentation {
     ConnectionPresentation::new(
         search.generation,
-        search.start.intent,
+        search.start.binding.clone(),
+        search.start.fixed_endpoint,
         search.start.fixed_anchor,
         search.start.fixed_outward,
+        search.start.moving_outward,
         search.pointer,
         search.probe.clone(),
+        search.start.binding.reconnect_edge(),
         Some(search.status),
         false,
         None,
@@ -2737,11 +5599,14 @@ fn connection_presentation_from_commit(
 ) -> ConnectionPresentation {
     ConnectionPresentation::new(
         commit.generation,
-        commit.start.intent,
+        commit.start.binding.clone(),
+        commit.start.fixed_endpoint,
         commit.start.fixed_anchor,
         commit.start.fixed_outward,
+        commit.start.moving_outward,
         commit.pointer,
         commit.probe.clone(),
+        commit.start.binding.reconnect_edge(),
         commit
             .return_to_search
             .then_some(ConnectionSearchStatus::Loading),
@@ -2752,27 +5617,46 @@ fn connection_presentation_from_commit(
 
 fn node_drag_presentation(
     generation: InteractionGeneration,
-    nodes: Arc<[NodeId]>,
+    cohort: NodeMoveCohort,
     delta: CanvasPoint,
     guides: Arc<[AlignmentGuide]>,
     release_pending: bool,
     ticket: Option<InteractionTicketId>,
 ) -> NodeDragPresentation {
-    NodeDragPresentation::new(generation, nodes, delta, guides, release_pending, ticket)
+    NodeDragPresentation::new(generation, cohort, delta, guides, release_pending, ticket)
 }
 
-fn search_request(search: &ConnectionSearchInteraction) -> ConnectionSearchRequest {
-    connection_search_request(search.generation, search.start, search.pointer)
+fn search_request(
+    session: InteractionSessionId,
+    provenance: ViewProvenance,
+    search: &ConnectionSearchInteraction,
+) -> ConnectionSearchRequest {
+    connection_search_request(
+        session,
+        provenance,
+        search.generation,
+        search.attempt,
+        &search.start,
+        search.pointer,
+    )
 }
 
 fn connection_search_request(
+    session: InteractionSessionId,
+    provenance: ViewProvenance,
     generation: InteractionGeneration,
-    start: ConnectionInteractionStart,
+    attempt: ConnectionSearchAttemptId,
+    start: &ConnectionInteractionStart,
     position: InteractionPosition,
 ) -> ConnectionSearchRequest {
     ConnectionSearchRequest {
-        generation,
-        intent: start.intent,
+        token: ConnectionSearchToken {
+            provenance,
+            session,
+            generation,
+            attempt,
+            binding: start.binding.clone(),
+        },
         position,
     }
 }
@@ -2784,6 +5668,64 @@ fn settlement_terminal(settlement: CommandSettlement) -> InteractionTerminalReas
         CommandSettlement::Rejected => InteractionTerminalReason::Rejected,
         CommandSettlement::Conflict => InteractionTerminalReason::Conflict,
         CommandSettlement::TransportFailure => InteractionTerminalReason::TransportFailure,
+    }
+}
+
+fn connection_probe_targeting(
+    config: CanvasInteractionConfig,
+    preferred: Option<ConnectionProbeTargetIdentity>,
+) -> ConnectionProbeTargeting {
+    let targeting = ConnectionProbeTargeting::new(
+        config.connection_acquire_radius_in_view,
+        config.connection_release_radius_in_view,
+    )
+    .expect("a live interaction session retains valid connection target bands");
+    preferred.map_or(targeting, |preferred| targeting.with_preferred(preferred))
+}
+
+fn map_connection_binding_error(error: ViewSessionError) -> CanvasInteractionError {
+    match error {
+        ViewSessionError::ForeignInteractionFacts => {
+            CanvasInteractionError::ForeignInteractionFacts
+        }
+        ViewSessionError::StaleInteractionFacts => CanvasInteractionError::StaleInteractionFacts,
+        _ => CanvasInteractionError::ViewUnavailable,
+    }
+}
+
+fn map_create_from_wire_query_error(error: ViewCreateFromWireQueryError) -> CanvasInteractionError {
+    match error {
+        ViewCreateFromWireQueryError::Session(error) => map_connection_binding_error(error),
+        ViewCreateFromWireQueryError::Query(CreateFromWireQueryError::Busy) => {
+            CanvasInteractionError::ViewUnavailable
+        }
+        ViewCreateFromWireQueryError::Query(CreateFromWireQueryError::ForeignSourcePort {
+            ..
+        }) => CanvasInteractionError::ForeignInteractionFacts,
+        ViewCreateFromWireQueryError::Query(
+            CreateFromWireQueryError::MissingSourcePort { .. }
+            | CreateFromWireQueryError::SourcePortRetired { .. }
+            | CreateFromWireQueryError::MissingSourceNode { .. }
+            | CreateFromWireQueryError::SourceNotConnectable { .. },
+        ) => CanvasInteractionError::StaleInteractionFacts,
+    }
+}
+
+fn map_node_move_bind_error(error: FreshGraphMutationBindError) -> CanvasInteractionError {
+    match error {
+        FreshGraphMutationBindError::NodeDragMemberForeignRuntime { .. } => {
+            CanvasInteractionError::ForeignInteractionFacts
+        }
+        FreshGraphMutationBindError::NodeDragMemberPositionOverflow { .. } => {
+            CanvasInteractionError::InvalidPosition
+        }
+        FreshGraphMutationBindError::NodeDragMemberUnavailable { .. }
+        | FreshGraphMutationBindError::NodeDragMemberReplaced { .. }
+        | FreshGraphMutationBindError::NodeDragMemberNotDraggable { .. }
+        | FreshGraphMutationBindError::NodeMoveExtentUnavailable { .. } => {
+            CanvasInteractionError::StaleInteractionFacts
+        }
+        _ => CanvasInteractionError::StaleInteractionFacts,
     }
 }
 
@@ -2821,6 +5763,62 @@ fn snapped_delta(
     CanvasPoint {
         x: ((snap_origin.x + raw.x) / grid.width).round() * grid.width - snap_origin.x,
         y: ((snap_origin.y + raw.y) / grid.height).round() * grid.height - snap_origin.y,
+    }
+}
+
+fn nudge_delta_for_grid(
+    snapshot: &GraphSnapshot,
+    cohort: &NodeMoveCohort,
+    requested: CanvasPoint,
+    grid: Option<CanvasSize>,
+) -> Option<CanvasPoint> {
+    let anchor = snapshot
+        .graph()
+        .node(&cohort.nodes().first().copied()?)?
+        .pos;
+    anchor.is_finite().then(|| {
+        snapped_delta(
+            anchor,
+            CanvasPoint {
+                x: anchor.x + requested.x,
+                y: anchor.y + requested.y,
+            },
+            anchor,
+            grid,
+        )
+    })
+}
+
+fn reveal_pan_delta(
+    bounds: CanvasRect,
+    transform: crate::runtime::viewport::ViewportTransform,
+    viewport: ViewSize,
+    padding: f32,
+) -> Option<ViewDelta> {
+    if !bounds.is_positive_finite() || !transform.is_valid() || !viewport.is_positive_finite() {
+        return None;
+    }
+    let min = transform.screen_point_for_canvas(bounds.origin)?;
+    let max = transform.screen_point_for_canvas(CanvasPoint {
+        x: bounds.origin.x + bounds.size.width,
+        y: bounds.origin.y + bounds.size.height,
+    })?;
+    Some(ViewDelta {
+        x: reveal_axis_delta(min.x, max.x, viewport.width, padding),
+        y: reveal_axis_delta(min.y, max.y, viewport.height, padding),
+    })
+}
+
+fn reveal_axis_delta(min: f32, max: f32, extent: f32, padding: f32) -> f32 {
+    let available = extent - padding * 2.0;
+    if max - min > available {
+        extent * 0.5 - (min + max) * 0.5
+    } else if min < padding {
+        padding - min
+    } else if max > extent - padding {
+        extent - padding - max
+    } else {
+        0.0
     }
 }
 
@@ -2871,6 +5869,7 @@ fn active_pointer(state: &InteractionState) -> Option<InteractionPosition> {
         {
             Some(drag.pointer)
         }
+        InteractionState::Marquee(marquee) if !marquee.release_pending => Some(marquee.pointer),
         InteractionState::NodeDrag(_)
         | InteractionState::Armed(_)
         | InteractionState::EdgePickPending(_)
@@ -2879,9 +5878,111 @@ fn active_pointer(state: &InteractionState) -> Option<InteractionPosition> {
         | InteractionState::Marquee(_)
         | InteractionState::Connection(ConnectionInteraction::Dragging(_))
         | InteractionState::Connection(ConnectionInteraction::Searching(_))
+        | InteractionState::KeyboardConnection(_)
         | InteractionState::Committing(_)
         | InteractionState::EdgeActive(_) => None,
     }
+}
+
+fn validate_position_reprojection(
+    position: InteractionPosition,
+    snapshot: ViewportSnapshot,
+) -> Result<(), CanvasInteractionError> {
+    if position.provenance() != snapshot.provenance() {
+        return Err(CanvasInteractionError::ForeignInteractionFacts);
+    }
+    position
+        .reproject(snapshot)
+        .map(|_| ())
+        .ok_or(CanvasInteractionError::InvalidPosition)
+}
+
+fn visit_interaction_positions(
+    state: &InteractionState,
+    mut visit: impl FnMut(InteractionPosition),
+) {
+    match state {
+        InteractionState::Idle
+        | InteractionState::KeyboardConnection(_)
+        | InteractionState::Committing(CommitInteraction::NodeMove(_))
+        | InteractionState::Committing(CommitInteraction::KeyboardConnection(_))
+        | InteractionState::Committing(CommitInteraction::EdgeDelete(_))
+        | InteractionState::Committing(CommitInteraction::SelectionDelete(_))
+        | InteractionState::EdgeActive(_) => {}
+        InteractionState::Armed(armed) => visit(armed.start),
+        InteractionState::NodeDrag(drag) => {
+            visit(drag.start);
+            visit(drag.pointer);
+        }
+        InteractionState::Pan(pan) => visit(pan.pointer),
+        InteractionState::Marquee(marquee) => {
+            visit(marquee.start);
+            visit(marquee.pointer);
+        }
+        InteractionState::Connection(ConnectionInteraction::Dragging(drag)) => visit(drag.pointer),
+        InteractionState::Connection(ConnectionInteraction::Searching(search)) => {
+            visit(search.pointer);
+        }
+        InteractionState::Committing(CommitInteraction::Connection(commit)) => {
+            visit(commit.pointer);
+        }
+        InteractionState::EdgePickPending(pending) => {
+            visit(pending.press);
+            visit(pending.pointer);
+        }
+    }
+}
+
+fn visit_interaction_positions_mut(
+    state: &mut InteractionState,
+    mut visit: impl FnMut(&mut InteractionPosition),
+) {
+    match state {
+        InteractionState::Idle
+        | InteractionState::KeyboardConnection(_)
+        | InteractionState::Committing(CommitInteraction::NodeMove(_))
+        | InteractionState::Committing(CommitInteraction::KeyboardConnection(_))
+        | InteractionState::Committing(CommitInteraction::EdgeDelete(_))
+        | InteractionState::Committing(CommitInteraction::SelectionDelete(_))
+        | InteractionState::EdgeActive(_) => {}
+        InteractionState::Armed(armed) => visit(&mut armed.start),
+        InteractionState::NodeDrag(drag) => {
+            visit(&mut drag.start);
+            visit(&mut drag.pointer);
+        }
+        InteractionState::Pan(pan) => visit(&mut pan.pointer),
+        InteractionState::Marquee(marquee) => {
+            visit(&mut marquee.start);
+            visit(&mut marquee.pointer);
+        }
+        InteractionState::Connection(ConnectionInteraction::Dragging(drag)) => {
+            visit(&mut drag.pointer);
+        }
+        InteractionState::Connection(ConnectionInteraction::Searching(search)) => {
+            visit(&mut search.pointer);
+        }
+        InteractionState::Committing(CommitInteraction::Connection(commit)) => {
+            visit(&mut commit.pointer);
+        }
+        InteractionState::EdgePickPending(pending) => {
+            visit(&mut pending.press);
+            visit(&mut pending.pointer);
+        }
+    }
+}
+
+fn interaction_positions_need_rebase(
+    state: &InteractionState,
+    pending_hover: Option<PendingHoverEdgePick>,
+    snapshot: ViewportSnapshot,
+) -> bool {
+    let mut stale = false;
+    visit_interaction_positions(state, |position| {
+        stale |= position.viewport_revision() != snapshot.revision();
+    });
+    stale
+        || pending_hover
+            .is_some_and(|pending| pending.position.viewport_revision() != snapshot.revision())
 }
 
 fn state_generation(state: &InteractionState) -> Option<InteractionGeneration> {
@@ -2897,17 +5998,71 @@ fn state_generation(state: &InteractionState) -> Option<InteractionGeneration> {
         InteractionState::Connection(ConnectionInteraction::Searching(search)) => {
             Some(search.generation)
         }
+        InteractionState::KeyboardConnection(connection) => Some(connection.generation),
         InteractionState::Committing(CommitInteraction::Connection(commit)) => {
             Some(commit.generation)
         }
-        InteractionState::Committing(CommitInteraction::NodeDrag(commit)) => {
+        InteractionState::Committing(CommitInteraction::KeyboardConnection(commit)) => {
+            Some(commit.generation)
+        }
+        InteractionState::Committing(CommitInteraction::NodeMove(commit)) => {
             Some(commit.generation)
         }
         InteractionState::Committing(CommitInteraction::EdgeDelete(commit)) => {
             Some(commit.generation)
         }
+        InteractionState::Committing(CommitInteraction::SelectionDelete(commit)) => {
+            Some(commit.generation)
+        }
         InteractionState::EdgeActive(edge) => Some(edge.generation),
         InteractionState::EdgePickPending(pending) => Some(pending.generation),
+    }
+}
+
+fn interaction_state_submission_ticket(state: &InteractionState) -> Option<InteractionTicketId> {
+    match state {
+        InteractionState::Committing(CommitInteraction::Connection(commit)) => Some(commit.ticket),
+        InteractionState::Committing(CommitInteraction::KeyboardConnection(commit)) => {
+            Some(commit.ticket)
+        }
+        InteractionState::Committing(CommitInteraction::NodeMove(commit)) => Some(commit.ticket),
+        InteractionState::Committing(CommitInteraction::EdgeDelete(commit)) => Some(commit.ticket),
+        InteractionState::Committing(CommitInteraction::SelectionDelete(commit)) => {
+            Some(commit.ticket)
+        }
+        _ => None,
+    }
+}
+
+fn state_connection_intent(state: &InteractionState) -> Option<ConnectionGestureBinding> {
+    match state {
+        InteractionState::Armed(ArmedInteraction {
+            target: ArmedTarget::Connection(start),
+            ..
+        }) => Some(start.binding.clone()),
+        InteractionState::Connection(ConnectionInteraction::Dragging(drag)) => {
+            Some(drag.start.binding.clone())
+        }
+        InteractionState::Connection(ConnectionInteraction::Searching(search)) => {
+            Some(search.start.binding.clone())
+        }
+        InteractionState::KeyboardConnection(connection) => Some(connection.start.binding.clone()),
+        InteractionState::Committing(CommitInteraction::Connection(commit)) => {
+            Some(commit.start.binding.clone())
+        }
+        InteractionState::Committing(CommitInteraction::KeyboardConnection(commit)) => {
+            Some(commit.start.binding.clone())
+        }
+        InteractionState::Idle
+        | InteractionState::Armed(_)
+        | InteractionState::NodeDrag(_)
+        | InteractionState::Pan(_)
+        | InteractionState::Marquee(_)
+        | InteractionState::Committing(CommitInteraction::NodeMove(_))
+        | InteractionState::Committing(CommitInteraction::EdgeDelete(_))
+        | InteractionState::Committing(CommitInteraction::SelectionDelete(_))
+        | InteractionState::EdgeActive(_)
+        | InteractionState::EdgePickPending(_) => None,
     }
 }
 
@@ -2925,11 +6080,12 @@ fn state_needs_tick(state: &InteractionState) -> bool {
         InteractionState::Connection(ConnectionInteraction::Dragging(drag)) => {
             !drag.release_pending
         }
+        InteractionState::Marquee(marquee) => !marquee.release_pending,
         InteractionState::Idle
         | InteractionState::Armed(_)
         | InteractionState::Pan(_)
-        | InteractionState::Marquee(_)
         | InteractionState::Connection(ConnectionInteraction::Searching(_))
+        | InteractionState::KeyboardConnection(_)
         | InteractionState::Committing(_)
         | InteractionState::EdgeActive(_)
         | InteractionState::EdgePickPending(_) => false,
@@ -2952,17 +6108,33 @@ fn edge_action_damage() -> InteractionDamage {
     }
 }
 
+fn selection_delete_damage() -> InteractionDamage {
+    InteractionDamage {
+        presentation: true,
+        nodes: true,
+        ports: true,
+        edges: true,
+        selection: true,
+        ..InteractionDamage::default()
+    }
+}
+
 fn damage_for_state(state: &InteractionState) -> InteractionDamage {
     match state {
         InteractionState::NodeDrag(_)
-        | InteractionState::Committing(CommitInteraction::NodeDrag(_)) => {
+        | InteractionState::Committing(CommitInteraction::NodeMove(_)) => {
             InteractionDamage::node_drag()
         }
         InteractionState::Connection(_)
-        | InteractionState::Committing(CommitInteraction::Connection(_)) => {
+        | InteractionState::KeyboardConnection(_)
+        | InteractionState::Committing(CommitInteraction::Connection(_))
+        | InteractionState::Committing(CommitInteraction::KeyboardConnection(_)) => {
             InteractionDamage::connection()
         }
         InteractionState::Committing(CommitInteraction::EdgeDelete(_)) => edge_action_damage(),
+        InteractionState::Committing(CommitInteraction::SelectionDelete(_)) => {
+            selection_delete_damage()
+        }
         InteractionState::Idle
         | InteractionState::Armed(_)
         | InteractionState::Pan(_)
@@ -2975,29 +6147,40 @@ fn damage_for_state(state: &InteractionState) -> InteractionDamage {
 fn state_uses_owner(state: &InteractionState, owner: InteractionOwner) -> bool {
     match state {
         InteractionState::Armed(armed) => match &armed.target {
-            ArmedTarget::NodeDrag(start) => owner == InteractionOwner::Node(start.clicked),
-            ArmedTarget::Connection(start) => connection_uses_owner(*start, owner),
+            ArmedTarget::NodeDrag(start) => match owner {
+                InteractionOwner::Node(node) => start.cohort.contains_member(node),
+                InteractionOwner::Port(_) | InteractionOwner::Edge(_) => false,
+            },
+            ArmedTarget::Connection(start) => connection_uses_owner(start, owner),
             ArmedTarget::Pan { .. } | ArmedTarget::Marquee { .. } => false,
         },
         InteractionState::NodeDrag(drag) => match owner {
-            InteractionOwner::Node(node) => drag.nodes.contains(&node),
+            InteractionOwner::Node(node) => drag.cohort.contains_member(node),
             InteractionOwner::Port(_) | InteractionOwner::Edge(_) => false,
         },
         InteractionState::Connection(ConnectionInteraction::Dragging(drag)) => {
-            connection_uses_owner(drag.start, owner)
+            connection_uses_owner(&drag.start, owner)
         }
         InteractionState::Connection(ConnectionInteraction::Searching(search)) => {
-            connection_uses_owner(search.start, owner)
+            connection_uses_owner(&search.start, owner)
+        }
+        InteractionState::KeyboardConnection(connection) => {
+            connection_binding_uses_owner(&connection.start.binding, owner)
         }
         InteractionState::Committing(CommitInteraction::Connection(commit)) => {
-            connection_uses_owner(commit.start, owner)
+            connection_uses_owner(&commit.start, owner)
         }
-        InteractionState::Committing(CommitInteraction::NodeDrag(commit)) => match owner {
-            InteractionOwner::Node(node) => commit.nodes.contains(&node),
+        InteractionState::Committing(CommitInteraction::KeyboardConnection(commit)) => {
+            connection_binding_uses_owner(&commit.start.binding, owner)
+                || owner == InteractionOwner::Port(commit.target.instance())
+        }
+        InteractionState::Committing(CommitInteraction::NodeMove(commit)) => match owner {
+            InteractionOwner::Node(node) => commit.cohort.contains_member(node),
             InteractionOwner::Port(_) | InteractionOwner::Edge(_) => false,
         },
         InteractionState::Committing(CommitInteraction::EdgeDelete(_)) => false,
-        InteractionState::EdgeActive(edge) => owner == InteractionOwner::Edge(edge.edge),
+        InteractionState::Committing(CommitInteraction::SelectionDelete(_)) => false,
+        InteractionState::EdgeActive(edge) => owner == InteractionOwner::Edge(edge.instance),
         InteractionState::Idle
         | InteractionState::Pan(_)
         | InteractionState::Marquee(_)
@@ -3005,2218 +6188,75 @@ fn state_uses_owner(state: &InteractionState, owner: InteractionOwner) -> bool {
     }
 }
 
-fn connection_uses_owner(start: ConnectionInteractionStart, owner: InteractionOwner) -> bool {
-    match owner {
-        InteractionOwner::Node(node) => start.owner_node == node,
-        InteractionOwner::Port(port) => {
-            start.intent.fixed_port() == port || start.intent.detached_port() == Some(port)
+fn state_is_current(
+    state: &InteractionState,
+    snapshot: &GraphSnapshot,
+    policy: GraphRuntimePolicy,
+) -> bool {
+    match state {
+        InteractionState::Armed(armed) => match &armed.target {
+            ArmedTarget::NodeDrag(start) => cohort_is_current(&start.cohort, snapshot),
+            ArmedTarget::Connection(start) => start.binding.is_interactive(snapshot, policy),
+            ArmedTarget::Pan { .. } | ArmedTarget::Marquee { .. } => true,
+        },
+        InteractionState::NodeDrag(drag) => cohort_is_current(&drag.cohort, snapshot),
+        InteractionState::Connection(ConnectionInteraction::Dragging(drag)) => {
+            drag.start.binding.is_interactive(snapshot, policy)
         }
-        InteractionOwner::Edge(edge) => start.intent.edge() == edge,
+        InteractionState::Connection(ConnectionInteraction::Searching(search)) => {
+            search.start.binding.is_interactive(snapshot, policy)
+        }
+        InteractionState::KeyboardConnection(connection) => {
+            connection.start.binding.is_interactive(snapshot, policy)
+        }
+        InteractionState::Committing(CommitInteraction::Connection(commit)) => {
+            commit.start.binding.is_interactive(snapshot, policy)
+                && commit.target.is_current(snapshot)
+        }
+        InteractionState::Committing(CommitInteraction::KeyboardConnection(commit)) => {
+            commit.start.binding.is_interactive(snapshot, policy)
+                && snapshot.port_instance_is_current(commit.target.instance())
+        }
+        InteractionState::Committing(CommitInteraction::NodeMove(commit)) => {
+            cohort_is_current(&commit.cohort, snapshot)
+        }
+        InteractionState::Committing(CommitInteraction::EdgeDelete(commit)) => {
+            snapshot.edge_instance_is_current(commit.instance)
+        }
+        InteractionState::EdgeActive(edge) => snapshot.edge_instance_is_current(edge.instance),
+        InteractionState::Idle
+        | InteractionState::Pan(_)
+        | InteractionState::Marquee(_)
+        | InteractionState::Committing(CommitInteraction::SelectionDelete(_))
+        | InteractionState::EdgePickPending(_) => true,
+    }
+}
+
+fn cohort_is_current(cohort: &NodeMoveCohort, snapshot: &GraphSnapshot) -> bool {
+    cohort.members().iter().all(|member| {
+        snapshot.node_lifetime_is_current(*member)
+            && snapshot.graph().node(&member.node()).is_some_and(|node| {
+                !node.hidden && node.selectable.unwrap_or(true) && node.draggable.unwrap_or(true)
+            })
+    })
+}
+
+fn connection_uses_owner(start: &ConnectionInteractionStart, owner: InteractionOwner) -> bool {
+    connection_binding_uses_owner(&start.binding, owner)
+}
+
+fn connection_binding_uses_owner(
+    binding: &ConnectionGestureBinding,
+    owner: InteractionOwner,
+) -> bool {
+    match owner {
+        InteractionOwner::Node(node) => binding.owner() == node,
+        InteractionOwner::Port(port) => {
+            binding.fixed_port_instance() == port || binding.detached_port_instance() == Some(port)
+        }
+        InteractionOwner::Edge(edge) => binding.reconnect_edge() == Some(edge),
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use jellyflow_core::core::{
-        CanvasPoint, CanvasSize, Edge, EdgeId, EdgeKind, EdgeReconnectable,
-        EdgeReconnectableEndpoint, GraphBuilder, GraphId, Node, NodeId, NodeKindKey, Port,
-        PortCapacity, PortDirection, PortId, PortKey, PortKind,
-    };
-    use jellyflow_core::interaction::NodeGraphConnectionMode;
-
-    use super::*;
-    use crate::rules::EdgeEndpoint;
-    use crate::runtime::geometry::{
-        EdgeEndpointPosition, EdgePosition, HandlePosition, resolve_edge_route_path,
-    };
-    use crate::runtime::interaction::AlignmentSnapWork;
-    use crate::runtime::interaction::ConnectionProbeTarget;
-    use crate::runtime::view_session::{ConnectionProbeWork, EdgePickQueryOutcome, EdgePickWork};
-
-    #[test]
-    fn native_node_activation_selects_without_arming_drag_or_allocating_generation() {
-        let mut session = test_session(CanvasInteractionConfig::default());
-        let node = NodeId::from_u128(10);
-
-        let update = session
-            .activate_node(node, SelectionMode::Replace)
-            .expect("idle native activation");
-        let [
-            CanvasInteractionEffect::Selection(SelectionMutation::Node {
-                node: selected,
-                mode,
-            }),
-        ] = update.effects()
-        else {
-            panic!("native node activation must emit one node selection");
-        };
-        assert_eq!(*selected, node);
-        assert_eq!(*mode, SelectionMode::Replace);
-        assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
-        assert_eq!(session.presentation().generation(), None);
-        assert!(session.presentation().node_drag().is_none());
-
-        session
-            .press(CanvasPressTarget::Pan, position(0.0, 0.0))
-            .expect("arm another interaction");
-        assert!(matches!(
-            session.activate_node(node, SelectionMode::Add),
-            Err(CanvasInteractionError::AlreadyActive)
-        ));
-    }
-
-    #[test]
-    fn connection_stays_armed_below_threshold_and_release_is_a_noop() {
-        let mut session = test_session(CanvasInteractionConfig::default());
-        let pressed = session
-            .press(connection_target(false), position(0.0, 0.0))
-            .unwrap();
-        assert_eq!(pressed.tick_demand(), InteractionTickDemand::None);
-
-        let moved = session.move_to(position(3.0, 0.0)).unwrap();
-        assert_eq!(
-            session.presentation().phase(),
-            CanvasInteractionPhase::Armed
-        );
-        assert!(moved.queries().is_empty());
-        assert_eq!(moved.tick_demand(), InteractionTickDemand::None);
-
-        let released = session.release(position(3.0, 0.0)).unwrap();
-        assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
-        assert!(released.effects().is_empty());
-    }
-
-    #[test]
-    fn semantic_owner_query_tracks_connection_before_and_after_activation() {
-        let edge = EdgeId::from_u128(9);
-        let detached = source_port();
-        let fixed = target_port();
-        let node = source_node();
-        let start = ConnectionInteractionStart::new(
-            node,
-            ConnectionGestureIntent::reconnect(
-                edge,
-                EdgeEndpoint::To,
-                detached,
-                fixed,
-                NodeGraphConnectionMode::Strict,
-            ),
-            CanvasPoint { x: 0.0, y: 8.0 },
-            HandlePosition::Right,
-            false,
-        )
-        .unwrap();
-        let mut session = test_session(CanvasInteractionConfig::default());
-
-        session
-            .press(CanvasPressTarget::Connection(start), position(0.0, 0.0))
-            .unwrap();
-        for owner in [
-            InteractionOwner::Node(node),
-            InteractionOwner::Port(detached),
-            InteractionOwner::Port(fixed),
-            InteractionOwner::Edge(edge),
-        ] {
-            assert!(session.uses_owner(owner));
-        }
-        assert!(!session.uses_owner(InteractionOwner::Node(NodeId::from_u128(999))));
-
-        session.move_to(position(8.0, 0.0)).unwrap();
-        assert_eq!(
-            session.presentation().phase(),
-            CanvasInteractionPhase::ConnectionDrag
-        );
-        assert!(session.uses_owner(InteractionOwner::Port(detached)));
-
-        session.cancel();
-        assert!(!session.uses_owner(InteractionOwner::Port(detached)));
-    }
-
-    #[test]
-    fn independent_drag_thresholds_cross_only_beyond_the_exact_view_distance() {
-        assert!(!threshold_crossed_distance(
-            view_distance_squared(ViewPoint::new(0.0, 0.0), ViewPoint::new(4.0, 0.0)),
-            4.0,
-        ));
-        assert!(threshold_crossed_distance(
-            view_distance_squared(ViewPoint::new(0.0, 0.0), ViewPoint::new(4.01, 0.0)),
-            4.0,
-        ));
-
-        let node = NodeId::from_u128(10);
-        let start = NodeDragStart::new(
-            node,
-            [node],
-            CanvasPoint { x: 0.0, y: 0.0 },
-            SelectionMode::Replace,
-        )
-        .unwrap();
-        let mut session = test_session(CanvasInteractionConfig::default());
-        let pressed = session
-            .press(CanvasPressTarget::NodeDrag(start), position(0.0, 0.0))
-            .unwrap();
-        assert_eq!(pressed.tick_demand(), InteractionTickDemand::None);
-        let boundary = session.move_to(position(4.0, 0.0)).unwrap();
-        assert_eq!(boundary.tick_demand(), InteractionTickDemand::None);
-        assert_eq!(
-            session.presentation().phase(),
-            CanvasInteractionPhase::Armed
-        );
-        let dragged = session.move_to(position(4.01, 0.0)).unwrap();
-        assert_eq!(dragged.tick_demand(), InteractionTickDemand::WhileActive);
-        assert_eq!(
-            session.presentation().phase(),
-            CanvasInteractionPhase::NodeDrag
-        );
-    }
-
-    #[test]
-    fn node_click_tolerance_is_independent_from_the_drag_threshold() {
-        let node = NodeId::from_u128(10);
-        let start = || {
-            NodeDragStart::new(node, [], CanvasPoint::default(), SelectionMode::Replace).unwrap()
-        };
-
-        let mut click = test_session(CanvasInteractionConfig::default());
-        click
-            .press(CanvasPressTarget::NodeDrag(start()), position(0.0, 0.0))
-            .unwrap();
-        let selected = click.release(position(2.0, 0.0)).unwrap();
-        assert!(matches!(
-            selected.effects(),
-            [CanvasInteractionEffect::Selection(SelectionMutation::Node {
-                node: selected,
-                mode: SelectionMode::Replace,
-            })] if *selected == node
-        ));
-
-        let mut dead_zone = test_session(CanvasInteractionConfig::default());
-        dead_zone
-            .press(CanvasPressTarget::NodeDrag(start()), position(0.0, 0.0))
-            .unwrap();
-        let released = dead_zone.release(position(2.01, 0.0)).unwrap();
-        assert!(released.effects().is_empty());
-        assert_eq!(
-            dead_zone.presentation().phase(),
-            CanvasInteractionPhase::Idle
-        );
-    }
-
-    #[test]
-    fn blank_canvas_click_clears_only_for_replace_mode() {
-        for mode in [
-            SelectionMode::Replace,
-            SelectionMode::Add,
-            SelectionMode::Toggle,
-        ] {
-            let mut session = test_session(CanvasInteractionConfig::default());
-            let pressed = session
-                .press(canvas_marquee_target(mode), position(8.0, 8.0))
-                .unwrap();
-            session
-                .resolve_canvas_press_edge_resolution(
-                    edge_query_id(&pressed),
-                    CanvasEdgePickResolution::Complete(None),
-                )
-                .unwrap();
-            let released = session.release(position(8.0, 8.0)).unwrap();
-            match mode {
-                SelectionMode::Replace => assert!(matches!(
-                    released.effects(),
-                    [CanvasInteractionEffect::Selection(SelectionMutation::Clear)]
-                )),
-                SelectionMode::Add | SelectionMode::Toggle => {
-                    assert!(released.effects().is_empty())
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn toggle_node_click_toggles_but_toggle_drag_adds_without_deselecting() {
-        let node = NodeId::from_u128(10);
-        let start =
-            || NodeDragStart::new(node, [], CanvasPoint::default(), SelectionMode::Toggle).unwrap();
-
-        let mut click = test_session(CanvasInteractionConfig::default());
-        click
-            .press(CanvasPressTarget::NodeDrag(start()), position(0.0, 0.0))
-            .unwrap();
-        let selected = click.release(position(0.0, 0.0)).unwrap();
-        assert!(matches!(
-            selected.effects(),
-            [CanvasInteractionEffect::Selection(
-                SelectionMutation::Node {
-                    mode: SelectionMode::Toggle,
-                    ..
-                }
-            )]
-        ));
-
-        let mut drag = test_session(CanvasInteractionConfig::default());
-        drag.press(CanvasPressTarget::NodeDrag(start()), position(0.0, 0.0))
-            .unwrap();
-        let activated = drag.move_to(position(8.0, 0.0)).unwrap();
-        assert!(matches!(
-            activated.effects(),
-            [CanvasInteractionEffect::Selection(
-                SelectionMutation::Node {
-                    mode: SelectionMode::Add,
-                    ..
-                }
-            )]
-        ));
-        assert_eq!(
-            drag.presentation().phase(),
-            CanvasInteractionPhase::NodeDrag
-        );
-    }
-
-    #[test]
-    fn asynchronous_search_and_commit_states_do_not_request_animation_ticks() {
-        let mut search = test_session(CanvasInteractionConfig::default());
-        let activated = search
-            .activate_connection_search(connection_start(true), position(20.0, 10.0))
-            .unwrap();
-        assert_eq!(activated.tick_demand(), InteractionTickDemand::None);
-        let ready = search
-            .search_ready(
-                search
-                    .presentation()
-                    .generation()
-                    .expect("search generation"),
-                1,
-            )
-            .unwrap();
-        assert_eq!(ready.tick_demand(), InteractionTickDemand::None);
-
-        let route =
-            published_edge_route(EdgeId::from_u128(24), true, EdgeReconnectable::Bool(true));
-        let mut deletion = test_session(CanvasInteractionConfig::default());
-        let submitted = deletion.delete_edge(&route).unwrap();
-        assert_eq!(submitted.tick_demand(), InteractionTickDemand::None);
-    }
-
-    #[test]
-    fn direct_connection_reprobes_on_release_and_keeps_preview_until_terminal_receipt() {
-        let mut session = test_session(CanvasInteractionConfig::default());
-        session
-            .press(connection_target(false), position(0.0, 0.0))
-            .unwrap();
-        let moved = session.move_to(position(8.0, 0.0)).unwrap();
-        let move_query = connection_query_id(&moved);
-        session
-            .resolve_connection_probe(move_query, complete(valid_probe(target_port())))
-            .unwrap();
-
-        let released = session.release(position(20.0, 0.0)).unwrap();
-        let release_query = connection_query_id(&released);
-        assert_ne!(move_query, release_query);
-        assert!(
-            session
-                .presentation()
-                .connection()
-                .expect("drag presentation")
-                .is_release_pending()
-        );
-
-        let committing = session
-            .resolve_connection_probe(release_query, complete(valid_probe(target_port())))
-            .unwrap();
-        let ticket = submit_ticket(&committing);
-        let presentation = session.presentation();
-        assert_eq!(presentation.phase(), CanvasInteractionPhase::Committing);
-        let connection = presentation.connection().expect("commit preview");
-        assert_eq!(connection.ticket(), Some(ticket));
-        assert_eq!(connection.preview_target(), CanvasPoint { x: 24.0, y: 8.0 });
-
-        session.settle(ticket, CommandSettlement::Rejected).unwrap();
-        assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
-        assert_eq!(
-            session.presentation().terminal(),
-            Some(InteractionTerminalReason::Rejected)
-        );
-
-        let late = session.settle(ticket, CommandSettlement::Applied).unwrap();
-        assert!(late.effects().is_empty());
-        assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
-    }
-
-    #[test]
-    fn released_connection_at_auto_pan_edge_preserves_its_final_probe() {
-        let mut session = test_session(CanvasInteractionConfig::default());
-        session
-            .press(connection_target(false), position(100.0, 40.0))
-            .unwrap();
-        let moved = session.move_to(position(190.0, 40.0)).unwrap();
-        session
-            .resolve_connection_probe(
-                connection_query_id(&moved),
-                complete(valid_probe(target_port())),
-            )
-            .unwrap();
-
-        let released = session.release(position(195.0, 40.0)).unwrap();
-        let release_query = connection_query_id(&released);
-        let transform = ViewportTransform::new(CanvasPoint::default(), 1.0).unwrap();
-        let tick = session
-            .tick(0.1, ViewSize::new(200.0, 120.0), transform)
-            .unwrap();
-
-        assert!(tick.effects().is_empty());
-        assert!(tick.queries().is_empty());
-        assert!(
-            session
-                .presentation()
-                .connection()
-                .expect("released connection preview")
-                .is_release_pending()
-        );
-
-        let committing = session
-            .resolve_connection_probe(release_query, complete(valid_probe(target_port())))
-            .unwrap();
-        assert!(matches!(
-            committing.effects(),
-            [CanvasInteractionEffect::SubmitGraph { .. }]
-        ));
-    }
-
-    #[test]
-    fn stale_drag_probe_restart_replaces_identity_and_ignores_the_old_page() {
-        let mut session = test_session(CanvasInteractionConfig {
-            query_entry_budget: 1,
-            ..CanvasInteractionConfig::default()
-        });
-        session
-            .press(connection_target(false), position(0.0, 0.0))
-            .unwrap();
-        let started = session.move_to(position(12.0, 4.0)).unwrap();
-        let stale_id = connection_query_id(&started);
-
-        let restarted = session.restart_stale_query(stale_id).unwrap();
-        let fresh_id = connection_query_id(&restarted);
-        assert_ne!(fresh_id, stale_id);
-        assert_eq!(
-            session.presentation().phase(),
-            CanvasInteractionPhase::ConnectionDrag
-        );
-
-        let late = session
-            .resolve_connection_probe(stale_id, complete(valid_probe(target_port())))
-            .unwrap();
-        assert!(late.queries().is_empty());
-        assert!(late.effects().is_empty());
-        let resolved = session
-            .resolve_connection_probe(fresh_id, complete(valid_probe(target_port())))
-            .unwrap();
-        assert!(resolved.effects().is_empty());
-        assert!(
-            session
-                .presentation()
-                .connection()
-                .expect("active connection preview")
-                .probe()
-                .is_valid()
-        );
-    }
-
-    #[test]
-    fn stale_release_probe_restart_preserves_release_pending_until_commit() {
-        let mut session = test_session(CanvasInteractionConfig {
-            query_entry_budget: 1,
-            ..CanvasInteractionConfig::default()
-        });
-        session
-            .press(connection_target(false), position(0.0, 0.0))
-            .unwrap();
-        let moved = session.move_to(position(8.0, 0.0)).unwrap();
-        session
-            .resolve_connection_probe(
-                connection_query_id(&moved),
-                complete(valid_probe(target_port())),
-            )
-            .unwrap();
-        let released = session.release(position(20.0, 0.0)).unwrap();
-        let stale_id = connection_query_id(&released);
-
-        let restarted = session.restart_stale_query(stale_id).unwrap();
-        let fresh_id = connection_query_id(&restarted);
-        assert_ne!(fresh_id, stale_id);
-        assert!(
-            session
-                .presentation()
-                .connection()
-                .expect("release preview")
-                .is_release_pending()
-        );
-
-        let committing = session
-            .resolve_connection_probe(fresh_id, complete(valid_probe(target_port())))
-            .unwrap();
-        assert!(matches!(
-            committing.effects(),
-            [CanvasInteractionEffect::SubmitGraph { .. }]
-        ));
-        assert_eq!(
-            session.presentation().phase(),
-            CanvasInteractionPhase::Committing
-        );
-    }
-
-    #[test]
-    fn stale_commit_revalidation_restart_reuses_ticket_and_keeps_budget_terminal() {
-        let mut session = test_session(CanvasInteractionConfig {
-            query_entry_budget: 1,
-            ..CanvasInteractionConfig::default()
-        });
-        let ticket = begin_direct_connection_commit(&mut session);
-        let requested = session
-            .request_connection_commit_revalidation(ticket)
-            .unwrap();
-        let stale_id = connection_query_id(&requested);
-        let restarted = session.restart_stale_query(stale_id).unwrap();
-        let fresh_id = connection_query_id(&restarted);
-        assert_ne!(fresh_id, stale_id);
-        assert_eq!(
-            session
-                .presentation()
-                .connection()
-                .expect("commit preview")
-                .ticket(),
-            Some(ticket)
-        );
-
-        let exhausted = session
-            .resolve_connection_probe(
-                fresh_id,
-                ConnectionProbeQueryOutcome::BudgetExhausted {
-                    work: ConnectionProbeWork::default(),
-                },
-            )
-            .unwrap();
-        assert!(exhausted.effects().is_empty());
-        assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
-        assert_eq!(
-            session.presentation().terminal(),
-            Some(InteractionTerminalReason::BudgetExhausted)
-        );
-    }
-
-    #[test]
-    fn stale_edge_pick_restart_replaces_identity_without_relaxing_budget_failure() {
-        let mut session = test_session(CanvasInteractionConfig {
-            query_entry_budget: 1,
-            ..CanvasInteractionConfig::default()
-        });
-        let requested = session.request_edge_pick(position(20.0, 10.0)).unwrap();
-        let stale_id = edge_query_id(&requested);
-        let restarted = session.restart_stale_query(stale_id).unwrap();
-        let fresh_id = edge_query_id(&restarted);
-        assert_ne!(fresh_id, stale_id);
-
-        let late = session
-            .resolve_edge_pick(
-                stale_id,
-                EdgePickQueryOutcome::Complete {
-                    pick: None,
-                    work: EdgePickWork::default(),
-                },
-            )
-            .unwrap();
-        assert!(late.queries().is_empty());
-        let exhausted = session
-            .resolve_edge_pick(
-                fresh_id,
-                EdgePickQueryOutcome::BudgetExhausted {
-                    work: EdgePickWork::default(),
-                },
-            )
-            .unwrap();
-        assert!(exhausted.effects().is_empty());
-        assert_eq!(
-            session.presentation().terminal(),
-            Some(InteractionTerminalReason::BudgetExhausted)
-        );
-    }
-
-    #[test]
-    fn repeated_stale_drag_probe_restarts_are_bounded_per_pointer_query() {
-        let mut session = test_session(CanvasInteractionConfig::default());
-        session
-            .press(connection_target(false), position(0.0, 0.0))
-            .unwrap();
-        let started = session.move_to(position(12.0, 4.0)).unwrap();
-        let mut current = connection_query_id(&started);
-
-        for _ in 0..MAX_STALE_QUERY_RESTARTS {
-            let restarted = session.restart_stale_query(current).unwrap();
-            current = connection_query_id(&restarted);
-        }
-        let exhausted = session.restart_stale_query(current).unwrap();
-
-        assert!(exhausted.queries().is_empty());
-        assert!(exhausted.effects().is_empty());
-        assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
-        assert_eq!(
-            session.presentation().terminal(),
-            Some(InteractionTerminalReason::BudgetExhausted)
-        );
-    }
-
-    #[test]
-    fn repeated_stale_hover_edge_picks_are_bounded() {
-        let mut session = test_session(CanvasInteractionConfig::default());
-        let requested = session.request_edge_pick(position(20.0, 10.0)).unwrap();
-        let mut current = edge_query_id(&requested);
-
-        for _ in 0..MAX_STALE_QUERY_RESTARTS {
-            let restarted = session.restart_stale_query(current).unwrap();
-            current = edge_query_id(&restarted);
-        }
-        let exhausted = session.restart_stale_query(current).unwrap();
-
-        assert!(exhausted.queries().is_empty());
-        assert!(exhausted.effects().is_empty());
-        assert_eq!(session.presentation().hovered_edge(), None);
-        assert_eq!(
-            session.presentation().terminal(),
-            Some(InteractionTerminalReason::BudgetExhausted)
-        );
-    }
-
-    #[test]
-    fn repeated_stale_commit_revalidation_rejects_without_graph_mutation() {
-        let mut session = test_session(CanvasInteractionConfig::default());
-        let ticket = begin_direct_connection_commit(&mut session);
-        let requested = session
-            .request_connection_commit_revalidation(ticket)
-            .unwrap();
-        let mut current = connection_query_id(&requested);
-
-        for _ in 0..MAX_STALE_QUERY_RESTARTS {
-            let restarted = session.restart_stale_query(current).unwrap();
-            current = connection_query_id(&restarted);
-        }
-        let exhausted = session.restart_stale_query(current).unwrap();
-
-        assert!(exhausted.queries().is_empty());
-        assert!(exhausted.effects().is_empty());
-        assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
-        assert_eq!(
-            session.presentation().terminal(),
-            Some(InteractionTerminalReason::BudgetExhausted)
-        );
-    }
-
-    #[test]
-    fn exact_canvas_press_selects_its_resolved_edge_instead_of_a_previous_hover() {
-        let stale_hover = EdgeId::from_u128(40);
-        let pressed_edge = EdgeId::from_u128(41);
-        let mut session = test_session(CanvasInteractionConfig::default());
-        session.hovered_edge = Some(stale_hover);
-
-        let pressed = session
-            .press(
-                canvas_marquee_target(SelectionMode::Toggle),
-                position(20.0, 10.0),
-            )
-            .unwrap();
-        let query = edge_query_id(&pressed);
-        assert_eq!(session.presentation().hovered_edge(), None);
-        assert_eq!(
-            session.presentation().phase(),
-            CanvasInteractionPhase::Armed
-        );
-
-        let resolved = session
-            .resolve_canvas_press_edge_resolution(
-                query,
-                CanvasEdgePickResolution::Complete(Some(pressed_edge)),
-            )
-            .unwrap();
-
-        assert!(matches!(
-            resolved.effects(),
-            [CanvasInteractionEffect::Selection(SelectionMutation::Edge {
-                edge,
-                mode: SelectionMode::Toggle,
-            })] if *edge == pressed_edge
-        ));
-        assert_eq!(
-            session.presentation().phase(),
-            CanvasInteractionPhase::EdgeActive
-        );
-        assert_eq!(session.presentation().active_edge(), Some(pressed_edge));
-        assert_eq!(session.presentation().hovered_edge(), Some(pressed_edge));
-    }
-
-    #[test]
-    fn empty_exact_pick_activates_marquee_from_press_to_latest_pointer() {
-        let mut session = test_session(CanvasInteractionConfig::default());
-        let pressed = session
-            .press(
-                canvas_marquee_target(SelectionMode::Add),
-                position(2.0, 3.0),
-            )
-            .unwrap();
-        let query = edge_query_id(&pressed);
-        let moved = session.move_to(position(14.0, 11.0)).unwrap();
-        assert!(moved.effects().is_empty());
-
-        let resolved = session
-            .resolve_canvas_press_edge_resolution(query, CanvasEdgePickResolution::Complete(None))
-            .unwrap();
-
-        assert!(matches!(
-            resolved.effects(),
-            [CanvasInteractionEffect::Selection(SelectionMutation::Marquee {
-                bounds,
-                mode: SelectionMode::Add,
-                ..
-            })] if *bounds == CanvasRect {
-                origin: CanvasPoint { x: 2.0, y: 3.0 },
-                size: CanvasSize { width: 12.0, height: 8.0 },
-            }
-        ));
-        assert_eq!(
-            session.presentation().phase(),
-            CanvasInteractionPhase::Marquee
-        );
-        assert_eq!(
-            session.presentation().marquee(),
-            Some(CanvasRect {
-                origin: CanvasPoint { x: 2.0, y: 3.0 },
-                size: CanvasSize {
-                    width: 12.0,
-                    height: 8.0,
-                },
-            })
-        );
-    }
-
-    #[test]
-    fn release_before_exact_pick_completion_suppresses_delayed_edge_click_and_finishes_fallback() {
-        let edge = EdgeId::from_u128(50);
-        let mut edge_session = test_session(CanvasInteractionConfig::default());
-        let pressed = edge_session
-            .press(
-                canvas_marquee_target(SelectionMode::Replace),
-                position(0.0, 0.0),
-            )
-            .unwrap();
-        let query = edge_query_id(&pressed);
-        let released = edge_session.release(position(12.0, 0.0)).unwrap();
-        assert!(released.effects().is_empty());
-        let resolved = edge_session
-            .resolve_canvas_press_edge_resolution(
-                query,
-                CanvasEdgePickResolution::Complete(Some(edge)),
-            )
-            .unwrap();
-        assert!(resolved.effects().is_empty());
-        assert_eq!(
-            edge_session.presentation().phase(),
-            CanvasInteractionPhase::Idle
-        );
-
-        let mut empty_session = test_session(CanvasInteractionConfig::default());
-        let pressed = empty_session
-            .press(
-                canvas_marquee_target(SelectionMode::Replace),
-                position(0.0, 0.0),
-            )
-            .unwrap();
-        let query = edge_query_id(&pressed);
-        empty_session.release(position(12.0, 8.0)).unwrap();
-        let resolved = empty_session
-            .resolve_canvas_press_edge_resolution(query, CanvasEdgePickResolution::Complete(None))
-            .unwrap();
-        assert!(matches!(
-            resolved.effects(),
-            [CanvasInteractionEffect::Selection(
-                SelectionMutation::Marquee { .. }
-            )]
-        ));
-        assert_eq!(
-            empty_session.presentation().phase(),
-            CanvasInteractionPhase::Idle
-        );
-    }
-
-    #[test]
-    fn exact_press_pagination_latches_maximum_displacement_until_completion() {
-        let edge = EdgeId::from_u128(60);
-        let mut session = test_session(CanvasInteractionConfig {
-            query_entry_budget: 1,
-            ..CanvasInteractionConfig::default()
-        });
-        let pressed = session
-            .press(
-                canvas_marquee_target(SelectionMode::Replace),
-                position(4.0, 5.0),
-            )
-            .unwrap();
-        let query = edge_query_id(&pressed);
-        session.move_to(position(40.0, 50.0)).unwrap();
-        let continued = session
-            .resolve_canvas_press_edge_resolution(
-                query,
-                CanvasEdgePickResolution::Continue(EdgePickQuery::new(
-                    ViewPoint::new(4.0, 5.0),
-                    10.0,
-                    1,
-                )),
-            )
-            .unwrap();
-        assert_eq!(edge_query_id(&continued), query);
-        assert!(continued.effects().is_empty());
-        let InteractionState::EdgePickPending(pending) = &session.state else {
-            panic!("exact press must remain pending between query pages");
-        };
-        assert_eq!(pending.press, position(4.0, 5.0));
-        assert_eq!(pending.pointer, position(40.0, 50.0));
-
-        session.release(position(44.0, 55.0)).unwrap();
-        let resolved = session
-            .resolve_canvas_press_edge_resolution(
-                query,
-                CanvasEdgePickResolution::Complete(Some(edge)),
-            )
-            .unwrap();
-        assert!(resolved.effects().is_empty());
-        assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
-    }
-
-    #[test]
-    fn exact_press_latches_a_far_move_even_after_returning_to_the_press_point() {
-        let edge = EdgeId::from_u128(60);
-        let mut session = test_session(CanvasInteractionConfig::default());
-        let pressed = session
-            .press(
-                canvas_marquee_target(SelectionMode::Replace),
-                position(4.0, 5.0),
-            )
-            .unwrap();
-        let query = edge_query_id(&pressed);
-        session.move_to(position(40.0, 50.0)).unwrap();
-        session.move_to(position(4.0, 5.0)).unwrap();
-        session.release(position(4.0, 5.0)).unwrap();
-
-        let resolved = session
-            .resolve_canvas_press_edge_resolution(
-                query,
-                CanvasEdgePickResolution::Complete(Some(edge)),
-            )
-            .unwrap();
-        assert!(resolved.effects().is_empty());
-        assert_eq!(session.presentation().active_edge(), None);
-    }
-
-    #[test]
-    fn stale_exact_press_restart_requeries_the_press_point_and_ignores_the_old_identity() {
-        let edge = EdgeId::from_u128(61);
-        let mut session = test_session(CanvasInteractionConfig::default());
-        let pressed = session
-            .press(
-                canvas_marquee_target(SelectionMode::Replace),
-                position(4.0, 5.0),
-            )
-            .unwrap();
-        let stale = edge_query_id(&pressed);
-        session.move_to(position(40.0, 50.0)).unwrap();
-
-        let restarted = session.restart_stale_query(stale).unwrap();
-        let fresh = edge_query_id(&restarted);
-        assert_ne!(fresh, stale);
-        let InteractionState::EdgePickPending(pending) = &session.state else {
-            panic!("exact press restart must remain pending");
-        };
-        assert_eq!(pending.press, position(4.0, 5.0));
-        assert_eq!(pending.pointer, position(40.0, 50.0));
-
-        let late = session
-            .resolve_canvas_press_edge_resolution(
-                stale,
-                CanvasEdgePickResolution::Complete(Some(edge)),
-            )
-            .unwrap();
-        assert!(late.effects().is_empty());
-        assert_eq!(session.presentation().active_edge(), None);
-
-        let resolved = session
-            .resolve_canvas_press_edge_resolution(
-                fresh,
-                CanvasEdgePickResolution::Complete(Some(edge)),
-            )
-            .unwrap();
-        assert!(resolved.effects().is_empty());
-    }
-
-    #[test]
-    fn exact_press_supersedes_fast_hover_without_accepting_its_late_result() {
-        let pressed_edge = EdgeId::from_u128(63);
-        let mut session = test_session(CanvasInteractionConfig::default());
-        let hover = session.request_edge_pick(position(2.0, 3.0)).unwrap();
-        let hover_query = edge_query_id(&hover);
-        let pressed = session
-            .press(
-                canvas_marquee_target(SelectionMode::Replace),
-                position(8.0, 9.0),
-            )
-            .unwrap();
-        let press_query = edge_query_id(&pressed);
-        assert_ne!(press_query, hover_query);
-
-        let late_hover = session
-            .resolve_edge_pick(
-                hover_query,
-                EdgePickQueryOutcome::BudgetExhausted {
-                    work: EdgePickWork::default(),
-                },
-            )
-            .unwrap();
-        assert!(late_hover.effects().is_empty());
-        assert_eq!(session.presentation().hovered_edge(), None);
-        assert_eq!(session.presentation().terminal(), None);
-
-        session
-            .resolve_canvas_press_edge_resolution(
-                press_query,
-                CanvasEdgePickResolution::Complete(Some(pressed_edge)),
-            )
-            .unwrap();
-        assert_eq!(session.presentation().active_edge(), Some(pressed_edge));
-        assert_eq!(session.presentation().hovered_edge(), Some(pressed_edge));
-    }
-
-    #[test]
-    fn exact_press_budget_geometry_cancel_and_late_results_never_select() {
-        for (resolution, terminal) in [
-            (
-                CanvasEdgePickResolution::BudgetExhausted,
-                InteractionTerminalReason::BudgetExhausted,
-            ),
-            (
-                CanvasEdgePickResolution::GeometryIndeterminate,
-                InteractionTerminalReason::GeometryIndeterminate,
-            ),
-        ] {
-            let mut session = test_session(CanvasInteractionConfig::default());
-            let pressed = session
-                .press(
-                    canvas_marquee_target(SelectionMode::Replace),
-                    position(0.0, 0.0),
-                )
-                .unwrap();
-            let resolved = session
-                .resolve_canvas_press_edge_resolution(edge_query_id(&pressed), resolution)
-                .unwrap();
-            assert!(resolved.effects().is_empty());
-            assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
-            assert_eq!(session.presentation().terminal(), Some(terminal));
-        }
-
-        let edge = EdgeId::from_u128(70);
-        let mut session = test_session(CanvasInteractionConfig::default());
-        let pressed = session
-            .press(
-                canvas_marquee_target(SelectionMode::Replace),
-                position(0.0, 0.0),
-            )
-            .unwrap();
-        let query = edge_query_id(&pressed);
-        let cancelled = session.cancel();
-        assert!(cancelled.effects().is_empty());
-        assert_eq!(
-            session.presentation().terminal(),
-            Some(InteractionTerminalReason::Cancelled)
-        );
-        let late = session
-            .resolve_canvas_press_edge_resolution(
-                query,
-                CanvasEdgePickResolution::Complete(Some(edge)),
-            )
-            .unwrap();
-        assert!(late.effects().is_empty());
-        assert_eq!(session.presentation().active_edge(), None);
-
-        let mut closed_session = test_session(CanvasInteractionConfig::default());
-        let pressed = closed_session
-            .press(
-                canvas_marquee_target(SelectionMode::Replace),
-                position(0.0, 0.0),
-            )
-            .unwrap();
-        let query = edge_query_id(&pressed);
-        let closed = closed_session.close();
-        assert!(closed.effects().is_empty());
-        assert_eq!(
-            closed_session.presentation().terminal(),
-            Some(InteractionTerminalReason::ViewClosed)
-        );
-        let late = closed_session
-            .resolve_canvas_press_edge_resolution(
-                query,
-                CanvasEdgePickResolution::Complete(Some(edge)),
-            )
-            .unwrap();
-        assert!(late.effects().is_empty());
-        assert_eq!(closed_session.presentation().active_edge(), None);
-    }
-
-    #[test]
-    fn empty_exact_pick_can_activate_pan_without_a_second_press() {
-        let mut session = test_session(CanvasInteractionConfig::default());
-        let pressed = session
-            .press(
-                CanvasPressTarget::Canvas(CanvasPressFallback::Pan {
-                    selection_mode: SelectionMode::Replace,
-                }),
-                position(1.0, 2.0),
-            )
-            .unwrap();
-        let query = edge_query_id(&pressed);
-        session.move_to(position(11.0, 14.0)).unwrap();
-        let resolved = session
-            .resolve_canvas_press_edge_resolution(query, CanvasEdgePickResolution::Complete(None))
-            .unwrap();
-        assert!(matches!(
-            resolved.effects(),
-            [CanvasInteractionEffect::Viewport(ViewportMutation::PanByView(delta))]
-                if *delta == ViewDelta { x: 10.0, y: 12.0 }
-        ));
-        assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Pan);
-    }
-
-    #[test]
-    fn reconnect_suppresses_old_edge_through_commit_and_restores_it_after_conflict() {
-        let edge = EdgeId::from_u128(9);
-        let start = ConnectionInteractionStart::new(
-            source_node(),
-            ConnectionGestureIntent::reconnect(
-                edge,
-                EdgeEndpoint::To,
-                PortId::from_u128(4),
-                source_port(),
-                NodeGraphConnectionMode::Strict,
-            ),
-            CanvasPoint { x: 0.0, y: 8.0 },
-            HandlePosition::Right,
-            false,
-        )
-        .unwrap();
-        let mut session = test_session(CanvasInteractionConfig::default());
-        session
-            .press(CanvasPressTarget::Connection(start), position(0.0, 0.0))
-            .unwrap();
-        let moved = session.move_to(position(8.0, 0.0)).unwrap();
-        session
-            .resolve_connection_probe(
-                connection_query_id(&moved),
-                complete(valid_probe(target_port())),
-            )
-            .unwrap();
-        assert_eq!(
-            session
-                .presentation()
-                .connection()
-                .unwrap()
-                .suppressed_edge(),
-            Some(edge)
-        );
-
-        let released = session.release(position(20.0, 0.0)).unwrap();
-        let committing = session
-            .resolve_connection_probe(
-                connection_query_id(&released),
-                complete(valid_probe(target_port())),
-            )
-            .unwrap();
-        let ticket = submit_ticket(&committing);
-        assert_eq!(
-            session
-                .presentation()
-                .connection()
-                .unwrap()
-                .suppressed_edge(),
-            Some(edge)
-        );
-
-        session.settle(ticket, CommandSettlement::Conflict).unwrap();
-        assert!(session.presentation().connection().is_none());
-        assert_eq!(
-            session.presentation().terminal(),
-            Some(InteractionTerminalReason::Conflict)
-        );
-    }
-
-    #[test]
-    fn connection_commit_revalidation_reuses_ticket_and_refreshes_optimistic_preview() {
-        let edge = EdgeId::from_u128(9);
-        let start = ConnectionInteractionStart::new(
-            source_node(),
-            ConnectionGestureIntent::reconnect(
-                edge,
-                EdgeEndpoint::To,
-                PortId::from_u128(4),
-                source_port(),
-                NodeGraphConnectionMode::Strict,
-            ),
-            CanvasPoint { x: 0.0, y: 8.0 },
-            HandlePosition::Right,
-            false,
-        )
-        .unwrap();
-        let mut session = test_session(CanvasInteractionConfig::default());
-        session
-            .press(CanvasPressTarget::Connection(start), position(0.0, 0.0))
-            .unwrap();
-        let moved = session.move_to(position(8.0, 0.0)).unwrap();
-        session
-            .resolve_connection_probe(
-                connection_query_id(&moved),
-                complete(valid_probe(target_port())),
-            )
-            .unwrap();
-        let released = session.release(position(20.0, 0.0)).unwrap();
-        let committing = session
-            .resolve_connection_probe(
-                connection_query_id(&released),
-                complete(valid_probe(target_port())),
-            )
-            .unwrap();
-        let ticket = submit_ticket(&committing);
-        let fresh_target = PortId::from_u128(3);
-        let fresh_probe = valid_probe_at(fresh_target, 7, CanvasPoint { x: 48.0, y: 12.0 });
-
-        let requested = session
-            .request_connection_commit_revalidation(ticket)
-            .unwrap();
-        let query = connection_query_id(&requested);
-        assert_eq!(
-            session
-                .presentation()
-                .connection()
-                .expect("commit preview")
-                .suppressed_edge(),
-            Some(edge)
-        );
-        let revalidated = session
-            .resolve_connection_probe(query, complete(fresh_probe))
-            .unwrap();
-        let [
-            CanvasInteractionEffect::SubmitGraph {
-                ticket: emitted_ticket,
-                mutation:
-                    FreshGraphMutation::Connection {
-                        intent,
-                        target,
-                        validated_revision,
-                        topology,
-                    },
-            },
-        ] = revalidated.effects()
-        else {
-            panic!("valid revalidation must emit one replacement connection mutation");
-        };
-        assert_eq!(*emitted_ticket, ticket);
-        assert_eq!(*intent, start.intent());
-        assert_eq!(*target, fresh_target);
-        assert_eq!(*validated_revision, 7);
-        assert!(topology.is_empty());
-
-        let presentation = session.presentation();
-        assert_eq!(presentation.phase(), CanvasInteractionPhase::Committing);
-        let connection = presentation.connection().expect("commit preview");
-        assert_eq!(connection.ticket(), Some(ticket));
-        assert_eq!(connection.suppressed_edge(), Some(edge));
-        assert_eq!(
-            connection.preview_target(),
-            CanvasPoint { x: 48.0, y: 12.0 }
-        );
-    }
-
-    #[test]
-    fn invalid_commit_revalidation_conflicts_without_emitting_a_mutation() {
-        let mut session = test_session(CanvasInteractionConfig::default());
-        let ticket = begin_direct_connection_commit(&mut session);
-        let invalid = ConnectionProbe::Invalid {
-            revision: 5,
-            target: probe_target(target_port(), CanvasPoint { x: 32.0, y: 8.0 }),
-            diagnostics: Vec::new(),
-        };
-
-        let requested = session
-            .request_connection_commit_revalidation(ticket)
-            .unwrap();
-        let query = connection_query_id(&requested);
-        let rejected = session
-            .resolve_connection_probe(query, complete(invalid))
-            .unwrap();
-        assert!(rejected.effects().is_empty());
-        assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
-        assert_eq!(
-            session.presentation().terminal(),
-            Some(InteractionTerminalReason::Conflict)
-        );
-
-        let late = session
-            .resolve_connection_probe(query, complete(valid_probe(target_port())))
-            .unwrap();
-        assert!(late.effects().is_empty());
-        assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
-        assert_eq!(
-            session.presentation().terminal(),
-            Some(InteractionTerminalReason::Conflict)
-        );
-    }
-
-    #[test]
-    fn create_from_wire_refresh_reuses_atomic_topology_and_returns_to_search_on_conflict() {
-        let mut session = test_session(CanvasInteractionConfig::default());
-        let ticket = begin_search_connection_commit(&mut session);
-        let request = session
-            .search_request()
-            .expect("authoritative search request");
-        assert_eq!(
-            request.intent(),
-            ConnectionGestureIntent::connect(
-                EdgeId::from_u128(9),
-                source_port(),
-                NodeGraphConnectionMode::Strict,
-            )
-        );
-
-        let wrong_ticket = InteractionTicketId(ticket.get() + 1);
-        let stale = session
-            .refresh_create_from_wire_commit_revision(wrong_ticket, 6)
-            .unwrap();
-        assert!(stale.effects().is_empty());
-
-        assert!(matches!(
-            session.request_connection_commit_revalidation(ticket),
-            Err(CanvasInteractionError::ConnectionCommitRequiresFreshRevision)
-        ));
-        let refreshed = session
-            .refresh_create_from_wire_commit_revision(ticket, 7)
-            .unwrap();
-        let [
-            CanvasInteractionEffect::SubmitGraph {
-                ticket: emitted_ticket,
-                mutation:
-                    FreshGraphMutation::Connection {
-                        target,
-                        validated_revision,
-                        topology,
-                        ..
-                    },
-            },
-        ] = refreshed.effects()
-        else {
-            panic!("fresh create-from-wire revision must resubmit one atomic mutation");
-        };
-        assert_eq!(*emitted_ticket, ticket);
-        assert_eq!(*target, target_port());
-        assert_eq!(*validated_revision, 7);
-        assert!(!topology.is_empty());
-        assert_eq!(
-            session.search_request().unwrap().generation(),
-            session.presentation().generation().unwrap()
-        );
-
-        let duplicate = session
-            .refresh_create_from_wire_commit_revision(ticket, 8)
-            .unwrap();
-        assert!(duplicate.effects().is_empty());
-        session.settle(ticket, CommandSettlement::Conflict).unwrap();
-        assert_eq!(
-            session.presentation().phase(),
-            CanvasInteractionPhase::ConnectionSearch
-        );
-        assert_eq!(
-            session.presentation().connection().unwrap().search(),
-            Some(ConnectionSearchStatus::CommitRejected)
-        );
-        assert_eq!(
-            session.presentation().terminal(),
-            Some(InteractionTerminalReason::Conflict)
-        );
-    }
-
-    #[test]
-    fn stale_connection_revalidation_ticket_does_not_change_pending_commit() {
-        let mut session = test_session(CanvasInteractionConfig::default());
-        let ticket = begin_direct_connection_commit(&mut session);
-        let original_preview = session
-            .presentation()
-            .connection()
-            .expect("commit preview")
-            .preview_target();
-        let stale_ticket = InteractionTicketId(ticket.get() + 1);
-
-        let stale = session
-            .request_connection_commit_revalidation(stale_ticket)
-            .unwrap();
-        assert!(stale.queries().is_empty());
-        assert!(stale.effects().is_empty());
-        assert_eq!(stale.damage(), InteractionDamage::default());
-        let presentation = session.presentation();
-        assert_eq!(presentation.phase(), CanvasInteractionPhase::Committing);
-        let connection = presentation.connection().expect("commit preview");
-        assert_eq!(connection.ticket(), Some(ticket));
-        assert_eq!(connection.preview_target(), original_preview);
-
-        let requested = session
-            .request_connection_commit_revalidation(ticket)
-            .unwrap();
-        assert_eq!(requested.queries().len(), 1);
-    }
-
-    #[test]
-    fn ordinary_connection_cannot_bypass_probe_with_revision_refresh() {
-        let mut session = test_session(CanvasInteractionConfig::default());
-        let ticket = begin_direct_connection_commit(&mut session);
-
-        assert!(matches!(
-            session.refresh_create_from_wire_commit_revision(ticket, 9),
-            Err(CanvasInteractionError::ConnectionCommitRequiresProbe)
-        ));
-        assert_eq!(
-            session.presentation().phase(),
-            CanvasInteractionPhase::Committing
-        );
-        let requested = session
-            .request_connection_commit_revalidation(ticket)
-            .unwrap();
-        assert_eq!(requested.queries().len(), 1);
-    }
-
-    #[test]
-    fn connection_commit_revalidation_budget_exhaustion_is_terminal() {
-        let mut session = test_session(CanvasInteractionConfig::default());
-        let ticket = begin_direct_connection_commit(&mut session);
-        let requested = session
-            .request_connection_commit_revalidation(ticket)
-            .unwrap();
-        let exhausted = session
-            .resolve_connection_probe(
-                connection_query_id(&requested),
-                ConnectionProbeQueryOutcome::BudgetExhausted {
-                    work: ConnectionProbeWork::default(),
-                },
-            )
-            .unwrap();
-
-        assert!(exhausted.effects().is_empty());
-        assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
-        assert_eq!(
-            session.presentation().terminal(),
-            Some(InteractionTerminalReason::BudgetExhausted)
-        );
-    }
-
-    #[test]
-    fn release_budget_exhaustion_is_terminal_without_graph_mutation() {
-        let mut session = test_session(CanvasInteractionConfig::default());
-        session
-            .press(connection_target(false), position(0.0, 0.0))
-            .unwrap();
-        let moved = session.move_to(position(8.0, 0.0)).unwrap();
-        session
-            .resolve_connection_probe(
-                connection_query_id(&moved),
-                complete(valid_probe(target_port())),
-            )
-            .unwrap();
-        let released = session.release(position(20.0, 0.0)).unwrap();
-        let exhausted = session
-            .resolve_connection_probe(
-                connection_query_id(&released),
-                ConnectionProbeQueryOutcome::BudgetExhausted {
-                    work: ConnectionProbeWork::default(),
-                },
-            )
-            .unwrap();
-
-        assert!(exhausted.effects().is_empty());
-        assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
-        assert_eq!(
-            session.presentation().terminal(),
-            Some(InteractionTerminalReason::BudgetExhausted)
-        );
-    }
-
-    #[test]
-    fn search_failure_retry_and_rejected_selection_keep_one_search_owner() {
-        let mut session = test_session(CanvasInteractionConfig::default());
-        session
-            .press(connection_target(true), position(0.0, 0.0))
-            .unwrap();
-        let moved = session.move_to(position(8.0, 0.0)).unwrap();
-        session
-            .resolve_connection_probe(connection_query_id(&moved), complete(ConnectionProbe::None))
-            .unwrap();
-        let released = session.release(position(20.0, 0.0)).unwrap();
-        let searching = session
-            .resolve_connection_probe(
-                connection_query_id(&released),
-                complete(ConnectionProbe::None),
-            )
-            .unwrap();
-        let [CanvasInteractionEffect::Search(request)] = searching.effects() else {
-            panic!("expected one connection search request");
-        };
-        assert_eq!(request.source(), source_port());
-        assert_eq!(request.mode(), NodeGraphConnectionMode::Strict);
-        let generation = session.presentation().generation().unwrap();
-        assert_eq!(
-            session.presentation().connection().unwrap().search(),
-            Some(ConnectionSearchStatus::Loading)
-        );
-
-        session.search_failed(generation).unwrap();
-        assert_eq!(
-            session.presentation().connection().unwrap().search(),
-            Some(ConnectionSearchStatus::Error)
-        );
-        let retry = session.retry_search(generation).unwrap();
-        assert!(matches!(
-            retry.effects(),
-            [CanvasInteractionEffect::Search(_)]
-        ));
-        session.search_ready(generation, 2).unwrap();
-
-        let selected = session
-            .select_search_result(generation, search_selection(0))
-            .unwrap();
-        let ticket = submit_ticket(&selected);
-        session.settle(ticket, CommandSettlement::Rejected).unwrap();
-        assert_eq!(
-            session.presentation().phase(),
-            CanvasInteractionPhase::ConnectionSearch
-        );
-        assert_eq!(
-            session.presentation().connection().unwrap().search(),
-            Some(ConnectionSearchStatus::CommitRejected)
-        );
-
-        session.cancel();
-        assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
-    }
-
-    #[test]
-    fn search_callbacks_reject_inactive_and_stale_generations_without_state_changes() {
-        let mut session = test_session(CanvasInteractionConfig::default());
-        let inactive_generation = InteractionGeneration(1);
-        assert!(matches!(
-            session.search_ready(inactive_generation, 1),
-            Err(CanvasInteractionError::ConnectionSearchInactive)
-        ));
-        assert!(matches!(
-            session.search_failed(inactive_generation),
-            Err(CanvasInteractionError::ConnectionSearchInactive)
-        ));
-        assert!(matches!(
-            session.retry_search(inactive_generation),
-            Err(CanvasInteractionError::ConnectionSearchInactive)
-        ));
-        assert!(matches!(
-            session.select_search_result(inactive_generation, search_selection(0)),
-            Err(CanvasInteractionError::ConnectionSearchInactive)
-        ));
-
-        let CanvasPressTarget::Connection(start) = connection_target(true) else {
-            unreachable!("connection fixture must produce a connection target");
-        };
-        session
-            .activate_connection_search(start, position(12.0, 18.0))
-            .unwrap();
-        let generation = session.presentation().generation().unwrap();
-        let stale_generation = InteractionGeneration(generation.get() + 1);
-        for result in [
-            session.search_ready(stale_generation, 1),
-            session.search_failed(stale_generation),
-            session.retry_search(stale_generation),
-            session.select_search_result(stale_generation, search_selection(0)),
-        ] {
-            assert!(matches!(
-                result,
-                Err(CanvasInteractionError::ConnectionSearchStaleGeneration)
-            ));
-        }
-        assert_eq!(
-            session.presentation().phase(),
-            CanvasInteractionPhase::ConnectionSearch
-        );
-        assert_eq!(session.presentation().generation(), Some(generation));
-
-        session.search_ready(generation, 1).unwrap();
-        session
-            .select_search_result(generation, search_selection(0))
-            .unwrap();
-        assert_eq!(
-            session.presentation().phase(),
-            CanvasInteractionPhase::Committing
-        );
-        for result in [
-            session.search_ready(generation, 1),
-            session.search_failed(generation),
-            session.retry_search(generation),
-            session.select_search_result(generation, search_selection(0)),
-        ] {
-            assert!(matches!(
-                result,
-                Err(CanvasInteractionError::ConnectionSearchInactive)
-            ));
-        }
-        assert_eq!(
-            session.presentation().phase(),
-            CanvasInteractionPhase::Committing
-        );
-        assert_eq!(session.presentation().generation(), Some(generation));
-    }
-
-    #[test]
-    fn native_activation_enters_the_same_connection_search_without_fake_pointer_motion() {
-        let mut session = test_session(CanvasInteractionConfig::default());
-        let CanvasPressTarget::Connection(start) = connection_target(true) else {
-            unreachable!("connection fixture must produce a connection target");
-        };
-
-        let activated = session
-            .activate_connection_search(start, position(12.0, 18.0))
-            .unwrap();
-        let [CanvasInteractionEffect::Search(request)] = activated.effects() else {
-            panic!("native activation must publish one search request");
-        };
-        assert_eq!(request.intent(), start.intent());
-        assert_eq!(request.position(), position(12.0, 18.0));
-        assert_eq!(
-            session.presentation().phase(),
-            CanvasInteractionPhase::ConnectionSearch
-        );
-        assert_eq!(session.search_request(), Some(*request));
-
-        let mut unavailable = test_session(CanvasInteractionConfig::default());
-        let CanvasPressTarget::Connection(start) = connection_target(false) else {
-            unreachable!("connection fixture must produce a connection target");
-        };
-        assert!(matches!(
-            unavailable.activate_connection_search(start, position(0.0, 0.0)),
-            Err(CanvasInteractionError::ConnectionSearchUnavailable)
-        ));
-        assert_eq!(
-            unavailable.presentation().phase(),
-            CanvasInteractionPhase::Idle
-        );
-    }
-
-    #[test]
-    fn reconnect_search_keeps_edge_identity_through_selection_and_revision_refresh() {
-        let edge = EdgeId::from_u128(9);
-        let intent = ConnectionGestureIntent::reconnect(
-            edge,
-            EdgeEndpoint::To,
-            PortId::from_u128(4),
-            source_port(),
-            NodeGraphConnectionMode::Strict,
-        );
-        let start = ConnectionInteractionStart::new(
-            source_node(),
-            intent,
-            CanvasPoint { x: 0.0, y: 8.0 },
-            HandlePosition::Right,
-            true,
-        )
-        .unwrap();
-        let mut session = test_session(CanvasInteractionConfig::default());
-
-        let activated = session
-            .activate_connection_search(start, position(12.0, 18.0))
-            .unwrap();
-        let [CanvasInteractionEffect::Search(request)] = activated.effects() else {
-            panic!("native reconnect activation must publish one search request");
-        };
-        assert_eq!(request.intent(), intent);
-        let generation = request.generation();
-        session.search_ready(generation, 1).unwrap();
-
-        let selected = session
-            .select_search_result(generation, search_selection(0))
-            .unwrap();
-        let [
-            CanvasInteractionEffect::SubmitGraph {
-                ticket,
-                mutation:
-                    FreshGraphMutation::Connection {
-                        intent: selected_intent,
-                        target,
-                        topology,
-                        ..
-                    },
-            },
-        ] = selected.effects()
-        else {
-            panic!("reconnect search selection must submit one atomic connection mutation");
-        };
-        assert_eq!(*selected_intent, intent);
-        assert_eq!(*target, target_port());
-        assert!(!topology.is_empty());
-
-        let refreshed = session
-            .refresh_create_from_wire_commit_revision(*ticket, 7)
-            .unwrap();
-        let [
-            CanvasInteractionEffect::SubmitGraph {
-                ticket: refreshed_ticket,
-                mutation:
-                    FreshGraphMutation::Connection {
-                        intent: refreshed_intent,
-                        target: refreshed_target,
-                        validated_revision,
-                        topology: refreshed_topology,
-                    },
-            },
-        ] = refreshed.effects()
-        else {
-            panic!("revision refresh must retain the atomic reconnect mutation");
-        };
-        assert_eq!(refreshed_ticket, ticket);
-        assert_eq!(*refreshed_intent, intent);
-        assert_eq!(*refreshed_target, target_port());
-        assert_eq!(*validated_revision, 7);
-        assert!(!refreshed_topology.is_empty());
-    }
-
-    #[test]
-    fn generation_exhaustion_is_reported_without_arming_an_interaction() {
-        let mut session = test_session(CanvasInteractionConfig::default());
-        session.next_generation = None;
-
-        assert!(matches!(
-            session.press(CanvasPressTarget::Pan, position(0.0, 0.0)),
-            Err(CanvasInteractionError::IdentityExhausted)
-        ));
-        assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
-        assert_eq!(
-            session.presentation().terminal(),
-            Some(InteractionTerminalReason::IdentityExhausted)
-        );
-    }
-
-    #[test]
-    fn repeated_toggle_marquee_moves_reuse_the_press_time_selection_baseline() {
-        let selected_node = NodeId::from_u128(21);
-        let selected_edge = EdgeId::from_u128(22);
-        let baseline = SelectionBaseline::new([selected_node], [selected_edge], []);
-        let mut session = test_session(CanvasInteractionConfig::default());
-        session
-            .press(
-                CanvasPressTarget::Marquee {
-                    selection_mode: SelectionMode::Toggle,
-                    baseline: baseline.clone(),
-                },
-                position(0.0, 0.0),
-            )
-            .unwrap();
-
-        let first = session.move_to(position(20.0, 16.0)).unwrap();
-        let second = session.move_to(position(20.0, 16.0)).unwrap();
-        let first_selection = marquee_selection_effect(&first);
-        let second_selection = marquee_selection_effect(&second);
-
-        assert_eq!(first_selection, second_selection);
-        let SelectionMutation::Marquee {
-            mode,
-            baseline: emitted_baseline,
-            ..
-        } = first_selection
-        else {
-            panic!("marquee move must emit a marquee selection effect");
-        };
-        assert_eq!(*mode, SelectionMode::Toggle);
-        assert_eq!(emitted_baseline, &baseline);
-
-        let cancelled = session.cancel();
-        assert!(matches!(
-            cancelled.effects(),
-            [CanvasInteractionEffect::Selection(SelectionMutation::Restore(restored))]
-                if restored == &baseline
-        ));
-        assert!(cancelled.damage().selection);
-        assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
-    }
-
-    #[test]
-    fn node_drag_snaps_relative_intent_and_conflict_is_not_retried() {
-        let config = CanvasInteractionConfig {
-            grid_size_in_canvas: Some(CanvasSize {
-                width: 10.0,
-                height: 10.0,
-            }),
-            ..CanvasInteractionConfig::default()
-        };
-        let mut session = test_session(config);
-        let first = NodeId::from_u128(10);
-        let second = NodeId::from_u128(11);
-        let start = NodeDragStart::new(
-            first,
-            [first, second],
-            CanvasPoint { x: 0.0, y: 0.0 },
-            SelectionMode::Replace,
-        )
-        .unwrap();
-        session
-            .press(CanvasPressTarget::NodeDrag(start), position(0.0, 0.0))
-            .unwrap();
-        session.move_to(position(6.0, 14.0)).unwrap();
-        assert_eq!(
-            session.presentation().node_drag().unwrap().delta(),
-            CanvasPoint { x: 10.0, y: 10.0 }
-        );
-
-        let released = session.release(position(6.0, 14.0)).unwrap();
-        let mut effects = released.into_dispatch().pre_query_effects;
-        let CanvasInteractionEffect::SubmitGraph { ticket, mutation } = effects.remove(0) else {
-            panic!("node release must emit one graph intent");
-        };
-        let FreshGraphMutation::MoveNodes(intent) = mutation else {
-            panic!("node release emitted the wrong graph intent");
-        };
-        assert_eq!(intent.nodes(), &[first, second]);
-        assert_eq!(intent.delta(), CanvasPoint { x: 10.0, y: 10.0 });
-        assert!(effects.is_empty());
-
-        session.settle(ticket, CommandSettlement::Conflict).unwrap();
-        let late = session.settle(ticket, CommandSettlement::Applied).unwrap();
-        assert!(late.effects().is_empty());
-        assert_eq!(
-            session.presentation().terminal(),
-            Some(InteractionTerminalReason::Conflict)
-        );
-    }
-
-    #[test]
-    fn node_release_waits_for_the_final_alignment_query_without_requesting_ticks() {
-        let mut session = test_session(CanvasInteractionConfig {
-            alignment_snap: AlignmentSnapConfig::new(6.0, 9.0),
-            ..CanvasInteractionConfig::default()
-        });
-        let node = NodeId::from_u128(10);
-        let start =
-            NodeDragStart::new(node, [node], CanvasPoint::default(), SelectionMode::Replace)
-                .unwrap();
-        session
-            .press(CanvasPressTarget::NodeDrag(start), position(0.0, 0.0))
-            .unwrap();
-        session.move_to(position(12.0, 0.0)).unwrap();
-
-        let released = session.release(position(16.0, 0.0)).unwrap();
-        let [CanvasInteractionQuery::AlignmentSnap { id, generation, .. }] = released.queries()
-        else {
-            panic!("release must request one final alignment result");
-        };
-        assert!(released.effects().is_empty());
-        assert_eq!(released.tick_demand(), InteractionTickDemand::None);
-        assert!(
-            session
-                .presentation()
-                .node_drag()
-                .expect("release preview")
-                .is_release_pending()
-        );
-
-        let committed = session
-            .resolve_alignment_snap(
-                *id,
-                AlignmentSnapQueryOutcome::GeometryIndeterminate(AlignmentSnapWork::new(
-                    *generation,
-                    0,
-                )),
-            )
-            .unwrap();
-        assert!(matches!(
-            committed.effects(),
-            [CanvasInteractionEffect::SubmitGraph { .. }]
-        ));
-        assert_eq!(
-            session.presentation().phase(),
-            CanvasInteractionPhase::Committing
-        );
-    }
-
-    #[test]
-    fn auto_pan_dispatch_orders_viewport_effect_before_alignment_query() {
-        let mut session = test_session(CanvasInteractionConfig {
-            alignment_snap: AlignmentSnapConfig::new(6.0, 9.0),
-            ..CanvasInteractionConfig::default()
-        });
-        let node = NodeId::from_u128(10);
-        let start =
-            NodeDragStart::new(node, [node], CanvasPoint::default(), SelectionMode::Replace)
-                .unwrap();
-        session
-            .press(CanvasPressTarget::NodeDrag(start), position(0.0, 0.0))
-            .unwrap();
-        session.move_to(position(195.0, 40.0)).unwrap();
-
-        let dispatch = session
-            .tick(
-                1.0 / 60.0,
-                ViewSize::new(200.0, 120.0),
-                ViewportTransform::new(CanvasPoint::default(), 1.0).unwrap(),
-            )
-            .unwrap()
-            .into_dispatch();
-        assert!(matches!(
-            dispatch.pre_query_effects.as_slice(),
-            [CanvasInteractionEffect::Viewport(
-                ViewportMutation::PanByView(_)
-            )]
-        ));
-        assert!(matches!(
-            dispatch.queries.as_slice(),
-            [CanvasInteractionQuery::AlignmentSnap { .. }]
-        ));
-    }
-
-    #[test]
-    fn edge_delete_requires_authoritative_permission_and_owns_one_ticket_until_settlement() {
-        let edge = EdgeId::from_u128(21);
-        let denied = published_edge_route(edge, false, EdgeReconnectable::Bool(true));
-        let allowed = published_edge_route(edge, true, EdgeReconnectable::Bool(true));
-        let mut session = test_session(CanvasInteractionConfig::default());
-        session
-            .press(CanvasPressTarget::Pan, position(0.0, 0.0))
-            .unwrap();
-        session.cancel();
-
-        let ignored = session.delete_edge(&denied).unwrap();
-        assert!(ignored.effects().is_empty());
-        assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
-        assert_eq!(session.presentation().generation(), None);
-        assert_eq!(
-            session.presentation().terminal(),
-            Some(InteractionTerminalReason::Cancelled)
-        );
-
-        let submitted = session.delete_edge(&allowed).unwrap();
-        let [CanvasInteractionEffect::SubmitGraph { ticket, mutation }] = submitted.effects()
-        else {
-            panic!("one permitted edge delete must submit exactly one mutation");
-        };
-        let FreshGraphMutation::DeleteEdge(intent) = mutation else {
-            panic!("edge delete emitted the wrong graph mutation");
-        };
-        assert_eq!(ticket.get(), 1);
-        assert_eq!(intent.edge(), edge);
-        assert_eq!(
-            session.presentation().phase(),
-            CanvasInteractionPhase::Committing
-        );
-        assert_eq!(session.presentation().active_edge(), Some(edge));
-        assert!(submitted.damage().edges);
-        assert!(matches!(
-            session.delete_edge(&allowed),
-            Err(CanvasInteractionError::AlreadyActive)
-        ));
-
-        let settled = session
-            .settle(*ticket, CommandSettlement::Rejected)
-            .unwrap();
-        assert!(settled.effects().is_empty());
-        assert!(settled.damage().edges);
-        assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
-        assert_eq!(
-            session.presentation().terminal(),
-            Some(InteractionTerminalReason::Rejected)
-        );
-        let late = session.settle(*ticket, CommandSettlement::Applied).unwrap();
-        assert!(late.effects().is_empty());
-        assert_eq!(
-            session.presentation().terminal(),
-            Some(InteractionTerminalReason::Rejected)
-        );
-    }
-
-    #[test]
-    fn reconnect_start_resolves_graph_topology_and_endpoint_specific_route_facts() {
-        let edge = EdgeId::from_u128(22);
-        let graph = reconnect_graph(edge);
-        let route = published_edge_route(
-            edge,
-            true,
-            EdgeReconnectable::Endpoint(EdgeReconnectableEndpoint::Source),
-        );
-        let source = ConnectionInteractionStart::reconnect_from_graph_route(
-            &graph,
-            &route,
-            EdgeEndpoint::From,
-            NodeGraphConnectionMode::Loose,
-            false,
-        )
-        .expect("source reconnect is permitted");
-        assert_eq!(source.owner_node(), source_node());
-        assert_eq!(source.intent().fixed_port(), target_port());
-        assert_eq!(source.intent().detached_port(), Some(source_port()));
-        assert_eq!(source.intent().mode(), NodeGraphConnectionMode::Loose);
-
-        assert!(
-            ConnectionInteractionStart::reconnect_from_graph_route(
-                &graph,
-                &route,
-                EdgeEndpoint::To,
-                NodeGraphConnectionMode::Strict,
-                false,
-            )
-            .is_none()
-        );
-        let missing =
-            published_edge_route(EdgeId::from_u128(23), true, EdgeReconnectable::Bool(true));
-        assert!(
-            ConnectionInteractionStart::reconnect_from_graph_route(
-                &graph,
-                &missing,
-                EdgeEndpoint::From,
-                NodeGraphConnectionMode::Strict,
-                false,
-            )
-            .is_none()
-        );
-    }
-
-    #[test]
-    fn retiring_an_edge_during_delete_preserves_the_ticket_for_fresh_bind_noop() {
-        let edge = EdgeId::from_u128(24);
-        let route = published_edge_route(edge, true, EdgeReconnectable::Bool(true));
-        let mut session = test_session(CanvasInteractionConfig::default());
-        let submitted = session.delete_edge(&route).unwrap();
-        let ticket = submit_ticket(&submitted);
-
-        let retired = session.owner_retired(InteractionOwner::Edge(edge));
-        assert!(retired.effects().is_empty());
-        assert_eq!(
-            session.presentation().phase(),
-            CanvasInteractionPhase::Committing
-        );
-        assert_eq!(session.presentation().active_edge(), Some(edge));
-
-        session.settle(ticket, CommandSettlement::Noop).unwrap();
-        assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
-        assert_eq!(
-            session.presentation().terminal(),
-            Some(InteractionTerminalReason::Noop)
-        );
-    }
-
-    #[test]
-    fn active_drag_requests_bounded_auto_pan_and_retirement_cancels_late_receipts() {
-        let mut session = test_session(CanvasInteractionConfig::default());
-        let node = NodeId::from_u128(10);
-        let start = NodeDragStart::new(
-            node,
-            [node],
-            CanvasPoint { x: 0.0, y: 0.0 },
-            SelectionMode::Replace,
-        )
-        .unwrap();
-        session
-            .press(CanvasPressTarget::NodeDrag(start), position(10.0, 10.0))
-            .unwrap();
-        session.move_to(position(5.0, 5.0)).unwrap();
-        let transform = ViewportTransform::new(CanvasPoint::default(), 1.0).unwrap();
-        let tick = session
-            .tick(0.1, ViewSize::new(200.0, 120.0), transform)
-            .unwrap();
-        let [CanvasInteractionEffect::Viewport(ViewportMutation::PanByView(delta))] =
-            tick.effects()
-        else {
-            panic!("edge-band drag must request auto-pan");
-        };
-        assert!(delta.x > 0.0 && delta.y > 0.0);
-        assert!(delta.x <= 36.0 && delta.y <= 36.0);
-
-        session.owner_retired(InteractionOwner::Node(node));
-        assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
-        assert_eq!(
-            session.presentation().terminal(),
-            Some(InteractionTerminalReason::OwnerRetired)
-        );
-    }
-
-    #[test]
-    fn auto_pan_caps_long_frames_and_does_not_pan_from_a_narrow_viewport_center() {
-        let long_frame = auto_pan_delta(
-            ViewPoint::new(0.0, 0.0),
-            ViewSize::new(200.0, 120.0),
-            36.0,
-            720.0,
-            MAX_AUTO_PAN_ELAPSED_SECONDS,
-        );
-        assert_eq!(long_frame, ViewDelta { x: 36.0, y: 36.0 });
-        assert_eq!(auto_pan_axis(10.0, 20.0, 36.0), 0.0);
-        assert_eq!(auto_pan_axis(0.0, 20.0, 36.0), 1.0);
-        assert_eq!(auto_pan_axis(20.0, 20.0, 36.0), -1.0);
-    }
-
-    fn test_session(config: CanvasInteractionConfig) -> CanvasInteractionSession {
-        CanvasInteractionSession::new(
-            ViewId::new(crate::runtime::graph_runtime::RuntimeId::UNAVAILABLE, 0),
-            ViewGeneration::initial(),
-            config,
-        )
-        .unwrap()
-    }
-
-    fn published_edge_route(
-        edge: EdgeId,
-        deletable: bool,
-        reconnectable: EdgeReconnectable,
-    ) -> PublishedEdgeRoute {
-        let mut model = Edge::new(EdgeKind::Data, source_port(), target_port());
-        model.deletable = Some(deletable);
-        model.reconnectable = Some(reconnectable);
-        let endpoints = EdgePosition {
-            source: EdgeEndpointPosition {
-                point: CanvasPoint { x: 0.0, y: 0.0 },
-                position: HandlePosition::Right,
-            },
-            target: EdgeEndpointPosition {
-                point: CanvasPoint { x: 100.0, y: 0.0 },
-                position: HandlePosition::Left,
-            },
-        };
-        let facts = resolve_edge_route_path(&model, endpoints).expect("test edge route");
-        PublishedEdgeRoute::new(edge, facts)
-    }
-
-    fn reconnect_graph(edge: EdgeId) -> Graph {
-        let mut source = test_node(CanvasPoint { x: 0.0, y: 0.0 });
-        source.ports.push(source_port());
-        let mut target = test_node(CanvasPoint { x: 100.0, y: 0.0 });
-        target.ports.push(target_port());
-        GraphBuilder::new(GraphId::from_u128(1))
-            .with_node(source_node(), source)
-            .with_port(
-                source_port(),
-                test_port(source_node(), "out", PortDirection::Out),
-            )
-            .with_node(NodeId::from_u128(2), target)
-            .with_port(
-                target_port(),
-                test_port(NodeId::from_u128(2), "in", PortDirection::In),
-            )
-            .with_edge(
-                edge,
-                Edge::new(EdgeKind::Data, source_port(), target_port()),
-            )
-            .build()
-            .expect("valid reconnect graph")
-    }
-
-    fn test_node(pos: CanvasPoint) -> Node {
-        Node {
-            kind: NodeKindKey::new("test.node"),
-            kind_version: 1,
-            pos,
-            origin: None,
-            selectable: None,
-            draggable: None,
-            connectable: None,
-            deletable: None,
-            parent: None,
-            extent: None,
-            expand_parent: None,
-            size: Some(CanvasSize {
-                width: 160.0,
-                height: 96.0,
-            }),
-            hidden: false,
-            collapsed: false,
-            ports: Vec::new(),
-            data: serde_json::Value::Null,
-        }
-    }
-
-    fn test_port(node: NodeId, key: &str, dir: PortDirection) -> Port {
-        Port {
-            node,
-            key: PortKey::new(key),
-            dir,
-            kind: PortKind::Data,
-            capacity: PortCapacity::Multi,
-            connectable: None,
-            connectable_start: None,
-            connectable_end: None,
-            ty: None,
-            data: serde_json::Value::Null,
-        }
-    }
-
-    fn connection_target(allow_search: bool) -> CanvasPressTarget {
-        CanvasPressTarget::Connection(connection_start(allow_search))
-    }
-
-    fn connection_start(allow_search: bool) -> ConnectionInteractionStart {
-        ConnectionInteractionStart::new(
-            source_node(),
-            ConnectionGestureIntent::connect(
-                EdgeId::from_u128(9),
-                source_port(),
-                NodeGraphConnectionMode::Strict,
-            ),
-            CanvasPoint { x: 0.0, y: 8.0 },
-            HandlePosition::Right,
-            allow_search,
-        )
-        .unwrap()
-    }
-
-    fn canvas_marquee_target(selection_mode: SelectionMode) -> CanvasPressTarget {
-        CanvasPressTarget::Canvas(CanvasPressFallback::Marquee {
-            selection_mode,
-            baseline: SelectionBaseline::default(),
-        })
-    }
-
-    fn position(x: f32, y: f32) -> InteractionPosition {
-        InteractionPosition::from_view(
-            ViewPoint::new(x, y),
-            ViewportTransform::new(CanvasPoint::default(), 1.0).unwrap(),
-        )
-        .unwrap()
-    }
-
-    fn marquee_selection_effect(update: &CanvasInteractionUpdate) -> &SelectionMutation {
-        let [CanvasInteractionEffect::Selection(selection)] = update.effects() else {
-            panic!("marquee move must emit one selection effect");
-        };
-        selection
-    }
-
-    fn valid_probe(port: PortId) -> ConnectionProbe {
-        valid_probe_at(port, 0, CanvasPoint { x: 24.0, y: 8.0 })
-    }
-
-    fn valid_probe_at(
-        port: PortId,
-        revision: GraphRevision,
-        route_anchor: CanvasPoint,
-    ) -> ConnectionProbe {
-        ConnectionProbe::Valid {
-            revision,
-            target: probe_target(port, route_anchor),
-        }
-    }
-
-    fn probe_target(port: PortId, route_anchor: CanvasPoint) -> ConnectionProbeTarget {
-        ConnectionProbeTarget::new(
-            port,
-            NodeId::from_u128(2),
-            route_anchor,
-            HandlePosition::Left,
-            0.0,
-        )
-    }
-
-    fn begin_direct_connection_commit(
-        session: &mut CanvasInteractionSession,
-    ) -> InteractionTicketId {
-        session
-            .press(connection_target(false), position(0.0, 0.0))
-            .unwrap();
-        let moved = session.move_to(position(8.0, 0.0)).unwrap();
-        session
-            .resolve_connection_probe(
-                connection_query_id(&moved),
-                complete(valid_probe(target_port())),
-            )
-            .unwrap();
-        let released = session.release(position(20.0, 0.0)).unwrap();
-        let committing = session
-            .resolve_connection_probe(
-                connection_query_id(&released),
-                complete(valid_probe(target_port())),
-            )
-            .unwrap();
-        submit_ticket(&committing)
-    }
-
-    fn begin_search_connection_commit(
-        session: &mut CanvasInteractionSession,
-    ) -> InteractionTicketId {
-        session
-            .press(connection_target(true), position(0.0, 0.0))
-            .unwrap();
-        let moved = session.move_to(position(8.0, 0.0)).unwrap();
-        session
-            .resolve_connection_probe(connection_query_id(&moved), complete(ConnectionProbe::None))
-            .unwrap();
-        let released = session.release(position(20.0, 0.0)).unwrap();
-        session
-            .resolve_connection_probe(
-                connection_query_id(&released),
-                complete(ConnectionProbe::None),
-            )
-            .unwrap();
-        let generation = session.presentation().generation().unwrap();
-        session.search_ready(generation, 1).unwrap();
-        let committing = session
-            .select_search_result(generation, search_selection(0))
-            .unwrap();
-        submit_ticket(&committing)
-    }
-
-    fn search_selection(revision: GraphRevision) -> ConnectionSearchSelection {
-        ConnectionSearchSelection::new(
-            target_port(),
-            revision,
-            TopologyEdit::new().set_node_data(
-                source_node(),
-                serde_json::json!({ "created_from_wire": true }),
-            ),
-        )
-        .expect("create-from-wire selection carries topology")
-    }
-
-    fn complete(probe: ConnectionProbe) -> ConnectionProbeQueryOutcome {
-        ConnectionProbeQueryOutcome::Complete {
-            probe,
-            work: ConnectionProbeWork::default(),
-        }
-    }
-
-    fn connection_query_id(update: &CanvasInteractionUpdate) -> InteractionQueryId {
-        let [CanvasInteractionQuery::ConnectionProbe { id, .. }] = update.queries() else {
-            panic!("expected one connection probe query");
-        };
-        *id
-    }
-
-    fn edge_query_id(update: &CanvasInteractionUpdate) -> InteractionQueryId {
-        let [CanvasInteractionQuery::EdgePick { id, .. }] = update.queries() else {
-            panic!("expected one edge-pick query");
-        };
-        *id
-    }
-
-    fn submit_ticket(update: &CanvasInteractionUpdate) -> InteractionTicketId {
-        let [CanvasInteractionEffect::SubmitGraph { ticket, .. }] = update.effects() else {
-            panic!("expected one graph submission");
-        };
-        *ticket
-    }
-
-    fn source_node() -> NodeId {
-        NodeId::from_u128(1)
-    }
-
-    fn source_port() -> PortId {
-        PortId::from_u128(1)
-    }
-
-    fn target_port() -> PortId {
-        PortId::from_u128(2)
-    }
-}
+mod tests;

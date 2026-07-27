@@ -1,6 +1,7 @@
 use jellyflow_core::types::TypeDesc;
 use jellyflow_core::{EdgeKind, Graph, PortId};
-use jellyflow_runtime::{Diagnostic, GraphProfile, PortTypeImpactContext, PortTypeRevalidation};
+use jellyflow_runtime::graph::Diagnostic;
+use jellyflow_runtime::profile::{GraphProfile, PortTypeImpactContext, PortTypeRevalidation};
 
 /// Product policy for Shader Graph and Blueprint data-flow documents.
 #[derive(Clone, Copy, Debug, Default)]

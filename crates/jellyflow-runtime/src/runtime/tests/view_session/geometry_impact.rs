@@ -92,14 +92,22 @@ fn runtime_patch_geometry_impact_covers_payload_move_size_and_topology() {
 
     let payload = applied_patch(
         &runtime,
-        GraphCommand::set_node_data(0, ids.source, serde_json::json!({ "expanded": true })),
+        GraphCommand::set_node_data(
+            runtime.snapshot().unwrap().version(),
+            ids.source,
+            serde_json::json!({ "expanded": true }),
+        ),
     );
     assert!(!payload.geometry_impact().is_global());
     assert!(payload.geometry_impact().nodes().contains(&ids.source));
 
     let position = applied_patch(
         &runtime,
-        GraphCommand::set_node_position(1, ids.source, CanvasPoint { x: 30.0, y: 40.0 }),
+        GraphCommand::set_node_position(
+            runtime.snapshot().unwrap().version(),
+            ids.source,
+            CanvasPoint { x: 30.0, y: 40.0 },
+        ),
     );
     assert!(!position.geometry_impact().is_global());
     assert!(position.geometry_impact().nodes().contains(&ids.source));
@@ -107,7 +115,7 @@ fn runtime_patch_geometry_impact_covers_payload_move_size_and_topology() {
     let size = applied_patch(
         &runtime,
         GraphCommand::set_node_size(
-            2,
+            runtime.snapshot().unwrap().version(),
             ids.target,
             Some(CanvasSize {
                 width: 220.0,
@@ -121,7 +129,7 @@ fn runtime_patch_geometry_impact_covers_payload_move_size_and_topology() {
     let topology = applied_patch(
         &runtime,
         GraphCommand::reconnect(
-            3,
+            runtime.snapshot().unwrap().version(),
             ids.edge,
             EdgeEndpoint::From,
             ids.alternate_source_port,
@@ -150,7 +158,11 @@ fn unrelated_external_patch_publishes_only_unaffected_layout_and_counts_work() {
 
     applied_patch(
         &runtime,
-        GraphCommand::set_node_data(0, nodes[1], serde_json::json!({ "expanded": true })),
+        GraphCommand::set_node_data(
+            runtime.snapshot().unwrap().version(),
+            nodes[1],
+            serde_json::json!({ "expanded": true }),
+        ),
     );
 
     let collector = frame.collector();
@@ -192,7 +204,7 @@ fn same_frame_applied_command_stales_only_intersecting_candidate() {
     collector.layout(layout_for(&frame, nodes[1])).unwrap();
     collector
         .command(GraphCommand::set_node_data(
-            0,
+            frame.graph_version(),
             nodes[0],
             serde_json::json!({ "expanded": true }),
         ))
@@ -258,7 +270,7 @@ fn same_frame_node_translation_rejects_old_layout_without_withdrawing_geometry()
     let collector = frame.collector();
     collector
         .command(GraphCommand::set_node_position(
-            0,
+            frame.graph_version(),
             ids.source,
             CanvasPoint { x: 80.0, y: 40.0 },
         ))
@@ -303,26 +315,36 @@ fn noop_rejected_and_conflicting_commands_do_not_create_geometry_impact() {
     let runtime = GraphRuntime::builder(Default::default())
         .build(graph)
         .unwrap();
+    let stale_version = runtime.snapshot().unwrap().version();
+    runtime
+        .execute(GraphCommand::set_node_data(
+            stale_version,
+            nodes[0],
+            serde_json::json!({ "advance": true }),
+        ))
+        .unwrap()
+        .applied()
+        .unwrap();
     let session = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     let frame = session.frame(request()).unwrap();
     let collector = frame.collector();
     collector
         .command(GraphCommand::set_node_data(
-            0,
+            frame.graph_version(),
             nodes[0],
-            serde_json::Value::Null,
+            serde_json::json!({ "advance": true }),
         ))
         .unwrap();
     collector
         .command(GraphCommand::set_node_data(
-            0,
+            frame.graph_version(),
             NodeId::from_u128(0xffff),
             serde_json::json!({ "missing": true }),
         ))
         .unwrap();
     collector
         .command(GraphCommand::set_node_data(
-            99,
+            stale_version,
             nodes[0],
             serde_json::json!({ "conflict": true }),
         ))
@@ -368,7 +390,11 @@ fn multi_view_pending_impacts_are_scoped_per_candidate() {
 
     applied_patch(
         &runtime,
-        GraphCommand::set_node_data(0, nodes[0], serde_json::json!({ "expanded": true })),
+        GraphCommand::set_node_data(
+            runtime.snapshot().unwrap().version(),
+            nodes[0],
+            serde_json::json!({ "expanded": true }),
+        ),
     );
 
     let first_collector = first_frame.collector();
@@ -410,7 +436,7 @@ fn ten_thousand_pending_single_node_patches_merge_each_affected_record_once() {
     for (revision, node) in nodes.iter().copied().enumerate() {
         let outcome = runtime
             .execute(GraphCommand::set_node_data(
-                revision as u64,
+                runtime.snapshot().unwrap().version(),
                 node,
                 serde_json::json!({ "revision": revision }),
             ))
@@ -430,7 +456,10 @@ fn new_edge_route_is_removed_when_impacted_endpoint_layout_is_withdrawn() {
     let runtime = GraphRuntime::builder(Default::default())
         .build(graph)
         .unwrap();
-    applied_patch(&runtime, GraphCommand::disconnect(0, ids.edge));
+    applied_patch(
+        &runtime,
+        GraphCommand::disconnect(runtime.snapshot().unwrap().version(), ids.edge),
+    );
     let session = runtime.attach_view(ViewSessionOptions::default()).unwrap();
 
     let initial = session.frame(request()).unwrap();
@@ -456,7 +485,7 @@ fn new_edge_route_is_removed_when_impacted_endpoint_layout_is_withdrawn() {
     collector.layout(layout_for(&frame, ids.source)).unwrap();
     collector
         .command(GraphCommand::connect(
-            1,
+            frame.graph_version(),
             ids.edge,
             ids.source_port,
             ids.target_port,
@@ -500,7 +529,7 @@ fn document_reset_patch_has_global_geometry_impact() {
 
 #[test]
 fn geometry_impact_is_available_from_the_public_runtime_surface() {
-    fn assert_public_value(_: &crate::GeometryImpact) {}
+    fn assert_public_value(_: &crate::graph::GeometryImpact) {}
 
     let (graph, nodes) = graph_with_nodes(1);
     let runtime = GraphRuntime::builder(Default::default())
@@ -508,7 +537,11 @@ fn geometry_impact_is_available_from_the_public_runtime_surface() {
         .unwrap();
     let patch = applied_patch(
         &runtime,
-        GraphCommand::set_node_data(0, nodes[0], serde_json::json!({ "expanded": true })),
+        GraphCommand::set_node_data(
+            runtime.snapshot().unwrap().version(),
+            nodes[0],
+            serde_json::json!({ "expanded": true }),
+        ),
     );
 
     assert_public_value(patch.geometry_impact());

@@ -4,16 +4,23 @@ use std::rc::Rc;
 use jellyflow_core::{
     CanvasPoint, CanvasRect, CanvasSize, GraphBuilder, GraphId, Node, NodeId, NodeKindKey,
 };
-use jellyflow_open_gpui::authoring::OpenGpuiNodeBinding;
-use jellyflow_open_gpui::{
-    OpenGpuiActivityKind, OpenGpuiActivityLease, OpenGpuiNodeActivityRegistry,
-    OpenGpuiNodeRegistry, OpenGpuiSceneHost, RetainedField, RetainedFieldConflictChoice,
-    RetainedFieldError, RetainedFieldKey, RetainedFieldPhase, RetainedFieldResolution,
-    RetainedFieldStore, RetainedFieldUpdate,
+use jellyflow_open_gpui::activity::{
+    OpenGpuiActivityKind, OpenGpuiActivityLease, OpenGpuiNodeActivityHandle,
+};
+use jellyflow_open_gpui::authoring::{
+    OpenGpuiNodeAuthoring, OpenGpuiNodeBinding, OpenGpuiNodeObservation,
+};
+use jellyflow_open_gpui::host::OpenGpuiSceneHost;
+use jellyflow_open_gpui::registry::OpenGpuiNodeRegistry;
+use jellyflow_open_gpui::retained_field::{
+    RetainedField, RetainedFieldAttemptState, RetainedFieldConflictChoice, RetainedFieldError,
+    RetainedFieldKey, RetainedFieldPhase, RetainedFieldResolution, RetainedFieldRetention,
+    RetainedFieldStore, RetainedFieldSubmitMode, RetainedFieldUpdate,
 };
 use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec};
 use jellyflow_runtime::{
-    GraphCommand, GraphRevision, GraphRuntime, IncidentEdgePolicy, TopologyEdit, ViewSessionOptions,
+    commands::GraphCommand, commands::IncidentEdgePolicy, commands::TopologyEdit,
+    graph::GraphRuntime, view::ViewSessionOptions,
 };
 use open_gpui::{
     AppContext, Context, Entity, EntityInputHandler, Focusable, ParentElement, Render, Styled,
@@ -31,7 +38,7 @@ const FIELD_KEY: &str = "prompt";
 
 struct NativeDraftNode {
     binding: Entity<OpenGpuiNodeBinding>,
-    activity: OpenGpuiNodeActivityRegistry,
+    activity: OpenGpuiNodeActivityHandle,
     controller: Entity<TextInputController>,
     field: RetainedField<String>,
     focus_lease: Option<OpenGpuiActivityLease>,
@@ -41,7 +48,7 @@ struct NativeDraftNode {
 impl NativeDraftNode {
     fn new(
         binding: Entity<OpenGpuiNodeBinding>,
-        activity: OpenGpuiNodeActivityRegistry,
+        activity: OpenGpuiNodeActivityHandle,
         controller: Entity<TextInputController>,
         field: RetainedField<String>,
     ) -> Self {
@@ -63,98 +70,60 @@ impl NativeDraftNode {
                 controller.marked_range_utf16().is_some(),
             )
         };
-        self.field.field_mut().edit(value);
-        self.field.field_mut().set_composing(composing);
         self.field
-            .sync_retention()
-            .expect("live native input retention");
+            .edit(value)
+            .expect("retain native input value before publishing it");
+        self.field
+            .set_composing(composing)
+            .expect("retain native input composition before publishing it");
         cx.notify();
     }
 
     fn sync_from_graph(&mut self, cx: &mut Context<Self>) {
-        let (revision, value) = binding_value(&self.binding, cx);
-        let update = self.field.field_mut().observe(revision, value);
+        let (_, observation) = binding_observation(&self.binding, cx);
+        let update = self
+            .field
+            .observe(observation)
+            .expect("retain graph reconciliation");
         if matches!(update, RetainedFieldUpdate::RemoteApplied) {
-            let value = self.field.field().local().clone();
+            let value = self.field.local().clone();
             self.controller
                 .update(cx, |controller, cx| controller.set_value(value, cx));
         }
     }
 
     fn accept_remote(&mut self, cx: &mut Context<Self>) {
-        let revision = self.field.field().remote_revision();
+        let (authoring, observation) = binding_observation(&self.binding, cx);
+        self.field
+            .observe(observation)
+            .expect("observe conflict authoring before resolution");
         assert!(matches!(
             self.field
-                .field_mut()
-                .resolve(RetainedFieldConflictChoice::AcceptRemote, revision),
+                .resolve(&authoring, RetainedFieldConflictChoice::AcceptRemote),
             Ok(RetainedFieldResolution::AcceptedRemote { .. })
         ));
-        let value = self.field.field().local().clone();
+        let value = self.field.local().clone();
         self.controller
             .update(cx, |controller, cx| controller.set_value(value, cx));
-        self.field
-            .sync_retention()
-            .expect("accepted native input retention");
         cx.notify();
     }
 
     fn reapply_local(&mut self, cx: &mut Context<Self>) {
-        let revision = self.field.field().remote_revision();
-        let intent = match self
+        let (authoring, observation) = binding_observation(&self.binding, cx);
+        self.field
+            .observe(observation)
+            .expect("observe current conflict authoring");
+        let plan = self
             .field
-            .field_mut()
-            .resolve(RetainedFieldConflictChoice::ReapplyLocal, revision)
-            .expect("explicit native input reapply")
-        {
-            RetainedFieldResolution::Reapply(intent) => intent,
-            resolution => panic!("expected a reapply intent, got {resolution:?}"),
-        };
-        let attempt = intent.attempt();
-        let expected_revision = intent.expected_revision();
-        let value = intent.value().clone();
-        let node = node_id();
-        self.field
-            .prepare_task(attempt)
-            .expect("retain native input command task");
-        let authoring = match self.binding.read(cx).authoring() {
-            Ok(authoring) => authoring,
-            Err(error) => {
-                self.field
-                    .not_dispatched(attempt)
-                    .expect("clear definitely undispatched native input command");
-                panic!("live retained binding: {error}");
-            }
-        };
-        assert_eq!(
-            authoring.revision(),
-            expected_revision,
-            "field intent must target the current authoring revision",
-        );
-        let ticket = match authoring.enqueue(
-            GraphCommand::set_node_data(expected_revision, node, value.into()),
+            .plan(authoring, RetainedFieldSubmitMode::Reapply)
+            .expect("explicit native input reapply plan");
+        let expected_version = plan.authoring().version();
+        let value = plan.value().clone();
+        plan.dispatch(
+            GraphCommand::set_node_data(expected_version, node_id(), value.into()),
             cx,
-        ) {
-            Ok(ticket) => ticket,
-            Err(error) => {
-                self.field
-                    .not_dispatched(attempt)
-                    .expect("clear definitely undispatched native input command");
-                panic!("binding command enqueue: {error}");
-            }
-        };
-        let task = cx.spawn(async move |node, cx| {
-            let result = ticket.await;
-            node.update(cx, |node, cx| {
-                node.field
-                    .settle_ticket(attempt, result)
-                    .expect("settle live native input command");
-                cx.notify();
-            })
-            .expect("native draft node remains mounted");
-        });
-        self.field
-            .attach_task(attempt, task)
-            .expect("attach native input command task");
+        )
+        .expect("dispatch native input command");
     }
 
     fn sync_activity(&mut self, window: &Window, cx: &mut Context<Self>) {
@@ -177,9 +146,6 @@ impl NativeDraftNode {
             OpenGpuiActivityKind::Ime,
             composing,
         );
-        self.field
-            .sync_retention()
-            .expect("live native input retention");
     }
 }
 
@@ -202,10 +168,10 @@ fn focused_composing_draft_survives_real_undo_and_redo_until_remote_is_accepted(
     cx: &mut open_gpui::TestAppContext,
 ) {
     cx.update(init_text_input);
-    let (runtime, host, node, controller, activity, cx) = mount_scene(cx);
+    let (runtime, host, node, controller, activity, _store, cx) = mount_scene(cx);
     runtime
         .execute(GraphCommand::set_node_data(
-            0,
+            runtime.snapshot().unwrap().version(),
             node_id(),
             "committed".into(),
         ))
@@ -218,19 +184,16 @@ fn focused_composing_draft_survives_real_undo_and_redo_until_remote_is_accepted(
     let input_focus = cx.read_entity(&controller, |controller, cx| controller.focus_handle(cx));
 
     runtime
-        .execute(GraphCommand::undo(1))
+        .execute(GraphCommand::undo(runtime.snapshot().unwrap().version()))
         .unwrap()
         .applied()
         .expect("undo applies");
     draw(cx);
 
     cx.read_entity(&node, |node, _| {
-        assert_eq!(
-            node.field.field().phase(),
-            RetainedFieldPhase::ComposingConflict
-        );
-        assert_eq!(node.field.field().local(), "local 中文🙂");
-        assert_eq!(node.field.field().remote(), "base");
+        assert_eq!(node.field.phase(), RetainedFieldPhase::ComposingConflict);
+        assert_eq!(node.field.local(), "local 中文🙂");
+        assert_eq!(node.field.remote(), "base");
     });
     cx.read_entity(&controller, |controller, _| {
         assert_eq!(controller.value(), "local 中文🙂");
@@ -243,19 +206,16 @@ fn focused_composing_draft_survives_real_undo_and_redo_until_remote_is_accepted(
     assert_eq!(runtime.snapshot().unwrap().revision(), 2);
 
     runtime
-        .execute(GraphCommand::redo(2))
+        .execute(GraphCommand::redo(runtime.snapshot().unwrap().version()))
         .unwrap()
         .applied()
         .expect("redo applies");
     draw(cx);
 
     cx.read_entity(&node, |node, _| {
-        assert_eq!(
-            node.field.field().phase(),
-            RetainedFieldPhase::ComposingConflict
-        );
-        assert_eq!(node.field.field().local(), "local 中文🙂");
-        assert_eq!(node.field.field().remote(), "committed");
+        assert_eq!(node.field.phase(), RetainedFieldPhase::ComposingConflict);
+        assert_eq!(node.field.local(), "local 中文🙂");
+        assert_eq!(node.field.remote(), "committed");
     });
     cx.read_entity(&controller, |controller, _| {
         assert_eq!(controller.value(), "local 中文🙂");
@@ -270,8 +230,8 @@ fn focused_composing_draft_survives_real_undo_and_redo_until_remote_is_accepted(
     cx.update_entity(&node, |node, cx| node.accept_remote(cx));
     draw(cx);
     cx.read_entity(&node, |node, _| {
-        assert_eq!(node.field.field().phase(), RetainedFieldPhase::Clean);
-        assert_eq!(node.field.field().local(), "committed");
+        assert_eq!(node.field.phase(), RetainedFieldPhase::Clean);
+        assert_eq!(node.field.local(), "committed");
     });
     cx.read_entity(&controller, |controller, _| {
         assert_eq!(controller.value(), "committed");
@@ -282,7 +242,7 @@ fn focused_composing_draft_survives_real_undo_and_redo_until_remote_is_accepted(
 
     runtime
         .execute(GraphCommand::topology(
-            3,
+            runtime.snapshot().unwrap().version(),
             TopologyEdit::new().remove_node(node_id(), IncidentEdgePolicy::Reject),
         ))
         .unwrap();
@@ -299,23 +259,21 @@ fn composing_conflict_reapplies_only_after_explicit_unmark_and_revision_checked_
     cx: &mut open_gpui::TestAppContext,
 ) {
     cx.update(init_text_input);
-    let (runtime, _host, node, controller, activity, cx) = mount_scene(cx);
+    let (runtime, _host, node, controller, activity, _store, cx) = mount_scene(cx);
     focus_and_mark_local(&node, &controller, cx, "local branch");
     runtime
         .execute(GraphCommand::set_node_data(
-            0,
+            runtime.snapshot().unwrap().version(),
             node_id(),
             "remote branch".into(),
         ))
         .unwrap();
     draw(cx);
 
-    cx.update_entity(&node, |node, _| {
-        let revision = node.field.field().remote_revision();
+    cx.update_entity(&node, |node, cx| {
+        let authoring = node.binding.read(cx).authoring().expect("live authoring");
         assert!(matches!(
-            node.field
-                .field_mut()
-                .resolve(RetainedFieldConflictChoice::ReapplyLocal, revision,),
+            node.field.plan(authoring, RetainedFieldSubmitMode::Reapply),
             Err(RetainedFieldError::CompositionActive)
         ));
     });
@@ -342,8 +300,8 @@ fn composing_conflict_reapplies_only_after_explicit_unmark_and_revision_checked_
         serde_json::json!("local branch")
     );
     cx.read_entity(&node, |node, _| {
-        assert_eq!(node.field.field().phase(), RetainedFieldPhase::Clean);
-        assert_eq!(node.field.field().base_revision(), 2);
+        assert_eq!(node.field.phase(), RetainedFieldPhase::Clean);
+        assert_eq!(node.field.base_revision(), 2);
     });
     cx.read_entity(&controller, |controller, _| {
         assert_eq!(controller.value(), "local branch");
@@ -353,11 +311,67 @@ fn composing_conflict_reapplies_only_after_explicit_unmark_and_revision_checked_
 }
 
 #[open_gpui::test]
+fn internal_supervisor_owns_dispatch_ticket_and_releases_task_resources(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    cx.update(init_text_input);
+    let (runtime, host, node, _controller, activity, store, cx) = mount_scene(cx);
+
+    cx.update_entity(&node, |node, cx| {
+        dispatch_test_value(node, "supervised value", cx)
+            .expect("internal supervisor retains the dispatched ticket");
+    });
+    assert_eq!(activity.active_count(), 2);
+
+    draw(cx);
+    draw(cx);
+    assert_eq!(
+        runtime
+            .snapshot()
+            .unwrap()
+            .graph()
+            .node(&node_id())
+            .unwrap()
+            .data,
+        serde_json::json!("supervised value")
+    );
+    cx.read_entity(&node, |node, _| {
+        assert_eq!(node.field.attempt_state(), RetainedFieldAttemptState::Idle);
+        assert_eq!(node.field.phase(), RetainedFieldPhase::Clean);
+        assert_eq!(node.field.retention(), RetainedFieldRetention::Idle);
+    });
+    assert_eq!(activity.active_count(), 0);
+    assert!(store.is_empty());
+
+    let settled_revision = runtime.snapshot().unwrap().revision();
+    let settled_stats = cx.read_entity(&host, |host, _| host.stats());
+    for frame in 0..120 {
+        draw(cx);
+        cx.read_entity(&node, |node, _| {
+            assert_eq!(node.field.attempt_state(), RetainedFieldAttemptState::Idle);
+            assert_eq!(node.field.phase(), RetainedFieldPhase::Clean);
+            assert_eq!(node.field.retention(), RetainedFieldRetention::Idle);
+        });
+        assert_eq!(activity.active_count(), 0, "frame {frame}");
+        assert_eq!(activity.protected_count(), 0, "frame {frame}");
+        assert!(store.is_empty(), "frame {frame}");
+    }
+    assert_eq!(runtime.snapshot().unwrap().revision(), settled_revision);
+    cx.read_entity(&host, |host, _| {
+        let stats = host.stats();
+        assert_eq!(stats.mounts(), settled_stats.mounts());
+        assert_eq!(stats.strong_instances(), settled_stats.strong_instances());
+        assert_eq!(stats.protected_instances(), 0);
+        assert_eq!(stats.protected_leases(), 0);
+    });
+}
+
+#[open_gpui::test]
 fn focused_native_input_survives_culling_then_blurs_parks_and_hard_retires(
     cx: &mut open_gpui::TestAppContext,
 ) {
     cx.update(init_text_input);
-    let (runtime, host, node, controller, activity, cx) = mount_scene(cx);
+    let (runtime, host, node, controller, activity, _store, cx) = mount_scene(cx);
 
     let input = cx.debug_bounds(INPUT_SELECTOR).expect("native text input");
     cx.simulate_click(input.center(), Default::default());
@@ -421,7 +435,7 @@ fn focused_native_input_survives_culling_then_blurs_parks_and_hard_retires(
     drop(node);
     runtime
         .execute(GraphCommand::topology(
-            0,
+            runtime.snapshot().unwrap().version(),
             TopologyEdit::new().remove_node(node_id(), IncidentEdgePolicy::Reject),
         ))
         .unwrap();
@@ -472,9 +486,25 @@ fn focus_and_mark_local(
     });
     cx.update_entity(node, |node, cx| node.sync_from_controller(cx));
     cx.read_entity(node, |node, _| {
-        assert_eq!(node.field.field().phase(), RetainedFieldPhase::Composing);
+        assert_eq!(node.field.phase(), RetainedFieldPhase::Composing);
     });
     draw(cx);
+}
+
+fn dispatch_test_value(
+    node: &mut NativeDraftNode,
+    value: &str,
+    cx: &mut Context<NativeDraftNode>,
+) -> Result<(), RetainedFieldError> {
+    let (authoring, observation) = binding_observation(&node.binding, cx);
+    node.field.observe(observation)?;
+    node.field.edit(value.to_owned())?;
+    let plan = node
+        .field
+        .plan(authoring, RetainedFieldSubmitMode::Commit)?;
+    let version = plan.authoring().version();
+    let command = GraphCommand::set_node_data(version, node_id(), plan.value().clone().into());
+    plan.dispatch(command, cx)
 }
 
 fn mount_scene(
@@ -484,7 +514,8 @@ fn mount_scene(
     Entity<OpenGpuiSceneHost>,
     Entity<NativeDraftNode>,
     Entity<TextInputController>,
-    OpenGpuiNodeActivityRegistry,
+    OpenGpuiNodeActivityHandle,
+    RetainedFieldStore<String>,
     &mut open_gpui::VisualTestContext,
 ) {
     let runtime = Rc::new(GraphRuntime::builder(catalog()).build(graph()).unwrap());
@@ -496,17 +527,17 @@ fn mount_scene(
     let factory_controller = captured_controller.clone();
     let factory_activity = captured_activity.clone();
     let field_store = RetainedFieldStore::new();
+    let factory_field_store = field_store.clone();
     let mut registry = OpenGpuiNodeRegistry::builder();
     registry.register(RENDERER, move |binding, _window, cx| {
         let activity = binding.read(cx).activity().clone();
-        let (revision, value) = binding_value(&binding, cx);
+        let (_authoring, observation) = binding_observation(&binding, cx);
+        let value = observation.value().clone();
         let controller = cx.new(|cx| TextInputController::with_value(value.clone(), cx));
         let field = RetainedField::mount(
-            binding.read(cx),
+            observation,
             RetainedFieldKey::new(FIELD_KEY).expect("valid native input field key"),
-            field_store.clone(),
-            revision,
-            value,
+            factory_field_store.clone(),
         )
         .expect("mount native retained field");
         let node =
@@ -538,11 +569,11 @@ fn mount_scene(
         .borrow_mut()
         .take()
         .expect("node activity registry");
-    (runtime, host, node, controller, activity, cx)
+    (runtime, host, node, controller, activity, field_store, cx)
 }
 
 fn sync_lease(
-    activity: &OpenGpuiNodeActivityRegistry,
+    activity: &OpenGpuiNodeActivityHandle,
     lease: &mut Option<OpenGpuiActivityLease>,
     kind: OpenGpuiActivityKind,
     active: bool,
@@ -554,21 +585,17 @@ fn sync_lease(
     }
 }
 
-fn binding_value(
+fn binding_observation(
     binding: &Entity<OpenGpuiNodeBinding>,
     cx: &open_gpui::App,
-) -> (GraphRevision, String) {
+) -> (OpenGpuiNodeAuthoring, OpenGpuiNodeObservation<String>) {
     let authoring = binding
         .read(cx)
         .authoring()
         .expect("live binding authoring");
-    let value = authoring
-        .node()
-        .data
-        .as_str()
-        .expect("string prompt")
-        .to_owned();
-    (authoring.revision(), value)
+    let observation =
+        authoring.observe_field(|node| node.data.as_str().expect("string prompt").to_owned());
+    (authoring, observation)
 }
 
 fn draw(cx: &mut open_gpui::VisualTestContext) {

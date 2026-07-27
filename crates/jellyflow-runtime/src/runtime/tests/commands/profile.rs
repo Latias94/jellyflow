@@ -42,7 +42,11 @@ fn profile_concretization_cannot_reintroduce_a_registered_alias() {
 
     let rejected = assert_rejected_without_side_effects(
         &runtime,
-        GraphCommand::set_node_data(0, nodes[0], serde_json::json!({ "changed": true })),
+        GraphCommand::set_node_data(
+            runtime.snapshot().unwrap().version(),
+            nodes[0],
+            serde_json::json!({ "changed": true }),
+        ),
         "topology.node_kind_not_canonical",
     );
 
@@ -50,7 +54,7 @@ fn profile_concretization_cannot_reintroduce_a_registered_alias() {
         rejected.rejection().unwrap().diagnostics()[0].target,
         DiagnosticTarget::Node { id } if id == added
     ));
-    assert!(runtime.node_incarnation(added).unwrap().is_none());
+    assert!(runtime.node_lifetime_key(added).unwrap().is_none());
 }
 
 #[test]
@@ -97,7 +101,7 @@ fn profile_type_compatibility_is_shared_by_document_evaluation_and_execution() {
     assert_eq!(evaluation.revision(), 0);
 
     runtime
-        .execute(GraphCommand::connection(evaluation.revision(), edit))
+        .execute(GraphCommand::connection(evaluation.version(), edit))
         .unwrap()
         .applied()
         .expect("execution uses the same custom compatibility");
@@ -165,7 +169,10 @@ fn symbol_type_changes_revalidate_profile_types_atomically() {
 
     assert_rejected_without_side_effects(
         &runtime,
-        GraphCommand::symbols(0, SymbolEdit::new().update(symbol_id, incompatible)),
+        GraphCommand::symbols(
+            runtime.snapshot().unwrap().version(),
+            SymbolEdit::new().update(symbol_id, incompatible),
+        ),
         "connect.type_mismatch",
     );
     assert_eq!(
@@ -189,7 +196,7 @@ fn symbol_type_changes_revalidate_profile_types_atomically() {
     compatible.name = "renamed source value".to_owned();
     runtime
         .execute(GraphCommand::symbols(
-            0,
+            runtime.snapshot().unwrap().version(),
             SymbolEdit::new().update(symbol_id, compatible),
         ))
         .unwrap()
@@ -278,11 +285,18 @@ fn profile_can_narrow_symbol_dependencies_through_indexed_referrers() {
     let graph = builder.build().expect("valid indexed symbol-ref graph");
     let mut renamed = graph.symbol(&symbol_id).expect("symbol").clone();
     renamed.name = "renamed source value".to_owned();
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph.clone())
+        .unwrap();
+    let command = GraphCommand::symbols(
+        runtime.snapshot().unwrap().version(),
+        SymbolEdit::new().update(symbol_id, renamed),
+    );
     let planned = plan_graph_command(
         &graph,
         &GraphIndex::from_graph(&graph),
         &NodeCatalog::new(),
-        &GraphCommand::symbols(0, SymbolEdit::new().update(symbol_id, renamed)),
+        &command,
         Some(&IndexedSymbolBackedTypes {
             symbol: symbol_id,
             port: ids.source_port,
@@ -315,7 +329,7 @@ fn stable_port_type_changes_revalidate_existing_edges_against_final_topology() {
     let rejected = assert_rejected_without_side_effects(
         &runtime,
         GraphCommand::topology(
-            0,
+            runtime.snapshot().unwrap().version(),
             TopologyEdit::new().replace_node_ports(
                 ids.target,
                 target_ports,
@@ -341,7 +355,7 @@ fn stable_port_type_changes_revalidate_existing_edges_against_final_topology() {
     );
     runtime
         .execute(GraphCommand::topology(
-            0,
+            runtime.snapshot().unwrap().version(),
             TopologyEdit::new().replace_node_ports(
                 ids.target,
                 target_ports,
@@ -376,7 +390,7 @@ fn stable_port_type_changes_revalidate_existing_edges_against_final_topology() {
         topology_ports_with_type(snapshot.graph(), ids.target, ids.target_port, TypeDesc::Int);
     runtime
         .execute(GraphCommand::topology(
-            0,
+            snapshot.version(),
             TopologyEdit::new()
                 .replace_node_ports(ids.source, source_ports, IncidentEdgePolicy::Reject)
                 .replace_node_ports(ids.target, target_ports, IncidentEdgePolicy::Reject),
@@ -428,7 +442,11 @@ fn profile_declares_sibling_port_type_impact_from_port_data() {
 
     let rejected = assert_rejected_without_side_effects(
         &runtime,
-        GraphCommand::set_port_data(0, trigger, serde_json::Value::Bool(true)),
+        GraphCommand::set_port_data(
+            runtime.snapshot().unwrap().version(),
+            trigger,
+            serde_json::Value::Bool(true),
+        ),
         "connect.type_mismatch",
     );
 
@@ -463,7 +481,7 @@ fn profile_declares_transitive_type_impact_from_connection_topology() {
     let rejected = assert_rejected_without_side_effects(
         &runtime,
         GraphCommand::connect(
-            0,
+            runtime.snapshot().unwrap().version(),
             new_edge,
             ids.alternate_source_port,
             ids.target_port,
@@ -502,7 +520,11 @@ fn runtime_computes_transitive_profile_type_dependency_closure() {
 
     let rejected = assert_rejected_without_side_effects(
         &runtime,
-        GraphCommand::set_port_data(0, ids.alternate_source_port, serde_json::Value::Bool(true)),
+        GraphCommand::set_port_data(
+            runtime.snapshot().unwrap().version(),
+            ids.alternate_source_port,
+            serde_json::Value::Bool(true),
+        ),
         "connect.type_mismatch",
     );
 
@@ -521,7 +543,11 @@ fn profile_cannot_expand_type_dependencies_through_missing_ports() {
 
     let rejected = assert_rejected_without_side_effects(
         &runtime,
-        GraphCommand::set_port_data(0, ids.alternate_source_port, serde_json::Value::Bool(true)),
+        GraphCommand::set_port_data(
+            runtime.snapshot().unwrap().version(),
+            ids.alternate_source_port,
+            serde_json::Value::Bool(true),
+        ),
         "profile.port_type_dependency_missing",
     );
 
@@ -546,7 +572,7 @@ fn cascade_type_revalidation_keeps_policy_after_an_empty_first_drain() {
 
     runtime
         .execute(GraphCommand::topology(
-            0,
+            runtime.snapshot().unwrap().version(),
             TopologyEdit::new().replace_node_ports(
                 ids.alternate_source,
                 [],
@@ -658,7 +684,7 @@ fn connection_commands_use_profile_type_resolution() {
 
     let outcome = runtime
         .execute(GraphCommand::connect(
-            0,
+            runtime.snapshot().unwrap().version(),
             edge,
             ids.alternate_source_port,
             ids.target_port,
@@ -694,7 +720,7 @@ fn connection_evaluation_and_execution_share_revisioned_semantics() {
 
     runtime
         .execute(GraphCommand::set_node_data(
-            0,
+            evaluation.version(),
             ids.source,
             serde_json::json!({ "changed": true }),
         ))
@@ -702,14 +728,14 @@ fn connection_evaluation_and_execution_share_revisioned_semantics() {
         .applied()
         .expect("intervening command applies");
     let stale = runtime
-        .execute(GraphCommand::connection(evaluation.revision(), edit))
+        .execute(GraphCommand::connection(evaluation.version(), edit))
         .unwrap();
     assert!(stale.conflict().is_some());
     assert!(runtime.snapshot().unwrap().graph().edge(&edge).is_none());
 
     let refreshed = runtime.evaluate_connection(edit).unwrap();
     runtime
-        .execute(GraphCommand::connection(refreshed.revision(), edit))
+        .execute(GraphCommand::connection(refreshed.version(), edit))
         .unwrap()
         .applied()
         .expect("refreshed connection applies");
@@ -767,7 +793,7 @@ fn connection_evaluation_and_execution_observe_the_same_pure_profile_policy() {
     assert_eq!(event_count.get(), 0);
 
     let outcome = runtime
-        .execute(GraphCommand::connection(evaluation.revision(), edit))
+        .execute(GraphCommand::connection(evaluation.version(), edit))
         .unwrap();
     let rejection = outcome.rejection().expect("execution rejects identically");
     assert_eq!(
@@ -799,7 +825,7 @@ fn profile_cycle_policy_rejects_only_the_cycle_closing_connection() {
 
     runtime
         .execute(GraphCommand::topology(
-            0,
+            runtime.snapshot().unwrap().version(),
             TopologyEdit::new()
                 .replace_node_ports(
                     nodes[0],
@@ -823,7 +849,7 @@ fn profile_cycle_policy_rejects_only_the_cycle_closing_connection() {
         .expect("ports apply");
     runtime
         .execute(GraphCommand::connect(
-            1,
+            runtime.snapshot().unwrap().version(),
             EdgeId::from_u128(235),
             a_out,
             b_in,
@@ -837,7 +863,7 @@ fn profile_cycle_policy_rejects_only_the_cycle_closing_connection() {
 
     let outcome = runtime
         .execute(GraphCommand::connect(
-            2,
+            before.version(),
             EdgeId::from_u128(236),
             b_out,
             a_in,
@@ -868,7 +894,7 @@ fn history_replay_does_not_run_profile_concretization_again() {
 
     runtime
         .execute(GraphCommand::set_node_position(
-            0,
+            runtime.snapshot().unwrap().version(),
             nodes[0],
             CanvasPoint { x: 10.0, y: 20.0 },
         ))
@@ -922,7 +948,7 @@ fn profile_rejected_undo_preserves_graph_history_stats_and_notifications() {
     .unwrap();
     runtime
         .execute(GraphCommand::set_node_data(
-            0,
+            runtime.snapshot().unwrap().version(),
             nodes[0],
             serde_json::json!({ "value": 1 }),
         ))
@@ -939,7 +965,9 @@ fn profile_rejected_undo_preserves_graph_history_stats_and_notifications() {
         .subscribe(move |_| callback_count.set(callback_count.get() + 1))
         .unwrap();
 
-    let outcome = runtime.execute(GraphCommand::undo(1)).unwrap();
+    let outcome = runtime
+        .execute(GraphCommand::undo(before.version()))
+        .unwrap();
     let rejection = outcome.rejection().expect("profile rejects undo replay");
 
     assert_eq!(
@@ -980,7 +1008,7 @@ fn panicking_profile_validation_does_not_consume_prepared_history() {
     .unwrap();
     runtime
         .execute(GraphCommand::set_node_data(
-            0,
+            runtime.snapshot().unwrap().version(),
             nodes[0],
             serde_json::json!({ "value": 1 }),
         ))
@@ -999,7 +1027,7 @@ fn panicking_profile_validation_does_not_consume_prepared_history() {
 
     armed.set(true);
     let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        runtime.execute(GraphCommand::undo(before.revision()))
+        runtime.execute(GraphCommand::undo(before.version()))
     }));
     assert!(panic.is_err());
     assert!(before.ptr_eq(&runtime.snapshot().unwrap()));
@@ -1039,8 +1067,12 @@ fn multi_round_profile_derivation_is_one_exact_history_entry() {
 
     runtime
         .execute(
-            GraphCommand::set_node_data(0, nodes[0], serde_json::json!({ "value": "user" }))
-                .with_label("update node and derived topology"),
+            GraphCommand::set_node_data(
+                runtime.snapshot().unwrap().version(),
+                nodes[0],
+                serde_json::json!({ "value": "user" }),
+            )
+            .with_label("update node and derived topology"),
         )
         .unwrap()
         .applied()
@@ -1085,8 +1117,15 @@ fn multi_round_profile_journal_preserves_label_and_operation_order() {
         port: derived_port,
         concretize_calls: concretize_calls.clone(),
     };
-    let command = GraphCommand::set_node_data(0, nodes[0], serde_json::json!({ "value": "user" }))
-        .with_label("ordered profile journal");
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph.clone())
+        .unwrap();
+    let command = GraphCommand::set_node_data(
+        runtime.snapshot().unwrap().version(),
+        nodes[0],
+        serde_json::json!({ "value": "user" }),
+    )
+    .with_label("ordered profile journal");
 
     let planned = plan_graph_command(
         &graph,
@@ -1145,7 +1184,7 @@ fn profile_validation_rejection_after_derivation_has_zero_runtime_side_effects()
 
     let outcome = runtime
         .execute(GraphCommand::set_node_position(
-            0,
+            before.version(),
             nodes[0],
             CanvasPoint { x: 10.0, y: 20.0 },
         ))
@@ -1185,7 +1224,7 @@ fn non_convergent_profile_has_zero_runtime_side_effects() {
 
     let outcome = runtime
         .execute(GraphCommand::set_node_position(
-            0,
+            before.version(),
             nodes[0],
             CanvasPoint { x: 10.0, y: 20.0 },
         ))

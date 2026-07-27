@@ -12,7 +12,7 @@ fn full_history_replay_prepares_only_the_top_owned_transaction() {
     for revision in 0..HISTORY_DEPTH {
         runtime
             .execute(GraphCommand::set_node_data(
-                revision as u64,
+                runtime.snapshot().unwrap().version(),
                 nodes[0],
                 serde_json::json!({
                     "revision": revision,
@@ -133,7 +133,7 @@ fn dynamic_topology_on_large_graph_never_uses_full_graph_diff() {
 
     let outcome = runtime
         .execute(GraphCommand::topology(
-            0,
+            runtime.snapshot().unwrap().version(),
             TopologyEdit::new().replace_node_ports(
                 nodes[0],
                 [TopologyPort::new(
@@ -232,7 +232,7 @@ fn single_input_replacement_reads_only_incident_edges_and_bindings_at_scale() {
 
     runtime
         .execute(GraphCommand::connect(
-            0,
+            runtime.snapshot().unwrap().version(),
             replacement_edge,
             new_source,
             single_target,
@@ -301,7 +301,10 @@ fn batched_connections_query_only_port_local_staged_edges() {
         .build(builder.build().expect("valid batched graph"))
         .unwrap();
     runtime
-        .execute(GraphCommand::topology(0, edit))
+        .execute(GraphCommand::topology(
+            runtime.snapshot().unwrap().version(),
+            edit,
+        ))
         .unwrap()
         .applied()
         .expect("batched connections apply");
@@ -341,7 +344,7 @@ fn add_node_preserves_declared_port_order_and_plans_from_affected_facts() {
 
     runtime
         .execute(GraphCommand::topology(
-            0,
+            runtime.snapshot().unwrap().version(),
             TopologyEdit::new().add_node(
                 node_id,
                 node,
@@ -449,7 +452,7 @@ fn profiled_commands_keep_type_propagation_local_on_a_ten_thousand_edge_graph() 
 
     runtime
         .execute(GraphCommand::set_node_position(
-            0,
+            runtime.snapshot().unwrap().version(),
             affected_source,
             CanvasPoint { x: 50.0, y: 25.0 },
         ))
@@ -465,7 +468,7 @@ fn profiled_commands_keep_type_propagation_local_on_a_ten_thousand_edge_graph() 
 
     runtime
         .execute(GraphCommand::set_node_data(
-            1,
+            runtime.snapshot().unwrap().version(),
             affected_source,
             serde_json::json!({ "value": 1 }),
         ))

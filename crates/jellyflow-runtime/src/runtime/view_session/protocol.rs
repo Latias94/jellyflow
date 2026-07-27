@@ -14,18 +14,18 @@ use crate::runtime::adapter_protocol::{
 use crate::runtime::geometry::CanvasBounds;
 use crate::runtime::graph_runtime::{
     DocumentEpoch, GeometryImpact, GraphRevision, GraphSnapshot, IncidentEdgeSnapshot,
-    IncidentSnapshotWork, NodeIncarnation, RuntimePatch,
+    IncidentSnapshotWork, NodeLifetimeKey, RuntimePatch,
 };
 use crate::runtime::unwind::{PanicCollector, PanicPayload, resume};
-use crate::runtime::viewport::ViewportTransform;
+use crate::runtime::viewport::{ViewportRevision, ViewportSnapshot, ViewportTransform};
 
 use super::geometry::{expanded_bounds, publish_layouts};
 use super::order::sort_render_order;
-use super::{ViewSession, ViewSessionError, ViewSessionEvent, ensure_open};
+use super::{ViewSession, ViewSessionError, ViewSessionEvent, ViewState, ensure_open};
 
 #[derive(Debug, Clone)]
 pub(super) struct ExpectedNodeLayout {
-    pub(super) incarnation: NodeIncarnation,
+    pub(super) lifetime: NodeLifetimeKey,
     pub(super) renderer: RendererStamp,
     pub(super) layout_generation: u64,
     pub(super) ports: BTreeSet<PortId>,
@@ -39,7 +39,7 @@ pub(super) struct PendingFrame {
     pub(super) impact_through_revision: GraphRevision,
     pub(super) geometry_impact: GeometryImpact,
     pub(super) document_epoch: DocumentEpoch,
-    pub(super) transform_revision: u64,
+    pub(super) viewport_revision: ViewportRevision,
     pub(super) transform: ViewportTransform,
     pub(super) environment: AdapterEnvironment,
     pub(super) nodes: BTreeMap<NodeId, ExpectedNodeLayout>,
@@ -99,6 +99,7 @@ fn take_candidate_budget(
     mut candidates: Vec<FrameCandidate>,
     limit: usize,
     explicit_ranks: &BTreeMap<NodeId, usize>,
+    recent_interaction: Option<NodeId>,
 ) -> (Vec<FrameCandidate>, usize) {
     if candidates.len() <= limit {
         return (candidates, 0);
@@ -108,6 +109,7 @@ fn take_candidate_budget(
         |candidate| candidate.node,
         |candidate| candidate.selected,
         explicit_ranks,
+        recent_interaction,
     );
     let overflow = candidates.len() - limit;
     candidates.drain(..overflow);
@@ -165,6 +167,7 @@ impl ViewSession {
             let mut admission_candidates = admission_query.nodes;
             admission_candidates.extend(measured_query.nodes);
             let (candidates, candidate_ids, materialization_overflow, selection_membership_lookups) = {
+                let recent_interaction = state.recent_interaction_node_id();
                 let candidate_for = |node_id, forced| {
                     let node = snapshot.graph().node(&node_id)?;
                     if node.hidden {
@@ -200,6 +203,7 @@ impl ViewSession {
                     visible_candidates,
                     request.materialization_budget.visible_nodes(),
                     &state.node_draw_order_ranks,
+                    recent_interaction,
                 );
                 let visible_ids = candidates
                     .iter()
@@ -219,6 +223,7 @@ impl ViewSession {
                     required_candidates,
                     request.materialization_budget.required_nodes(),
                     &state.node_draw_order_ranks,
+                    recent_interaction,
                 );
                 candidate_ids.extend(required_candidates.iter().map(|candidate| candidate.node));
                 candidates.extend(required_candidates);
@@ -236,6 +241,7 @@ impl ViewSession {
                     explicit_routing_candidates,
                     routing_budget,
                     &state.node_draw_order_ranks,
+                    recent_interaction,
                 );
                 let explicit_routing_count = explicit_routing_candidates.len();
                 candidate_ids.extend(
@@ -275,6 +281,7 @@ impl ViewSession {
                     incident_candidates,
                     remaining_routing_budget,
                     &state.node_draw_order_ranks,
+                    recent_interaction,
                 );
                 routing_overflow = routing_overflow.saturating_add(incident_overflow);
                 candidate_ids.extend(incident_candidates.iter().map(|candidate| candidate.node));
@@ -292,6 +299,7 @@ impl ViewSession {
                     |candidate| candidate.node,
                     |candidate| candidate.selected,
                     &state.node_draw_order_ranks,
+                    recent_interaction,
                 );
                 (
                     candidates,
@@ -334,14 +342,18 @@ impl ViewSession {
                 .map(|candidate| (candidate.node, candidate.renderer.clone()))
                 .collect::<BTreeMap<_, _>>();
             let policy = state.policy;
-            let selected_edges = state.selected_edge_membership.clone();
-            let (publication, incident_work, generations) = state.derived.reconcile_frame_geometry(
+            let ViewState {
+                derived,
+                selected_edge_membership,
+                ..
+            } = &mut *state;
+            let (publication, incident_work, generations) = derived.reconcile_frame_geometry(
                 &snapshot,
                 &renderers,
                 &candidate_ids,
                 &facts,
                 policy,
-                &selected_edges,
+                selected_edge_membership,
             );
             state.derived.record_frame_admission(
                 rebuild_visits,
@@ -386,13 +398,17 @@ impl ViewSession {
             bounds_source,
         } in candidates
         {
-            let Some((incarnation, incident_edges)) = facts.get(&node_id) else {
+            let Some(runtime_facts) = facts.get(&node_id) else {
                 continue;
             };
             let Some(node) = snapshot.graph().node(&node_id) else {
                 continue;
             };
-            let instance = NodeInstanceKey::new(view_id, node_id, renderer.clone(), *incarnation);
+            let Some(instance) =
+                NodeInstanceKey::new(view_id, renderer.clone(), runtime_facts.lifetime)
+            else {
+                continue;
+            };
             let layout_target = Arc::new(NodeLayoutTarget {
                 instance,
                 layout_generation,
@@ -402,19 +418,23 @@ impl ViewSession {
                 .ports
                 .iter()
                 .filter_map(|port_id| {
-                    snapshot.graph().port(port_id).map(|_| {
-                        FramePort::new(snapshot.clone(), Arc::clone(&layout_target), *port_id)
-                    })
+                    snapshot.graph().port(port_id)?;
+                    let port_instance = runtime_facts.port_instances.get(port_id).copied()?;
+                    Some(FramePort::new(
+                        snapshot.clone(),
+                        Arc::clone(&layout_target),
+                        port_instance,
+                    ))
                 })
                 .collect::<Vec<_>>();
             expected_nodes.insert(
                 node_id,
                 ExpectedNodeLayout {
-                    incarnation: *incarnation,
+                    lifetime: runtime_facts.lifetime,
                     renderer: renderer.clone(),
                     layout_generation,
                     ports: node.ports.iter().copied().collect(),
-                    incident_edges: incident_edges.clone(),
+                    incident_edges: runtime_facts.incident_edges.clone(),
                 },
             );
             frame_nodes.push(FrameNode::new(
@@ -429,7 +449,7 @@ impl ViewSession {
         }
 
         let materialized_count = frame_nodes.len() as u64;
-        let (token, transform) = {
+        let (token, viewport) = {
             let mut state = self
                 .shared
                 .state
@@ -464,9 +484,14 @@ impl ViewSession {
                 generation: state.generation,
                 sequence,
             };
-            let transform_revision = state.transform_revision;
+            let viewport_revision = state.viewport_revision;
             let transform = ViewportTransform::new(state.facts.pan, state.facts.zoom)
                 .ok_or(FrameMaterializationError::InvalidViewport)?;
+            let viewport = ViewportSnapshot::new(
+                super::ViewProvenance::new(state.id, state.generation),
+                viewport_revision,
+                transform,
+            );
             let environment = state.environment;
             state.pending_frame = Some(PendingFrame {
                 sequence,
@@ -474,26 +499,27 @@ impl ViewSession {
                 impact_through_revision: snapshot.revision(),
                 geometry_impact: GeometryImpact::default(),
                 document_epoch: snapshot.document_epoch(),
-                transform_revision,
+                viewport_revision,
                 transform,
                 environment,
                 nodes: expected_nodes,
             });
-            (token, transform)
+            (token, viewport)
         };
 
         let frame = AdapterFrame::new(
             token.clone(),
-            snapshot.revision(),
+            snapshot.version(),
             snapshot.document_epoch(),
-            transform,
+            viewport,
             frame_nodes,
             materialization_overflow,
         );
-        if let Some((layout_revision, nodes)) = renderer_publication {
-            self.publish_layout_event(layout_revision, nodes);
-        }
-        self.ensure_materialized_frame_is_current(&token, &snapshot)?;
+        let callback_panic = renderer_publication
+            .and_then(|(layout_revision, nodes)| self.publish_layout_event(layout_revision, nodes));
+        let materialization = self.ensure_materialized_frame_is_current(&token, &snapshot);
+        resume(callback_panic);
+        materialization?;
         Ok(frame)
     }
 
@@ -538,7 +564,7 @@ impl ViewSession {
                 reason: StaleFrameReason::DocumentEpoch,
             });
         }
-        if pending.transform_revision != state.transform_revision {
+        if pending.viewport_revision != state.viewport_revision {
             return Err(FrameMaterializationError::StaleFrame {
                 sequence: token.sequence,
                 reason: StaleFrameReason::Transform,
@@ -585,22 +611,6 @@ impl ViewSession {
 
             for (operation_index, operation) in feedback.operations.into_iter().enumerate() {
                 match operation {
-                    FeedbackOperation::Selection {
-                        nodes,
-                        edges,
-                        groups,
-                    } => {
-                        self.set_selection(nodes, edges, groups)?;
-                        receipts[operation_index] = Some(FeedbackOperationReceipt::Selection {
-                            selection: self.selection()?,
-                        });
-                    }
-                    FeedbackOperation::Viewport { pan, zoom } => {
-                        self.set_viewport(pan, zoom)?;
-                        receipts[operation_index] = Some(FeedbackOperationReceipt::Viewport {
-                            transform: self.viewport_transform()?,
-                        });
-                    }
                     FeedbackOperation::Command(command) => {
                         let outcome = self.execute(command);
                         if let Ok(outcome) = &outcome
@@ -658,7 +668,7 @@ impl ViewSession {
                     impact_global_fallbacks,
                 );
                 let global_stale = current.document_epoch() != pending.document_epoch
-                    || state.transform_revision != pending.transform_revision
+                    || state.viewport_revision != pending.viewport_revision
                     || state.environment != pending.environment
                     || state.last_issued_frame > token.sequence;
                 publish_layouts(
@@ -760,7 +770,7 @@ impl ViewSession {
                 reason: StaleFrameReason::GraphRevision,
             });
         }
-        if pending.transform_revision != state.transform_revision {
+        if pending.viewport_revision != state.viewport_revision {
             return Err(FeedbackSubmissionError::StaleFrame {
                 sequence: token.sequence,
                 reason: StaleFrameReason::Transform,
@@ -836,24 +846,27 @@ impl ViewSession {
                 .collect::<BTreeMap<_, _>>();
             let route_edges = facts
                 .values()
-                .flat_map(|(_, incident_edges)| incident_edges.iter().copied())
+                .flat_map(|facts| facts.incident_edges.iter().copied())
                 .collect::<BTreeSet<_>>();
             let policy = state.policy;
-            let selected_edges = state.selected_edge_membership.clone();
-            state
-                .derived
+            let ViewState {
+                derived,
+                selected_edge_membership,
+                ..
+            } = &mut *state;
+            derived
                 .mark_all_stale(
                     &snapshot,
                     &ports_by_node,
                     &route_edges,
                     policy,
-                    &selected_edges,
+                    selected_edge_membership,
                 )
                 .map(|layout_revision| (layout_revision, nodes.iter().copied().collect::<Vec<_>>()))
         };
-        if let Some((layout_revision, nodes)) = publication {
-            self.publish_layout_event(layout_revision, nodes);
-        }
+        let callback_panic = publication
+            .and_then(|(layout_revision, nodes)| self.publish_layout_event(layout_revision, nodes));
+        resume(callback_panic);
         Ok(true)
     }
 
@@ -863,7 +876,7 @@ impl ViewSession {
     ) -> Result<bool, ViewSessionError> {
         let runtime = self.runtime()?;
         let snapshot = runtime.snapshot()?;
-        let Some(incarnation) = runtime.node_incarnation(instance.node())? else {
+        let Some(lifetime) = runtime.node_lifetime_key(instance.node())? else {
             return Err(ViewSessionError::NodeUnavailable {
                 node: instance.node(),
             });
@@ -878,7 +891,7 @@ impl ViewSession {
                 .map_err(|_| ViewSessionError::Busy)?;
             ensure_open(state.status)?;
             if instance.view() != state.id
-                || incarnation != instance.incarnation()
+                || lifetime != instance.lifetime()
                 || !state
                     .derived
                     .renderer_matches(instance.node(), instance.renderer())
@@ -893,19 +906,22 @@ impl ViewSession {
                 .flatten();
             let route_edges = facts
                 .get(&instance.node())
-                .map(|(_, incident_edges)| incident_edges.clone())
+                .map(|facts| facts.incident_edges.clone())
                 .unwrap_or_default();
             let policy = state.policy;
-            let selected_edges = state.selected_edge_membership.clone();
-            state
-                .derived
+            let ViewState {
+                derived,
+                selected_edge_membership,
+                ..
+            } = &mut *state;
+            derived
                 .mark_one_stale(
                     &snapshot,
                     instance.node(),
                     ports,
                     &route_edges,
                     policy,
-                    &selected_edges,
+                    selected_edge_membership,
                 )
                 .map(|layout_revision| (layout_revision, vec![instance.node()]))
         };
@@ -949,7 +965,7 @@ mod candidate_budget_tests {
         ];
         let ranks = BTreeMap::from([(back, 0), (front, 1), (selected, 2)]);
 
-        let (retained, overflow) = take_candidate_budget(candidates.into(), 2, &ranks);
+        let (retained, overflow) = take_candidate_budget(candidates.into(), 2, &ranks, None);
 
         assert_eq!(overflow, 1);
         assert_eq!(
