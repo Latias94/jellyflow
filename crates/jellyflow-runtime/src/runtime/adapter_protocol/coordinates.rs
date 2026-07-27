@@ -7,7 +7,7 @@ use crate::runtime::geometry::HandlePosition;
 use crate::runtime::viewport::ViewportTransform;
 
 /// A point in framework view-space logical pixels.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct ViewPoint {
     pub x: f32,
     pub y: f32,
@@ -23,14 +23,7 @@ impl ViewPoint {
     }
 
     pub fn to_canvas_point(self, transform: ViewportTransform) -> Option<CanvasPoint> {
-        if !self.is_finite() || !transform.is_valid() {
-            return None;
-        }
-        let point = transform.canvas_point_at_screen(CanvasPoint {
-            x: self.x,
-            y: self.y,
-        });
-        point.is_finite().then_some(point)
+        transform.canvas_point_at_screen(self)
     }
 }
 
@@ -63,7 +56,7 @@ impl ViewDelta {
 }
 
 /// A size in framework view-space logical pixels.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct ViewSize {
     pub width: f32,
     pub height: f32,

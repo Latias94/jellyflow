@@ -174,7 +174,7 @@ fn lod_frame(
             let anchor = transform
                 .screen_point_for_canvas(geometry.route_anchor())
                 .ok_or("input_lod_port_projection_failed")?;
-            Ok((*port, ViewPoint::new(anchor.x, anchor.y)))
+            Ok((*port, anchor))
         })
         .collect::<Result<BTreeMap<_, _>, &'static str>>()?;
     Ok(LodFrameEvidence {

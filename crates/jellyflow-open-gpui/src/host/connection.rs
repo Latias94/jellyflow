@@ -7,8 +7,8 @@ use jellyflow_runtime::geometry::{
 };
 use jellyflow_runtime::schema::NodeCatalogInstantiationError;
 use jellyflow_runtime::{
-    geometry::ViewPoint, graph::CreateFromWireCandidates, graph::EdgeEndpoint,
-    graph::EdgeInstanceKey, graph::PortConnectionDragIntent, interaction::CanvasInteractionError,
+    graph::CreateFromWireCandidates, graph::EdgeEndpoint, graph::EdgeInstanceKey,
+    graph::PortConnectionDragIntent, interaction::CanvasInteractionError,
     interaction::CanvasInteractionPhase, interaction::CanvasInteractionPresentation,
     interaction::ConnectionGestureBinding, interaction::ConnectionInteractionStart,
     interaction::ConnectionProbeValidity, interaction::ConnectionSearchRequest,
@@ -759,9 +759,7 @@ impl OpenGpuiSceneHost {
     ) -> Option<ViewportPointerSample> {
         let transform = self.view.viewport_transform().ok()?;
         let view = transform.screen_point_for_canvas(canvas)?;
-        self.view
-            .viewport_pointer_sample(ViewPoint::new(view.x, view.y))
-            .ok()
+        self.view.viewport_pointer_sample(view).ok()
     }
 
     pub(super) fn cancel_connection_for_drag(

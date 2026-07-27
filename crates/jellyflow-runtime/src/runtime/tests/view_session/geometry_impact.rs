@@ -41,7 +41,7 @@ fn layout_for(frame: &AdapterFrame, node: NodeId) -> NodeLayout {
         .screen_point_for_canvas(canvas.origin)
         .expect("fixture bounds are finite");
     let bounds = ViewRect::new(
-        ViewPoint::new(origin.x, origin.y),
+        origin,
         ViewSize::new(
             canvas.size.width * transform.zoom,
             canvas.size.height * transform.zoom,

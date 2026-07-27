@@ -1542,7 +1542,7 @@ fn authoritative_node_origin(
         })
         .unwrap_or(frame_bounds);
     let origin = transform.screen_point_for_canvas(canvas_bounds.origin)?;
-    Some(ViewPoint::new(origin.x, origin.y))
+    Some(origin)
 }
 
 fn align_measured_rect(
@@ -1632,7 +1632,7 @@ pub(crate) fn projected_view_rect(
 ) -> Option<ViewRect> {
     let origin = transform.screen_point_for_canvas(bounds.origin)?;
     let projected = ViewRect::new(
-        ViewPoint::new(origin.x, origin.y),
+        origin,
         ViewSize::new(
             bounds.size.width * transform.zoom,
             bounds.size.height * transform.zoom,

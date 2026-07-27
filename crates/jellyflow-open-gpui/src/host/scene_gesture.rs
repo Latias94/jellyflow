@@ -6,10 +6,11 @@ use jellyflow_runtime::viewport::{
     ViewportPanRequest, ViewportTransform, ViewportZoomRequest, pan_viewport, zoom_viewport,
 };
 use jellyflow_runtime::{
-    geometry::ViewDelta, interaction::CanvasInteractionError, interaction::CanvasInteractionUpdate,
-    interaction::CanvasPressFallback, interaction::CanvasPressTarget,
-    interaction::InteractionOwner, interaction::NodeDragStart, interaction::SelectionMode,
-    view::GeometrySnapshot, view::NodeInstanceKey, viewport::ViewportPointerSample,
+    geometry::ViewDelta, geometry::ViewPoint, interaction::CanvasInteractionError,
+    interaction::CanvasInteractionUpdate, interaction::CanvasPressFallback,
+    interaction::CanvasPressTarget, interaction::InteractionOwner, interaction::NodeDragStart,
+    interaction::SelectionMode, view::GeometrySnapshot, view::NodeInstanceKey,
+    viewport::ViewportPointerSample,
 };
 use open_gpui::{
     Context, MouseDownEvent, MouseMoveEvent, PinchEvent, Pixels, ScrollWheelEvent, Window, px,
@@ -81,7 +82,9 @@ impl OpenGpuiSceneHost {
         let Some(sample) = self.viewport_pointer_sample(event.position) else {
             return false;
         };
-        let position = sample_canvas_point(sample);
+        let Some(position) = sample_canvas_point(sample) else {
+            return false;
+        };
         if self.scene_point_hits_node_or_port(position) != Some(false) {
             return false;
         }
@@ -185,7 +188,9 @@ impl OpenGpuiSceneHost {
         for (instance, mounted) in self.mounts.active_in_order() {
             let bounds =
                 mounted_node_interaction_bounds(instance, mounted, geometry.as_ref(), transform);
-            let point = sample_canvas_point(sample);
+            let Some(point) = sample_canvas_point(sample) else {
+                return;
+            };
             if canvas_rect_contains(bounds, point) {
                 hovered_node = Some(instance.node());
             }
@@ -582,9 +587,9 @@ impl OpenGpuiSceneHost {
     pub(super) fn scene_screen_position(
         &self,
         position: open_gpui::Point<Pixels>,
-    ) -> Option<CanvasPoint> {
+    ) -> Option<ViewPoint> {
         let origin = self.scene_origin?;
-        let screen = CanvasPoint {
+        let screen = ViewPoint {
             x: (position.x - origin.x).as_f32(),
             y: (position.y - origin.y).as_f32(),
         };
@@ -592,12 +597,9 @@ impl OpenGpuiSceneHost {
     }
 }
 
-fn sample_canvas_point(sample: ViewportPointerSample) -> CanvasPoint {
+fn sample_canvas_point(sample: ViewportPointerSample) -> Option<CanvasPoint> {
     let raw = sample.raw();
-    sample
-        .snapshot()
-        .transform()
-        .canvas_point_at_screen(CanvasPoint { x: raw.x, y: raw.y })
+    sample.snapshot().transform().canvas_point_at_screen(raw)
 }
 
 fn canvas_rect_contains(bounds: CanvasRect, point: CanvasPoint) -> bool {

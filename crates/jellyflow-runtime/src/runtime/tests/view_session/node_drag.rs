@@ -430,7 +430,7 @@ fn reveal_node_pans_the_owned_view_without_changing_zoom() {
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     publish_graph_layouts(&view);
     view.apply_viewport_intent(ViewportIntent::zoom(ViewportZoomRequest::new(
-        CanvasPoint::default(),
+        ViewPoint::default(),
         2.0,
         0.25,
         4.0,

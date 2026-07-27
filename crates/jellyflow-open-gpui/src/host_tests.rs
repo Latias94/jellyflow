@@ -142,7 +142,8 @@ fn pointer_sample_canvas(
     sample
         .snapshot()
         .transform()
-        .canvas_point_at_screen(CanvasPoint { x: raw.x, y: raw.y })
+        .canvas_point_at_screen(raw)
+        .expect("valid pointer sample has a canvas projection")
 }
 
 fn assert_connect_search_binding(host: &OpenGpuiSceneHost, source: PortId) {

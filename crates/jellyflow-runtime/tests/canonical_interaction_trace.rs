@@ -1512,10 +1512,8 @@ fn pointer_sample(view: &ViewSession, point: ViewPoint) -> ViewportPointerSample
 fn canvas_anchor(view: &ViewSession, point: ViewPoint) -> CanvasPoint {
     view.viewport_transform()
         .unwrap()
-        .canvas_point_at_screen(CanvasPoint {
-            x: point.x,
-            y: point.y,
-        })
+        .canvas_point_at_screen(point)
+        .expect("finite canonical anchor")
 }
 
 fn node_lifetime(view: &ViewSession, node: NodeId) -> jellyflow_runtime::graph::NodeLifetimeKey {

@@ -1419,9 +1419,9 @@ impl OpenGpuiSceneHost {
                 bounds.origin.x += delta.x;
                 bounds.origin.y += delta.y;
             }
-            let origin = transform
-                .screen_point_for_canvas(bounds.origin)
-                .unwrap_or(bounds.origin);
+            let Some(origin) = transform.screen_point_for_canvas(bounds.origin) else {
+                continue;
+            };
             let screen_size = mounted.semantic_zoom.screen_size(
                 transform.zoom,
                 presentation,
@@ -3299,12 +3299,12 @@ fn project_scene_point(
 }
 
 fn reconnect_grip_center(
-    anchor: CanvasPoint,
+    anchor: ViewPoint,
     outward: HandlePosition,
     offset_in_view: f32,
-) -> CanvasPoint {
+) -> ViewPoint {
     let direction = outward_tangent(outward);
-    CanvasPoint {
+    ViewPoint {
         x: anchor.x + direction.x * offset_in_view,
         y: anchor.y + direction.y * offset_in_view,
     }
@@ -3385,24 +3385,24 @@ mod navigation_render_tests {
 
     #[test]
     fn reconnect_grip_moves_outward_for_every_handle_side() {
-        let anchor = CanvasPoint { x: 40.0, y: 60.0 };
+        let anchor = ViewPoint { x: 40.0, y: 60.0 };
         let offset = OPEN_GPUI_RECONNECT_GRIP_OFFSET_IN_VIEW;
 
         assert_eq!(
             reconnect_grip_center(anchor, HandlePosition::Top, offset),
-            CanvasPoint { x: 40.0, y: 48.0 }
+            ViewPoint { x: 40.0, y: 48.0 }
         );
         assert_eq!(
             reconnect_grip_center(anchor, HandlePosition::Right, offset),
-            CanvasPoint { x: 52.0, y: 60.0 }
+            ViewPoint { x: 52.0, y: 60.0 }
         );
         assert_eq!(
             reconnect_grip_center(anchor, HandlePosition::Bottom, offset),
-            CanvasPoint { x: 40.0, y: 72.0 }
+            ViewPoint { x: 40.0, y: 72.0 }
         );
         assert_eq!(
             reconnect_grip_center(anchor, HandlePosition::Left, offset),
-            CanvasPoint { x: 28.0, y: 60.0 }
+            ViewPoint { x: 28.0, y: 60.0 }
         );
     }
 

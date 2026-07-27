@@ -51,7 +51,6 @@ impl RealWindowSmokeProbe {
                     .ok_or("input_connection_target_anchor_missing")?;
                 let target = transform
                     .screen_point_for_canvas(target_anchor)
-                    .map(|point| ViewPoint::new(point.x, point.y))
                     .ok_or("input_connection_target_projection_failed")?;
                 let edge = auto_pan_pointer_toward(target, surface_size)
                     .ok_or("input_autopan_plan_invalid")?;
@@ -109,8 +108,7 @@ impl RealWindowSmokeProbe {
                     .to_anchor
                     .ok_or("input_connection_target_anchor_missing")?;
                 let target = current
-                    .screen_point_for_canvas(target_anchor)
-                    .map(|point| ViewPoint::new(point.x, point.y));
+                    .screen_point_for_canvas(target_anchor);
                 let settled_target =
                     target.and_then(|point| settled_connection_target_point(point, surface_size));
                 let _ = interaction;

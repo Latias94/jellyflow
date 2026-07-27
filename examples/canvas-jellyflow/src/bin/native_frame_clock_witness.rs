@@ -559,7 +559,6 @@ fn drag_plan(
     };
     let press = transform
         .screen_point_for_canvas(header_anchor)
-        .map(|point| ViewPoint::new(point.x, point.y))
         .ok_or("failed to project the node drag handle")?;
     let activation = ViewPoint::new(press.x + 24.0, press.y + 16.0);
     let edge = ViewPoint::new(EDGE_INSET, activation.y.clamp(48.0, surface.height - 48.0));

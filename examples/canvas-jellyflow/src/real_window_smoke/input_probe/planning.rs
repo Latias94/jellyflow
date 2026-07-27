@@ -146,11 +146,13 @@ pub(super) fn set_zoom_preserving_surface_center(
     let current = view
         .viewport_transform()
         .map_err(|_| "input_viewport_read_failed")?;
-    let center = CanvasPoint {
+    let center = ViewPoint {
         x: surface_size.width * 0.5,
         y: surface_size.height * 0.5,
     };
-    let canvas_center = current.canvas_point_at_screen(center);
+    let canvas_center = current
+        .canvas_point_at_screen(center)
+        .ok_or("input_viewport_read_failed")?;
     let pan = CanvasPoint {
         x: center.x / zoom - canvas_center.x,
         y: center.y / zoom - canvas_center.y,
@@ -346,7 +348,7 @@ pub(super) fn port_owner_view_center(
         .map_err(|_| "input_viewport_read_failed")?;
     Ok(transform
         .screen_point_for_canvas(anchor)
-        .map(|point| ViewPoint::new(point.x, point.y)))
+    )
 }
 
 fn port_owner_canvas_center(
@@ -424,10 +426,11 @@ fn edge_owner_reveal_anchor(
             let transform = view
                 .viewport_transform()
                 .map_err(|_| "input_viewport_read_failed")?;
-            let viewport_center = transform.canvas_point_at_screen(CanvasPoint {
+            let viewport_center = transform.canvas_point_at_screen(ViewPoint {
                 x: surface_size.width * 0.5,
                 y: surface_size.height * 0.5,
-            });
+            })
+            .ok_or("input_viewport_read_failed")?;
             let distance_squared = |point: CanvasPoint| {
                 (point.x - viewport_center.x).powi(2) + (point.y - viewport_center.y).powi(2)
             };
@@ -459,7 +462,6 @@ fn reveal_edge_candidate_with_owner(
         .map_err(|_| "input_viewport_read_failed")?;
     let current = transform
         .screen_point_for_canvas(canvas_point)
-        .map(|point| ViewPoint::new(point.x, point.y))
         .ok_or("input_edge_projection_failed")?;
     if input_point_is_safe(current, surface_size) {
         return Ok(EdgeCandidateViewport::Ready(current));
@@ -628,7 +630,6 @@ pub(super) fn visible_unique_edge_point(
     for (canvas_point, _) in &candidates {
         let Some(point) = transform
             .screen_point_for_canvas(*canvas_point)
-            .map(|point| ViewPoint::new(point.x, point.y))
         else {
             continue;
         };
@@ -667,7 +668,7 @@ pub(super) fn visible_reconnect_grip(
         .map_err(|_| "input_viewport_read_failed")?;
     Ok(transform
         .screen_point_for_canvas(edge_canvas)
-        .map(|point| ViewPoint::new(point.x, point.y)))
+    )
 }
 
 fn reconnect_grip_canvas_point(
@@ -978,7 +979,6 @@ pub(super) fn blank_surface_point(
         .map(|port| {
             transform
                 .screen_point_for_canvas(port.route_anchor())
-                .map(|point| ViewPoint::new(point.x, point.y))
         })
         .collect::<Option<Vec<_>>>()
         .ok_or("input_blank_surface_port_projection_failed")?;
