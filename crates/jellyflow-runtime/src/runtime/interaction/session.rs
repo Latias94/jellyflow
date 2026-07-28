@@ -1381,7 +1381,7 @@ pub struct CanvasInteractionSession {
     hovered_edge: Option<EdgeInstanceKey>,
     terminal: Option<InteractionTerminalReason>,
     submission_binding: Option<SubmissionBinding>,
-    closed: bool,
+    lifecycle: InteractionSessionLifecycle,
     #[cfg(test)]
     test_authority_bypass: bool,
     #[cfg(test)]
@@ -1400,6 +1400,14 @@ struct SelectionCommitFailure {
     retryable: bool,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum InteractionSessionLifecycle {
+    #[default]
+    Open,
+    ClosePending,
+    Closed,
+}
+
 enum SubmissionBindingPhase {
     Pending,
     NoCommand,
@@ -1414,7 +1422,7 @@ impl std::fmt::Debug for CanvasInteractionSession {
             .field("config", &self.config)
             .field("state", &self.state)
             .field("terminal", &self.terminal)
-            .field("closed", &self.closed)
+            .field("lifecycle", &self.lifecycle)
             .finish()
     }
 }
@@ -1660,7 +1668,7 @@ impl CanvasInteractionSession {
             hovered_edge: None,
             terminal: None,
             submission_binding: None,
-            closed: false,
+            lifecycle: InteractionSessionLifecycle::Open,
             #[cfg(test)]
             test_authority_bypass: false,
             #[cfg(test)]
@@ -1728,7 +1736,10 @@ impl CanvasInteractionSession {
     /// Adapters use this as the scheduling authority so duplicate callbacks and stale redraws cannot
     /// keep an idle, release-pending, or terminal interaction alive.
     pub fn tick_demand(&self) -> InteractionTickDemand {
-        if self.closed || self.terminal.is_some() || self.query_work.cleanup_pending() {
+        if self.lifecycle != InteractionSessionLifecycle::Open
+            || self.terminal.is_some()
+            || self.query_work.cleanup_pending()
+        {
             InteractionTickDemand::None
         } else if state_needs_tick(&self.state) {
             InteractionTickDemand::WhileActive
@@ -1758,11 +1769,13 @@ impl CanvasInteractionSession {
 
     pub fn presentation(&self) -> CanvasInteractionPresentation {
         let mut presentation = match &self.state {
-            InteractionState::Idle => CanvasInteractionPresentation::new(if self.closed {
-                CanvasInteractionPhase::Closed
-            } else {
-                CanvasInteractionPhase::Idle
-            }),
+            InteractionState::Idle => CanvasInteractionPresentation::new(
+                if matches!(self.lifecycle, InteractionSessionLifecycle::Closed) {
+                    CanvasInteractionPhase::Closed
+                } else {
+                    CanvasInteractionPhase::Idle
+                },
+            ),
             InteractionState::Armed(_) => {
                 CanvasInteractionPresentation::new(CanvasInteractionPhase::Armed)
             }
@@ -2792,7 +2805,7 @@ impl CanvasInteractionSession {
 
         if terminal_error.is_none() && page_budget > 0 && self.query_work.cleanup_pending() {
             let (cleanup_update, cleanup_error) = self.terminate_query_failure();
-            update.merge_internal(cleanup_update);
+            update.merge_internal(self.finish_pending_close(cleanup_update));
             terminal_error = cleanup_error;
             let update = self.finalize_update(update);
             let needs_tick = update.query_work_pending();
@@ -2819,7 +2832,7 @@ impl CanvasInteractionSession {
                 Err(error) => {
                     self.query_work.clear();
                     let (cleanup_update, _) = self.terminate_query_failure();
-                    update.merge_internal(cleanup_update);
+                    update.merge_internal(self.finish_pending_close(cleanup_update));
                     if failed_edge_pick {
                         self.clear_pending_edge_pick_work();
                         self.hovered_edge = None;
@@ -4182,7 +4195,7 @@ impl CanvasInteractionSession {
         submission: InteractionGraphSubmission,
     ) -> Result<Option<crate::runtime::commands::GraphCommand>, InteractionGraphSubmissionBindError>
     {
-        if self.closed {
+        if self.lifecycle != InteractionSessionLifecycle::Open {
             return Err(InteractionGraphSubmissionBindError::Closed);
         }
         let ticket = submission.ticket;
@@ -4796,6 +4809,7 @@ impl CanvasInteractionSession {
 
     pub fn cancel(&mut self) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
         self.cancel_with_selection_failure()
+            .map(|update| self.finish_pending_close(update))
             .map_err(|failure| failure.error)
     }
 
@@ -4920,19 +4934,51 @@ impl CanvasInteractionSession {
         Ok(self.finalize_update(update.with_damage(damage)))
     }
 
+    /// Requests terminal closure after restoring any view-owned selection baseline.
+    ///
+    /// A transient view borrow defers restoration and reports query work pending. Granting the next
+    /// query advancement opportunity completes both cleanup and closure without replaying input.
     pub fn close(&mut self) -> CanvasInteractionUpdate {
-        if self.closed {
+        if self.lifecycle == InteractionSessionLifecycle::Closed {
             return self.finalize_update(CanvasInteractionUpdate::default());
         }
+        self.lifecycle = InteractionSessionLifecycle::ClosePending;
+        if self.query_work.cleanup_pending() {
+            return self.finalize_update(CanvasInteractionUpdate::default());
+        }
+        match self.cancel_with_selection_failure() {
+            Ok(update) => self.finish_close(update),
+            Err(failure) if failure.retryable => {
+                self.query_work.require_cleanup();
+                self.finalize_update(CanvasInteractionUpdate::default())
+            }
+            Err(_) => {
+                let update = self.force_terminate_query_failure();
+                self.finish_close(update)
+            }
+        }
+    }
+
+    fn finish_pending_close(&mut self, update: CanvasInteractionUpdate) -> CanvasInteractionUpdate {
+        if self.lifecycle == InteractionSessionLifecycle::ClosePending
+            && !self.query_work.cleanup_pending()
+        {
+            self.finish_close(update)
+        } else {
+            update
+        }
+    }
+
+    fn finish_close(&mut self, update: CanvasInteractionUpdate) -> CanvasInteractionUpdate {
         let damage = damage_for_state(&self.state);
         self.clear_pending_edge_pick_work();
         self.hovered_edge = None;
         self.query_work.clear();
         self.submission_binding = None;
         self.state = InteractionState::Idle;
-        self.closed = true;
+        self.lifecycle = InteractionSessionLifecycle::Closed;
         self.terminal = Some(InteractionTerminalReason::ViewClosed);
-        self.finalize_update(CanvasInteractionUpdate::default().with_damage(damage))
+        self.finalize_update(update.with_damage(damage))
     }
 
     fn ensure_available(&self) -> Result<(), CanvasInteractionError> {
@@ -4940,7 +4986,7 @@ impl CanvasInteractionSession {
     }
 
     fn ensure_session_open(&self) -> Result<(), CanvasInteractionError> {
-        if self.closed {
+        if self.lifecycle == InteractionSessionLifecycle::Closed {
             Err(CanvasInteractionError::Closed)
         } else {
             Ok(())

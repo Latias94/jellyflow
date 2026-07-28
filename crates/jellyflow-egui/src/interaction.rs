@@ -94,9 +94,7 @@ impl EguiInteractionOutput {
             self.terminal_query_error = other.terminal_query_error;
         }
         merge_damage(&mut self.damage, other.damage);
-        if other.tick_demand == InteractionTickDemand::WhileActive {
-            self.tick_demand = InteractionTickDemand::WhileActive;
-        }
+        self.tick_demand = other.tick_demand;
         self.released_native_ownership |= other.released_native_ownership;
         self.renderer_work_pending = other.renderer_work_pending;
     }
@@ -635,7 +633,8 @@ impl EguiCanvasInteraction {
 
     pub fn close(&mut self, ctx: &Context) -> EguiInteractionOutput {
         let mut output = self.drain_frame_output();
-        collect_terminal_update(self.session.close(), &mut output);
+        let update = self.session.close();
+        self.collect_update(update, &mut output);
         self.release_native_ownership(ctx, &mut output);
         self.clear_tracked_response();
         self.finish_output(ctx, output)
@@ -777,6 +776,7 @@ impl EguiCanvasInteraction {
         ctx: &Context,
         mut output: EguiInteractionOutput,
     ) -> EguiInteractionOutput {
+        output.tick_demand = self.session.tick_demand();
         output.renderer_work_pending = self.session.query_work_pending();
         if output.has_work() {
             ctx.request_repaint();
@@ -842,4 +842,24 @@ fn merge_damage(target: &mut InteractionDamage, other: InteractionDamage) {
     target.edges |= other.edges;
     target.viewport |= other.viewport;
     target.selection |= other.selection;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn output_merge_uses_latest_tick_demand() {
+        let mut accumulated = EguiInteractionOutput {
+            tick_demand: InteractionTickDemand::WhileActive,
+            renderer_work_pending: true,
+            ..EguiInteractionOutput::default()
+        };
+        let terminal = EguiInteractionOutput::default();
+
+        accumulated.merge(terminal);
+
+        assert_eq!(accumulated.tick_demand(), InteractionTickDemand::None);
+        assert!(!accumulated.renderer_work_pending());
+    }
 }

@@ -10,8 +10,9 @@ use jellyflow_runtime::adapter::conformance::{
     ConformancePhase, ConformanceScenario, ConformanceScenarioId, ConformanceSelection,
     ConformanceSettlement, ConformanceTarget, ConformanceTerminal, ConformanceTicket,
     ConformanceViewStatus, NormalizedObservation, canonical_scenarios, compare_observations,
+    new_connection_scenario,
 };
-use open_gpui::{InputEvent, MouseUpEvent};
+use open_gpui::{InputEvent, MouseMoveEvent, MouseUpEvent};
 
 use super::super::scene_render::open_gpui_reconnect_hit_selector;
 use crate::command_journal::{OpenGpuiCommandOrigin, OpenGpuiCommandPrefixPermit};
@@ -149,6 +150,8 @@ struct CanonicalDriver {
     previous_capture: Option<HitboxId>,
     baseline_source_position: CanvasPoint,
     baseline_source_bounds: CanvasRect,
+    query_schedule: CanonicalQuerySchedule,
+    max_native_query_frames: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -167,9 +170,31 @@ struct EffectEvidence {
     terminal: Option<InteractionTerminalReason>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CanonicalQuerySchedule {
+    Default,
+    OnePagePerNativeFrame,
+}
+
+const PAGED_QUERY_NATIVE_FRAME_LIMIT: usize = 32;
+
+impl CanonicalQuerySchedule {
+    const fn overlaps_valid_targets(self) -> bool {
+        matches!(self, Self::OnePagePerNativeFrame)
+    }
+}
+
 impl CanonicalDriver {
     fn mount<'a>(
         scenario: &ConformanceScenario,
+        cx: &'a mut open_gpui::TestAppContext,
+    ) -> (Self, &'a mut open_gpui::VisualTestContext) {
+        Self::mount_with_query_schedule(scenario, CanonicalQuerySchedule::Default, cx)
+    }
+
+    fn mount_with_query_schedule<'a>(
+        scenario: &ConformanceScenario,
+        query_schedule: CanonicalQuerySchedule,
         cx: &'a mut open_gpui::TestAppContext,
     ) -> (Self, &'a mut open_gpui::VisualTestContext) {
         let with_edge = matches!(
@@ -181,7 +206,10 @@ impl CanonicalDriver {
                 | ConformanceScenarioId::EdgePick
         );
         let runtime = GraphRuntime::builder(catalog())
-            .build(canonical_graph(with_edge))
+            .build(canonical_graph(
+                with_edge,
+                query_schedule.overlaps_valid_targets(),
+            ))
             .expect("valid canonical graph");
         let runtime = match scenario_settlement(scenario.id) {
             Some(ConformanceSettlement::Rejected) => {
@@ -239,6 +267,31 @@ impl CanonicalDriver {
         }
         draw(cx);
         draw(cx);
+        if query_schedule == CanonicalQuerySchedule::OnePagePerNativeFrame {
+            cx.update_entity(&host, |host, _| {
+                let session = jellyflow_runtime::interaction::CanvasInteractionSession::attach(
+                    &host.view,
+                    jellyflow_runtime::interaction::CanvasInteractionConfig {
+                        query_entry_budget: 1,
+                        ..jellyflow_runtime::interaction::CanvasInteractionConfig::default()
+                    },
+                )
+                .expect("attach paged canonical interaction session");
+                host.interaction_owner.test_replace_session(session);
+            });
+            cx.read_entity(&host, |host, _| {
+                let geometry = host.view.geometry_snapshot().expect("paged probe geometry");
+                let target = geometry
+                    .port(target_port())
+                    .and_then(|port| port.hit_bounds())
+                    .expect("paged target hit bounds");
+                let alternate = geometry
+                    .port(alternate_target_port())
+                    .and_then(|port| port.hit_bounds())
+                    .expect("paged alternate target hit bounds");
+                assert_eq!(target, alternate, "paged probe targets must overlap");
+            });
+        }
         let baseline_source_position = runtime
             .snapshot()
             .expect("canonical Open GPUI source baseline")
@@ -270,6 +323,8 @@ impl CanonicalDriver {
                 previous_capture: None,
                 baseline_source_position,
                 baseline_source_bounds,
+                query_schedule,
+                max_native_query_frames: 0,
             },
             cx,
         )
@@ -289,12 +344,12 @@ impl CanonicalDriver {
                 } else {
                     point(px(280.0), px(430.0))
                 };
-                cx.simulate_mouse_move(position, Some(MouseButton::Left), Default::default());
+                self.move_pointer(position, cx);
                 self.pointer = Some(position);
             }
             ConformanceAction::MoveToCandidate(candidate) => {
                 let position = self.candidate_position(candidate, cx);
-                cx.simulate_mouse_move(position, Some(MouseButton::Left), Default::default());
+                self.move_pointer(position, cx);
                 self.pointer = Some(position);
             }
             ConformanceAction::Release => self.release(cx),
@@ -343,8 +398,41 @@ impl CanonicalDriver {
                 cx.run_until_parked();
             }
         }
+        let native_query_frames = self.drain_native_query_frames(cx);
+        self.max_native_query_frames = self.max_native_query_frames.max(native_query_frames);
         let after = self.effect_evidence(cx);
         self.last_effect = effect_from_transition(before, after);
+    }
+
+    fn drain_native_query_frames(&self, cx: &mut open_gpui::VisualTestContext) -> usize {
+        if self.query_schedule == CanonicalQuerySchedule::Default {
+            return 0;
+        }
+
+        let mut frames = 0;
+        while cx.read_entity(&self.host, |host, _| {
+            host.interaction_owner.test_query_work_pending()
+        }) {
+            assert!(
+                frames < PAGED_QUERY_NATIVE_FRAME_LIMIT,
+                "paged canonical query did not settle within its native-frame bound",
+            );
+            draw_once(cx);
+            frames += 1;
+        }
+        frames
+    }
+
+    fn move_pointer(
+        &self,
+        position: open_gpui::Point<open_gpui::Pixels>,
+        cx: &mut open_gpui::VisualTestContext,
+    ) {
+        if self.query_schedule == CanonicalQuerySchedule::OnePagePerNativeFrame {
+            dispatch_mouse_move(position, cx);
+        } else {
+            cx.simulate_mouse_move(position, Some(MouseButton::Left), Default::default());
+        }
     }
 
     fn press(&mut self, target: ConformanceTarget, cx: &mut open_gpui::VisualTestContext) {
@@ -1156,8 +1244,37 @@ fn dispatch_mouse_up(
     });
 }
 
+fn dispatch_mouse_move(
+    position: open_gpui::Point<open_gpui::Pixels>,
+    cx: &mut open_gpui::VisualTestContext,
+) {
+    cx.update(|window, cx| {
+        window.dispatch_event(
+            MouseMoveEvent {
+                position,
+                modifiers: Default::default(),
+                pressed_button: Some(MouseButton::Left),
+            }
+            .to_platform_input(),
+            cx,
+        );
+    });
+}
+
 fn run_canonical_scenario(scenario: &ConformanceScenario, cx: &mut open_gpui::TestAppContext) {
-    let (mut driver, cx) = CanonicalDriver::mount(scenario, cx);
+    run_canonical_scenario_with_query_schedule(scenario, CanonicalQuerySchedule::Default, cx);
+}
+
+fn run_canonical_scenario_with_query_schedule(
+    scenario: &ConformanceScenario,
+    query_schedule: CanonicalQuerySchedule,
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let (mut driver, cx) = if query_schedule == CanonicalQuerySchedule::Default {
+        CanonicalDriver::mount(scenario, cx)
+    } else {
+        CanonicalDriver::mount_with_query_schedule(scenario, query_schedule, cx)
+    };
     let mut observations = Vec::with_capacity(scenario.steps.len());
     for step in &scenario.steps {
         driver.perform(step.action, cx);
@@ -1165,10 +1282,26 @@ fn run_canonical_scenario(scenario: &ConformanceScenario, cx: &mut open_gpui::Te
     }
     compare_observations(scenario, &observations)
         .unwrap_or_else(|error| panic!("Open GPUI canonical mismatch: {error}"));
-    if scenario_settlement(scenario.id) == Some(ConformanceSettlement::Applied) {
+    if query_schedule == CanonicalQuerySchedule::Default
+        && scenario_settlement(scenario.id) == Some(ConformanceSettlement::Applied)
+    {
         driver.assert_applied_mutation();
     }
+    if query_schedule == CanonicalQuerySchedule::OnePagePerNativeFrame {
+        assert!(
+            driver.max_native_query_frames >= 1,
+            "overlapping targets must require at least one continuation frame after the first page",
+        );
+        assert!(driver.max_native_query_frames < PAGED_QUERY_NATIVE_FRAME_LIMIT);
+    }
     driver.close(cx);
+}
+
+fn connection_probe_prefix_scenario() -> ConformanceScenario {
+    let mut scenario = new_connection_scenario(ConformanceSettlement::Applied);
+    scenario.display_name = "new-connection-probe-prefix";
+    scenario.steps.truncate(4);
+    scenario
 }
 
 #[open_gpui::test]
@@ -1180,8 +1313,24 @@ fn canonical_scenarios_run_through_real_open_gpui_events_and_frames(
     }
 }
 
-fn canonical_graph(with_edge: bool) -> jellyflow_core::Graph {
+#[open_gpui::test]
+fn one_page_open_gpui_frames_match_the_canonical_connection_probe_prefix(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    run_canonical_scenario_with_query_schedule(
+        &connection_probe_prefix_scenario(),
+        CanonicalQuerySchedule::OnePagePerNativeFrame,
+        cx,
+    );
+}
+
+fn canonical_graph(with_edge: bool, overlap_valid_targets: bool) -> jellyflow_core::Graph {
     let mut graph = GraphBuilder::new(GraphId::from_u128(0xCA11));
+    let alternate_target_position = if overlap_valid_targets {
+        CanvasPoint { x: 360.0, y: 80.0 }
+    } else {
+        CanvasPoint { x: 620.0, y: 80.0 }
+    };
     for (node_id, position, port_id, key, direction) in [
         (
             source_node(),
@@ -1206,7 +1355,7 @@ fn canonical_graph(with_edge: bool) -> jellyflow_core::Graph {
         ),
         (
             alternate_target_node(),
-            CanvasPoint { x: 620.0, y: 80.0 },
+            alternate_target_position,
             alternate_target_port(),
             "alternate-target",
             PortDirection::In,
@@ -1221,6 +1370,14 @@ fn canonical_graph(with_edge: bool) -> jellyflow_core::Graph {
     ] {
         graph.insert_node(node_id, node(position, port_id));
         graph.insert_port(port_id, port(node_id, key, direction));
+    }
+    if overlap_valid_targets {
+        for index in 0..6_u128 {
+            let node_id = NodeId::from_u128(1_000 + index);
+            let port_id = PortId::from_u128(2_000 + index);
+            graph.insert_node(node_id, node(CanvasPoint { x: 360.0, y: 80.0 }, port_id));
+            graph.insert_port(port_id, port(node_id, "paged-target", PortDirection::In));
+        }
     }
     if with_edge {
         graph.insert_edge(

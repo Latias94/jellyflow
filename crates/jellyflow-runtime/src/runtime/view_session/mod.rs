@@ -1352,6 +1352,13 @@ impl ViewSession {
         self.shared.state.borrow_mut().viewport_revision = ViewportRevision::exhausted_for_test();
     }
 
+    #[cfg(test)]
+    pub(crate) fn advance_generation_for_test(&self) {
+        let mut state = self.shared.state.borrow_mut();
+        assert!(matches!(state.status, ViewStatus::Open));
+        state.generation = state.generation.terminal();
+    }
+
     fn ensure_open(&self) -> Result<(), ViewSessionError> {
         let state = self
             .shared

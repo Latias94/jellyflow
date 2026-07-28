@@ -1,3 +1,6 @@
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+
 use egui::{Event, Id, Key, Modifiers, PointerButton, Pos2, Rect, Sense, Ui, Vec2};
 use egui_kittest::Harness;
 use jellyflow_core::{
@@ -7,9 +10,12 @@ use jellyflow_egui::{EguiCanvasInteraction, EguiInteractionOutput, EguiNativeFra
 use jellyflow_runtime::geometry::{ViewPoint, ViewRect, ViewSize};
 use jellyflow_runtime::graph::GraphRuntime;
 use jellyflow_runtime::interaction::{
-    CanvasInteractionConfig, CanvasInteractionPhase, CanvasPressTarget, SelectionMode,
+    CanvasInteractionConfig, CanvasInteractionError, CanvasInteractionPhase, CanvasPressTarget,
+    InteractionTickDemand, SelectionBaseline, SelectionMode,
 };
-use jellyflow_runtime::view::{FrameRequest, RendererStamp, ViewSession, ViewSessionOptions};
+use jellyflow_runtime::view::{
+    FrameRequest, RendererStamp, ViewCloseReason, ViewSession, ViewSessionEvent, ViewSessionOptions,
+};
 
 const NODE_COUNT: usize = 4;
 const PRESS: Pos2 = Pos2::new(40.0, 40.0);
@@ -17,10 +23,13 @@ const PARTIAL_DRAG: Pos2 = Pos2::new(115.0, 130.0);
 const DRAG: Pos2 = Pos2::new(200.0, 180.0);
 
 struct PagedMarqueeState {
-    _runtime: GraphRuntime,
+    _runtime: Rc<RefCell<Option<GraphRuntime>>>,
     host: EguiNativeFrameHost,
     interaction: EguiCanvasInteraction,
     nodes: Vec<NodeId>,
+    selection_baseline: SelectionBaseline,
+    scene_size: Vec2,
+    drop_runtime_on_viewport_change: Rc<Cell<bool>>,
     response_visible: bool,
     close_host_during_frame: bool,
     query_page_budget: usize,
@@ -43,6 +52,9 @@ impl PagedMarqueeState {
             .attach_view(ViewSessionOptions::default())
             .expect("paged marquee view");
         publish_node_geometry(&view, &nodes, 0.0);
+        let selection_baseline = view
+            .selection_baseline()
+            .expect("paged marquee selection baseline");
         let host = EguiNativeFrameHost::new(view);
         let interaction = EguiCanvasInteraction::new(
             host.view(),
@@ -53,11 +65,27 @@ impl PagedMarqueeState {
             },
         )
         .expect("paged marquee interaction");
+        let runtime = Rc::new(RefCell::new(Some(runtime)));
+        let drop_runtime_on_viewport_change = Rc::new(Cell::new(false));
+        let callback_runtime = Rc::clone(&runtime);
+        let callback_enabled = Rc::clone(&drop_runtime_on_viewport_change);
+        host.view()
+            .subscribe(move |event| {
+                if callback_enabled.get()
+                    && matches!(event, ViewSessionEvent::ViewportChanged { .. })
+                {
+                    callback_runtime.borrow_mut().take();
+                }
+            })
+            .expect("subscribe runtime-drop trigger");
         Self {
             _runtime: runtime,
             host,
             interaction,
             nodes,
+            selection_baseline,
+            scene_size: Vec2::new(480.0, 320.0),
+            drop_runtime_on_viewport_change,
             response_visible: true,
             close_host_during_frame: false,
             query_page_budget: 1,
@@ -68,9 +96,10 @@ impl PagedMarqueeState {
 
 fn render_paged_marquee(ui: &mut Ui, state: &mut PagedMarqueeState) {
     let query_page_budget = state.query_page_budget;
+    let scene_rect = Rect::from_min_size(ui.max_rect().min, state.scene_size);
     state
         .interaction
-        .begin_frame_with_query_page_budget(ui.ctx(), ui.max_rect(), query_page_budget)
+        .begin_frame_with_query_page_budget(ui.ctx(), scene_rect, query_page_budget)
         .expect("begin paged marquee frame");
     if state.response_visible {
         let response = ui.interact(
@@ -84,11 +113,7 @@ fn render_paged_marquee(ui: &mut Ui, state: &mut PagedMarqueeState) {
                 &response,
                 CanvasPressTarget::Marquee {
                     selection_mode: SelectionMode::Replace,
-                    baseline: state
-                        .host
-                        .view()
-                        .selection_baseline()
-                        .expect("paged marquee selection baseline"),
+                    baseline: state.selection_baseline.clone(),
                 },
             )
             .expect("map paged marquee response");
@@ -354,6 +379,61 @@ fn stale_marquee_cursor_restarts_from_the_latest_geometry_without_partial_select
         harness.state().nodes
     );
     assert_eq!(selection_publications, 1);
+}
+
+#[test]
+fn terminal_query_error_cleans_runtime_owned_continuation_without_an_extra_page() {
+    let mut harness = Harness::builder()
+        .with_size(Vec2::new(480.0, 320.0))
+        .build_ui_state(render_paged_marquee, PagedMarqueeState::new());
+    begin_marquee_drag(&mut harness, DRAG);
+    let first_page = harness
+        .state_mut()
+        .output
+        .take()
+        .expect("first marquee page output");
+    assert_query_page_continues(&first_page);
+
+    let state = harness.state_mut();
+    state.drop_runtime_on_viewport_change.set(true);
+    state.scene_size = Vec2::new(220.0, 200.0);
+    harness.step();
+    let terminal = harness
+        .state_mut()
+        .output
+        .take()
+        .expect("terminal query output");
+    assert_eq!(terminal.attempted_query_page_count(), 1);
+    assert!(matches!(
+        terminal.terminal_query_error(),
+        Some(CanvasInteractionError::ViewUnavailable)
+    ));
+    assert!(!terminal.renderer_work_pending());
+    assert_eq!(terminal.tick_demand(), InteractionTickDemand::None);
+    assert!(terminal.released_native_ownership());
+    assert_eq!(
+        harness.state().interaction.presentation().phase(),
+        CanvasInteractionPhase::Idle
+    );
+    assert_eq!(
+        harness.state().host.view().close_reason(),
+        Some(ViewCloseReason::RuntimeDropped)
+    );
+
+    harness.step();
+    let following = harness
+        .state_mut()
+        .output
+        .take()
+        .expect("frame after terminal query cleanup");
+    assert_eq!(following.attempted_query_page_count(), 0);
+    assert!(following.terminal_query_error().is_none());
+    assert!(!following.renderer_work_pending());
+    assert_eq!(following.tick_demand(), InteractionTickDemand::None);
+    assert_eq!(
+        harness.state().interaction.presentation().phase(),
+        CanvasInteractionPhase::Closed
+    );
 }
 
 #[test]

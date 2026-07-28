@@ -18,7 +18,7 @@ use jellyflow_runtime::adapter::conformance::{
     ConformanceSettlement as TraceReceipt, ConformanceTarget as TraceTarget,
     ConformanceTerminal as TraceTerminal, ConformanceTicket as TraceTicket,
     ConformanceViewStatus as TraceViewStatus, NormalizedObservation, canonical_scenarios,
-    compare_observations,
+    compare_observations, new_connection_scenario,
 };
 use jellyflow_runtime::commands::{GraphCommand, IncidentEdgePolicy, TopologyEdit};
 use jellyflow_runtime::geometry::{HandlePosition, ViewPoint, ViewRect, ViewSize};
@@ -41,6 +41,61 @@ fn egui_native_events_replay_every_canonical_interaction_trace() {
     for trace in canonical_scenarios() {
         EguiTraceRunner::for_scenario(trace.id).replay(&trace);
     }
+}
+
+#[test]
+fn egui_many_page_grant_matches_the_canonical_connection_probe_prefix() {
+    let trace = connection_probe_prefix_trace();
+    let mut runner = EguiTraceRunner::for_paged_probe(trace.id);
+
+    runner.replay(&trace);
+
+    assert!(
+        runner.max_query_pages_attempted >= 2,
+        "the overlapping targets must require at least two runtime query pages",
+    );
+    assert!(
+        runner.max_query_pages_attempted <= PAGED_QUERY_PAGES_PER_FRAME,
+        "one egui frame must not exceed its explicit page grant",
+    );
+}
+
+const PAGED_QUERY_PAGES_PER_FRAME: usize = 32;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TraceQuerySchedule {
+    Default,
+    ManyPagesPerFrame,
+}
+
+impl TraceQuerySchedule {
+    fn interaction_config(self) -> CanvasInteractionConfig {
+        match self {
+            Self::Default => CanvasInteractionConfig::default(),
+            Self::ManyPagesPerFrame => CanvasInteractionConfig {
+                query_entry_budget: 1,
+                ..CanvasInteractionConfig::default()
+            },
+        }
+    }
+
+    const fn query_pages_per_frame(self) -> usize {
+        match self {
+            Self::Default => 1,
+            Self::ManyPagesPerFrame => PAGED_QUERY_PAGES_PER_FRAME,
+        }
+    }
+
+    const fn overlaps_valid_targets(self) -> bool {
+        matches!(self, Self::ManyPagesPerFrame)
+    }
+}
+
+fn connection_probe_prefix_trace() -> CanonicalInteractionTrace {
+    let mut trace = new_connection_scenario(TraceReceipt::Applied);
+    trace.display_name = "new-connection-probe-prefix";
+    trace.steps.truncate(4);
+    trace
 }
 
 struct RejectCanonicalCommand;
@@ -153,6 +208,8 @@ struct EguiTraceRunner {
     scenario: TraceScenarioId,
     baseline_source_position: CanvasPoint,
     baseline_source_bounds: CanvasRect,
+    query_schedule: TraceQuerySchedule,
+    max_query_pages_attempted: usize,
 }
 
 impl EguiTraceRunner {
@@ -161,15 +218,31 @@ impl EguiTraceRunner {
     }
 
     fn for_scenario(id: TraceScenarioId) -> Self {
-        Self::build(scenario_settlement(id), Some(id))
+        Self::build(
+            scenario_settlement(id),
+            Some(id),
+            TraceQuerySchedule::Default,
+        )
+    }
+
+    fn for_paged_probe(id: TraceScenarioId) -> Self {
+        Self::build(
+            scenario_settlement(id),
+            Some(id),
+            TraceQuerySchedule::ManyPagesPerFrame,
+        )
     }
 
     fn for_settlement(settlement: Option<TraceReceipt>) -> Self {
-        Self::build(settlement, None)
+        Self::build(settlement, None, TraceQuerySchedule::Default)
     }
 
-    fn build(settlement: Option<TraceReceipt>, scenario: Option<TraceScenarioId>) -> Self {
-        let state = EguiTraceState::for_settlement(settlement);
+    fn build(
+        settlement: Option<TraceReceipt>,
+        scenario: Option<TraceScenarioId>,
+        query_schedule: TraceQuerySchedule,
+    ) -> Self {
+        let state = EguiTraceState::for_settlement(settlement, query_schedule);
         if matches!(
             scenario,
             Some(
@@ -227,6 +300,8 @@ impl EguiTraceRunner {
             scenario: scenario.unwrap_or(TraceScenarioId::NewConnection(TraceReceipt::Applied)),
             baseline_source_position,
             baseline_source_bounds,
+            query_schedule,
+            max_query_pages_attempted: 0,
         }
     }
 
@@ -600,7 +675,15 @@ impl EguiTraceRunner {
             output.terminal_query_error().is_none(),
             "canonical egui queries must not terminate with an adapter-visible error"
         );
-        let attempted_query = output.attempted_query_page_count() != 0;
+        let query_pages_attempted = output.attempted_query_page_count();
+        self.max_query_pages_attempted = self.max_query_pages_attempted.max(query_pages_attempted);
+        if self.query_schedule == TraceQuerySchedule::ManyPagesPerFrame {
+            assert!(
+                !output.renderer_work_pending(),
+                "the many-page egui grant must settle each semantic sampling point",
+            );
+        }
+        let attempted_query = query_pages_attempted != 0;
         let mut effects = output.take_effects().into_iter();
         if let Some(effect) = effects.next() {
             assert!(
@@ -934,11 +1017,15 @@ struct EguiTraceState {
     response: Option<TraceResponse>,
     response_visible: bool,
     steal_capture: bool,
+    query_pages_per_frame: usize,
     last_output: Option<EguiInteractionOutput>,
 }
 
 impl EguiTraceState {
-    fn for_settlement(settlement: Option<TraceReceipt>) -> Self {
+    fn for_settlement(
+        settlement: Option<TraceReceipt>,
+        query_schedule: TraceQuerySchedule,
+    ) -> Self {
         let ids = TraceGraphIds::new();
         let anchors = TraceAnchors::new();
         let mut builder = GraphBuilder::new(GraphId::from_u128(1));
@@ -989,8 +1076,8 @@ impl EguiTraceState {
         let view = runtime
             .attach_view(ViewSessionOptions::default())
             .expect("trace view");
-        publish_trace_geometry(&view, ids, anchors);
-        let interaction = EguiCanvasInteraction::new(&view, CanvasInteractionConfig::default())
+        publish_trace_geometry(&view, ids, anchors, query_schedule.overlaps_valid_targets());
+        let interaction = EguiCanvasInteraction::new(&view, query_schedule.interaction_config())
             .expect("egui interaction");
         let host = EguiNativeFrameHost::new(view);
         Self {
@@ -1002,6 +1089,7 @@ impl EguiTraceState {
             response: None,
             response_visible: true,
             steal_capture: false,
+            query_pages_per_frame: query_schedule.query_pages_per_frame(),
             last_output: None,
         }
     }
@@ -1043,9 +1131,10 @@ enum TraceReconnectEndpoint {
 
 fn render_trace(ui: &mut Ui, state: &mut EguiTraceState) {
     let scene_rect = ui.max_rect();
+    let query_pages_per_frame = state.query_pages_per_frame;
     state
         .interaction
-        .begin_frame(ui.ctx(), scene_rect)
+        .begin_frame_with_query_page_budget(ui.ctx(), scene_rect, query_pages_per_frame)
         .expect("begin egui interaction frame");
     if let Some(kind) = state.response.filter(|_| state.response_visible) {
         let center = state.response_center(kind);
@@ -1307,7 +1396,12 @@ impl TraceAnchors {
     }
 }
 
-fn publish_trace_geometry(view: &ViewSession, ids: TraceGraphIds, anchors: TraceAnchors) {
+fn publish_trace_geometry(
+    view: &ViewSession,
+    ids: TraceGraphIds,
+    anchors: TraceAnchors,
+    overlap_valid_targets: bool,
+) {
     let frame = view
         .frame(FrameRequest::new(
             CanvasRect {
@@ -1356,7 +1450,11 @@ fn publish_trace_geometry(view: &ViewSession, ids: TraceGraphIds, anchors: Trace
             ids.reconnect_alternate_node,
             ids.reconnect_alternate_port,
             PortDirection::In,
-            anchors.reconnect_alternate,
+            if overlap_valid_targets {
+                anchors.valid
+            } else {
+                anchors.reconnect_alternate
+            },
         ),
     ] {
         let frame_node = frame

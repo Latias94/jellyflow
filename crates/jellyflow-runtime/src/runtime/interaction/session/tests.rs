@@ -1,12 +1,13 @@
 use jellyflow_core::core::{
-    CanvasPoint, CanvasSize, Edge, EdgeId, EdgeKind, EdgeReconnectable, EdgeReconnectableEndpoint,
-    Graph, GraphBuilder, GraphId, Node, NodeId, NodeKindKey, Port, PortCapacity, PortDirection,
-    PortId, PortKey, PortKind,
+    CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId, EdgeKind, EdgeReconnectable,
+    EdgeReconnectableEndpoint, Graph, GraphBuilder, GraphId, Node, NodeId, NodeKindKey, Port,
+    PortCapacity, PortDirection, PortId, PortKey, PortKind,
 };
 use jellyflow_core::interaction::NodeGraphConnectionMode;
 
 use super::*;
 use crate::rules::EdgeEndpoint;
+use crate::runtime::adapter_protocol::{FrameRequest, RendererStamp, ViewRect};
 use crate::runtime::commands::GraphCommand;
 use crate::runtime::geometry::{
     EdgeEndpointPosition, EdgePosition, HandlePosition, resolve_edge_route_path,
@@ -2423,7 +2424,7 @@ fn callback_authority_orders_foreign_stale_closed_then_view_unavailable() {
         ));
     });
 
-    session.closed = true;
+    session.lifecycle = InteractionSessionLifecycle::Closed;
     assert!(matches!(
         session.callback_authority(session.id(), None, true),
         Err(CanvasInteractionError::Closed)
@@ -2580,6 +2581,92 @@ fn marquee_query_failure_retries_press_baseline_restore_exactly_once() {
 }
 
 #[test]
+fn close_waits_for_busy_marquee_baseline_restore_and_finishes_exactly_once() {
+    let (runtime, view, mut session) = bound_test_session();
+    set_selection_by_id(&view, [source_node()], [], Vec::new()).expect("initial selection");
+    let baseline = view.selection_baseline().expect("press-time baseline");
+    let press = bound_position(&session, &view, 0.0, 0.0);
+    let moved = bound_position(&session, &view, 40.0, 32.0);
+    session
+        .press(
+            CanvasPressTarget::Marquee {
+                selection_mode: SelectionMode::Replace,
+                baseline,
+            },
+            press,
+        )
+        .expect("arm marquee");
+    let queried = session.move_to(moved).expect("marquee query");
+    let snapshot = runtime.snapshot().expect("marquee snapshot");
+    session
+        .resolve_node_intersection_current(
+            marquee_query_id(&session, &queried),
+            NodeIntersectionQueryOutcome::Complete {
+                nodes: Vec::new(),
+                work: Default::default(),
+            },
+            Some(&snapshot),
+        )
+        .expect("publish temporary marquee selection");
+    assert!(view.selection().unwrap().nodes().is_empty());
+
+    let deferred = view.with_state_borrowed_for_test(|| session.close());
+    assert!(deferred.query_work_pending());
+    assert_eq!(deferred.tick_demand(), InteractionTickDemand::None);
+    assert_eq!(
+        session.presentation().phase(),
+        CanvasInteractionPhase::Marquee
+    );
+    assert_eq!(session.presentation().terminal(), None);
+    assert_eq!(session.lifecycle, InteractionSessionLifecycle::ClosePending);
+    assert!(view.selection().unwrap().nodes().is_empty());
+
+    let repeated_close = session.close();
+    assert!(repeated_close.query_work_pending());
+    assert!(!repeated_close.damage().selection);
+    assert_eq!(session.lifecycle, InteractionSessionLifecycle::ClosePending);
+    assert!(view.selection().unwrap().nodes().is_empty());
+
+    let zero_budget = session.advance_query_work(0);
+    assert_eq!(zero_budget.receipt().pages_attempted(), 0);
+    assert!(zero_budget.needs_tick());
+    assert!(zero_budget.update().query_work_pending());
+    assert!(view.selection().unwrap().nodes().is_empty());
+
+    let finished = session.advance_query_work(1);
+    assert_eq!(finished.receipt().pages_attempted(), 0);
+    assert!(finished.terminal_error().is_none());
+    assert!(!finished.needs_tick());
+    assert!(!finished.update().query_work_pending());
+    assert!(finished.update().damage().selection);
+    assert_eq!(view.selection().unwrap().nodes(), [source_node()]);
+    assert_eq!(
+        session.presentation().phase(),
+        CanvasInteractionPhase::Closed
+    );
+    assert_eq!(
+        session.presentation().terminal(),
+        Some(InteractionTerminalReason::ViewClosed)
+    );
+    assert_eq!(session.lifecycle, InteractionSessionLifecycle::Closed);
+
+    let settled_close = session.close();
+    assert!(!settled_close.query_work_pending());
+    assert!(!settled_close.damage().selection);
+    assert_eq!(view.selection().unwrap().nodes(), [source_node()]);
+
+    let settled_advance = session.advance_query_work(1);
+    assert_eq!(settled_advance.receipt().pages_attempted(), 0);
+    assert_eq!(
+        settled_advance.terminal_error(),
+        Some(CanvasInteractionError::Closed)
+    );
+    assert!(!settled_advance.needs_tick());
+    assert!(!settled_advance.update().damage().selection);
+    assert_eq!(view.selection().unwrap().nodes(), [source_node()]);
+}
+
+#[test]
 fn connection_probe_identity_exhaustion_retires_move_and_release_paths() {
     let mut move_session = test_session(CanvasInteractionConfig::default());
     move_session
@@ -2694,6 +2781,117 @@ fn foreign_bound_view_terminates_runtime_owned_query_without_retry() {
 
     let settled = session.advance_query_work(1);
     assert_eq!(settled.receipt().pages_attempted(), 0);
+    assert!(!settled.needs_tick());
+}
+
+#[test]
+fn mismatched_and_foreign_query_receipts_fail_without_settling_current_work() {
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(prospective_graph())
+        .expect("query receipt runtime");
+    let view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("query receipt view");
+    let foreign_view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("foreign receipt view");
+    let mut session = CanvasInteractionSession::attach(&view, CanvasInteractionConfig::default())
+        .expect("query receipt session");
+    let requested = session
+        .request_edge_pick(bound_position(&session, &view, 2.0, 3.0))
+        .expect("current edge-pick query");
+    let current = edge_query_id(&session, &requested);
+
+    let mismatched = session.allocate_query().expect("second query identity");
+    let mismatched_outcome = view
+        .edge_pick(
+            EdgePickQuery::new(ViewPoint::new(2.0, 3.0), 10.0, 1)
+                .bind_interaction(session.interaction_query_binding(mismatched)),
+        )
+        .expect("same-view mismatched receipt");
+    let before_mismatch = session_fingerprint(&session);
+    assert!(matches!(
+        session.resolve_edge_pick_outcome(current, mismatched_outcome),
+        Err(CanvasInteractionError::MismatchedInteractionQueryReceipt {
+            expected,
+            actual,
+        }) if expected == current && actual == mismatched
+    ));
+    assert_eq!(session_fingerprint(&session), before_mismatch);
+    assert_eq!(edge_query_id(&session, &requested), current);
+
+    let foreign_binding = InteractionQueryBinding::new(
+        foreign_view.provenance().expect("foreign view provenance"),
+        current,
+    );
+    let foreign_outcome = foreign_view
+        .edge_pick(
+            EdgePickQuery::new(ViewPoint::new(2.0, 3.0), 10.0, 1).bind_interaction(foreign_binding),
+        )
+        .expect("foreign-view receipt");
+    let before_foreign = session_fingerprint(&session);
+    assert!(matches!(
+        session.resolve_edge_pick_outcome(current, foreign_outcome),
+        Err(CanvasInteractionError::ForeignInteractionFacts)
+    ));
+    assert_eq!(session_fingerprint(&session), before_foreign);
+    assert_eq!(edge_query_id(&session, &requested), current);
+}
+
+#[test]
+fn non_restartable_view_generation_cursor_terminates_without_leaking_continuation() {
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(parallel_edge_graph())
+        .expect("parallel-edge runtime");
+    let view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("query origin view");
+    publish_parallel_edge_geometry(&view);
+    let mut session = CanvasInteractionSession::attach(
+        &view,
+        CanvasInteractionConfig {
+            query_entry_budget: 1,
+            ..CanvasInteractionConfig::default()
+        },
+    )
+    .expect("edge-pick interaction");
+    let requested = session
+        .request_edge_pick(bound_position(&session, &view, 140.0, 40.0))
+        .expect("runtime-owned edge-pick query");
+    let query = edge_query_id(&session, &requested);
+
+    let first_page = session.advance_query_work(1);
+    assert_eq!(first_page.receipt().pages_attempted(), 1);
+    assert!(matches!(
+        first_page.receipt().page_receipts(),
+        [CanvasInteractionQueryPageReceipt::EdgePick(_)]
+    ));
+    assert!(first_page.needs_tick());
+    assert!(first_page.update().query_work_pending());
+    assert_eq!(edge_query_id(&session, first_page.update()), query);
+
+    let next_query = session.next_query;
+    view.advance_generation_for_test();
+    session.test_authority_bypass = true;
+    let terminal = session.advance_query_work(1);
+    assert_eq!(terminal.receipt().pages_attempted(), 1);
+    assert!(terminal.receipt().page_receipts().is_empty());
+    assert_eq!(
+        terminal.terminal_error(),
+        Some(CanvasInteractionError::StaleInteractionFacts)
+    );
+    assert!(!terminal.needs_tick());
+    assert!(!terminal.update().query_work_pending());
+    assert!(!session.query_work_pending());
+    assert!(session.pending_edge_pick.is_none());
+    assert_eq!(
+        session.next_query, next_query,
+        "stale generation must not restart"
+    );
+
+    let settled = session.advance_query_work(1);
+    assert_eq!(settled.receipt().pages_attempted(), 0);
+    assert!(settled.terminal_error().is_none());
     assert!(!settled.needs_tick());
 }
 
@@ -2845,6 +3043,53 @@ fn runtime_owned_query_work_is_isolated_per_session_and_cancel_clears_it() {
     assert!(stale.effects().is_empty());
     assert!(!stale.query_work_pending());
     assert_eq!(session_fingerprint(&session), before_advance);
+}
+
+#[test]
+fn owner_retirement_releases_pending_query_exactly_once() {
+    let mut session = test_session(CanvasInteractionConfig::default());
+    session
+        .press_for_test(connection_target(false), position(0.0, 0.0))
+        .expect("arm connection drag");
+    let requested = session
+        .move_to(position(12.0, 4.0))
+        .expect("runtime-owned connection probe");
+    let query = connection_query_id(&session, &requested);
+    let owner = InteractionOwner::Port(port_instance(NodeId::from_u128(0), source_port()));
+    assert!(session.uses_owner(owner));
+
+    let retired = session.owner_retired(owner);
+    assert!(!retired.query_work_pending());
+    assert!(!session.query_work_pending());
+    assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
+    assert_eq!(
+        session.presentation().terminal(),
+        Some(InteractionTerminalReason::OwnerRetired)
+    );
+
+    let repeated = session.owner_retired(owner);
+    assert_eq!(repeated.damage(), InteractionDamage::default());
+    assert!(!repeated.query_work_pending());
+    assert_eq!(
+        session.presentation().terminal(),
+        Some(InteractionTerminalReason::OwnerRetired)
+    );
+
+    let late = session
+        .resolve_connection_probe_for_test(query, complete(valid_probe(target_port())))
+        .expect("late retired page is ignored");
+    assert_eq!(late.damage(), InteractionDamage::default());
+    assert!(late.effects().is_empty());
+    assert!(!late.query_work_pending());
+    assert_eq!(
+        session.presentation().terminal(),
+        Some(InteractionTerminalReason::OwnerRetired)
+    );
+
+    let settled = session.advance_query_work(1);
+    assert_eq!(settled.receipt().pages_attempted(), 0);
+    assert!(!settled.needs_tick());
+    assert!(settled.terminal_error().is_none());
 }
 
 #[test]
@@ -4371,6 +4616,88 @@ fn reconnect_graph(edge: EdgeId) -> Graph {
         .expect("valid reconnect graph")
 }
 
+fn parallel_edge_graph() -> Graph {
+    let mut source = test_node(CanvasPoint { x: 0.0, y: 0.0 });
+    source.ports.push(source_port());
+    let mut builder = GraphBuilder::new(GraphId::from_u128(2))
+        .with_node(source_node(), source)
+        .with_port(
+            source_port(),
+            test_port(source_node(), "out", PortDirection::Out),
+        );
+    for index in 0..4 {
+        let node = NodeId::from_u128(2 + index);
+        let port = PortId::from_u128(200 + index);
+        let mut target = test_node(CanvasPoint { x: 200.0, y: 0.0 });
+        target.ports.push(port);
+        builder = builder
+            .with_node(node, target)
+            .with_port(
+                port,
+                test_port(node, &format!("in-{index}"), PortDirection::In),
+            )
+            .with_edge(
+                EdgeId::from_u128(100 + index),
+                Edge::new(EdgeKind::Data, source_port(), port),
+            );
+    }
+    builder.build().expect("valid parallel-edge graph")
+}
+
+fn publish_parallel_edge_geometry(view: &ViewSession) {
+    let frame = view
+        .frame(FrameRequest::new(
+            CanvasRect {
+                origin: CanvasPoint {
+                    x: -100.0,
+                    y: -100.0,
+                },
+                size: CanvasSize {
+                    width: 500.0,
+                    height: 300.0,
+                },
+            },
+            RendererStamp::new("test.node", 1),
+        ))
+        .expect("geometry frame");
+    let collector = frame.collector();
+    for node in frame.nodes() {
+        let (node_x, port_x, outward) = if node.id() == source_node() {
+            (0.0, 74.0, HandlePosition::Right)
+        } else {
+            (200.0, 194.0, HandlePosition::Left)
+        };
+        let node_bounds = ViewRect::new(ViewPoint::new(node_x, 0.0), ViewSize::new(80.0, 80.0));
+        let port_bounds = ViewRect::new(ViewPoint::new(port_x, 34.0), ViewSize::new(12.0, 12.0));
+        let route_anchor = ViewPoint::new(
+            if outward == HandlePosition::Right {
+                80.0
+            } else {
+                200.0
+            },
+            40.0,
+        );
+        let [port] = node.ports() else {
+            panic!("parallel-edge fixture nodes each expose one port");
+        };
+        let mut layout = node.begin_layout(node_bounds);
+        layout
+            .port_rendered(
+                port.layout_target(),
+                port_bounds,
+                port_bounds,
+                route_anchor,
+                outward,
+            )
+            .expect("rendered port geometry");
+        collector
+            .layout(layout.finish().expect("complete node layout"))
+            .expect("collect node layout");
+    }
+    view.submit_feedback(collector.finish().expect("complete geometry feedback"))
+        .expect("publish routed geometry");
+}
+
 fn node_drag_start(
     clicked: NodeId,
     selected: impl IntoIterator<Item = NodeId>,
@@ -4577,7 +4904,7 @@ struct SessionFingerprint {
     pending_edge_pick: Option<InteractionQueryId>,
     hovered_edge: Option<EdgeInstanceKey>,
     terminal: Option<InteractionTerminalReason>,
-    closed: bool,
+    lifecycle: InteractionSessionLifecycle,
 }
 
 fn session_fingerprint(session: &CanvasInteractionSession) -> SessionFingerprint {
@@ -4590,7 +4917,7 @@ fn session_fingerprint(session: &CanvasInteractionSession) -> SessionFingerprint
         pending_edge_pick: session.pending_edge_pick.map(|pending| pending.id),
         hovered_edge: session.hovered_edge,
         terminal: session.terminal,
-        closed: session.closed,
+        lifecycle: session.lifecycle,
     }
 }
 
