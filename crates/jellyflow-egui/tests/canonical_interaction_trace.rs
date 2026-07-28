@@ -10,15 +10,15 @@ use jellyflow_core::{
 use jellyflow_egui::{EguiCanvasInteraction, EguiInteractionOutput, EguiNativeFrameHost};
 use jellyflow_runtime::adapter::conformance::{
     ConformanceAction as TraceInput, ConformanceCancelReason as TraceCancelReason,
-    ConformanceCandidate as TraceCandidate, ConformanceEffect as TraceEffect,
-    ConformanceGeometry as TraceGeometry, ConformanceGraph as TraceGraph,
-    ConformanceIntent as TraceIntent, ConformanceOwnership as TraceOwnership,
-    ConformancePhase as TracePhase, ConformanceScenario as CanonicalInteractionTrace,
-    ConformanceScenarioId as TraceScenarioId, ConformanceSelection as TraceSelection,
-    ConformanceSettlement as TraceReceipt, ConformanceTarget as TraceTarget,
+    ConformanceCandidate as TraceCandidate, ConformanceCommandOutcome as TraceReceipt,
+    ConformanceEffect as TraceEffect, ConformanceGeometry as TraceGeometry,
+    ConformanceGraph as TraceGraph, ConformanceIntent as TraceIntent,
+    ConformanceOwnership as TraceOwnership, ConformancePhase as TracePhase,
+    ConformanceScenario as CanonicalInteractionTrace, ConformanceScenarioId as TraceScenarioId,
+    ConformanceSelection as TraceSelection, ConformanceTarget as TraceTarget,
     ConformanceTerminal as TraceTerminal, ConformanceTicket as TraceTicket,
     ConformanceViewStatus as TraceViewStatus, NormalizedObservation, canonical_scenarios,
-    compare_observations, new_connection_scenario,
+    compare_observations, new_connection_probe_prefix_scenario,
 };
 use jellyflow_runtime::commands::{GraphCommand, IncidentEdgePolicy, TopologyEdit};
 use jellyflow_runtime::geometry::{HandlePosition, ViewPoint, ViewRect, ViewSize};
@@ -39,14 +39,14 @@ use jellyflow_runtime::view::{
 #[test]
 fn egui_native_events_replay_every_canonical_interaction_trace() {
     for trace in canonical_scenarios() {
-        EguiTraceRunner::for_scenario(trace.id).replay(&trace);
+        EguiTraceRunner::for_scenario(trace.id()).replay(&trace);
     }
 }
 
 #[test]
 fn egui_many_page_grant_matches_the_canonical_connection_probe_prefix() {
     let trace = connection_probe_prefix_trace();
-    let mut runner = EguiTraceRunner::for_paged_probe(trace.id);
+    let mut runner = EguiTraceRunner::for_paged_probe(trace.id());
 
     runner.replay(&trace);
 
@@ -92,10 +92,7 @@ impl TraceQuerySchedule {
 }
 
 fn connection_probe_prefix_trace() -> CanonicalInteractionTrace {
-    let mut trace = new_connection_scenario(TraceReceipt::Applied);
-    trace.display_name = "new-connection-probe-prefix";
-    trace.steps.truncate(4);
-    trace
+    new_connection_probe_prefix_scenario()
 }
 
 struct RejectCanonicalCommand;
@@ -169,12 +166,12 @@ fn release_at_a_new_position_activates_and_commits_an_armed_drag() {
 fn closing_only_the_semantic_interaction_cannot_satisfy_host_closed_conformance() {
     let trace = canonical_scenarios()
         .into_iter()
-        .find(|trace| trace.id == TraceScenarioId::HostClosed)
+        .find(|trace| trace.id() == TraceScenarioId::HostClosed)
         .expect("canonical host-close scenario");
-    let mut runner = EguiTraceRunner::for_scenario(trace.id);
+    let mut runner = EguiTraceRunner::for_scenario(trace.id());
     let mut observations = Vec::new();
-    for step in &trace.steps[..2] {
-        let effect = runner.apply(step.action);
+    for step in &trace.steps()[..2] {
+        let effect = runner.apply(step.action());
         observations.push(runner.observation(effect));
     }
 
@@ -219,7 +216,7 @@ impl EguiTraceRunner {
 
     fn for_scenario(id: TraceScenarioId) -> Self {
         Self::build(
-            scenario_settlement(id),
+            scenario_command_outcome(id),
             Some(id),
             TraceQuerySchedule::Default,
         )
@@ -227,7 +224,7 @@ impl EguiTraceRunner {
 
     fn for_paged_probe(id: TraceScenarioId) -> Self {
         Self::build(
-            scenario_settlement(id),
+            scenario_command_outcome(id),
             Some(id),
             TraceQuerySchedule::ManyPagesPerFrame,
         )
@@ -306,13 +303,13 @@ impl EguiTraceRunner {
     }
 
     fn replay(&mut self, trace: &CanonicalInteractionTrace) {
-        let mut observations = Vec::with_capacity(trace.steps.len());
-        for step in &trace.steps {
-            let effect = self.apply(step.action);
+        let mut observations = Vec::with_capacity(trace.steps().len());
+        for step in trace.steps() {
+            let effect = self.apply(step.action());
             observations.push(self.observation(effect));
         }
         compare_observations(trace, &observations)
-            .unwrap_or_else(|error| panic!("{}: {error}", trace.display_name));
+            .unwrap_or_else(|error| panic!("{}: {error}", trace.display_name()));
     }
 
     fn apply(&mut self, input: TraceInput) -> TraceEffect {
@@ -336,7 +333,7 @@ impl EguiTraceRunner {
                 let output = self.take_output();
                 self.capture_semantic_effect(output, false)
             }
-            TraceInput::Settle(receipt) => self.settle(receipt),
+            TraceInput::CompleteCommand(receipt) => self.settle(receipt),
             TraceInput::LoseCapture => self.lose_capture(),
             TraceInput::ReplaceOwner => self.replace_owner(),
             TraceInput::ReleasePreviousOwner => self.release_previous_owner(),
@@ -477,10 +474,7 @@ impl EguiTraceRunner {
             .expect("trace captured one graph submission");
         let ctx = self.harness.ctx.clone();
         match receipt {
-            TraceReceipt::Noop => {
-                panic!("canonical mutation scenarios do not synthesize no-command settlements")
-            }
-            TraceReceipt::TransportFailure => {
+            TraceReceipt::NotDispatched => {
                 drop(submission);
                 self.harness
                     .state_mut()
@@ -501,7 +495,7 @@ impl EguiTraceRunner {
                     TraceReceipt::Rejected | TraceReceipt::Conflict => {
                         TraceEffect::RestorePresentation
                     }
-                    TraceReceipt::Noop | TraceReceipt::TransportFailure => unreachable!(),
+                    TraceReceipt::NotDispatched => unreachable!(),
                 }
             }
         }
@@ -524,7 +518,7 @@ impl EguiTraceRunner {
                 emitted
             }
             TraceReceipt::Applied | TraceReceipt::Rejected => emitted,
-            TraceReceipt::Noop | TraceReceipt::TransportFailure => {
+            TraceReceipt::NotDispatched => {
                 unreachable!("non-dispatch receipts are handled before command binding")
             }
         };
@@ -1068,12 +1062,7 @@ impl EguiTraceState {
             .expect("trace runtime");
         let runtime = match settlement {
             Some(TraceReceipt::Rejected) => runtime.with_middleware(RejectCanonicalCommand),
-            Some(
-                TraceReceipt::Applied
-                | TraceReceipt::Noop
-                | TraceReceipt::Conflict
-                | TraceReceipt::TransportFailure,
-            )
+            Some(TraceReceipt::Applied | TraceReceipt::Conflict | TraceReceipt::NotDispatched)
             | None => runtime,
         };
         let view = runtime
@@ -1256,7 +1245,7 @@ fn paint_native_evidence(ui: &Ui, state: &EguiTraceState) {
     }
 }
 
-fn scenario_settlement(id: TraceScenarioId) -> Option<TraceReceipt> {
+fn scenario_command_outcome(id: TraceScenarioId) -> Option<TraceReceipt> {
     match id {
         TraceScenarioId::NewConnection(settlement)
         | TraceScenarioId::ReconnectSource(settlement)
@@ -1264,6 +1253,7 @@ fn scenario_settlement(id: TraceScenarioId) -> Option<TraceReceipt> {
         | TraceScenarioId::CreateFromWire(settlement)
         | TraceScenarioId::NodeDrag(settlement) => Some(settlement),
         TraceScenarioId::NewConnectionPrefixWait
+        | TraceScenarioId::NewConnectionProbePrefix
         | TraceScenarioId::ReconnectSourcePrefixWait
         | TraceScenarioId::ReconnectTargetPrefixWait
         | TraceScenarioId::CreateFromWirePrefixWait
@@ -1283,10 +1273,12 @@ fn scenario_settlement(id: TraceScenarioId) -> Option<TraceReceipt> {
 fn trace_terminal(reason: InteractionTerminalReason) -> TraceTerminal {
     match reason {
         InteractionTerminalReason::Applied => TraceTerminal::Applied,
-        InteractionTerminalReason::Noop => TraceTerminal::Noop,
+        InteractionTerminalReason::Noop => {
+            panic!("canonical egui trace does not model a no-op command")
+        }
         InteractionTerminalReason::Rejected => TraceTerminal::Rejected,
         InteractionTerminalReason::Conflict => TraceTerminal::Conflict,
-        InteractionTerminalReason::TransportFailure => TraceTerminal::TransportFailure,
+        InteractionTerminalReason::TransportFailure => TraceTerminal::NotDispatched,
         InteractionTerminalReason::Cancelled => TraceTerminal::Cancelled,
         InteractionTerminalReason::OwnerRetired => TraceTerminal::OwnerRetired,
         InteractionTerminalReason::ViewClosed => TraceTerminal::HostClosed,

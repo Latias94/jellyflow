@@ -7,7 +7,7 @@ use jellyflow_runtime::adapter::conformance::{
     ConformanceAction, ConformanceCancelReason, ConformanceCandidate, ConformanceEffect,
     ConformanceGeometry, ConformanceGraph, ConformanceIntent, ConformanceOwnership,
     ConformancePhase, ConformanceScenario, ConformanceScenarioId, ConformanceSelection,
-    ConformanceSettlement, ConformanceTarget, ConformanceTerminal, ConformanceTicket,
+    ConformanceCommandOutcome, ConformanceTarget, ConformanceTerminal, ConformanceTicket,
     ConformanceViewStatus, NormalizedObservation,
 };
 #[cfg(test)]
@@ -147,7 +147,7 @@ enum RawNativeEvent {
     QueueCommandPrefix,
     DrainCommandPrefix,
     Advance,
-    CommandSettled(ConformanceSettlement),
+    CommandSettled(ConformanceCommandOutcome),
     CaptureLost,
     CaptureReplaced,
     PreviousOwnerReleased,
@@ -515,7 +515,7 @@ impl RuntimeInteractionBridge {
 
     fn settle(
         &mut self,
-        settlement: ConformanceSettlement,
+        settlement: ConformanceCommandOutcome,
         view: &ViewSession,
         runtime: &GraphRuntime,
         excluded_revision_delta: &mut u64,
@@ -526,24 +526,21 @@ impl RuntimeInteractionBridge {
             .expect("one graph submission is pending");
         let ticket = submission.ticket();
         let update = match settlement {
-            ConformanceSettlement::Noop => {
-                panic!("canonical mutation scenarios do not synthesize no-command settlements")
-            }
-            ConformanceSettlement::TransportFailure => {
+            ConformanceCommandOutcome::NotDispatched => {
                 drop(submission);
                 self.session
                     .submission_not_dispatched(ticket)
                     .expect("external undispatched submission settles")
             }
-            ConformanceSettlement::Applied
-            | ConformanceSettlement::Rejected
-            | ConformanceSettlement::Conflict => {
+            ConformanceCommandOutcome::Applied
+            | ConformanceCommandOutcome::Rejected
+            | ConformanceCommandOutcome::Conflict => {
                 let command = self
                     .session
                     .bind_submission(submission)
                     .expect("external mutation remains fresh")
                     .expect("external mutation is not a no-op");
-                if settlement == ConformanceSettlement::Conflict {
+                if settlement == ConformanceCommandOutcome::Conflict {
                     let snapshot = runtime
                         .snapshot()
                         .expect("external conflict snapshot remains available");
@@ -572,10 +569,10 @@ impl RuntimeInteractionBridge {
             return effect;
         }
         match settlement {
-            ConformanceSettlement::Applied | ConformanceSettlement::Noop => ConformanceEffect::None,
-            ConformanceSettlement::Rejected
-            | ConformanceSettlement::Conflict
-            | ConformanceSettlement::TransportFailure => ConformanceEffect::RestorePresentation,
+            ConformanceCommandOutcome::Applied => ConformanceEffect::None,
+            ConformanceCommandOutcome::Rejected
+            | ConformanceCommandOutcome::Conflict
+            | ConformanceCommandOutcome::NotDispatched => ConformanceEffect::RestorePresentation,
         }
     }
 
@@ -696,15 +693,14 @@ impl MinimalNativeHost {
         let runtime = GraphRuntime::builder(fixture_catalog())
             .build(fixture_graph(ids, anchors))
             .expect("external conformance runtime starts");
-        let runtime = match scenario_settlement(scenario) {
-            Some(ConformanceSettlement::Rejected) => {
+        let runtime = match scenario_command_outcome(scenario) {
+            Some(ConformanceCommandOutcome::Rejected) => {
                 runtime.with_middleware(RejectConformanceCommand)
             }
             Some(
-                ConformanceSettlement::Applied
-                | ConformanceSettlement::Noop
-                | ConformanceSettlement::Conflict
-                | ConformanceSettlement::TransportFailure,
+                ConformanceCommandOutcome::Applied
+                | ConformanceCommandOutcome::Conflict
+                | ConformanceCommandOutcome::NotDispatched,
             )
             | None => runtime,
         };
@@ -1110,9 +1106,9 @@ impl ExternalNativeDriver {
 
     fn drive(&mut self, scenario: &ConformanceScenario) -> Vec<NormalizedObservation> {
         scenario
-            .steps
+            .steps()
             .iter()
-            .map(|step| self.dispatch_action(step.action))
+            .map(|step| self.dispatch_action(step.action()))
             .collect()
     }
 
@@ -1141,7 +1137,7 @@ impl ExternalNativeDriver {
             ConformanceAction::QueuePrefix => RawNativeEvent::QueueCommandPrefix,
             ConformanceAction::DrainPrefix => RawNativeEvent::DrainCommandPrefix,
             ConformanceAction::AdvanceFrame => RawNativeEvent::Advance,
-            ConformanceAction::Settle(settlement) => RawNativeEvent::CommandSettled(settlement),
+            ConformanceAction::CompleteCommand(settlement) => RawNativeEvent::CommandSettled(settlement),
             ConformanceAction::LoseCapture => RawNativeEvent::CaptureLost,
             ConformanceAction::ReplaceOwner => RawNativeEvent::CaptureReplaced,
             ConformanceAction::ReleasePreviousOwner => RawNativeEvent::PreviousOwnerReleased,
@@ -1208,10 +1204,12 @@ fn normalized_selection(view: &ViewSession, ids: FixtureIds) -> ConformanceSelec
 fn normalized_terminal(reason: InteractionTerminalReason) -> ConformanceTerminal {
     match reason {
         InteractionTerminalReason::Applied => ConformanceTerminal::Applied,
-        InteractionTerminalReason::Noop => ConformanceTerminal::Noop,
+        InteractionTerminalReason::Noop => {
+            panic!("external conformance does not model a no-op command")
+        }
         InteractionTerminalReason::Rejected => ConformanceTerminal::Rejected,
         InteractionTerminalReason::Conflict => ConformanceTerminal::Conflict,
-        InteractionTerminalReason::TransportFailure => ConformanceTerminal::TransportFailure,
+        InteractionTerminalReason::TransportFailure => ConformanceTerminal::NotDispatched,
         InteractionTerminalReason::Cancelled => ConformanceTerminal::Cancelled,
         InteractionTerminalReason::OwnerRetired => ConformanceTerminal::OwnerRetired,
         InteractionTerminalReason::ViewClosed => ConformanceTerminal::HostClosed,
@@ -1235,7 +1233,7 @@ fn normalized_intent(binding: ConnectionGestureBinding) -> ConformanceIntent {
     }
 }
 
-fn scenario_settlement(scenario: ConformanceScenarioId) -> Option<ConformanceSettlement> {
+fn scenario_command_outcome(scenario: ConformanceScenarioId) -> Option<ConformanceCommandOutcome> {
     match scenario {
         ConformanceScenarioId::NewConnection(settlement)
         | ConformanceScenarioId::ReconnectSource(settlement)
@@ -1243,6 +1241,7 @@ fn scenario_settlement(scenario: ConformanceScenarioId) -> Option<ConformanceSet
         | ConformanceScenarioId::CreateFromWire(settlement)
         | ConformanceScenarioId::NodeDrag(settlement) => Some(settlement),
         ConformanceScenarioId::NewConnectionPrefixWait
+        | ConformanceScenarioId::NewConnectionProbePrefix
         | ConformanceScenarioId::ReconnectSourcePrefixWait
         | ConformanceScenarioId::ReconnectTargetPrefixWait
         | ConformanceScenarioId::CreateFromWirePrefixWait
@@ -1449,12 +1448,12 @@ fn publish_geometry(view: &ViewSession, ids: FixtureIds, anchors: FixtureAnchors
 #[test]
 fn consumer_owned_native_driver_executes_every_public_canonical_scenario() {
     for scenario in canonical_scenarios() {
-        let mut driver = ExternalNativeDriver::for_scenario(scenario.id);
+        let mut driver = ExternalNativeDriver::for_scenario(scenario.id());
         let observations = driver.drive(&scenario);
         compare_observations(&scenario, &observations).unwrap_or_else(|error| {
             panic!(
                 "external native scenario {} diverged: {error}",
-                scenario.display_name
+                scenario.display_name()
             )
         });
         driver.host.shutdown();

@@ -4,17 +4,17 @@ use jellyflow_runtime::adapter::conformance as trace;
 
 use trace::{
     ConformanceAction as TraceInput, ConformanceCancelReason as TraceCancelReason,
-    ConformanceCandidate as TraceCandidate, ConformanceEffect as TraceEffect,
-    ConformanceGeometry as TraceGeometry, ConformanceGraph as TraceGraph,
-    ConformanceIntent as TraceIntent, ConformanceOwnership as TraceOwnership,
-    ConformancePhase as TracePhase, ConformanceReconnectEndpoint as TraceReconnectEndpoint,
+    ConformanceCandidate as TraceCandidate, ConformanceCommandOutcome as TraceReceipt,
+    ConformanceEffect as TraceEffect, ConformanceGeometry as TraceGeometry,
+    ConformanceGraph as TraceGraph, ConformanceIntent as TraceIntent,
+    ConformanceOwnership as TraceOwnership, ConformancePhase as TracePhase,
+    ConformanceReconnectEndpoint as TraceReconnectEndpoint,
     ConformanceScenario as CanonicalInteractionTrace, ConformanceScenarioId as TraceScenarioId,
-    ConformanceSelection as TraceSelection, ConformanceSettlement as TraceReceipt,
-    ConformanceTarget as TraceTarget, ConformanceTerminal as TraceTerminal,
-    ConformanceTicket as TraceTicket, ConformanceViewStatus as TraceViewStatus,
-    NormalizedObservation, canonical_scenarios, canonical_settlements, compare_observations,
-    create_from_wire_scenario as create_from_wire_trace, edge_pick_scenario as edge_pick_trace,
-    native_control_scenario as native_control_trace,
+    ConformanceSelection as TraceSelection, ConformanceTarget as TraceTarget,
+    ConformanceTerminal as TraceTerminal, ConformanceTicket as TraceTicket,
+    ConformanceViewStatus as TraceViewStatus, NormalizedObservation, canonical_command_outcomes,
+    canonical_scenarios, compare_observations, create_from_wire_scenario as create_from_wire_trace,
+    edge_pick_scenario as edge_pick_trace, native_control_scenario as native_control_trace,
     new_connection_scenario as new_connection_trace, node_drag_scenario as node_drag_trace,
     reconnect_scenario as reconnect_trace,
     terminal_ownership_scenarios as terminal_ownership_traces,
@@ -63,18 +63,23 @@ impl GraphRuntimeMiddleware for RejectCanonicalCommand {
 
 #[test]
 fn canonical_trace_vocabulary_is_deterministic_and_covers_terminal_receipts() {
-    for receipt in canonical_settlements() {
+    for receipt in canonical_command_outcomes() {
         let trace = new_connection_trace(receipt);
         assert_eq!(trace, new_connection_trace(receipt));
         assert_eq!(
-            trace.steps.last().expect("terminal step").expected.phase,
+            trace
+                .steps()
+                .last()
+                .expect("terminal step")
+                .expected()
+                .phase,
             TracePhase::Idle
         );
         assert_eq!(
             trace
-                .steps
+                .steps()
                 .iter()
-                .filter(|step| step.expected.effect == TraceEffect::SubmitConnection)
+                .filter(|step| step.expected().effect == TraceEffect::SubmitConnection)
                 .count(),
             1,
         );
@@ -86,9 +91,9 @@ fn canonical_trace_vocabulary_is_deterministic_and_covers_terminal_receipts() {
             let reconnect = reconnect_trace(endpoint, receipt);
             assert_eq!(
                 reconnect
-                    .steps
+                    .steps()
                     .iter()
-                    .filter(|step| step.expected.effect == TraceEffect::SubmitConnection)
+                    .filter(|step| step.expected().effect == TraceEffect::SubmitConnection)
                     .count(),
                 1,
             );
@@ -101,35 +106,35 @@ fn search_and_native_control_traces_keep_terminal_ownership_explicit() {
     let rejected = create_from_wire_trace(TraceReceipt::Rejected);
     assert_eq!(
         rejected
-            .steps
+            .steps()
             .last()
             .expect("terminal search step")
-            .expected
+            .expected()
             .phase,
         TracePhase::Searching,
     );
 
     let control = native_control_trace();
     let drag = node_drag_trace(TraceReceipt::Applied);
-    assert_eq!(control.steps[0].expected.phase, TracePhase::Idle);
+    assert_eq!(control.steps()[0].expected().phase, TracePhase::Idle);
     assert!(
-        drag.steps
+        drag.steps()
             .iter()
-            .any(|step| step.expected.phase == TracePhase::NodeDrag)
+            .any(|step| step.expected().phase == TracePhase::NodeDrag)
     );
 
     let edge = edge_pick_trace();
-    assert_eq!(edge.steps[0].expected.effect, TraceEffect::PickEdge);
+    assert_eq!(edge.steps()[0].expected().effect, TraceEffect::PickEdge);
     assert_eq!(
-        edge.steps.last().expect("edge terminal").expected.phase,
+        edge.steps().last().expect("edge terminal").expected().phase,
         TracePhase::Idle,
     );
 
     for trace in terminal_ownership_traces() {
-        let terminal = trace.steps.last().expect("ownership terminal");
-        assert_eq!(terminal.expected.phase, TracePhase::Idle);
+        let terminal = trace.steps().last().expect("ownership terminal");
+        assert_eq!(terminal.expected().phase, TracePhase::Idle);
         assert_eq!(
-            terminal.expected.effect,
+            terminal.expected().effect,
             TraceEffect::ReleaseNativeOwnership
         );
     }
@@ -137,9 +142,13 @@ fn search_and_native_control_traces_keep_terminal_ownership_explicit() {
 
 #[test]
 fn observation_comparison_fails_for_semantic_drift_not_display_names() {
-    let mut scenario = new_connection_trace(TraceReceipt::Applied);
-    let observations: Vec<_> = scenario.steps.iter().map(|step| step.expected).collect();
-    scenario.display_name = "renamed-for-diagnostics";
+    let scenario = new_connection_trace(TraceReceipt::Applied);
+    let observations: Vec<_> = scenario
+        .steps()
+        .iter()
+        .map(|step| step.expected())
+        .collect();
+    assert_eq!(scenario.display_name(), "new-connection");
     compare_observations(&scenario, &observations).expect("display names are not identity");
 
     let mut divergent = observations;
@@ -150,7 +159,7 @@ fn observation_comparison_fails_for_semantic_drift_not_display_names() {
 #[test]
 fn canonical_traces_drive_the_renderer_neutral_session_and_real_view_queries() {
     for trace in canonical_scenarios() {
-        TraceHarness::for_scenario(trace.id).replay(&trace);
+        TraceHarness::for_scenario(trace.id()).replay(&trace);
     }
 }
 
@@ -739,14 +748,9 @@ impl TraceHarness {
         let runtime = GraphRuntime::builder(Default::default())
             .build(builder.build().unwrap())
             .unwrap();
-        let runtime = match scenario_settlement(scenario) {
+        let runtime = match scenario_command_outcome(scenario) {
             Some(TraceReceipt::Rejected) => runtime.with_middleware(RejectCanonicalCommand),
-            Some(
-                TraceReceipt::Applied
-                | TraceReceipt::Noop
-                | TraceReceipt::Conflict
-                | TraceReceipt::TransportFailure,
-            )
+            Some(TraceReceipt::Applied | TraceReceipt::Conflict | TraceReceipt::NotDispatched)
             | None => runtime,
         };
         let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
@@ -788,7 +792,7 @@ impl TraceHarness {
 
     fn replay(&mut self, trace: &CanonicalInteractionTrace) {
         if matches!(
-            trace.id,
+            trace.id(),
             trace::ConformanceScenarioId::ReconnectSource(_)
                 | trace::ConformanceScenarioId::ReconnectTarget(_)
                 | trace::ConformanceScenarioId::ReconnectSourcePrefixWait
@@ -797,13 +801,13 @@ impl TraceHarness {
             set_selection_by_id(&self.view, Vec::new(), vec![self.ids.reconnect_edge])
                 .expect("seed canonical reconnect selection");
         }
-        let mut observations = Vec::with_capacity(trace.steps.len());
-        for step in &trace.steps {
-            let effect = self.apply(step.action);
+        let mut observations = Vec::with_capacity(trace.steps().len());
+        for step in trace.steps() {
+            let effect = self.apply(step.action());
             observations.push(self.observation(effect));
         }
         compare_observations(trace, &observations)
-            .unwrap_or_else(|error| panic!("{}: {error}", trace.display_name));
+            .unwrap_or_else(|error| panic!("{}: {error}", trace.display_name()));
     }
 
     fn apply(&mut self, input: TraceInput) -> TraceEffect {
@@ -873,17 +877,14 @@ impl TraceHarness {
                 self.capture_submit(update, TraceEffect::SubmitConnection)
             }
             TraceInput::AdvanceFrame => TraceEffect::None,
-            TraceInput::Settle(receipt) => {
+            TraceInput::CompleteCommand(receipt) => {
                 let ticket = self.ticket.take().expect("trace submitted one command");
                 let submission = self
                     .submission
                     .take()
                     .expect("trace captured one graph submission");
                 match receipt {
-                    TraceReceipt::Noop => panic!(
-                        "canonical mutation scenarios do not synthesize no-command settlements"
-                    ),
-                    TraceReceipt::TransportFailure => {
+                    TraceReceipt::NotDispatched => {
                         drop(submission);
                         self.session
                             .submission_not_dispatched(ticket)
@@ -897,10 +898,10 @@ impl TraceHarness {
                     }
                 }
                 match receipt {
-                    TraceReceipt::Applied | TraceReceipt::Noop => TraceEffect::None,
+                    TraceReceipt::Applied => TraceEffect::None,
                     TraceReceipt::Rejected
                     | TraceReceipt::Conflict
-                    | TraceReceipt::TransportFailure => TraceEffect::RestorePresentation,
+                    | TraceReceipt::NotDispatched => TraceEffect::RestorePresentation,
                 }
             }
             TraceInput::Cancel(reason) => {
@@ -969,7 +970,7 @@ impl TraceHarness {
         match requested {
             TraceReceipt::Conflict => self.execute_external_revision("conflict"),
             TraceReceipt::Applied | TraceReceipt::Rejected => {}
-            TraceReceipt::Noop | TraceReceipt::TransportFailure => {
+            TraceReceipt::NotDispatched => {
                 unreachable!("non-dispatch receipts are handled before command binding")
             }
         }
@@ -1530,6 +1531,7 @@ impl TraceHarness {
             | TraceScenarioId::ReconnectTarget(_)
             | TraceScenarioId::CreateFromWire(_)
             | TraceScenarioId::NodeDrag(_)
+            | TraceScenarioId::NewConnectionProbePrefix
             | TraceScenarioId::NewConnectionPrefixWait
             | TraceScenarioId::ReconnectTargetPrefixWait
             | TraceScenarioId::CreateFromWirePrefixWait
@@ -1557,6 +1559,7 @@ impl TraceHarness {
             TraceScenarioId::NewConnection(_)
             | TraceScenarioId::CreateFromWire(_)
             | TraceScenarioId::NodeDrag(_)
+            | TraceScenarioId::NewConnectionProbePrefix
             | TraceScenarioId::NewConnectionPrefixWait
             | TraceScenarioId::CreateFromWirePrefixWait
             | TraceScenarioId::NodeDragPrefixWait
@@ -1629,7 +1632,7 @@ fn advance_successful_query_page(
     (update, receipt)
 }
 
-fn scenario_settlement(id: TraceScenarioId) -> Option<TraceReceipt> {
+fn scenario_command_outcome(id: TraceScenarioId) -> Option<TraceReceipt> {
     match id {
         TraceScenarioId::NewConnection(settlement)
         | TraceScenarioId::ReconnectSource(settlement)
@@ -1637,6 +1640,7 @@ fn scenario_settlement(id: TraceScenarioId) -> Option<TraceReceipt> {
         | TraceScenarioId::CreateFromWire(settlement)
         | TraceScenarioId::NodeDrag(settlement) => Some(settlement),
         TraceScenarioId::NewConnectionPrefixWait
+        | TraceScenarioId::NewConnectionProbePrefix
         | TraceScenarioId::ReconnectSourcePrefixWait
         | TraceScenarioId::ReconnectTargetPrefixWait
         | TraceScenarioId::CreateFromWirePrefixWait
@@ -1656,10 +1660,12 @@ fn scenario_settlement(id: TraceScenarioId) -> Option<TraceReceipt> {
 fn trace_terminal(reason: InteractionTerminalReason) -> TraceTerminal {
     match reason {
         InteractionTerminalReason::Applied => TraceTerminal::Applied,
-        InteractionTerminalReason::Noop => TraceTerminal::Noop,
+        InteractionTerminalReason::Noop => {
+            panic!("canonical trace does not model a no-op command")
+        }
         InteractionTerminalReason::Rejected => TraceTerminal::Rejected,
         InteractionTerminalReason::Conflict => TraceTerminal::Conflict,
-        InteractionTerminalReason::TransportFailure => TraceTerminal::TransportFailure,
+        InteractionTerminalReason::TransportFailure => TraceTerminal::NotDispatched,
         InteractionTerminalReason::Cancelled => TraceTerminal::Cancelled,
         InteractionTerminalReason::OwnerRetired => TraceTerminal::OwnerRetired,
         InteractionTerminalReason::ViewClosed => TraceTerminal::HostClosed,

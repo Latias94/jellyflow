@@ -8,11 +8,12 @@ use std::fmt;
 /// Stable semantic identity for a canonical adapter scenario.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum ConformanceScenarioId {
-    NewConnection(ConformanceSettlement),
-    ReconnectSource(ConformanceSettlement),
-    ReconnectTarget(ConformanceSettlement),
-    CreateFromWire(ConformanceSettlement),
-    NodeDrag(ConformanceSettlement),
+    NewConnection(ConformanceCommandOutcome),
+    ReconnectSource(ConformanceCommandOutcome),
+    ReconnectTarget(ConformanceCommandOutcome),
+    CreateFromWire(ConformanceCommandOutcome),
+    NodeDrag(ConformanceCommandOutcome),
+    NewConnectionProbePrefix,
     NewConnectionPrefixWait,
     ReconnectSourcePrefixWait,
     ReconnectTargetPrefixWait,
@@ -57,12 +58,11 @@ pub enum ConformanceCandidate {
 
 /// Every terminal command result understood by the renderer-neutral interaction session.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub enum ConformanceSettlement {
+pub enum ConformanceCommandOutcome {
     Applied,
-    Noop,
     Rejected,
     Conflict,
-    TransportFailure,
+    NotDispatched,
 }
 
 /// A semantic cancellation initiated outside command settlement.
@@ -83,7 +83,7 @@ pub enum ConformanceAction {
     QueuePrefix,
     DrainPrefix,
     AdvanceFrame,
-    Settle(ConformanceSettlement),
+    CompleteCommand(ConformanceCommandOutcome),
     LoseCapture,
     ReplaceOwner,
     ReleasePreviousOwner,
@@ -122,10 +122,9 @@ pub enum ConformanceEffect {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ConformanceTerminal {
     Applied,
-    Noop,
     Rejected,
     Conflict,
-    TransportFailure,
+    NotDispatched,
     Cancelled,
     OwnerRetired,
     HostClosed,
@@ -274,14 +273,24 @@ impl NormalizedObservation {
 /// One canonical input and the observation required immediately after it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ConformanceStep {
-    pub action: ConformanceAction,
-    pub expected: NormalizedObservation,
+    action: ConformanceAction,
+    expected: NormalizedObservation,
 }
 
 impl ConformanceStep {
     #[must_use]
     pub const fn new(action: ConformanceAction, expected: NormalizedObservation) -> Self {
         Self { action, expected }
+    }
+
+    #[must_use]
+    pub const fn action(&self) -> ConformanceAction {
+        self.action
+    }
+
+    #[must_use]
+    pub const fn expected(&self) -> NormalizedObservation {
+        self.expected
     }
 
     #[must_use]
@@ -300,9 +309,79 @@ impl ConformanceStep {
 /// A complete semantic scenario. Display names are diagnostic only; identity is typed.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConformanceScenario {
-    pub id: ConformanceScenarioId,
-    pub display_name: &'static str,
-    pub steps: Vec<ConformanceStep>,
+    id: ConformanceScenarioId,
+    display_name: &'static str,
+    steps: Vec<ConformanceStep>,
+}
+
+impl ConformanceScenario {
+    #[must_use]
+    pub const fn id(&self) -> ConformanceScenarioId {
+        self.id
+    }
+
+    #[must_use]
+    pub const fn display_name(&self) -> &'static str {
+        self.display_name
+    }
+
+    #[must_use]
+    pub fn steps(&self) -> &[ConformanceStep] {
+        &self.steps
+    }
+}
+
+/// One renderer-neutral field that diverged between a canonical and native observation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConformanceFieldMismatch {
+    Phase {
+        expected: ConformancePhase,
+        actual: ConformancePhase,
+    },
+    Effect {
+        expected: ConformanceEffect,
+        actual: ConformanceEffect,
+    },
+    Terminal {
+        expected: Option<ConformanceTerminal>,
+        actual: Option<ConformanceTerminal>,
+    },
+    Ownership {
+        expected: ConformanceOwnership,
+        actual: ConformanceOwnership,
+    },
+    Ticket {
+        expected: ConformanceTicket,
+        actual: ConformanceTicket,
+    },
+    Intent {
+        expected: ConformanceIntent,
+        actual: ConformanceIntent,
+    },
+    OptimisticPresentation {
+        expected: bool,
+        actual: bool,
+    },
+    GraphRevisionDelta {
+        expected: u64,
+        actual: u64,
+    },
+    Graph {
+        expected: ConformanceGraph,
+        actual: ConformanceGraph,
+    },
+    Geometry {
+        expected: ConformanceGeometry,
+        actual: ConformanceGeometry,
+    },
+    Selection {
+        expected: ConformanceSelection,
+        actual: ConformanceSelection,
+    },
+    ViewStatus {
+        expected: ConformanceViewStatus,
+        actual: ConformanceViewStatus,
+    },
 }
 
 /// A structured difference between a canonical scenario and one native driver's observations.
@@ -313,12 +392,11 @@ pub enum ConformanceMismatch {
         expected: usize,
         actual: usize,
     },
-    Step {
+    Observation {
         scenario: ConformanceScenarioId,
         index: usize,
         action: ConformanceAction,
-        expected: NormalizedObservation,
-        actual: NormalizedObservation,
+        fields: Vec<ConformanceFieldMismatch>,
     },
 }
 
@@ -333,15 +411,14 @@ impl fmt::Display for ConformanceMismatch {
                 formatter,
                 "scenario {scenario:?} expected {expected} observations but received {actual}",
             ),
-            Self::Step {
+            Self::Observation {
                 scenario,
                 index,
                 action,
-                expected,
-                actual,
+                fields,
             } => write!(
                 formatter,
-                "scenario {scenario:?} diverged at step {index} after {action:?}: expected {expected:?}, received {actual:?}",
+                "scenario {scenario:?} diverged at step {index} after {action:?}: {fields:?}",
             ),
         }
     }
@@ -362,27 +439,107 @@ pub fn compare_observations(
         });
     }
     for (index, (step, actual)) in scenario.steps.iter().zip(actual).enumerate() {
-        if step.expected != *actual {
-            return Err(ConformanceMismatch::Step {
+        let fields = observation_mismatches(step.expected, *actual);
+        if !fields.is_empty() {
+            return Err(ConformanceMismatch::Observation {
                 scenario: scenario.id,
                 index,
                 action: step.action,
-                expected: step.expected,
-                actual: *actual,
+                fields,
             });
         }
     }
     Ok(())
 }
 
+fn observation_mismatches(
+    expected: NormalizedObservation,
+    actual: NormalizedObservation,
+) -> Vec<ConformanceFieldMismatch> {
+    let mut fields = Vec::new();
+    if expected.phase != actual.phase {
+        fields.push(ConformanceFieldMismatch::Phase {
+            expected: expected.phase,
+            actual: actual.phase,
+        });
+    }
+    if expected.effect != actual.effect {
+        fields.push(ConformanceFieldMismatch::Effect {
+            expected: expected.effect,
+            actual: actual.effect,
+        });
+    }
+    if expected.terminal != actual.terminal {
+        fields.push(ConformanceFieldMismatch::Terminal {
+            expected: expected.terminal,
+            actual: actual.terminal,
+        });
+    }
+    if expected.ownership != actual.ownership {
+        fields.push(ConformanceFieldMismatch::Ownership {
+            expected: expected.ownership,
+            actual: actual.ownership,
+        });
+    }
+    if expected.ticket != actual.ticket {
+        fields.push(ConformanceFieldMismatch::Ticket {
+            expected: expected.ticket,
+            actual: actual.ticket,
+        });
+    }
+    if expected.intent != actual.intent {
+        fields.push(ConformanceFieldMismatch::Intent {
+            expected: expected.intent,
+            actual: actual.intent,
+        });
+    }
+    if expected.optimistic_presentation != actual.optimistic_presentation {
+        fields.push(ConformanceFieldMismatch::OptimisticPresentation {
+            expected: expected.optimistic_presentation,
+            actual: actual.optimistic_presentation,
+        });
+    }
+    if expected.graph_revision_delta != actual.graph_revision_delta {
+        fields.push(ConformanceFieldMismatch::GraphRevisionDelta {
+            expected: expected.graph_revision_delta,
+            actual: actual.graph_revision_delta,
+        });
+    }
+    if expected.graph != actual.graph {
+        fields.push(ConformanceFieldMismatch::Graph {
+            expected: expected.graph,
+            actual: actual.graph,
+        });
+    }
+    if expected.geometry != actual.geometry {
+        fields.push(ConformanceFieldMismatch::Geometry {
+            expected: expected.geometry,
+            actual: actual.geometry,
+        });
+    }
+    if expected.selection != actual.selection {
+        fields.push(ConformanceFieldMismatch::Selection {
+            expected: expected.selection,
+            actual: actual.selection,
+        });
+    }
+    if expected.view_status != actual.view_status {
+        fields.push(ConformanceFieldMismatch::ViewStatus {
+            expected: expected.view_status,
+            actual: actual.view_status,
+        });
+    }
+    fields
+}
+
 /// Returns every command settlement used by canonical mutation scenarios.
 #[must_use]
-pub const fn canonical_settlements() -> [ConformanceSettlement; 4] {
+pub const fn canonical_command_outcomes() -> [ConformanceCommandOutcome; 4] {
     [
-        ConformanceSettlement::Applied,
-        ConformanceSettlement::Rejected,
-        ConformanceSettlement::Conflict,
-        ConformanceSettlement::TransportFailure,
+        ConformanceCommandOutcome::Applied,
+        ConformanceCommandOutcome::Rejected,
+        ConformanceCommandOutcome::Conflict,
+        ConformanceCommandOutcome::NotDispatched,
     ]
 }
 
@@ -390,18 +547,18 @@ pub const fn canonical_settlements() -> [ConformanceSettlement; 4] {
 #[must_use]
 pub fn canonical_scenarios() -> Vec<ConformanceScenario> {
     let mut scenarios = Vec::new();
-    for settlement in canonical_settlements() {
-        scenarios.push(new_connection_scenario(settlement));
+    for outcome in canonical_command_outcomes() {
+        scenarios.push(new_connection_scenario(outcome));
         scenarios.push(reconnect_scenario(
             ConformanceReconnectEndpoint::Source,
-            settlement,
+            outcome,
         ));
         scenarios.push(reconnect_scenario(
             ConformanceReconnectEndpoint::Target,
-            settlement,
+            outcome,
         ));
-        scenarios.push(create_from_wire_scenario(settlement));
-        scenarios.push(node_drag_scenario(settlement));
+        scenarios.push(create_from_wire_scenario(outcome));
+        scenarios.push(node_drag_scenario(outcome));
     }
     scenarios.push(native_control_scenario());
     scenarios.push(edge_pick_scenario());
@@ -413,41 +570,100 @@ pub fn canonical_scenarios() -> Vec<ConformanceScenario> {
     scenarios
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mismatch_reports_each_drifted_semantic_field() {
+        let scenario = new_connection_scenario(ConformanceCommandOutcome::Applied);
+        let mut actual = scenario
+            .steps()
+            .iter()
+            .map(ConformanceStep::expected)
+            .collect::<Vec<_>>();
+        actual[1].phase = ConformancePhase::Candidate;
+        actual[1].effect = ConformanceEffect::None;
+        actual[1].geometry = ConformanceGeometry::Unavailable;
+
+        let Err(ConformanceMismatch::Observation { fields, .. }) =
+            compare_observations(&scenario, &actual)
+        else {
+            panic!("semantic drift must report a field-level observation mismatch");
+        };
+        assert!(fields.iter().any(|field| matches!(
+            field,
+            ConformanceFieldMismatch::Phase {
+                expected: ConformancePhase::ConnectionDrag,
+                actual: ConformancePhase::Candidate,
+            }
+        )));
+        assert!(fields.iter().any(|field| matches!(
+            field,
+            ConformanceFieldMismatch::Effect {
+                expected: ConformanceEffect::ProbeConnection,
+                actual: ConformanceEffect::None,
+            }
+        )));
+        assert!(fields.iter().any(|field| matches!(
+            field,
+            ConformanceFieldMismatch::Geometry {
+                expected: ConformanceGeometry::Baseline,
+                actual: ConformanceGeometry::Unavailable,
+            }
+        )));
+    }
+}
+
 #[must_use]
-pub fn new_connection_scenario(settlement: ConformanceSettlement) -> ConformanceScenario {
+pub fn new_connection_scenario(outcome: ConformanceCommandOutcome) -> ConformanceScenario {
     connection_scenario(
-        ConformanceScenarioId::NewConnection(settlement),
+        ConformanceScenarioId::NewConnection(outcome),
         "new-connection",
         ConformanceTarget::SourcePort,
-        settlement,
+        outcome,
     )
+}
+
+/// Returns the connection-probe prefix without borrowing the identity of a full command trace.
+///
+/// The prefix is a distinct scenario because adapters use it to compare bounded probe work before
+/// a release. It must not be represented by truncating a full mutation scenario in place.
+#[must_use]
+pub fn new_connection_probe_prefix_scenario() -> ConformanceScenario {
+    let full = new_connection_scenario(ConformanceCommandOutcome::Applied);
+    ConformanceScenario {
+        id: ConformanceScenarioId::NewConnectionProbePrefix,
+        display_name: "new-connection-probe-prefix",
+        steps: full.steps.into_iter().take(4).collect(),
+    }
 }
 
 #[must_use]
 pub fn reconnect_scenario(
     endpoint: ConformanceReconnectEndpoint,
-    settlement: ConformanceSettlement,
+    outcome: ConformanceCommandOutcome,
 ) -> ConformanceScenario {
     let (id, name, target) = match endpoint {
         ConformanceReconnectEndpoint::Source => (
-            ConformanceScenarioId::ReconnectSource(settlement),
+            ConformanceScenarioId::ReconnectSource(outcome),
             "reconnect-source",
             ConformanceTarget::ReconnectSource,
         ),
         ConformanceReconnectEndpoint::Target => (
-            ConformanceScenarioId::ReconnectTarget(settlement),
+            ConformanceScenarioId::ReconnectTarget(outcome),
             "reconnect-target",
             ConformanceTarget::ReconnectTarget,
         ),
     };
-    connection_scenario(id, name, target, settlement)
+    connection_scenario(id, name, target, outcome)
 }
 
 fn connection_scenario(
     id: ConformanceScenarioId,
     display_name: &'static str,
     target: ConformanceTarget,
-    settlement: ConformanceSettlement,
+    outcome: ConformanceCommandOutcome,
 ) -> ConformanceScenario {
     let (selection, intent, applied_graph) = match target {
         ConformanceTarget::ReconnectSource => (
@@ -510,32 +726,29 @@ fn connection_scenario(
             pending_step(ConformanceAction::AdvanceFrame, ConformanceEffect::None)
                 .with_intent(intent)
                 .with_selection(selection),
-            settlement_step(settlement, ConformancePhase::Idle, applied_graph)
+            settlement_step(outcome, ConformancePhase::Idle, applied_graph)
                 .with_selection(selection),
         ],
     }
 }
 
 #[must_use]
-pub fn create_from_wire_scenario(settlement: ConformanceSettlement) -> ConformanceScenario {
-    let settlement_phase = match settlement {
-        ConformanceSettlement::Applied | ConformanceSettlement::Noop => ConformancePhase::Idle,
-        ConformanceSettlement::Rejected
-        | ConformanceSettlement::Conflict
-        | ConformanceSettlement::TransportFailure => ConformancePhase::Searching,
+pub fn create_from_wire_scenario(outcome: ConformanceCommandOutcome) -> ConformanceScenario {
+    let settlement_phase = match outcome {
+        ConformanceCommandOutcome::Applied => ConformancePhase::Idle,
+        ConformanceCommandOutcome::Rejected
+        | ConformanceCommandOutcome::Conflict
+        | ConformanceCommandOutcome::NotDispatched => ConformancePhase::Searching,
     };
-    let settlement_step = settlement_step(
-        settlement,
-        settlement_phase,
-        ConformanceGraph::CreateFromWire,
-    );
+    let settlement_step =
+        settlement_step(outcome, settlement_phase, ConformanceGraph::CreateFromWire);
     let settlement_step = if settlement_phase == ConformancePhase::Searching {
         settlement_step.with_intent(ConformanceIntent::Connect)
     } else {
         settlement_step
     };
     ConformanceScenario {
-        id: ConformanceScenarioId::CreateFromWire(settlement),
+        id: ConformanceScenarioId::CreateFromWire(outcome),
         display_name: "create-from-wire",
         steps: vec![
             held_step(
@@ -575,9 +788,9 @@ pub fn create_from_wire_scenario(settlement: ConformanceSettlement) -> Conforman
 }
 
 #[must_use]
-pub fn node_drag_scenario(settlement: ConformanceSettlement) -> ConformanceScenario {
+pub fn node_drag_scenario(outcome: ConformanceCommandOutcome) -> ConformanceScenario {
     ConformanceScenario {
-        id: ConformanceScenarioId::NodeDrag(settlement),
+        id: ConformanceScenarioId::NodeDrag(outcome),
         display_name: "node-drag",
         steps: vec![
             held_step(
@@ -598,12 +811,8 @@ pub fn node_drag_scenario(settlement: ConformanceSettlement) -> ConformanceScena
             .with_selection(ConformanceSelection::SourceNode),
             pending_step(ConformanceAction::AdvanceFrame, ConformanceEffect::None)
                 .with_selection(ConformanceSelection::SourceNode),
-            settlement_step(
-                settlement,
-                ConformancePhase::Idle,
-                ConformanceGraph::NodeMoved,
-            )
-            .with_selection(ConformanceSelection::SourceNode),
+            settlement_step(outcome, ConformancePhase::Idle, ConformanceGraph::NodeMoved)
+                .with_selection(ConformanceSelection::SourceNode),
         ],
     }
 }
@@ -635,7 +844,7 @@ pub fn node_press_below_threshold_scenario() -> ConformanceScenario {
 pub fn connection_prefix_wait_scenarios() -> [ConformanceScenario; 4] {
     [
         with_prefix_wait(
-            new_connection_scenario(ConformanceSettlement::Applied),
+            new_connection_scenario(ConformanceCommandOutcome::Applied),
             ConformanceScenarioId::NewConnectionPrefixWait,
             "new-connection-prefix-wait",
             ConformanceSelection::Empty,
@@ -643,7 +852,7 @@ pub fn connection_prefix_wait_scenarios() -> [ConformanceScenario; 4] {
         with_prefix_wait(
             reconnect_scenario(
                 ConformanceReconnectEndpoint::Source,
-                ConformanceSettlement::Applied,
+                ConformanceCommandOutcome::Applied,
             ),
             ConformanceScenarioId::ReconnectSourcePrefixWait,
             "reconnect-source-prefix-wait",
@@ -652,14 +861,14 @@ pub fn connection_prefix_wait_scenarios() -> [ConformanceScenario; 4] {
         with_prefix_wait(
             reconnect_scenario(
                 ConformanceReconnectEndpoint::Target,
-                ConformanceSettlement::Applied,
+                ConformanceCommandOutcome::Applied,
             ),
             ConformanceScenarioId::ReconnectTargetPrefixWait,
             "reconnect-target-prefix-wait",
             ConformanceSelection::CanonicalEdge,
         ),
         with_prefix_wait(
-            create_from_wire_scenario(ConformanceSettlement::Applied),
+            create_from_wire_scenario(ConformanceCommandOutcome::Applied),
             ConformanceScenarioId::CreateFromWirePrefixWait,
             "create-from-wire-prefix-wait",
             ConformanceSelection::Empty,
@@ -737,7 +946,7 @@ pub fn node_drag_prefix_wait_scenario() -> ConformanceScenario {
             pending_step(ConformanceAction::AdvanceFrame, ConformanceEffect::None)
                 .with_selection(ConformanceSelection::SourceNode),
             settlement_step(
-                ConformanceSettlement::Applied,
+                ConformanceCommandOutcome::Applied,
                 ConformancePhase::Idle,
                 ConformanceGraph::NodeMoved,
             )
@@ -974,10 +1183,9 @@ const fn terminal_step(
             .with_selection(ConformanceSelection::Unavailable)
             .with_view_status(ConformanceViewStatus::HostClosed),
         ConformanceTerminal::Applied
-        | ConformanceTerminal::Noop
+        | ConformanceTerminal::NotDispatched
         | ConformanceTerminal::Rejected
         | ConformanceTerminal::Conflict
-        | ConformanceTerminal::TransportFailure
         | ConformanceTerminal::Cancelled
         | ConformanceTerminal::OwnerRetired => observation,
     };
@@ -1036,49 +1244,42 @@ const fn pending_step(action: ConformanceAction, effect: ConformanceEffect) -> C
 }
 
 const fn settlement_step(
-    settlement: ConformanceSettlement,
+    outcome: ConformanceCommandOutcome,
     phase: ConformancePhase,
     applied_graph: ConformanceGraph,
 ) -> ConformanceStep {
-    let (effect, terminal, revision_delta, graph, geometry) = match settlement {
-        ConformanceSettlement::Applied => (
+    let (effect, terminal, revision_delta, graph, geometry) = match outcome {
+        ConformanceCommandOutcome::Applied => (
             ConformanceEffect::None,
             ConformanceTerminal::Applied,
             1,
             applied_graph,
             geometry_for_graph(applied_graph),
         ),
-        ConformanceSettlement::Noop => (
-            ConformanceEffect::None,
-            ConformanceTerminal::Noop,
-            0,
-            ConformanceGraph::Baseline,
-            ConformanceGeometry::Baseline,
-        ),
-        ConformanceSettlement::Rejected => (
+        ConformanceCommandOutcome::Rejected => (
             ConformanceEffect::RestorePresentation,
             ConformanceTerminal::Rejected,
             0,
             ConformanceGraph::Baseline,
             ConformanceGeometry::Baseline,
         ),
-        ConformanceSettlement::Conflict => (
+        ConformanceCommandOutcome::Conflict => (
             ConformanceEffect::RestorePresentation,
             ConformanceTerminal::Conflict,
             0,
             ConformanceGraph::Baseline,
             ConformanceGeometry::Baseline,
         ),
-        ConformanceSettlement::TransportFailure => (
+        ConformanceCommandOutcome::NotDispatched => (
             ConformanceEffect::RestorePresentation,
-            ConformanceTerminal::TransportFailure,
+            ConformanceTerminal::NotDispatched,
             0,
             ConformanceGraph::Baseline,
             ConformanceGeometry::Baseline,
         ),
     };
     ConformanceStep::new(
-        ConformanceAction::Settle(settlement),
+        ConformanceAction::CompleteCommand(outcome),
         NormalizedObservation::new(
             phase,
             effect,

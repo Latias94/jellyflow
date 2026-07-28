@@ -5,12 +5,12 @@ use std::pin::Pin;
 use std::task::{Context as TaskContext, Poll, Waker};
 
 use jellyflow_runtime::adapter::conformance::{
-    ConformanceAction, ConformanceCancelReason, ConformanceCandidate, ConformanceEffect,
-    ConformanceGeometry, ConformanceGraph, ConformanceIntent, ConformanceOwnership,
-    ConformancePhase, ConformanceScenario, ConformanceScenarioId, ConformanceSelection,
-    ConformanceSettlement, ConformanceTarget, ConformanceTerminal, ConformanceTicket,
+    ConformanceAction, ConformanceCancelReason, ConformanceCandidate, ConformanceCommandOutcome,
+    ConformanceEffect, ConformanceGeometry, ConformanceGraph, ConformanceIntent,
+    ConformanceOwnership, ConformancePhase, ConformanceScenario, ConformanceScenarioId,
+    ConformanceSelection, ConformanceTarget, ConformanceTerminal, ConformanceTicket,
     ConformanceViewStatus, NormalizedObservation, canonical_scenarios, compare_observations,
-    new_connection_scenario,
+    new_connection_probe_prefix_scenario,
 };
 use open_gpui::{InputEvent, MouseMoveEvent, MouseUpEvent};
 
@@ -198,7 +198,7 @@ impl CanonicalDriver {
         cx: &'a mut open_gpui::TestAppContext,
     ) -> (Self, &'a mut open_gpui::VisualTestContext) {
         let with_edge = matches!(
-            scenario.id,
+            scenario.id(),
             ConformanceScenarioId::ReconnectSource(_)
                 | ConformanceScenarioId::ReconnectTarget(_)
                 | ConformanceScenarioId::ReconnectSourcePrefixWait
@@ -211,8 +211,8 @@ impl CanonicalDriver {
                 query_schedule.overlaps_valid_targets(),
             ))
             .expect("valid canonical graph");
-        let runtime = match scenario_settlement(scenario.id) {
-            Some(ConformanceSettlement::Rejected) => {
+        let runtime = match scenario_command_outcome(scenario.id()) {
+            Some(ConformanceCommandOutcome::Rejected) => {
                 runtime.with_middleware(RejectCanonicalCommand)
             }
             _ => runtime,
@@ -232,7 +232,7 @@ impl CanonicalDriver {
         });
         let captured_host = std::rc::Rc::new(std::cell::RefCell::new(None));
         let scene_host = captured_host.clone();
-        let scenario_id = scenario.id;
+        let scenario_id = scenario.id();
         let (_scene, cx) = cx.add_window_view(move |_, cx| {
             let host = cx.new(|_| {
                 let host = OpenGpuiSceneHost::new(
@@ -254,7 +254,7 @@ impl CanonicalDriver {
         });
         let host = captured_host.borrow().clone().expect("captured host");
         if matches!(
-            scenario.id,
+            scenario.id(),
             ConformanceScenarioId::ReconnectSource(_)
                 | ConformanceScenarioId::ReconnectTarget(_)
                 | ConformanceScenarioId::ReconnectSourcePrefixWait
@@ -310,7 +310,7 @@ impl CanonicalDriver {
 
         (
             Self {
-                id: scenario.id,
+                id: scenario.id(),
                 runtime,
                 host,
                 baseline_revision,
@@ -372,8 +372,8 @@ impl CanonicalDriver {
                 draw_once(cx);
                 self.prepare_injected_receipt(cx);
             }
-            ConformanceAction::Settle(settlement) => {
-                if settlement == ConformanceSettlement::TransportFailure {
+            ConformanceAction::CompleteCommand(settlement) => {
+                if settlement == ConformanceCommandOutcome::NotDispatched {
                     self.settle_not_dispatched(cx);
                 }
                 self.settle_retained_frames(cx);
@@ -641,13 +641,10 @@ impl CanonicalDriver {
     }
 
     fn prepare_injected_receipt(&mut self, cx: &mut open_gpui::VisualTestContext) {
-        let Some(settlement) = scenario_settlement(self.id) else {
+        let Some(settlement) = scenario_command_outcome(self.id) else {
             return;
         };
-        if settlement == ConformanceSettlement::Noop {
-            panic!("canonical mutation scenarios do not synthesize no-command settlements");
-        }
-        if settlement != ConformanceSettlement::Conflict {
+        if settlement != ConformanceCommandOutcome::Conflict {
             return;
         }
 
@@ -666,7 +663,7 @@ impl CanonicalDriver {
         let snapshot = self.runtime.snapshot().expect("receipt injection snapshot");
         let expected_version = snapshot.version();
         let command = match settlement {
-            ConformanceSettlement::Conflict => {
+            ConformanceCommandOutcome::Conflict => {
                 let (bound_ticket, command) = cx.update_entity(&self.host, |host, _| {
                     host.bind_pending_interaction_submission_for_execution()
                         .expect("canonical conflict binds the real pending submission")
@@ -1164,10 +1161,12 @@ fn effect_from_transition(before: EffectEvidence, after: EffectEvidence) -> Conf
 fn normalized_terminal(terminal: InteractionTerminalReason) -> ConformanceTerminal {
     match terminal {
         InteractionTerminalReason::Applied => ConformanceTerminal::Applied,
-        InteractionTerminalReason::Noop => ConformanceTerminal::Noop,
+        InteractionTerminalReason::Noop => {
+            panic!("canonical Open GPUI trace does not model a no-op command")
+        }
         InteractionTerminalReason::Rejected => ConformanceTerminal::Rejected,
         InteractionTerminalReason::Conflict => ConformanceTerminal::Conflict,
-        InteractionTerminalReason::TransportFailure => ConformanceTerminal::TransportFailure,
+        InteractionTerminalReason::TransportFailure => ConformanceTerminal::NotDispatched,
         InteractionTerminalReason::Cancelled => ConformanceTerminal::Cancelled,
         InteractionTerminalReason::OwnerRetired => ConformanceTerminal::OwnerRetired,
         InteractionTerminalReason::ViewClosed => ConformanceTerminal::HostClosed,
@@ -1202,7 +1201,7 @@ fn assert_route_matches(
     assert_eq!(route.facts().endpoints.target.point, target.route_anchor());
 }
 
-fn scenario_settlement(id: ConformanceScenarioId) -> Option<ConformanceSettlement> {
+fn scenario_command_outcome(id: ConformanceScenarioId) -> Option<ConformanceCommandOutcome> {
     match id {
         ConformanceScenarioId::NewConnection(settlement)
         | ConformanceScenarioId::ReconnectSource(settlement)
@@ -1210,10 +1209,11 @@ fn scenario_settlement(id: ConformanceScenarioId) -> Option<ConformanceSettlemen
         | ConformanceScenarioId::CreateFromWire(settlement)
         | ConformanceScenarioId::NodeDrag(settlement) => Some(settlement),
         ConformanceScenarioId::NewConnectionPrefixWait
+        | ConformanceScenarioId::NewConnectionProbePrefix
         | ConformanceScenarioId::ReconnectSourcePrefixWait
         | ConformanceScenarioId::ReconnectTargetPrefixWait
         | ConformanceScenarioId::CreateFromWirePrefixWait
-        | ConformanceScenarioId::NodeDragPrefixWait => Some(ConformanceSettlement::Applied),
+        | ConformanceScenarioId::NodeDragPrefixWait => Some(ConformanceCommandOutcome::Applied),
         ConformanceScenarioId::NodePressBelowThreshold
         | ConformanceScenarioId::NativeControl
         | ConformanceScenarioId::EdgePick
@@ -1275,15 +1275,15 @@ fn run_canonical_scenario_with_query_schedule(
     } else {
         CanonicalDriver::mount_with_query_schedule(scenario, query_schedule, cx)
     };
-    let mut observations = Vec::with_capacity(scenario.steps.len());
-    for step in &scenario.steps {
-        driver.perform(step.action, cx);
+    let mut observations = Vec::with_capacity(scenario.steps().len());
+    for step in scenario.steps() {
+        driver.perform(step.action(), cx);
         observations.push(driver.observe(cx));
     }
     compare_observations(scenario, &observations)
         .unwrap_or_else(|error| panic!("Open GPUI canonical mismatch: {error}"));
     if query_schedule == CanonicalQuerySchedule::Default
-        && scenario_settlement(scenario.id) == Some(ConformanceSettlement::Applied)
+        && scenario_command_outcome(scenario.id()) == Some(ConformanceCommandOutcome::Applied)
     {
         driver.assert_applied_mutation();
     }
@@ -1298,10 +1298,7 @@ fn run_canonical_scenario_with_query_schedule(
 }
 
 fn connection_probe_prefix_scenario() -> ConformanceScenario {
-    let mut scenario = new_connection_scenario(ConformanceSettlement::Applied);
-    scenario.display_name = "new-connection-probe-prefix";
-    scenario.steps.truncate(4);
-    scenario
+    new_connection_probe_prefix_scenario()
 }
 
 #[open_gpui::test]
