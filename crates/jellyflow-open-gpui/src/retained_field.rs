@@ -1,13 +1,6 @@
-use std::cell::{Cell, RefCell};
 use std::fmt;
-use std::future::Future;
-use std::panic::AssertUnwindSafe;
-use std::pin::Pin;
-use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::task::{Context as TaskContext, Poll};
 
-use futures_util::FutureExt;
 use jellyflow_core::NodeId;
 use jellyflow_runtime::{
     commands::CommandExecutionCompletion,
@@ -26,18 +19,21 @@ use jellyflow_runtime::{
     view::NodeInstanceKey,
     view::ViewCloseReason,
 };
-use open_gpui::{App, Task};
+use open_gpui::App;
 
 use crate::activity::{
     OpenGpuiActivityAcquireError, OpenGpuiActivityKind, OpenGpuiActivityLease,
     OpenGpuiNodeActivityRegistry,
 };
+use crate::admitted_command::{
+    AdmittedCommandEvent, AdmittedCommandTask, AdmittedCommandTaskLease, AdmittedCommandUncertainty,
+};
 use crate::authoring::{
-    OpenGpuiAuthoringStamp, OpenGpuiNodeAuthoring, OpenGpuiNodeAuthoringError,
-    OpenGpuiNodeObservation,
+    OpenGpuiAuthoringStamp, OpenGpuiCommandAdmissionError, OpenGpuiNodeAuthoring,
+    OpenGpuiNodeAuthoringError, OpenGpuiNodeObservation,
 };
 use crate::binding::{OpenGpuiMountContext, OpenGpuiMountValidationError};
-use crate::command_journal::{OpenGpuiCommandTicket, OpenGpuiCommandTicketResult};
+use crate::command_journal::OpenGpuiCommandTicketResult;
 pub use crate::draft_store::{
     OPEN_GPUI_DEFAULT_RETAINED_FIELD_STORE_CAPACITY, RetainedFieldStore, RetainedFieldStoreError,
 };
@@ -46,9 +42,24 @@ const RETAINED_FIELD_KEY_MAX_BYTES: usize = 128;
 const DISPATCH_ATTEMPT_DROPPED_MESSAGE: &str = "field command outcome is uncertain: the dispatched attempt was dropped before its ticket settled";
 const DISPATCH_TASK_INSTALLATION_UNWOUND_MESSAGE: &str =
     "field command outcome is uncertain: task installation unwound after the command was enqueued";
+const DISPATCH_HOST_NOTIFICATION_UNWOUND_MESSAGE: &str =
+    "field command outcome is uncertain: host notification unwound after the command was enqueued";
 const DISPATCH_TASK_PANICKED_MESSAGE: &str =
     "field command outcome is uncertain: the dispatched task panicked before its ticket settled";
 static NEXT_RETAINED_DRAFT_NONCE: AtomicU64 = AtomicU64::new(1);
+
+fn admitted_command_uncertainty_message(reason: AdmittedCommandUncertainty) -> &'static str {
+    match reason {
+        AdmittedCommandUncertainty::RunnerDropped => DISPATCH_ATTEMPT_DROPPED_MESSAGE,
+        AdmittedCommandUncertainty::RunnerPanicked => DISPATCH_TASK_PANICKED_MESSAGE,
+        AdmittedCommandUncertainty::TaskInstallationUnwound => {
+            DISPATCH_TASK_INSTALLATION_UNWOUND_MESSAGE
+        }
+        AdmittedCommandUncertainty::HostNotificationUnwound => {
+            DISPATCH_HOST_NOTIFICATION_UNWOUND_MESSAGE
+        }
+    }
+}
 
 fn allocate_retained_draft_nonce() -> Option<u64> {
     NEXT_RETAINED_DRAFT_NONCE
@@ -1456,97 +1467,6 @@ impl FieldRetentionState {
     }
 }
 
-#[derive(Debug)]
-struct FieldTaskState {
-    attempt: RetainedFieldAttempt,
-    _task: Task<()>,
-    _lease: OpenGpuiActivityLease,
-}
-
-impl FieldTaskState {
-    fn attached(
-        attempt: RetainedFieldAttempt,
-        task: Task<()>,
-        lease: OpenGpuiActivityLease,
-    ) -> Self {
-        Self {
-            attempt,
-            _task: task,
-            _lease: lease,
-        }
-    }
-
-    fn attempt(&self) -> RetainedFieldAttempt {
-        self.attempt
-    }
-}
-
-enum FieldTaskCompletion {
-    Ticket {
-        attempt: RetainedFieldAttempt,
-        result: Box<OpenGpuiCommandTicketResult>,
-    },
-    OutcomeUnknown {
-        attempt: RetainedFieldAttempt,
-        message: &'static str,
-    },
-}
-
-impl FieldTaskCompletion {
-    fn attempt(&self) -> RetainedFieldAttempt {
-        match self {
-            Self::Ticket { attempt, .. } | Self::OutcomeUnknown { attempt, .. } => *attempt,
-        }
-    }
-}
-
-/// Future owned exclusively by the retained-field supervisor after command dispatch.
-///
-/// Keeping the ticket in this future prevents product tasks from dropping its completion path or
-/// allowing a runner panic to bypass the field lifecycle.
-#[must_use = "a retained field dispatch supervisor must be retained until its ticket settles"]
-struct RetainedFieldDispatchedAttempt {
-    attempt: RetainedFieldAttempt,
-    ticket: Pin<Box<OpenGpuiCommandTicket>>,
-    completion: Rc<RefCell<Option<FieldTaskCompletion>>>,
-    post_enqueue_cleanup: Rc<Cell<bool>>,
-    ticket_settled: bool,
-}
-
-impl Future for RetainedFieldDispatchedAttempt {
-    type Output = ();
-
-    fn poll(mut self: Pin<&mut Self>, context: &mut TaskContext<'_>) -> Poll<Self::Output> {
-        let Poll::Ready(result) = self.ticket.as_mut().poll(context) else {
-            return Poll::Pending;
-        };
-        self.ticket_settled = true;
-        let mut completion = self.completion.borrow_mut();
-        if completion.is_none() {
-            *completion = Some(FieldTaskCompletion::Ticket {
-                attempt: self.attempt,
-                result: Box::new(result),
-            });
-        }
-        Poll::Ready(())
-    }
-}
-
-impl Drop for RetainedFieldDispatchedAttempt {
-    fn drop(&mut self) {
-        if self.ticket_settled || self.post_enqueue_cleanup.get() {
-            return;
-        }
-        let mut completion = self.completion.borrow_mut();
-        if completion.is_none() {
-            *completion = Some(FieldTaskCompletion::OutcomeUnknown {
-                attempt: self.attempt,
-                message: DISPATCH_ATTEMPT_DROPPED_MESSAGE,
-            });
-        }
-    }
-}
-
 /// Open GPUI-local owner for one retained editable field.
 pub struct RetainedField<T> {
     mount: RetainedFieldMountCapability,
@@ -1556,8 +1476,7 @@ pub struct RetainedField<T> {
     state: FieldOwnerState<T>,
     recovery: RetainedFieldRecovery,
     retention: FieldRetentionState,
-    task_state: Option<FieldTaskState>,
-    task_completion: Rc<RefCell<Option<FieldTaskCompletion>>>,
+    admitted_command: Option<AdmittedCommandTask<RetainedFieldAttempt>>,
 }
 
 impl<T> fmt::Debug for RetainedField<T>
@@ -1574,9 +1493,12 @@ where
             .field("has_draft_lease", &self.retention.is_protected())
             .field(
                 "task_attempt",
-                &self.task_state.as_ref().map(FieldTaskState::attempt),
+                &self
+                    .admitted_command
+                    .as_ref()
+                    .map(AdmittedCommandTask::attempt),
             )
-            .field("has_task", &self.task_state.is_some())
+            .field("has_task", &self.admitted_command.is_some())
             .field("externalized", &self.retention.is_externalized())
             .finish()
     }
@@ -1622,8 +1544,7 @@ where
             state: FieldOwnerState::new(field),
             recovery,
             retention: FieldRetentionState::Idle,
-            task_state: None,
-            task_completion: Rc::new(RefCell::new(None)),
+            admitted_command: None,
         };
         retained.ensure_live()?;
         let candidate = retained.state.prepare(|_| ());
@@ -1824,49 +1745,33 @@ where
             });
         }
 
-        let lease = match self.mount.activity.acquire(OpenGpuiActivityKind::Task) {
+        let lease = match AdmittedCommandTaskLease::acquire(&self.mount.activity) {
             Ok(lease) => lease,
             Err(error) => {
                 self.cancel_planned(attempt);
                 return Err(error.into());
             }
         };
-        let ticket = match authoring.enqueue(command, cx) {
-            Ok(ticket) => ticket,
+        let admitted = match authoring.admit(command) {
+            Ok(admitted) => admitted,
             Err(error) => {
                 self.cancel_planned(attempt);
-                return Err(map_authoring_error(error));
+                return Err(map_admission_error(error));
             }
         };
-        let dispatched = RetainedFieldDispatchedAttempt {
-            attempt,
-            ticket: Box::pin(ticket),
-            completion: Rc::clone(&self.task_completion),
-            post_enqueue_cleanup: Rc::new(Cell::new(false)),
-            ticket_settled: false,
-        };
-        let mut post_enqueue = RetainedFieldPostEnqueueGuard::new(
-            self,
-            attempt,
-            Rc::clone(&dispatched.post_enqueue_cleanup),
-        );
-        let completion = Rc::clone(&post_enqueue.field.task_completion);
-        let task = cx.spawn(async move |cx| {
-            let task_panicked = AssertUnwindSafe(dispatched).catch_unwind().await.is_err();
-            if task_panicked {
-                let mut completion = completion.borrow_mut();
-                if completion.is_none() {
-                    *completion = Some(FieldTaskCompletion::OutcomeUnknown {
-                        attempt,
-                        message: DISPATCH_TASK_PANICKED_MESSAGE,
-                    });
-                }
-            }
-            if completion.borrow().is_some() {
-                cx.refresh();
-            }
-        });
-        post_enqueue.field.task_state = Some(FieldTaskState::attached(attempt, task, lease));
+        let (ticket, notification) = admitted.into_parts();
+        self.admitted_command = Some(AdmittedCommandTask::new(attempt, ticket, lease));
+        let mut post_enqueue = RetainedFieldPostEnqueueGuard::new(self, attempt);
+        if !post_enqueue
+            .field
+            .admitted_command
+            .as_mut()
+            .is_some_and(|task| task.spawn(cx))
+        {
+            return Err(RetainedFieldError::TaskInstallationFailed);
+        }
+        post_enqueue.set_unwind_reason(AdmittedCommandUncertainty::HostNotificationUnwound);
+        notification.notify(cx);
         post_enqueue.disarm();
         Ok(())
     }
@@ -1929,22 +1834,23 @@ where
     fn drain_task_completion(
         &mut self,
     ) -> Result<Option<RetainedFieldSettlement>, RetainedFieldError> {
-        let completion = self.task_completion.borrow_mut().take();
-        let Some(completion) = completion else {
+        let event = self
+            .admitted_command
+            .as_ref()
+            .and_then(AdmittedCommandTask::take_event);
+        let Some(event) = event else {
             return Ok(None);
         };
-        let attempt = completion.attempt();
-        let settlement = self.mutate(|field| match completion {
-            FieldTaskCompletion::Ticket {
+        let attempt = event.attempt();
+        self.release_task_resources(attempt);
+        let settlement = self.mutate(|field| match event {
+            AdmittedCommandEvent::Settled {
                 attempt, result, ..
             } => Ok(field.settle_ticket(attempt, *result)),
-            FieldTaskCompletion::OutcomeUnknown { attempt, message } => {
-                field.mark_uncertain(attempt, message)
+            AdmittedCommandEvent::Uncertain { attempt, reason } => {
+                field.mark_uncertain(attempt, admitted_command_uncertainty_message(reason))
             }
         })?;
-        if !matches!(settlement, RetainedFieldSettlement::Ignored { .. }) {
-            self.release_task_resources(attempt);
-        }
         Ok(Some(settlement))
     }
 
@@ -2010,22 +1916,26 @@ where
     }
 
     fn release_task_resources(&mut self, attempt: RetainedFieldAttempt) {
-        self.task_state
-            .take_if(|task_state| task_state.attempt() == attempt);
+        AdmittedCommandTask::release_if(&mut self.admitted_command, attempt);
     }
 
     fn release_terminal_resources(&mut self) {
-        self.task_state.take();
-        self.task_completion.borrow_mut().take();
+        AdmittedCommandTask::shutdown(&mut self.admitted_command);
         self.retention.release_protection();
     }
 
-    fn terminalize_post_enqueue_unwind(&mut self, attempt: RetainedFieldAttempt) {
-        self.task_completion.borrow_mut().take();
-        let _ = self.state.try_transition(|field| {
-            field.mark_uncertain(attempt, DISPATCH_TASK_INSTALLATION_UNWOUND_MESSAGE)
-        });
-        self.release_task_resources(attempt);
+    fn record_post_enqueue_unwind(
+        &self,
+        attempt: RetainedFieldAttempt,
+        reason: AdmittedCommandUncertainty,
+    ) {
+        if let Some(task) = self
+            .admitted_command
+            .as_ref()
+            .filter(|task| task.attempt() == attempt)
+        {
+            task.record_uncertainty(reason);
+        }
     }
 }
 
@@ -2035,7 +1945,7 @@ where
 {
     field: &'a mut RetainedField<T>,
     attempt: RetainedFieldAttempt,
-    cleanup: Rc<Cell<bool>>,
+    reason: AdmittedCommandUncertainty,
     armed: bool,
 }
 
@@ -2043,17 +1953,17 @@ impl<'a, T> RetainedFieldPostEnqueueGuard<'a, T>
 where
     T: Clone + PartialEq + 'static,
 {
-    fn new(
-        field: &'a mut RetainedField<T>,
-        attempt: RetainedFieldAttempt,
-        cleanup: Rc<Cell<bool>>,
-    ) -> Self {
+    fn new(field: &'a mut RetainedField<T>, attempt: RetainedFieldAttempt) -> Self {
         Self {
             field,
             attempt,
-            cleanup,
+            reason: AdmittedCommandUncertainty::TaskInstallationUnwound,
             armed: true,
         }
+    }
+
+    fn set_unwind_reason(&mut self, reason: AdmittedCommandUncertainty) {
+        self.reason = reason;
     }
 
     fn disarm(&mut self) {
@@ -2069,8 +1979,8 @@ where
         if !self.armed {
             return;
         }
-        self.cleanup.set(true);
-        self.field.terminalize_post_enqueue_unwind(self.attempt);
+        self.field
+            .record_post_enqueue_unwind(self.attempt, self.reason);
     }
 }
 
@@ -2228,6 +2138,10 @@ pub enum RetainedFieldError {
     AttemptIdentityExhausted,
     #[error("retained field attempt does not match: {attempt:?}")]
     AttemptMismatch { attempt: RetainedFieldAttempt },
+    #[error("retained field command was not admitted: {message}")]
+    CommandNotAdmitted { message: String },
+    #[error("retained field command task could not be installed")]
+    TaskInstallationFailed,
     #[error("retained field belongs to graph runtime {expected:?}, not foreign runtime {actual:?}")]
     ForeignRuntimeAuthority {
         expected: RuntimeProvenance,
@@ -2314,6 +2228,15 @@ fn map_authoring_error(error: OpenGpuiNodeAuthoringError) -> RetainedFieldError 
             current_revision,
         },
         error => RetainedFieldError::Authoring(Box::new(error)),
+    }
+}
+
+fn map_admission_error(error: OpenGpuiCommandAdmissionError) -> RetainedFieldError {
+    match error {
+        OpenGpuiCommandAdmissionError::Authoring(error) => map_authoring_error(error),
+        OpenGpuiCommandAdmissionError::Journal(error) => RetainedFieldError::CommandNotAdmitted {
+            message: error.to_string(),
+        },
     }
 }
 
@@ -2821,13 +2744,13 @@ mod tests {
                         })
                     )
             ));
-            assert!(field.task_state.is_none());
+            assert!(field.admitted_command.is_none());
             assert_eq!(field.retention(), RetainedFieldRetention::Idle);
         }
     }
 
     #[test]
-    fn post_enqueue_unwind_marks_the_pending_attempt_uncertain_without_a_task_lease() {
+    fn post_enqueue_unwind_records_uncertainty_without_reducing_from_drop() {
         let (_runtime, view, instance) = retained_field_instance();
         let capability = test_capability(&view, instance, 2);
         let mut field = mount_capability_for_test(
@@ -2844,12 +2767,28 @@ mod tests {
             .try_transition(|field| field.plan(revision))
             .expect("plan pending field attempt");
         let attempt = intent.attempt();
+        field.admitted_command = Some(AdmittedCommandTask::without_transport(attempt));
 
         {
-            let _guard =
-                RetainedFieldPostEnqueueGuard::new(&mut field, attempt, Rc::new(Cell::new(false)));
+            let _guard = RetainedFieldPostEnqueueGuard::new(&mut field, attempt);
         }
 
+        assert_eq!(
+            field.attempt_state(),
+            RetainedFieldAttemptState::Pending { attempt },
+            "guard drop must not clone user data or enter the field reducer",
+        );
+        let settlement = field
+            .drain_task_completion()
+            .expect("drain installation unwind")
+            .expect("installation unwind emits one event");
+        assert!(matches!(
+            settlement,
+            RetainedFieldSettlement::Uncertain {
+                attempt: settled_attempt,
+                ..
+            } if settled_attempt == attempt
+        ));
         assert_eq!(
             field.attempt_state(),
             RetainedFieldAttemptState::Uncertain {
@@ -2862,7 +2801,7 @@ mod tests {
                 .notice()
                 .is_some_and(|notice| notice.contains("task installation unwound"))
         );
-        assert!(field.task_state.is_none());
+        assert!(field.admitted_command.is_none());
     }
 
     fn mount_capability_for_test<T>(

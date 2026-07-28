@@ -179,8 +179,7 @@ impl RealWindowSmokeProbe {
                             .auto_pan_origin
                             .ok_or("input_autopan_baseline_missing")?;
                         let presentation = interaction_presentation(surface, cx);
-                        let tick_resources =
-                            surface.read(cx).host().read(cx).resource_snapshot();
+                        let tick_resources = surface.read(cx).host().read(cx).resource_snapshot();
                         let drag_delta = presentation
                             .node_drag()
                             .map(|drag| drag.delta())

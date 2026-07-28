@@ -1816,7 +1816,8 @@ mod tests {
                 OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY
             );
             assert!(
-                host.resource_snapshot().eligible_parked_nodes() <= OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY
+                host.resource_snapshot().eligible_parked_nodes()
+                    <= OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY
             );
         });
         assert!(weak_node.upgrade().is_none());

@@ -6,9 +6,11 @@ use jellyflow_core::{
     CanvasPoint, CanvasRect, CanvasSize, GraphBuilder, GraphId, Node, NodeId, NodeKindKey, Port,
     PortCapacity, PortDirection, PortId, PortKey, PortKind,
 };
+use jellyflow_open_gpui::activity::OpenGpuiNodeActivityHandle;
 use jellyflow_open_gpui::authoring::{
-    OpenGpuiCommandTicket, OpenGpuiCommandTicketResult, OpenGpuiNodeAuthoring,
-    OpenGpuiNodeAuthoringError, OpenGpuiNodeBinding, OpenGpuiNodeDragHandle, OpenGpuiPortHandle,
+    MutationDispatchError, MutationLayoutEffect, MutationLayoutSettlement, MutationRequest,
+    MutationSettlement, OpenGpuiManagedMutation, OpenGpuiNodeAuthoring, OpenGpuiNodeAuthoringError,
+    OpenGpuiNodeBinding, OpenGpuiNodeDragHandle, OpenGpuiPortHandle,
 };
 use jellyflow_open_gpui::host::{OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY, OpenGpuiSceneHost};
 use jellyflow_open_gpui::interaction::{OpenGpuiPortDragPhase, OpenGpuiPortEvent};
@@ -29,6 +31,10 @@ const RENDERER: &str = "test.native.mount-capability-node";
 
 struct ProbeNode {
     _binding: Entity<OpenGpuiNodeBinding>,
+}
+
+struct MutationHarness {
+    mutation: OpenGpuiManagedMutation<serde_json::Value>,
 }
 
 struct InteractiveProbeNode {
@@ -211,6 +217,7 @@ fn eligible_lru_eviction_revokes_old_binding_before_same_instance_remount(
     });
     let stale_execute = binding_authoring(cx, &old);
     let stale_facts = binding_authoring(cx, &old);
+    let stale_mutation = mutation_harness(cx, &old);
     cx.read_entity(&old, |binding, _| {
         assert!(binding.authoring().unwrap().port(port_id()).is_some());
     });
@@ -238,7 +245,7 @@ fn eligible_lru_eviction_revokes_old_binding_before_same_instance_remount(
         "runtime identity survives eviction"
     );
     assert_revoked_binding(cx, &old);
-    assert_stale_authoring_rejected(stale_execute, stale_facts, &old, cx);
+    assert_stale_authoring_rejected(stale_execute, stale_facts, &old, &stale_mutation, cx);
     assert_live_replacement(&runtime, cx, &new, serde_json::json!("after eviction"));
 }
 
@@ -281,6 +288,7 @@ fn retry_mount_revokes_failed_factory_binding_before_same_instance_remount(
     });
     let stale_execute = binding_authoring(cx, &old);
     let stale_facts = binding_authoring(cx, &old);
+    let stale_mutation = mutation_harness(cx, &old);
     assert!(cx.update_entity(&host, |host, cx| host.retry_mount(node_id(), cx)));
     assert_revoked_binding(cx, &old);
 
@@ -292,7 +300,7 @@ fn retry_mount_revokes_failed_factory_binding_before_same_instance_remount(
     });
     assert_eq!(old_instance, new_instance, "retry reuses runtime identity");
     assert_revoked_binding(cx, &old);
-    assert_stale_authoring_rejected(stale_execute, stale_facts, &old, cx);
+    assert_stale_authoring_rejected(stale_execute, stale_facts, &old, &stale_mutation, cx);
     assert_live_replacement(&runtime, cx, &new, serde_json::json!("after retry"));
 }
 
@@ -335,19 +343,20 @@ fn authoring_rejects_mismatched_and_stale_commands_before_journal_admission(
         .expect("foreign runtime snapshot")
         .version();
     let mismatched = binding_authoring(cx, &binding);
-    let authoring_version = mismatched.version();
-    let mismatch = cx.update(|_, cx| {
-        mismatched.enqueue(
-            GraphCommand::set_node_data(foreign_version, node_id(), serde_json::json!("mismatch")),
+    let mismatch_harness = mutation_harness(cx, &binding);
+    let mismatch_value = serde_json::json!("mismatch");
+    let mismatch = cx.update_entity(&mismatch_harness, |harness, cx| {
+        harness.mutation.dispatch(
+            mismatched,
+            GraphCommand::set_node_data(foreign_version, node_id(), mismatch_value.clone()),
+            MutationRequest::new(mismatch_value),
+            MutationLayoutEffect::Preserve,
             cx,
         )
     });
     assert!(matches!(
         mismatch,
-        Err(OpenGpuiNodeAuthoringError::CommandVersionMismatch {
-            authoring_version: actual_authoring,
-            command_version: actual_command,
-        }) if actual_authoring == authoring_version && actual_command == foreign_version
+        Err(MutationDispatchError::NotDispatched { .. })
     ));
     draw(cx);
     assert_eq!(runtime.snapshot().unwrap().revision(), 0);
@@ -378,18 +387,20 @@ fn authoring_rejects_mismatched_and_stale_commands_before_journal_admission(
         serde_json::json!("newer graph"),
     );
     let stale_version = stale.version();
-    let stale_result = cx.update(|_, cx| {
-        stale.enqueue(
-            GraphCommand::set_node_data(stale_version, node_id(), serde_json::json!("stale")),
+    let stale_harness = mutation_harness(cx, &binding);
+    let stale_value = serde_json::json!("stale");
+    let stale_result = cx.update_entity(&stale_harness, |harness, cx| {
+        harness.mutation.dispatch(
+            stale,
+            GraphCommand::set_node_data(stale_version, node_id(), stale_value.clone()),
+            MutationRequest::new(stale_value),
+            MutationLayoutEffect::Preserve,
             cx,
         )
     });
     assert!(matches!(
         stale_result,
-        Err(OpenGpuiNodeAuthoringError::StaleRevision {
-            authoring_revision: 0,
-            current_revision: 1,
-        })
+        Err(MutationDispatchError::NotDispatched { .. })
     ));
     draw(cx);
     assert_eq!(runtime.snapshot().unwrap().revision(), 1);
@@ -426,6 +437,7 @@ fn host_close_reason_is_preserved_for_binding_and_captured_authoring(
         .clone()
         .expect("captured live binding");
     let captured_authoring = binding_authoring(cx, &binding);
+    let mutation = mutation_harness(cx, &binding);
 
     let outcome = cx
         .update_window_entity(&host, |host, window, cx| host.close_in_window(window, cx))
@@ -441,19 +453,215 @@ fn host_close_reason_is_preserved_for_binding_and_captured_authoring(
     });
 
     let captured_version = captured_authoring.version();
-    let closed_result = cx.update(|_, cx| {
-        captured_authoring.enqueue(
-            GraphCommand::set_node_data(captured_version, node_id(), serde_json::json!("closed")),
+    let closed_value = serde_json::json!("closed");
+    let closed_result = cx.update_entity(&mutation, |harness, cx| {
+        harness.mutation.dispatch(
+            captured_authoring,
+            GraphCommand::set_node_data(captured_version, node_id(), closed_value.clone()),
+            MutationRequest::new(closed_value),
+            MutationLayoutEffect::Preserve,
             cx,
         )
     });
     assert!(matches!(
         closed_result,
-        Err(OpenGpuiNodeAuthoringError::Closed {
+        Err(MutationDispatchError::Closed {
             reason: ViewCloseReason::HostClosed,
         })
     ));
     assert_eq!(runtime.snapshot().unwrap().revision(), 0);
+}
+
+#[open_gpui::test]
+fn pending_mutation_retirement_is_terminal_across_same_instance_remount(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let (runtime, host, bindings, attempts, cx) = mount_managed_mutation_scene(cx, true);
+    let old = bindings.borrow()[0].clone();
+    let old_instance = cx.read_entity(&old, |binding, _| {
+        binding.authoring().unwrap().instance().clone()
+    });
+    let old_activity = cx.read_entity(&old, |binding, _| binding.activity());
+    let mut old_mutation = cx.read_entity(&old, |binding, _| {
+        binding.managed_mutation::<serde_json::Value>()
+    });
+    let old_value = serde_json::json!({ "owner": "retired" });
+
+    dispatch_pending_data_mutation(cx, &old, &mut old_mutation, old_value.clone());
+    assert_mutation_resources(cx, &host, &old_activity, 2, 1);
+    assert!(cx.update_entity(&host, |host, cx| host.retry_mount(node_id(), cx)));
+
+    assert_revoked_activity(&old_activity);
+    assert_terminal_retired(&old_mutation, &old_value);
+    assert_host_protection(cx, &host, 0, 0);
+    let retired_error = cx.read_entity(&old, |binding, _| {
+        binding
+            .authoring()
+            .expect_err("retired binding rejects authoring")
+    });
+    assert!(matches!(
+        old_mutation.observe_authoring_error(&retired_error),
+        MutationSettlement::Retired { .. }
+    ));
+
+    draw(cx);
+    assert_eq!(attempts.get(), 2);
+    assert_eq!(runtime.snapshot().unwrap().revision(), 1);
+    assert_eq!(
+        runtime
+            .snapshot()
+            .unwrap()
+            .graph()
+            .node(&node_id())
+            .unwrap()
+            .data,
+        old_value,
+        "journal admission remains host-owned after the old manager retires",
+    );
+    assert_terminal_retired(&old_mutation, &old_value);
+    assert_revoked_activity(&old_activity);
+
+    draw(cx);
+    let replacement = bindings.borrow()[1].clone();
+    let replacement_instance = cx.read_entity(&replacement, |binding, _| {
+        binding.authoring().unwrap().instance().clone()
+    });
+    assert_eq!(old_instance, replacement_instance);
+    let replacement_activity = cx.read_entity(&replacement, |binding, _| binding.activity());
+    assert!(!replacement_activity.is_revoked());
+    assert_eq!(replacement_activity.active_count(), 0);
+
+    let replacement_value = serde_json::json!({ "owner": "replacement" });
+    let mut replacement_mutation = cx.read_entity(&replacement, |binding, _| {
+        binding.managed_mutation::<serde_json::Value>()
+    });
+    dispatch_pending_data_mutation(
+        cx,
+        &replacement,
+        &mut replacement_mutation,
+        replacement_value.clone(),
+    );
+    assert_mutation_resources(cx, &host, &replacement_activity, 2, 1);
+    draw(cx);
+    draw(cx);
+    let replacement_authoring = binding_authoring(cx, &replacement);
+    assert!(matches!(
+        cx.update_entity(&replacement, |_, cx| replacement_mutation.observe(
+            &replacement_authoring,
+            |intent| replacement_authoring.node().data == *intent,
+            cx,
+        )),
+        MutationSettlement::Satisfied {
+            layout: MutationLayoutSettlement::NotRequested,
+        }
+    ));
+    assert_eq!(runtime.snapshot().unwrap().revision(), 2);
+    assert_mutation_resources(cx, &host, &replacement_activity, 0, 0);
+    assert_terminal_retired(&old_mutation, &old_value);
+
+    let close = cx
+        .update_window_entity(&host, |host, window, cx| host.close_in_window(window, cx))
+        .expect("settled remount has no journal work left for close");
+    assert_eq!(close.command_completions().count(), 0);
+    assert_eq!(runtime.snapshot().unwrap().revision(), 2);
+    assert_eq!(runtime.history_state().unwrap().undo_len(), 2);
+    cx.run_until_parked();
+    assert_terminal_retired(&old_mutation, &old_value);
+    assert_host_terminal_resources(cx, &host);
+}
+
+#[open_gpui::test]
+fn pending_mutation_host_close_wins_over_deferred_ticket_resolution(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let (runtime, host, bindings, _attempts, cx) = mount_managed_mutation_scene(cx, false);
+    let binding = bindings.borrow()[0].clone();
+    let activity = cx.read_entity(&binding, |binding, _| binding.activity());
+    let mut mutation = cx.read_entity(&binding, |binding, _| {
+        binding.managed_mutation::<serde_json::Value>()
+    });
+    let value = serde_json::json!({ "owner": "closed" });
+
+    dispatch_pending_data_mutation(cx, &binding, &mut mutation, value.clone());
+    assert_mutation_resources(cx, &host, &activity, 2, 1);
+    let close = cx
+        .update_window_entity(&host, |host, window, cx| host.close_in_window(window, cx))
+        .expect("host close drains the pending managed command");
+
+    assert_eq!(close.reason(), ViewCloseReason::HostClosed);
+    assert_eq!(close.command_completions().count(), 0);
+    assert_eq!(runtime.snapshot().unwrap().revision(), 1);
+    assert_eq!(runtime.history_state().unwrap().undo_len(), 1);
+    assert_revoked_activity(&activity);
+    assert_terminal_closed(&mutation, &value);
+    assert_host_terminal_resources(cx, &host);
+
+    let closed_error = cx.read_entity(&binding, |binding, _| {
+        binding
+            .authoring()
+            .expect_err("closed binding rejects authoring")
+    });
+    assert!(matches!(
+        mutation.observe_authoring_error(&closed_error),
+        MutationSettlement::Closed {
+            reason: ViewCloseReason::HostClosed,
+            ..
+        }
+    ));
+    cx.run_until_parked();
+
+    assert_terminal_closed(&mutation, &value);
+    assert_revoked_activity(&activity);
+    assert_host_terminal_resources(cx, &host);
+    assert_eq!(runtime.snapshot().unwrap().revision(), 1);
+    assert_eq!(runtime.history_state().unwrap().undo_len(), 1);
+}
+
+#[open_gpui::test]
+fn dropping_pending_mutation_owner_releases_leases_and_host_settles_journal_once(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let (runtime, host, bindings, _attempts, cx) = mount_managed_mutation_scene(cx, false);
+    let binding = bindings.borrow()[0].clone();
+    let activity = cx.read_entity(&binding, |binding, _| binding.activity());
+    let mut mutation = cx.read_entity(&binding, |binding, _| {
+        binding.managed_mutation::<serde_json::Value>()
+    });
+    let value = serde_json::json!({ "owner": "dropped" });
+
+    dispatch_pending_data_mutation(cx, &binding, &mut mutation, value.clone());
+    assert_mutation_resources(cx, &host, &activity, 2, 1);
+    drop(mutation);
+
+    assert!(!activity.is_revoked());
+    assert_eq!(activity.active_count(), 0);
+    assert_eq!(activity.protected_count(), 0);
+    assert_host_protection(cx, &host, 0, 0);
+
+    let close = cx
+        .update_window_entity(&host, |host, window, cx| host.close_in_window(window, cx))
+        .expect("host retains and settles a command after its mutation owner drops");
+    assert_eq!(close.command_completions().count(), 0);
+    assert_eq!(runtime.snapshot().unwrap().revision(), 1);
+    assert_eq!(runtime.history_state().unwrap().undo_len(), 1);
+    assert_eq!(
+        runtime
+            .snapshot()
+            .unwrap()
+            .graph()
+            .node(&node_id())
+            .unwrap()
+            .data,
+        value,
+    );
+    assert_revoked_activity(&activity);
+    assert_host_terminal_resources(cx, &host);
+
+    cx.run_until_parked();
+    assert_eq!(runtime.snapshot().unwrap().revision(), 1);
+    assert_eq!(runtime.history_state().unwrap().undo_len(), 1);
+    assert_revoked_activity(&activity);
+    assert_host_terminal_resources(cx, &host);
 }
 
 #[open_gpui::test]
@@ -782,11 +990,171 @@ fn revoked_port_prepaint_cannot_cancel_replacement_mount_drag(cx: &mut open_gpui
     });
 }
 
+fn mount_managed_mutation_scene(
+    cx: &mut open_gpui::TestAppContext,
+    fail_first_mount: bool,
+) -> (
+    Rc<GraphRuntime>,
+    Entity<OpenGpuiSceneHost>,
+    Rc<RefCell<Vec<Entity<OpenGpuiNodeBinding>>>>,
+    Rc<Cell<u32>>,
+    &mut open_gpui::VisualTestContext,
+) {
+    let runtime = Rc::new(
+        GraphRuntime::builder(catalog())
+            .build(graph_with_nodes(1))
+            .expect("valid managed-mutation graph"),
+    );
+    let view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("managed-mutation view");
+    let attempts = Rc::new(Cell::new(0_u32));
+    let bindings = Rc::new(RefCell::new(Vec::new()));
+    let factory_attempts = Rc::clone(&attempts);
+    let factory_bindings = Rc::clone(&bindings);
+    let mut registry = OpenGpuiNodeRegistry::builder();
+    registry.try_register(RENDERER, move |binding, _window, cx| {
+        factory_attempts.set(factory_attempts.get().saturating_add(1));
+        factory_bindings.borrow_mut().push(binding.clone());
+        if fail_first_mount && factory_attempts.get() == 1 {
+            return Err(OpenGpuiNodeMountError::new(
+                "pending mutation retirement fixture",
+            ));
+        }
+        Ok(cx.new(|_| ProbeNode { _binding: binding }))
+    });
+    let (host, cx) = cx.add_window_view(move |_, _| {
+        OpenGpuiSceneHost::new(
+            view,
+            registry.seal().expect("valid managed-mutation registry"),
+            visible_viewport(),
+        )
+    });
+    draw(cx);
+    assert_eq!(attempts.get(), 1);
+    assert_eq!(bindings.borrow().len(), 1);
+    (runtime, host, bindings, attempts, cx)
+}
+
+fn dispatch_pending_data_mutation(
+    cx: &mut open_gpui::VisualTestContext,
+    binding: &Entity<OpenGpuiNodeBinding>,
+    mutation: &mut OpenGpuiManagedMutation<serde_json::Value>,
+    value: serde_json::Value,
+) {
+    let settlement = cx.update_entity(binding, |binding, cx| {
+        let authoring = binding.authoring().expect("live pending authoring");
+        let command =
+            GraphCommand::set_node_data(authoring.version(), authoring.node_id(), value.clone());
+        mutation
+            .dispatch(
+                authoring,
+                command,
+                MutationRequest::new(value),
+                MutationLayoutEffect::Preserve,
+                cx,
+            )
+            .expect("pending mutation enters the journal")
+    });
+    assert_eq!(
+        settlement,
+        MutationSettlement::Pending {
+            awaiting_authority: false,
+        }
+    );
+}
+
+fn assert_mutation_resources(
+    cx: &mut open_gpui::VisualTestContext,
+    host: &Entity<OpenGpuiSceneHost>,
+    activity: &OpenGpuiNodeActivityHandle,
+    active: usize,
+    protected: usize,
+) {
+    assert_eq!(activity.active_count(), active);
+    assert_eq!(activity.protected_count(), protected);
+    assert_host_protection(cx, host, usize::from(protected > 0), protected);
+}
+
+fn assert_host_protection(
+    cx: &mut open_gpui::VisualTestContext,
+    host: &Entity<OpenGpuiSceneHost>,
+    instances: usize,
+    leases: usize,
+) {
+    cx.read_entity(host, |host, _| {
+        let resources = host.resource_snapshot();
+        assert_eq!(resources.protected_instances(), instances);
+        assert_eq!(resources.protected_leases(), leases);
+    });
+}
+
+fn assert_revoked_activity(activity: &OpenGpuiNodeActivityHandle) {
+    assert!(activity.is_revoked());
+    assert_eq!(activity.active_count(), 0);
+    assert_eq!(activity.protected_count(), 0);
+}
+
+fn assert_terminal_retired(
+    mutation: &OpenGpuiManagedMutation<serde_json::Value>,
+    intent: &serde_json::Value,
+) {
+    assert!(matches!(
+        mutation.settlement(),
+        MutationSettlement::Retired { .. }
+    ));
+    assert_eq!(mutation.active_intent(), Some(intent));
+    assert!(mutation.retry().is_none());
+    assert!(mutation.confirm_uncertain_retry().is_none());
+    assert!(!mutation.can_confirm_uncertain_retry());
+}
+
+fn assert_terminal_closed(
+    mutation: &OpenGpuiManagedMutation<serde_json::Value>,
+    intent: &serde_json::Value,
+) {
+    assert!(matches!(
+        mutation.settlement(),
+        MutationSettlement::Closed {
+            reason: ViewCloseReason::HostClosed,
+            ..
+        }
+    ));
+    assert_eq!(mutation.active_intent(), Some(intent));
+    assert!(mutation.retry().is_none());
+    assert!(mutation.confirm_uncertain_retry().is_none());
+    assert!(!mutation.can_confirm_uncertain_retry());
+}
+
+fn assert_host_terminal_resources(
+    cx: &mut open_gpui::VisualTestContext,
+    host: &Entity<OpenGpuiSceneHost>,
+) {
+    cx.read_entity(host, |host, _| {
+        let resources = host.resource_snapshot();
+        assert_eq!(resources.active_nodes(), 0);
+        assert_eq!(resources.parked_nodes(), 0);
+        assert_eq!(resources.strong_instances(), 0);
+        assert_eq!(resources.protected_instances(), 0);
+        assert_eq!(resources.protected_leases(), 0);
+    });
+}
+
 fn binding_authoring(
     cx: &mut open_gpui::VisualTestContext,
     binding: &Entity<OpenGpuiNodeBinding>,
 ) -> OpenGpuiNodeAuthoring {
     cx.read_entity(binding, |binding, _| binding.authoring().unwrap())
+}
+
+fn mutation_harness(
+    cx: &mut open_gpui::VisualTestContext,
+    binding: &Entity<OpenGpuiNodeBinding>,
+) -> Entity<MutationHarness> {
+    cx.update(|_, cx| {
+        let mutation = binding.read(cx).managed_mutation();
+        cx.new(|_| MutationHarness { mutation })
+    })
 }
 
 fn assert_revoked_binding(
@@ -810,18 +1178,21 @@ fn assert_stale_authoring_rejected(
     stale_execute: OpenGpuiNodeAuthoring,
     stale_facts: OpenGpuiNodeAuthoring,
     binding: &Entity<OpenGpuiNodeBinding>,
+    mutation: &Entity<MutationHarness>,
     cx: &mut open_gpui::VisualTestContext,
 ) {
-    let command = GraphCommand::set_node_data(
-        stale_execute.version(),
-        node_id(),
-        serde_json::json!("retired authoring must not execute"),
-    );
-    let stale_result = cx.update(|_, cx| stale_execute.enqueue(command, cx));
-    assert!(matches!(
-        stale_result,
-        Err(OpenGpuiNodeAuthoringError::RetiredMount { node }) if node == node_id()
-    ));
+    let value = serde_json::json!("retired authoring must not execute");
+    let command = GraphCommand::set_node_data(stale_execute.version(), node_id(), value.clone());
+    let stale_result = cx.update_entity(mutation, |harness, cx| {
+        harness.mutation.dispatch(
+            stale_execute,
+            command,
+            MutationRequest::new(value),
+            MutationLayoutEffect::Preserve,
+            cx,
+        )
+    });
+    assert!(matches!(stale_result, Err(MutationDispatchError::Retired)));
     let stale_port = stale_facts
         .port(port_id())
         .expect("owned authoring preserves coherent old facts");
@@ -840,30 +1211,35 @@ fn assert_live_replacement(
         assert!(binding.authoring().unwrap().port(port_id()).is_some());
         assert!(!binding.activity().is_revoked());
     });
-    assert!(
-        cx.update_entity(binding, |binding, cx| binding.invalidate_layout(cx))
-            .expect("replacement layout invalidation")
-    );
-
+    let mutation = mutation_harness(cx, binding);
     let authoring = binding_authoring(cx, binding);
-    let command = GraphCommand::set_node_data(authoring.version(), node_id(), value);
-    let mut ticket = cx
-        .update(|_, cx| authoring.enqueue(command, cx))
-        .expect("replacement binding enqueues");
+    let command = GraphCommand::set_node_data(authoring.version(), node_id(), value.clone());
+    cx.update_entity(&mutation, |harness, cx| {
+        harness
+            .mutation
+            .dispatch(
+                authoring,
+                command,
+                MutationRequest::new(value.clone()),
+                MutationLayoutEffect::InvalidateWhenSatisfied,
+                cx,
+            )
+            .expect("replacement binding admits managed mutation");
+    });
     draw(cx);
-    let completion = poll_command_ticket(&mut ticket).expect("replacement ticket resolves");
-    completion
-        .applied_revision()
-        .expect("replacement command applies");
+    let fresh = binding_authoring(cx, binding);
+    let settlement = cx.update_entity(&mutation, |harness, cx| {
+        harness
+            .mutation
+            .observe(&fresh, |intent| fresh.node().data == *intent, cx)
+    });
+    assert!(matches!(
+        settlement,
+        MutationSettlement::Satisfied {
+            layout: MutationLayoutSettlement::Invalidated,
+        }
+    ));
     assert_eq!(runtime.snapshot().unwrap().revision(), 1);
-}
-
-fn poll_command_ticket(ticket: &mut OpenGpuiCommandTicket) -> OpenGpuiCommandTicketResult {
-    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
-    match std::future::Future::poll(std::pin::Pin::new(ticket), &mut context) {
-        std::task::Poll::Ready(result) => result,
-        std::task::Poll::Pending => panic!("native command ticket is still pending"),
-    }
 }
 
 fn draw(cx: &mut open_gpui::VisualTestContext) {

@@ -173,6 +173,13 @@ class ExternalConsumerScenarioTests(unittest.TestCase):
         self.assertIn("Select::new", shared_recipe)
         self.assertIn("Button::new", shared_recipe)
         self.assertIn("overflow_y_scroll", shared_recipe)
+        self.assertIn("OpenGpuiManagedMutation", shared_recipe)
+        self.assertIn("managed_mutation", shared_recipe)
+        self.assertNotIn("OpenGpuiCommandTicket", shared_recipe)
+        self.assertNotIn(".enqueue(", shared_recipe)
+        self.assertNotIn("OpenGpuiActivityKind::Task", shared_recipe)
+        self.assertNotIn("command_task", shared_recipe)
+        self.assertNotIn("invalidate_layout(", shared_recipe)
         self.assertEqual(
             external_smoke.jellyflow_open_gpui_source_scenario(
                 Path("/tmp/source")

@@ -7,7 +7,8 @@ use jellyflow_core::{
     Port, PortCapacity, PortDirection, PortId, PortKey, PortKind,
 };
 use jellyflow_open_gpui::authoring::{
-    OpenGpuiCommandTicketResult, OpenGpuiNodeAuthoring, OpenGpuiNodeBinding, OpenGpuiPortSide,
+    MutationLayoutEffect, MutationLayoutSettlement, MutationRequest, MutationSettlement,
+    OpenGpuiManagedMutation, OpenGpuiNodeAuthoring, OpenGpuiNodeBinding, OpenGpuiPortSide,
 };
 use jellyflow_open_gpui::host::OpenGpuiSceneHost;
 use jellyflow_open_gpui::registry::OpenGpuiNodeRegistry;
@@ -102,16 +103,51 @@ enum NativeFrameOperation {
     LayoutStale,
 }
 
-struct NativeFrameObservation {
-    result: OpenGpuiCommandTicketResult,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeTopologyIntent {
+    AddDynamicPort,
+    RemoveDynamicPort,
 }
 
 struct NativeTracerNode {
     binding: Entity<OpenGpuiNodeBinding>,
+    topology_mutation: OpenGpuiManagedMutation<NativeTopologyIntent>,
     prompt: Entity<TextInputController>,
     ids: TracerIds,
     fast_mode: bool,
-    observations: Rc<RefCell<VecDeque<NativeFrameObservation>>>,
+    observations: Rc<RefCell<VecDeque<MutationSettlement>>>,
+}
+
+impl NativeTracerNode {
+    fn dispatch_next_topology(&mut self, cx: &mut Context<Self>) {
+        let authoring = {
+            self.binding
+                .read(cx)
+                .authoring()
+                .expect("command binding stays live")
+        };
+        let intent = next_topology_intent(&authoring, self.ids);
+        let command = next_topology_command(&authoring, self.ids);
+        let settlement = self
+            .topology_mutation
+            .dispatch(
+                authoring,
+                command,
+                MutationRequest::new(intent),
+                MutationLayoutEffect::InvalidateWhenSatisfied,
+                cx,
+            )
+            .expect("native topology mutation enters the host journal");
+        assert!(
+            matches!(
+                settlement,
+                MutationSettlement::Pending {
+                    awaiting_authority: false
+                }
+            ),
+            "a newly admitted topology mutation must await its authoritative result",
+        );
+    }
 }
 
 impl Render for NativeTracerNode {
@@ -125,6 +161,22 @@ impl Render for NativeTracerNode {
             .read(cx)
             .authoring()
             .expect("retained tracer binding stays live");
+        let ids = self.ids;
+        let settlement = self.topology_mutation.observe(
+            &authoring,
+            |intent| topology_intent_is_satisfied(&authoring, ids, *intent),
+            cx,
+        );
+        if matches!(
+            &settlement,
+            MutationSettlement::Satisfied { .. }
+                | MutationSettlement::Retryable { .. }
+                | MutationSettlement::Uncertain { .. }
+                | MutationSettlement::Retired { .. }
+                | MutationSettlement::Closed { .. }
+        ) {
+            self.observations.borrow_mut().push_back(settlement);
+        }
         let has_dynamic_port = authoring.port(self.ids.dynamic_port).is_some();
         let expected_port_order = authoring.node().ports.clone();
         let ports = authoring
@@ -152,9 +204,7 @@ impl Render for NativeTracerNode {
                 });
             });
 
-        let command_binding = self.binding.clone();
-        let command_ids = self.ids;
-        let observations = Rc::clone(&self.observations);
+        let command_node = cx.weak_entity();
         let command = Button::new(
             "adapter-tracer-command",
             if has_dynamic_port {
@@ -164,22 +214,7 @@ impl Render for NativeTracerNode {
             },
         )
         .on_click(move |_, _, cx| {
-            let authoring = command_binding
-                .read(cx)
-                .authoring()
-                .expect("command binding stays live");
-            let command = next_topology_command(&authoring, command_ids);
-            let ticket = authoring
-                .enqueue(command, cx)
-                .expect("native command enters the host journal");
-            let observations = Rc::clone(&observations);
-            cx.spawn(async move |_| {
-                let result = ticket.await;
-                observations
-                    .borrow_mut()
-                    .push_back(NativeFrameObservation { result });
-            })
-            .detach();
+            let _ = command_node.update(cx, |node, cx| node.dispatch_next_topology(cx));
         });
 
         let mut root = div()
@@ -255,8 +290,10 @@ fn native_vertical_tracer_runs_commands_and_layout_through_one_real_host_frame(
     let mut registry = OpenGpuiNodeRegistry::builder();
     registry.register(TRACER_RENDERER, move |binding, _window, cx| {
         let prompt = cx.new(|cx| TextInputController::with_value(String::new(), cx));
+        let topology_mutation = binding.read(cx).managed_mutation::<NativeTopologyIntent>();
         let node = cx.new(|_| NativeTracerNode {
             binding,
+            topology_mutation,
             prompt: prompt.clone(),
             ids,
             fast_mode: false,
@@ -440,22 +477,45 @@ fn next_topology_command(authoring: &OpenGpuiNodeAuthoring, ids: TracerIds) -> G
     )
 }
 
+fn next_topology_intent(authoring: &OpenGpuiNodeAuthoring, ids: TracerIds) -> NativeTopologyIntent {
+    if authoring.port(ids.dynamic_port).is_some() {
+        NativeTopologyIntent::RemoveDynamicPort
+    } else {
+        NativeTopologyIntent::AddDynamicPort
+    }
+}
+
+fn topology_intent_is_satisfied(
+    authoring: &OpenGpuiNodeAuthoring,
+    ids: TracerIds,
+    intent: NativeTopologyIntent,
+) -> bool {
+    let has_dynamic_port = authoring.port(ids.dynamic_port).is_some();
+    match intent {
+        NativeTopologyIntent::AddDynamicPort => has_dynamic_port,
+        NativeTopologyIntent::RemoveDynamicPort => !has_dynamic_port,
+    }
+}
+
 fn take_command_observation(
-    observations: &Rc<RefCell<VecDeque<NativeFrameObservation>>>,
+    observations: &Rc<RefCell<VecDeque<MutationSettlement>>>,
     withdrawals: &Rc<RefCell<VecDeque<bool>>>,
 ) -> [NativeFrameOperation; 2] {
     let mut observations = observations.borrow_mut();
-    let observation = observations
+    let settlement = observations
         .pop_front()
-        .expect("native command task records one resolved frame");
+        .expect("managed mutation records one authoritative settlement");
     assert!(
         observations.is_empty(),
-        "one click must resolve exactly one command"
+        "one click must produce exactly one terminal mutation observation"
     );
-    let completion = observation.result.expect("native command ticket resolves");
-    completion
-        .applied_revision()
-        .expect("native command receipt is applied");
+    assert_eq!(
+        settlement,
+        MutationSettlement::Satisfied {
+            layout: MutationLayoutSettlement::Invalidated,
+        },
+        "the managed mutation must be satisfied by authoritative graph facts and invalidate layout",
+    );
     let mut withdrawals = withdrawals.borrow_mut();
     let geometry_withdrawn = withdrawals
         .pop_front()

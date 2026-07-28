@@ -7,6 +7,7 @@
 
 pub mod accessibility;
 pub mod activity;
+mod admitted_command;
 pub mod authoring;
 mod binding;
 pub mod chrome;
@@ -14,6 +15,7 @@ mod command_journal;
 mod draft_store;
 pub mod host;
 pub mod interaction;
+mod managed_mutation;
 pub mod navigation;
 mod node_drag_handle;
 mod panic_sink;

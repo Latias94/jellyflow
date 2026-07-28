@@ -263,7 +263,10 @@ fn sixty_fifth_dirty_draft_survives_real_host_capacity_and_lru_churn(
             host.resource_snapshot().protected_instances(),
             OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY
         );
-        assert!(host.resource_snapshot().eligible_parked_nodes() <= OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY);
+        assert!(
+            host.resource_snapshot().eligible_parked_nodes()
+                <= OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY
+        );
     });
 
     cx.update_entity(&host, |host, cx| {

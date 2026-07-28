@@ -1,13 +1,13 @@
 use std::collections::BTreeMap;
 
 use jellyflow_core::{Node, NodeId, Port, PortId};
+pub use jellyflow_runtime::reconciliation::MutationRetryReason;
 use jellyflow_runtime::viewport::ViewportTransform;
 use jellyflow_runtime::{
     commands::GraphCommand, graph::GraphRevision, graph::GraphSnapshot, graph::GraphVersion,
     graph::PortConnectionSummary, graph::PortInstanceKey, view::NodeInstanceKey,
     view::ViewCloseReason, view::ViewSessionError,
 };
-use open_gpui::App;
 
 use crate::activity::OpenGpuiNodeActivityRegistry;
 pub use crate::binding::OpenGpuiNodeBinding;
@@ -15,9 +15,11 @@ use crate::binding::{
     OpenGpuiMountContext, OpenGpuiMountValidationError, OpenGpuiNodePresentationInputSignature,
 };
 use crate::command_journal::OpenGpuiCommandSink;
-pub use crate::command_journal::{
-    OPEN_GPUI_COMMAND_JOURNAL_CAPACITY, OpenGpuiCommandEnqueueError, OpenGpuiCommandTicket,
-    OpenGpuiCommandTicketError, OpenGpuiCommandTicketResult,
+use crate::command_journal::{OpenGpuiAdmittedCommand, OpenGpuiCommandEnqueueError};
+pub use crate::managed_mutation::{
+    MutationDiagnostic, MutationDiagnosticSource, MutationDispatchError, MutationLayoutEffect,
+    MutationLayoutSettlement, MutationRequest, MutationRetry, MutationSettlement,
+    OpenGpuiManagedMutation,
 };
 pub use crate::node_drag_handle::OpenGpuiNodeDragHandle;
 pub use crate::port_handle::{OpenGpuiPortAnchor, OpenGpuiPortHandle, OpenGpuiPortSide};
@@ -26,8 +28,8 @@ use crate::presentation::{OpenGpuiNodePresentationSnapshot, OpenGpuiPortInteract
 /// One owned, immutable authoring view for an exact native node mount and graph revision.
 ///
 /// The view deliberately owns its graph root and matching port capabilities. It is cheap to keep
-/// for one input callback or render pass, but must not be retained as component state. Enqueueing a
-/// command consumes it so a command cannot accidentally be rebound to newer facts.
+/// for one input callback or render pass, but must not be retained as component state. Managed
+/// mutation dispatch consumes it so a command cannot accidentally be rebound to newer facts.
 pub struct OpenGpuiNodeAuthoring {
     context: OpenGpuiMountContext,
     snapshot: GraphSnapshot,
@@ -387,31 +389,54 @@ impl OpenGpuiNodeAuthoring {
     ///
     /// Validation is completed before journal admission. This method never refreshes the command,
     /// rewrites its expected revision, retries it, or reserves journal capacity on failure.
-    pub fn enqueue(
+    pub(crate) fn admit(
         self,
         command: GraphCommand,
-        cx: &mut App,
-    ) -> Result<OpenGpuiCommandTicket, OpenGpuiNodeAuthoringError> {
-        self.context.ensure_exact_view().map_err(map_mount_error)?;
+    ) -> Result<OpenGpuiAdmittedCommand, OpenGpuiCommandAdmissionError> {
+        self.context
+            .ensure_exact_view()
+            .map_err(map_mount_error)
+            .map_err(OpenGpuiCommandAdmissionError::Authoring)?;
         let command_version = command.expected_version();
         let authoring_version = self.snapshot.version();
         if command_version != authoring_version {
-            return Err(OpenGpuiNodeAuthoringError::CommandVersionMismatch {
-                authoring_version,
-                command_version,
-            });
+            return Err(OpenGpuiCommandAdmissionError::Authoring(
+                OpenGpuiNodeAuthoringError::CommandVersionMismatch {
+                    authoring_version,
+                    command_version,
+                },
+            ));
         }
 
-        let current = self.context.ensure_current().map_err(map_mount_error)?;
+        let current = self
+            .context
+            .ensure_current()
+            .map_err(map_mount_error)
+            .map_err(OpenGpuiCommandAdmissionError::Authoring)?;
         if !self.snapshot.ptr_eq(&current) {
-            return Err(OpenGpuiNodeAuthoringError::StaleRevision {
-                authoring_revision: authoring_version.revision(),
-                current_revision: current.revision(),
-            });
+            return Err(OpenGpuiCommandAdmissionError::Authoring(
+                OpenGpuiNodeAuthoringError::StaleRevision {
+                    authoring_revision: authoring_version.revision(),
+                    current_revision: current.revision(),
+                },
+            ));
         }
-        self.context.ensure_exact_view().map_err(map_mount_error)?;
-        self.commands.enqueue(command, cx).map_err(Into::into)
+        self.context
+            .ensure_exact_view()
+            .map_err(map_mount_error)
+            .map_err(OpenGpuiCommandAdmissionError::Authoring)?;
+        self.commands
+            .admit(command)
+            .map_err(OpenGpuiCommandAdmissionError::Journal)
     }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum OpenGpuiCommandAdmissionError {
+    #[error(transparent)]
+    Authoring(OpenGpuiNodeAuthoringError),
+    #[error(transparent)]
+    Journal(OpenGpuiCommandEnqueueError),
 }
 
 fn map_mount_error(error: OpenGpuiMountValidationError) -> OpenGpuiNodeAuthoringError {
@@ -486,6 +511,4 @@ pub enum OpenGpuiNodeAuthoringError {
     },
     #[error(transparent)]
     Session(ViewSessionError),
-    #[error(transparent)]
-    CommandEnqueue(#[from] OpenGpuiCommandEnqueueError),
 }

@@ -3,22 +3,22 @@ use std::fmt;
 use std::process::ExitCode;
 use std::rc::Rc;
 
+use jellyflow_core::EdgeKind;
 use jellyflow_open_gpui::host::InitialViewportPolicy;
 use jellyflow_open_gpui::navigation::{OpenGpuiInputPreset, OpenGpuiNavigationConfig};
-use jellyflow_core::EdgeKind;
 use jellyflow_runtime::graph::{GraphRuntime, GraphRuntimePolicy};
 use jellyflow_runtime::view::ViewSessionOptions;
 use open_gpui::{
     App, AppContext, Bounds, Context, Entity, ParentElement, QuitMode, Render, Styled, Window,
     WindowBounds, WindowOptions, div, px, size,
 };
+use open_gpui_canvas_jellyflow::NativeProductTheme;
 use open_gpui_canvas_jellyflow::blackboard::{GraphRuntimeBlackboardSource, NativeBlackboard};
 use open_gpui_canvas_jellyflow::connection_search::NativeGraphSurface;
 use open_gpui_canvas_jellyflow::nodes::{
     NativeGraphVisualProfile, NativeNodeResources, ShaderFieldStore, WorkflowFieldStore,
     native_node_catalog, native_node_registry, workflow_demo_graph,
 };
-use open_gpui_canvas_jellyflow::NativeProductTheme;
 use open_gpui_platform::application;
 use open_gpui_ui_components::ThemeMode;
 use open_gpui_ui_components::gpui_adapter::init_text_input;

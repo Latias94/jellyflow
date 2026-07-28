@@ -11,7 +11,7 @@ use jellyflow_open_gpui::authoring::{
 use jellyflow_open_gpui::registry::{OpenGpuiNodeRegistrationPolicy, OpenGpuiNodeRegistryBuilder};
 use jellyflow_open_gpui::size_policy::{OpenGpuiContentHeightPolicy, OpenGpuiNodeSizePolicy};
 use jellyflow_runtime::commands::{GraphCommand, IncidentEdgePolicy, TopologyEdit, TopologyPort};
-use jellyflow_runtime::graph::{GraphRevision, GraphSnapshot, GraphVersion};
+use jellyflow_runtime::graph::{GraphSnapshot, GraphVersion};
 use jellyflow_runtime::schema::{NodeKindSpec, NodePortSpec};
 use jellyflow_runtime::view::NodeInstanceKey;
 use open_gpui::{
@@ -121,8 +121,6 @@ pub struct BlueprintCallNode {
 }
 
 struct BlueprintRenderData {
-    instance: NodeInstanceKey,
-    revision: GraphRevision,
     title: String,
     static_inputs: Vec<ShaderPort>,
     outputs: Vec<ShaderPort>,
@@ -133,15 +131,16 @@ struct BlueprintRenderData {
 
 impl BlueprintCallNode {
     #[must_use]
-    pub fn new(
+    fn new(
         binding: Entity<OpenGpuiNodeBinding>,
         instance: NodeInstanceKey,
+        topology: TopologyAttempt<BlueprintPinIntent>,
         product_theme: NativeProductTheme,
     ) -> Self {
         Self {
             binding,
             node_id: instance.node(),
-            topology: TopologyAttempt::new(instance),
+            topology,
             product_theme,
             diagnostic: None,
         }
@@ -238,8 +237,7 @@ impl BlueprintCallNode {
             &request.intent().action,
         ) {
             let effect = self.topology.observe(
-                authoring.instance(),
-                authoring.version().revision(),
+                &authoring,
                 |intent| {
                     blueprint_action_satisfied(
                         self.node_id,
@@ -248,6 +246,7 @@ impl BlueprintCallNode {
                         &intent.action,
                     )
                 },
+                cx,
             );
             self.apply_topology_effect(effect, cx);
             return;
@@ -267,10 +266,7 @@ impl BlueprintCallNode {
                 return;
             }
         };
-        let activity = self.binding.read(cx).activity().clone();
-        let dispatch = self
-            .topology
-            .dispatch(authoring, command, request, &activity, cx);
+        let dispatch = self.topology.dispatch(authoring, command, request, cx);
         match dispatch {
             Ok(()) => {}
             Err(error) => {
@@ -281,26 +277,27 @@ impl BlueprintCallNode {
         self.diagnostic = None;
     }
 
-    fn reconcile_command(&mut self, data: &BlueprintRenderData, cx: &mut Context<Self>) {
-        let effect = self
-            .topology
-            .observe(&data.instance, data.revision, |intent| {
+    fn reconcile_command(
+        &mut self,
+        authoring: &OpenGpuiNodeAuthoring,
+        data: &BlueprintRenderData,
+        cx: &mut Context<Self>,
+    ) {
+        let effect = self.topology.observe(
+            authoring,
+            |intent| {
                 blueprint_action_satisfied(self.node_id, &data.node, &data.ports, &intent.action)
-            });
+            },
+            cx,
+        );
         self.apply_topology_effect(effect, cx);
     }
 
-    fn apply_topology_effect(&mut self, effect: TopologyTransitionEffect, cx: &mut Context<Self>) {
-        if effect.topology_became_visible()
-            && let Err(error) = self
-                .binding
-                .update(cx, |binding, cx| binding.invalidate_layout(cx))
-        {
-            self.diagnostic = Some(format!(
-                "blueprint topology became visible but native layout invalidation failed: {error}"
-            ));
-            return;
-        }
+    fn apply_topology_effect(
+        &mut self,
+        _effect: TopologyTransitionEffect,
+        _cx: &mut Context<Self>,
+    ) {
         self.diagnostic = self.topology.diagnostic().map(str::to_owned);
     }
 }
@@ -318,18 +315,18 @@ impl Render for BlueprintCallNode {
         let (binding_valid, mut data) = match authoring {
             Ok(authoring) => match read_blueprint_authoring(&authoring) {
                 Ok(data) => {
-                    self.reconcile_command(&data, cx);
+                    self.reconcile_command(&authoring, &data, cx);
                     (true, data)
                 }
                 Err(error) => {
                     self.diagnostic = Some(error.to_string());
-                    (false, retired_render_data(drag_handle.instance().clone()))
+                    (false, retired_render_data())
                 }
             },
             Err(error) => {
                 self.topology.observe_authoring_error(&error);
                 self.diagnostic = Some(error.to_string());
-                (false, retired_render_data(drag_handle.instance().clone()))
+                (false, retired_render_data())
             }
         };
         let phase = self.topology.phase();
@@ -754,13 +751,16 @@ pub(super) fn register(
         BLUEPRINT_CALL_RENDERER,
         policy,
         move |binding, _window, cx| {
-            let instance = binding
-                .read(cx)
-                .authoring()
-                .expect("a Blueprint node factory must receive a live authoring binding")
-                .instance()
-                .clone();
-            cx.new(|_| BlueprintCallNode::new(binding, instance, product_theme))
+            let (instance, topology) = {
+                let binding = binding.read(cx);
+                let instance = binding
+                    .authoring()
+                    .expect("a Blueprint node factory must receive a live authoring binding")
+                    .instance()
+                    .clone();
+                (instance, TopologyAttempt::new(binding.managed_mutation()))
+            };
+            cx.new(|_| BlueprintCallNode::new(binding, instance, topology, product_theme))
         },
     );
 }
@@ -937,8 +937,6 @@ fn read_blueprint_authoring(
         .unwrap_or("Function Call")
         .to_owned();
     Ok(BlueprintRenderData {
-        instance: authoring.instance().clone(),
-        revision: authoring.version().revision(),
         title,
         static_inputs,
         outputs,
@@ -948,10 +946,8 @@ fn read_blueprint_authoring(
     })
 }
 
-fn retired_render_data(instance: NodeInstanceKey) -> BlueprintRenderData {
+fn retired_render_data() -> BlueprintRenderData {
     BlueprintRenderData {
-        instance,
-        revision: 0,
         title: "Retired Blueprint node".to_owned(),
         static_inputs: Vec::new(),
         outputs: Vec::new(),

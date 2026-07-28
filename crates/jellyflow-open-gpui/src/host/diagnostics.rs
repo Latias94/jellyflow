@@ -1428,9 +1428,11 @@ mod tests {
             edge_plan_live_vertices: 19,
             edge_plan_live_estimated_bytes: 20,
         };
-        let mut ledger = OpenGpuiSceneHostWorkLedger::default();
-        ledger.mounts = 99;
-        ledger.edge_path_cache_hits = 100;
+        let ledger = OpenGpuiSceneHostWorkLedger {
+            mounts: 99,
+            edge_path_cache_hits: 100,
+            ..OpenGpuiSceneHostWorkLedger::default()
+        };
 
         let combined = ledger.with_resource_snapshot(snapshot);
         assert_eq!(combined.active_nodes(), 2);

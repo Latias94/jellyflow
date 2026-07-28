@@ -6780,7 +6780,7 @@ fn windowless_close_rejects_queued_commands_without_executing_or_resolving_them(
     drop(host);
     assert!(matches!(
         poll_command_ticket(&mut ticket),
-        Err(crate::authoring::OpenGpuiCommandTicketError::HostDropped)
+        Err(crate::command_journal::OpenGpuiCommandTicketError::HostDropped)
     ));
 }
 
@@ -6923,9 +6923,11 @@ fn runtime_drop_bridge_terminalizes_a_queued_ticket_and_finishes_window_cleanup(
 
     assert!(matches!(
         poll_command_ticket(&mut ticket),
-        Err(crate::authoring::OpenGpuiCommandTicketError::HostClosed {
-            reason: ViewCloseReason::RuntimeDropped
-        })
+        Err(
+            crate::command_journal::OpenGpuiCommandTicketError::HostClosed {
+                reason: ViewCloseReason::RuntimeDropped
+            }
+        )
     ));
     cx.read_entity(&host, |host, _| {
         assert_eq!(host.close_reason(), Some(ViewCloseReason::RuntimeDropped));
@@ -6965,9 +6967,11 @@ fn prepaint_detected_close_terminalizes_the_collected_ticket(cx: &mut open_gpui:
     assert!(
         matches!(
             ticket_result,
-            Err(crate::authoring::OpenGpuiCommandTicketError::HostClosed {
-                reason: ViewCloseReason::HostClosed
-            })
+            Err(
+                crate::command_journal::OpenGpuiCommandTicketError::HostClosed {
+                    reason: ViewCloseReason::HostClosed
+                }
+            )
         ),
         "unexpected prepaint-close ticket result: {ticket_result:?}",
     );
@@ -7027,9 +7031,11 @@ fn first_render_of_an_already_closed_view_terminalizes_a_queued_ticket(
 
     assert!(matches!(
         poll_command_ticket(&mut ticket),
-        Err(crate::authoring::OpenGpuiCommandTicketError::HostClosed {
-            reason: ViewCloseReason::RuntimeDropped
-        })
+        Err(
+            crate::command_journal::OpenGpuiCommandTicketError::HostClosed {
+                reason: ViewCloseReason::RuntimeDropped
+            }
+        )
     ));
     cx.read_entity(&host, |host, _| {
         assert_eq!(host.close_reason(), Some(ViewCloseReason::RuntimeDropped));
@@ -7118,7 +7124,7 @@ fn window_close_middleware_panic_does_not_strand_command_ticket(
     assert!(matches!(
         poll_command_ticket(&mut ticket),
         Err(
-            crate::authoring::OpenGpuiCommandTicketError::ClosePanicked {
+            crate::command_journal::OpenGpuiCommandTicketError::ClosePanicked {
                 reason: ViewCloseReason::HostClosed
             }
         )
@@ -7155,7 +7161,7 @@ fn scene_preparation_failure_after_collection_fails_the_batch_and_reopens_capaci
     draw(cx);
     assert!(matches!(
         poll_command_ticket(&mut failed),
-        Err(crate::authoring::OpenGpuiCommandTicketError::FramePreparation { .. })
+        Err(crate::command_journal::OpenGpuiCommandTicketError::FramePreparation { .. })
     ));
     assert_eq!(runtime.snapshot().expect("unchanged graph").revision(), 0);
     cx.read_entity(&host, |host, _| assert!(!host.commands.has_pending()));
@@ -7300,7 +7306,7 @@ fn assert_ordinary_feedback_panic_isolated(
 
     assert!(matches!(
         poll_command_ticket(&mut failed),
-        Err(crate::authoring::OpenGpuiCommandTicketError::FeedbackOutcomeUnknown)
+        Err(crate::command_journal::OpenGpuiCommandTicketError::FeedbackOutcomeUnknown)
     ));
     let snapshot_after_panic = runtime.snapshot().expect("runtime after panic");
     let version_after_panic = snapshot_after_panic.version();
@@ -9457,8 +9463,8 @@ fn keyboard_connection_capacity_failure_aborts_then_retries_after_release(
 }
 
 fn poll_command_ticket(
-    ticket: &mut crate::authoring::OpenGpuiCommandTicket,
-) -> crate::authoring::OpenGpuiCommandTicketResult {
+    ticket: &mut crate::command_journal::OpenGpuiCommandTicket,
+) -> crate::command_journal::OpenGpuiCommandTicketResult {
     let mut context = std::task::Context::from_waker(std::task::Waker::noop());
     match std::future::Future::poll(std::pin::Pin::new(ticket), &mut context) {
         std::task::Poll::Ready(result) => result,
@@ -9466,12 +9472,12 @@ fn poll_command_ticket(
     }
 }
 
-fn assert_command_ticket_pending(ticket: &mut crate::authoring::OpenGpuiCommandTicket) {
+fn assert_command_ticket_pending(ticket: &mut crate::command_journal::OpenGpuiCommandTicket) {
     assert_command_ticket_pending_at(ticket, "while command is queued");
 }
 
 fn assert_command_ticket_pending_at(
-    ticket: &mut crate::authoring::OpenGpuiCommandTicket,
+    ticket: &mut crate::command_journal::OpenGpuiCommandTicket,
     stage: &str,
 ) {
     let mut context = std::task::Context::from_waker(std::task::Waker::noop());

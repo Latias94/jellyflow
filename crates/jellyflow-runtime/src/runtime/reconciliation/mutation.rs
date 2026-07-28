@@ -1,5 +1,18 @@
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use crate::runtime::commands::{CommandExecutionCompletion, CommandExecutionKind};
 use crate::runtime::graph_runtime::GraphRevision;
+
+static NEXT_MUTATION_ATTEMPT_ID: AtomicU64 = AtomicU64::new(1);
+
+fn allocate_mutation_attempt() -> Option<MutationAttemptId> {
+    NEXT_MUTATION_ATTEMPT_ID
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            current.checked_add(1)
+        })
+        .ok()
+        .map(MutationAttemptId)
+}
 
 /// Opaque identity for one product intent handled by a mutation reducer.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -52,6 +65,9 @@ pub enum MutationCommandResult {
         diagnostic: String,
     },
     Failed {
+        diagnostic: String,
+    },
+    NativeDispatchFailed {
         diagnostic: String,
     },
     NotDispatched {
@@ -137,6 +153,7 @@ pub enum MutationRetryReason {
     RuntimeRejected,
     RuntimeConflict,
     RuntimeFailed,
+    NativeDispatchFailed,
     NotDispatched,
 }
 
@@ -230,18 +247,14 @@ fn retryable_or_satisfied<I>(
 }
 
 /// Runtime-owned mutation reconciliation.  It has no task or renderer dependencies.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct MutationReconciler<I> {
     state: State<I>,
-    next_attempt: Option<u64>,
 }
 
 impl<I> Default for MutationReconciler<I> {
     fn default() -> Self {
-        Self {
-            state: State::Idle,
-            next_attempt: Some(1),
-        }
+        Self { state: State::Idle }
     }
 }
 
@@ -320,11 +333,7 @@ impl<I: Clone> MutationReconciler<I> {
         if !matches!(self.state, State::Idle) {
             return Err(MutationBeginError::Busy);
         }
-        let raw = self
-            .next_attempt
-            .ok_or(MutationBeginError::IdentityExhausted)?;
-        self.next_attempt = raw.checked_add(1);
-        let attempt = MutationAttemptId(raw);
+        let attempt = allocate_mutation_attempt().ok_or(MutationBeginError::IdentityExhausted)?;
         self.state = State::Pending {
             attempt,
             intent,
@@ -344,17 +353,16 @@ impl<I: Clone> MutationReconciler<I> {
                 State::Retryable {
                     attempt,
                     minimum_revision,
-                    observation,
+                    observation: Some(observation),
                     ..
                 },
                 MutationRetryKind::Retryable,
-            ) if *attempt == retry.source_attempt => Some(
-                observation
-                    .as_ref()
-                    .map_or(*minimum_revision, |observation| {
-                        (*minimum_revision).max(observation.revision)
-                    }),
-            ),
+            ) if *attempt == retry.source_attempt
+                && observation.revision >= *minimum_revision
+                && !observation.satisfied =>
+            {
+                Some(observation.revision)
+            }
             (
                 State::Uncertain {
                     attempt,
@@ -380,11 +388,7 @@ impl<I: Clone> MutationReconciler<I> {
                 received_revision: base_revision,
             });
         }
-        let raw = self
-            .next_attempt
-            .ok_or(MutationBeginError::IdentityExhausted)?;
-        self.next_attempt = raw.checked_add(1);
-        let attempt = MutationAttemptId(raw);
+        let attempt = allocate_mutation_attempt().ok_or(MutationBeginError::IdentityExhausted)?;
         let state = std::mem::replace(&mut self.state, State::Idle);
         let intent = match state {
             State::Retryable { intent, .. } | State::Uncertain { intent, .. } => intent,
@@ -406,12 +410,21 @@ impl<I: Clone> MutationReconciler<I> {
     pub fn retry(&self, confirm_uncertain: bool) -> Option<MutationRetry<I>> {
         match &self.state {
             State::Retryable {
-                attempt, intent, ..
-            } if !confirm_uncertain => Some(MutationRetry {
-                source_attempt: *attempt,
-                intent: intent.clone(),
-                kind: MutationRetryKind::Retryable,
-            }),
+                attempt,
+                intent,
+                minimum_revision,
+                observation: Some(observation),
+                ..
+            } if !confirm_uncertain
+                && observation.revision >= *minimum_revision
+                && !observation.satisfied =>
+            {
+                Some(MutationRetry {
+                    source_attempt: *attempt,
+                    intent: intent.clone(),
+                    kind: MutationRetryKind::Retryable,
+                })
+            }
             State::Uncertain {
                 attempt,
                 intent,
@@ -525,6 +538,15 @@ impl<I: Clone> MutationReconciler<I> {
                 diagnostic,
                 &mut transition,
             ),
+            MutationCommandResult::NativeDispatchFailed { diagnostic } => retryable_or_satisfied(
+                active,
+                intent,
+                base_revision,
+                observation,
+                MutationRetryReason::NativeDispatchFailed,
+                diagnostic,
+                &mut transition,
+            ),
             MutationCommandResult::NotDispatched { diagnostic } => retryable_or_satisfied(
                 active,
                 intent,
@@ -560,6 +582,57 @@ impl<I: Clone> MutationReconciler<I> {
         revision: GraphRevision,
         satisfied: impl FnOnce(&I) -> bool,
     ) -> MutationTransition {
+        let intent = match &self.state {
+            State::Pending {
+                intent,
+                base_revision,
+                observation,
+                ..
+            } if revision >= *base_revision
+                && observation
+                    .as_ref()
+                    .is_none_or(|current| current.revision < revision) =>
+            {
+                Some(intent)
+            }
+            State::AwaitingSnapshot {
+                intent,
+                minimum_revision,
+                ..
+            } if revision >= *minimum_revision => Some(intent),
+            State::Retryable {
+                intent,
+                minimum_revision,
+                observation,
+                ..
+            } if revision >= *minimum_revision
+                && observation
+                    .as_ref()
+                    .is_none_or(|current| current.revision < revision) =>
+            {
+                Some(intent)
+            }
+            State::Uncertain {
+                intent,
+                base_revision,
+                observation,
+                ..
+            } if revision > *base_revision
+                && observation
+                    .as_ref()
+                    .is_none_or(|current| current.revision < revision) =>
+            {
+                Some(intent)
+            }
+            State::Idle
+            | State::Pending { .. }
+            | State::AwaitingSnapshot { .. }
+            | State::Retryable { .. }
+            | State::Uncertain { .. } => None,
+        };
+        // Evaluate application code before moving state out of the reducer. If it panics, the
+        // active attempt and all previously recorded evidence remain intact.
+        let satisfaction = intent.map(satisfied);
         let state = std::mem::replace(&mut self.state, State::Idle);
         let mut transition = MutationTransition::default();
         self.state = match state {
@@ -586,7 +659,7 @@ impl<I: Clone> MutationReconciler<I> {
                         attempt,
                         observation: Some(Observation {
                             revision,
-                            satisfied: satisfied(&intent),
+                            satisfied: satisfaction.expect("pending observation was preflighted"),
                         }),
                         intent,
                         base_revision,
@@ -609,7 +682,7 @@ impl<I: Clone> MutationReconciler<I> {
             } => {
                 let observation = Observation {
                     revision,
-                    satisfied: satisfied(&intent),
+                    satisfied: satisfaction.expect("awaiting-snapshot observation was preflighted"),
                 };
                 transition.state_changed = true;
                 if observation.satisfied {
@@ -652,7 +725,7 @@ impl<I: Clone> MutationReconciler<I> {
                 } else {
                     let observation = Observation {
                         revision,
-                        satisfied: satisfied(&intent),
+                        satisfied: satisfaction.expect("retryable observation was preflighted"),
                     };
                     transition.state_changed = true;
                     if observation.satisfied {
@@ -692,7 +765,7 @@ impl<I: Clone> MutationReconciler<I> {
                 } else {
                     let observation = Observation {
                         revision,
-                        satisfied: satisfied(&intent),
+                        satisfied: satisfaction.expect("uncertain observation was preflighted"),
                     };
                     transition.state_changed = true;
                     if observation.satisfied {
@@ -758,6 +831,35 @@ mod tests {
             }
             assert_eq!(reducer.phase(), MutationPhase::Idle);
         }
+    }
+
+    #[test]
+    fn definitive_native_dispatch_failure_is_retryable_without_becoming_uncertain() {
+        let mut reducer = MutationReconciler::default();
+        let attempt = reducer.begin("add-port", 7).expect("begin");
+
+        reducer
+            .complete(
+                attempt,
+                MutationCommandResult::NativeDispatchFailed {
+                    diagnostic: "frame preparation failed".to_owned(),
+                },
+            )
+            .expect("complete");
+
+        assert_eq!(reducer.phase(), MutationPhase::Retryable);
+        assert_eq!(
+            reducer.retry_reason(),
+            Some(MutationRetryReason::NativeDispatchFailed)
+        );
+        assert_eq!(reducer.diagnostic(), Some("frame preparation failed"));
+        assert!(
+            reducer.retry(false).is_none(),
+            "retry waits for an authoritative unsatisfied observation"
+        );
+        reducer.observe(7, |_| false);
+        assert!(reducer.retry(false).is_some());
+        assert!(!reducer.can_confirm_uncertain_retry());
     }
 
     #[test]
@@ -884,7 +986,8 @@ mod tests {
             reducer.retry_reason(),
             Some(MutationRetryReason::RuntimeConflict)
         );
-        assert!(reducer.retry(false).is_some());
+        assert!(reducer.retry(false).is_none());
+        reducer.observe(5, |_| false);
 
         let retry = reducer.retry(false).expect("retry");
         let attempt = reducer.begin_retry(retry, 5).expect("begin retry");
@@ -957,6 +1060,8 @@ mod tests {
             Some(MutationRetryReason::RuntimeFailed)
         );
 
+        assert!(reducer.retry(false).is_none());
+        reducer.observe(3, |_| false);
         let retry = reducer.retry(false).expect("known failure can be retried");
         let second = reducer.begin_retry(retry, 3).expect("begin retry");
         assert!(second.get() > first.get());
@@ -1000,6 +1105,8 @@ mod tests {
             )
             .expect("not dispatched");
 
+        assert!(reducer.retry(false).is_none());
+        reducer.observe(1, |_| false);
         let accepted = reducer.retry(false).expect("retry");
         let stale = reducer.retry(false).expect("second plan");
         let successor = reducer.begin_retry(accepted, 1).expect("begin retry");
@@ -1038,7 +1145,64 @@ mod tests {
 
         let current = reducer.retry(false).expect("replacement retry plan");
         let successor = reducer.begin_retry(current, 7).expect("begin retry");
-        assert_eq!(successor.get(), first.get() + 1);
+        assert!(successor.get() > first.get());
+    }
+
+    #[test]
+    fn retry_capability_cannot_cross_reconciler_ownership() {
+        let mut first = MutationReconciler::default();
+        let first_attempt = first.begin("first", 1).expect("begin first");
+        first
+            .complete(
+                first_attempt,
+                MutationCommandResult::NotDispatched {
+                    diagnostic: "first not dispatched".to_owned(),
+                },
+            )
+            .expect("complete first");
+        first.observe(1, |_| false);
+
+        let mut second = MutationReconciler::default();
+        let second_attempt = second.begin("second", 1).expect("begin second");
+        second
+            .complete(
+                second_attempt,
+                MutationCommandResult::NotDispatched {
+                    diagnostic: "second not dispatched".to_owned(),
+                },
+            )
+            .expect("complete second");
+        second.observe(1, |_| false);
+
+        let foreign = first.retry(false).expect("first retry capability");
+        assert_eq!(
+            second.begin_retry(foreign, 1),
+            Err(MutationBeginError::RetryExpired)
+        );
+        assert_eq!(second.active_attempt(), Some(second_attempt));
+        assert_eq!(second.active_intent(), Some(&"second"));
+    }
+
+    #[test]
+    fn panicking_satisfaction_predicate_preserves_the_active_attempt() {
+        let mut reducer = MutationReconciler::default();
+        let attempt = reducer.begin("add-port", 4).expect("begin");
+
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            reducer.observe(5, |_| panic!("injected satisfaction panic"));
+        }));
+
+        assert!(panic.is_err());
+        assert_eq!(reducer.phase(), MutationPhase::Pending);
+        assert_eq!(reducer.active_attempt(), Some(attempt));
+        assert_eq!(reducer.active_intent(), Some(&"add-port"));
+        assert!(reducer.observe(5, |_| true).state_changed());
+        assert!(
+            reducer
+                .complete(attempt, applied(5))
+                .expect("completion after recovered predicate panic")
+                .became_satisfied()
+        );
     }
 
     #[test]

@@ -7,7 +7,8 @@ use jellyflow_core::{
 };
 use jellyflow_open_gpui::activity::{OpenGpuiActivityKind, OpenGpuiActivityLease};
 use jellyflow_open_gpui::authoring::{
-    OpenGpuiCommandTicket, OpenGpuiCommandTicketResult, OpenGpuiNodeBinding,
+    MutationLayoutEffect, MutationRequest, MutationSettlement, OpenGpuiManagedMutation,
+    OpenGpuiNodeBinding,
 };
 use jellyflow_open_gpui::host::{
     InitialViewportPolicy, OpenGpuiSceneHost, OpenGpuiSceneHostDiagnosticKind,
@@ -76,6 +77,7 @@ struct ContentMeasuredNode {
 
 struct PrefixQueuedContentNode {
     binding: Entity<OpenGpuiNodeBinding>,
+    mutation: OpenGpuiManagedMutation<serde_json::Value>,
     render_count: usize,
 }
 
@@ -95,7 +97,9 @@ struct RuntimeDroppingIncompleteNode {
 }
 
 struct ValidSiblingNode {
-    _binding: Entity<OpenGpuiNodeBinding>,
+    binding: Entity<OpenGpuiNodeBinding>,
+    mutation: OpenGpuiManagedMutation<serde_json::Value>,
+    last_settlement: Option<MutationSettlement>,
 }
 
 impl Render for OffsetScene {
@@ -321,20 +325,30 @@ impl Render for PrefixQueuedContentNode {
         cx: &mut Context<Self>,
     ) -> impl open_gpui::IntoElement {
         self.render_count = self.render_count.saturating_add(1);
+        let authoring = self
+            .binding
+            .read(cx)
+            .authoring()
+            .expect("prefix fixture binding stays live");
+        let _ = self
+            .mutation
+            .observe(&authoring, |intent| authoring.node().data == *intent, cx);
         if self.render_count == 2 {
-            let authoring = self
-                .binding
-                .read(cx)
-                .authoring()
-                .expect("prefix fixture binding stays live");
+            let intent = serde_json::json!({ "prefix": true });
             let command = GraphCommand::set_node_data(
                 authoring.version(),
                 NodeId::from_u128(10),
-                serde_json::json!({ "prefix": true }),
+                intent.clone(),
             );
-            let _ticket = authoring
-                .enqueue(command, cx)
-                .expect("prefix fixture command enters the host journal");
+            self.mutation
+                .dispatch(
+                    authoring,
+                    command,
+                    MutationRequest::new(intent),
+                    MutationLayoutEffect::Preserve,
+                    cx,
+                )
+                .expect("prefix fixture command enters managed authoring");
         }
         self.binding.read(cx).measure_content(
             div()
@@ -430,9 +444,44 @@ impl Render for ValidSiblingNode {
     fn render(
         &mut self,
         _window: &mut Window,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) -> impl open_gpui::IntoElement {
+        let authoring = self
+            .binding
+            .read(cx)
+            .authoring()
+            .expect("valid sibling binding stays live");
+        let settlement =
+            self.mutation
+                .observe(&authoring, |intent| authoring.node().data == *intent, cx);
+        if !matches!(
+            settlement,
+            MutationSettlement::Ready | MutationSettlement::Pending { .. }
+        ) {
+            self.last_settlement = Some(settlement);
+        }
         div().size_full().child("valid sibling renderer")
+    }
+}
+
+impl ValidSiblingNode {
+    fn set_data(&mut self, value: serde_json::Value, cx: &mut Context<Self>) {
+        let authoring = self
+            .binding
+            .read(cx)
+            .authoring()
+            .expect("valid sibling binding stays live");
+        let command =
+            GraphCommand::set_node_data(authoring.version(), NodeId::from_u128(11), value.clone());
+        self.mutation
+            .dispatch(
+                authoring,
+                command,
+                MutationRequest::new(value),
+                MutationLayoutEffect::Preserve,
+                cx,
+            )
+            .expect("valid sibling command enters managed authoring");
     }
 }
 
@@ -962,7 +1011,7 @@ fn incomplete_layout_keeps_command_and_authoritative_route_until_atomic_refresh(
     let weak_view = view.downgrade();
     let measure_output = Rc::new(Cell::new(true));
     let output_top = Rc::new(Cell::new(40.0));
-    let sibling_binding = Rc::new(RefCell::new(None));
+    let sibling_node = Rc::new(RefCell::new(None));
 
     let mut registry = OpenGpuiNodeRegistry::builder();
     let factory_measure_output = Rc::clone(&measure_output);
@@ -974,10 +1023,16 @@ fn incomplete_layout_keeps_command_and_authoritative_route_until_atomic_refresh(
             output_top: Rc::clone(&factory_output_top),
         })
     });
-    let captured_sibling = Rc::clone(&sibling_binding);
+    let captured_sibling = Rc::clone(&sibling_node);
     registry.register(VALID_SIBLING_RENDERER, move |binding, _window, cx| {
-        *captured_sibling.borrow_mut() = Some(binding.clone());
-        cx.new(|_| ValidSiblingNode { _binding: binding })
+        let mutation = binding.read(cx).managed_mutation();
+        let node = cx.new(|_| ValidSiblingNode {
+            binding,
+            mutation,
+            last_settlement: None,
+        });
+        *captured_sibling.borrow_mut() = Some(node.clone());
+        node
     });
 
     let (host, cx) = cx.add_window_view(move |_, _| {
@@ -1000,31 +1055,21 @@ fn incomplete_layout_keeps_command_and_authoritative_route_until_atomic_refresh(
 
     measure_output.set(false);
     output_top.set(72.0);
-    let sibling = sibling_binding
+    let sibling = sibling_node
         .borrow()
         .clone()
-        .expect("captured valid sibling binding");
-    let mut ticket = cx.update_entity(&sibling, |binding, cx| {
-        let authoring = binding.authoring().expect("live sibling binding");
-        let command = GraphCommand::set_node_data(
-            authoring.version(),
-            NodeId::from_u128(11),
-            serde_json::json!({ "same-frame": "applied" }),
-        );
-        authoring
-            .enqueue(command, cx)
-            .expect("queue command beside incomplete layout")
+        .expect("captured valid sibling node");
+    cx.update_entity(&sibling, |node, cx| {
+        node.set_data(serde_json::json!({ "same-frame": "applied" }), cx);
     });
     draw(cx);
 
-    assert_eq!(
-        poll_command_ticket(&mut ticket)
-            .expect("same-frame command ticket")
-            .applied_revision()
-            .expect("same-frame command applied"),
-        1
-    );
-    assert_command_ticket_pending(&mut ticket);
+    cx.read_entity(&sibling, |node, _| {
+        assert!(matches!(
+            node.last_settlement,
+            Some(MutationSettlement::Satisfied { .. })
+        ));
+    });
     assert_eq!(
         runtime
             .snapshot()
@@ -1173,8 +1218,10 @@ fn content_size_waits_for_queued_prefix_and_binds_one_fresh_revision(
     );
     let mut registry = OpenGpuiNodeRegistry::builder();
     registry.register_with_policy(RENDERER, policy, |binding, _window, cx| {
+        let mutation = binding.read(cx).managed_mutation();
         cx.new(|_| PrefixQueuedContentNode {
             binding,
+            mutation,
             render_count: 0,
         })
     });
@@ -1517,7 +1564,12 @@ fn duplicate_renderer_fallback_is_local_non_retryable_and_keeps_ports_interactiv
     let valid_calls = valid_factory_calls.clone();
     registry.register(VALID_SIBLING_RENDERER, move |binding, _window, cx| {
         valid_calls.set(valid_calls.get().saturating_add(1));
-        cx.new(|_| ValidSiblingNode { _binding: binding })
+        let mutation = binding.read(cx).managed_mutation();
+        cx.new(|_| ValidSiblingNode {
+            binding,
+            mutation,
+            last_settlement: None,
+        })
     });
 
     let (host, cx) = cx.add_window_view(move |_, _| {
@@ -2012,22 +2064,6 @@ fn draw(cx: &mut open_gpui::VisualTestContext) {
         window.draw(cx).clear();
     });
     cx.run_until_parked();
-}
-
-fn poll_command_ticket(ticket: &mut OpenGpuiCommandTicket) -> OpenGpuiCommandTicketResult {
-    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
-    match std::future::Future::poll(std::pin::Pin::new(ticket), &mut context) {
-        std::task::Poll::Ready(result) => result,
-        std::task::Poll::Pending => panic!("native command ticket is still pending"),
-    }
-}
-
-fn assert_command_ticket_pending(ticket: &mut OpenGpuiCommandTicket) {
-    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
-    assert!(matches!(
-        std::future::Future::poll(std::pin::Pin::new(ticket), &mut context),
-        std::task::Poll::Pending
-    ));
 }
 
 fn assert_close(actual: f32, expected: f32) {

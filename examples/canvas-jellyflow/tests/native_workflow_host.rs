@@ -855,7 +855,10 @@ fn prompt_conflict_can_explicitly_reapply_local_text_after_another_view_wins(
     );
     assert_eq!(runtime.history_state().unwrap().undo_len(), 2);
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.resource_snapshot().strong_instances(), fixture_node_count)
+        assert_eq!(
+            host.resource_snapshot().strong_instances(),
+            fixture_node_count
+        )
     });
 }
 
@@ -906,7 +909,10 @@ fn prompt_conflict_can_discard_local_text_without_writing_the_graph(
             .is_none()
     );
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.resource_snapshot().strong_instances(), fixture_node_count)
+        assert_eq!(
+            host.resource_snapshot().strong_instances(),
+            fixture_node_count
+        )
     });
 }
 
@@ -1183,7 +1189,10 @@ fn model_overlay_lease_protects_culling_and_releases_on_every_close_path(
     draw(cx);
     cx.read_entity(&host, |host, _| {
         assert_eq!(host.resource_snapshot().active_nodes(), 1);
-        assert_eq!(host.resource_snapshot().parked_nodes(), fixture_node_count - 1);
+        assert_eq!(
+            host.resource_snapshot().parked_nodes(),
+            fixture_node_count - 1
+        );
         assert_eq!(host.resource_snapshot().protected_instances(), 1);
         assert_eq!(host.resource_snapshot().protected_leases(), 1);
     });
@@ -1309,7 +1318,10 @@ fn model_overlay_lease_preserves_native_workflow_across_semantic_zoom(
     draw(cx);
     assert!(cx.debug_bounds(&option_selector).is_some());
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.resource_snapshot().strong_instances(), fixture_node_count);
+        assert_eq!(
+            host.resource_snapshot().strong_instances(),
+            fixture_node_count
+        );
         assert_eq!(host.resource_snapshot().protected_instances(), 1);
         assert_eq!(host.resource_snapshot().protected_leases(), 1);
     });
@@ -1335,7 +1347,10 @@ fn model_overlay_lease_preserves_native_workflow_across_semantic_zoom(
     assert!(cx.debug_bounds(OVERVIEW_NODE_SELECTOR).is_some());
     assert_graph_unchanged();
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.resource_snapshot().strong_instances(), fixture_node_count);
+        assert_eq!(
+            host.resource_snapshot().strong_instances(),
+            fixture_node_count
+        );
         assert_eq!(host.resource_snapshot().protected_instances(), 1);
         assert_eq!(host.resource_snapshot().protected_leases(), 1);
     });
@@ -1361,7 +1376,10 @@ fn model_overlay_lease_preserves_native_workflow_across_semantic_zoom(
     cx.read_entity(&host, |host, _| {
         assert_eq!(host.resource_snapshot().protected_instances(), 0);
         assert_eq!(host.resource_snapshot().protected_leases(), 0);
-        assert_eq!(host.resource_snapshot().strong_instances(), fixture_node_count);
+        assert_eq!(
+            host.resource_snapshot().strong_instances(),
+            fixture_node_count
+        );
     });
 
     weak_view
@@ -1397,7 +1415,10 @@ fn model_overlay_lease_preserves_native_workflow_across_semantic_zoom(
     cx.read_entity(&host, |host, _| {
         assert_eq!(host.resource_snapshot().protected_instances(), 0);
         assert_eq!(host.resource_snapshot().protected_leases(), 0);
-        assert_eq!(host.resource_snapshot().strong_instances(), fixture_node_count);
+        assert_eq!(
+            host.resource_snapshot().strong_instances(),
+            fixture_node_count
+        );
         assert!(host.last_diagnostic().is_none());
     });
 }

@@ -19,11 +19,11 @@ use jellyflow_runtime::interaction::InteractionTicketId;
 use crate::size_policy::OpenGpuiNodeSizeTicket;
 
 /// Maximum number of commands owned by one native host across its queue and in-flight batch.
-pub const OPEN_GPUI_COMMAND_JOURNAL_CAPACITY: usize = 256;
+pub(crate) const OPEN_GPUI_COMMAND_JOURNAL_CAPACITY: usize = 256;
 
 /// Failure to enqueue a command for the next real native frame.
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
-pub enum OpenGpuiCommandEnqueueError {
+pub(crate) enum OpenGpuiCommandEnqueueError {
     #[error("native command host is no longer available")]
     HostUnavailable,
     #[error("native command host is closing")]
@@ -42,7 +42,7 @@ pub enum OpenGpuiCommandEnqueueError {
 
 /// Terminal result transport failure for one enqueued native command.
 #[derive(Debug, thiserror::Error)]
-pub enum OpenGpuiCommandTicketError {
+pub(crate) enum OpenGpuiCommandTicketError {
     #[error("native command host was dropped before submission")]
     HostDropped,
     #[error("native command host closed before submission: {reason:?}")]
@@ -70,7 +70,7 @@ impl OpenGpuiCommandTicketError {
     }
 }
 
-pub type OpenGpuiCommandTicketResult =
+pub(crate) type OpenGpuiCommandTicketResult =
     Result<CommandExecutionCompletion, OpenGpuiCommandTicketError>;
 
 /// Terminal reason why a captured command prefix cannot be followed by another mutation.
@@ -255,7 +255,7 @@ impl Drop for OpenGpuiCommandPrefixPermit {
 
 /// One-shot future resolved by the host after its entity borrow has ended.
 #[must_use = "command tickets must be awaited or explicitly dropped"]
-pub struct OpenGpuiCommandTicket {
+pub(crate) struct OpenGpuiCommandTicket {
     id: u64,
     completion: Rc<CommandCompletion>,
 }
@@ -288,18 +288,42 @@ impl OpenGpuiCommandSink {
         Self { journal, host }
     }
 
-    pub(crate) fn enqueue(
+    pub(crate) fn admit(
         &self,
         command: GraphCommand,
-        cx: &mut App,
-    ) -> Result<OpenGpuiCommandTicket, OpenGpuiCommandEnqueueError> {
+    ) -> Result<OpenGpuiAdmittedCommand, OpenGpuiCommandEnqueueError> {
         let journal = self
             .journal
             .upgrade()
             .ok_or(OpenGpuiCommandEnqueueError::HostUnavailable)?;
         let ticket = journal.enqueue(command, OpenGpuiCommandOrigin::Binding)?;
+        Ok(OpenGpuiAdmittedCommand {
+            ticket,
+            notification: OpenGpuiCommandNotification { host: self.host },
+        })
+    }
+}
+
+/// Journal-admission proof split from the fallible native host notification.
+pub(crate) struct OpenGpuiAdmittedCommand {
+    ticket: OpenGpuiCommandTicket,
+    notification: OpenGpuiCommandNotification,
+}
+
+impl OpenGpuiAdmittedCommand {
+    pub(crate) fn into_parts(self) -> (OpenGpuiCommandTicket, OpenGpuiCommandNotification) {
+        (self.ticket, self.notification)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct OpenGpuiCommandNotification {
+    host: EntityId,
+}
+
+impl OpenGpuiCommandNotification {
+    pub(crate) fn notify(self, cx: &mut App) {
         cx.notify(self.host);
-        Ok(ticket)
     }
 }
 

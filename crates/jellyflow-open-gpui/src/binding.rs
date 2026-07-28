@@ -17,6 +17,7 @@ use crate::activity::{OpenGpuiNodeActivityHandle, OpenGpuiNodeActivityRegistry};
 use crate::authoring::{OpenGpuiNodeAuthoring, OpenGpuiNodeAuthoringError};
 use crate::command_journal::OpenGpuiCommandSink;
 use crate::interaction::OpenGpuiOverlayInteractionBoundary;
+use crate::managed_mutation::OpenGpuiManagedMutation;
 use crate::node_drag_handle::OpenGpuiNodeDragHandle;
 use crate::port_handle::{OpenGpuiMeasurementSink, OpenGpuiPortHandle};
 use crate::presentation::{
@@ -737,6 +738,18 @@ impl std::fmt::Debug for OpenGpuiNodeBinding {
 }
 
 impl OpenGpuiNodeBinding {
+    /// Creates one mutation supervisor bound to this exact retained node mount.
+    ///
+    /// Product code keeps ownership of intents, command construction, satisfaction checks, and
+    /// explicit retry decisions. The returned supervisor owns native admission and task lifecycle.
+    pub fn managed_mutation<I>(&self) -> OpenGpuiManagedMutation<I> {
+        OpenGpuiManagedMutation::mount(
+            self.mount.context.clone(),
+            self.activity.clone(),
+            Rc::clone(&self.layout_invalidator),
+        )
+    }
+
     /// Opens one owned authoring view for this exact mount and current graph revision.
     pub fn authoring(&self) -> Result<OpenGpuiNodeAuthoring, OpenGpuiNodeAuthoringError> {
         OpenGpuiNodeAuthoring::open(

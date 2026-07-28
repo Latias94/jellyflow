@@ -20,6 +20,7 @@ pub enum OpenGpuiActivityKind {
     Task,
     Subscription,
     Draft,
+    Mutation,
 }
 
 impl OpenGpuiActivityKind {
