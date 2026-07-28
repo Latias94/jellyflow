@@ -596,6 +596,10 @@ impl EguiTraceRunner {
         mut output: EguiInteractionOutput,
         query_is_probe: bool,
     ) -> TraceEffect {
+        assert!(
+            output.terminal_query_error().is_none(),
+            "canonical egui queries must not terminate with an adapter-visible error"
+        );
         let resolved_query = output.resolved_query_count() != 0;
         let mut effects = output.take_effects().into_iter();
         if let Some(effect) = effects.next() {

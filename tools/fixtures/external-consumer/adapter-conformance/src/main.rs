@@ -1,5 +1,3 @@
-use std::collections::VecDeque;
-
 use jellyflow_core::core::{
     CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId, EdgeKind, GraphBuilder, GraphId, Node,
     NodeId, NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKey, PortKind,
@@ -391,19 +389,13 @@ impl RuntimeInteractionBridge {
                 anchors.reconnect_source.y,
             ),
         );
-        let dispatch = self
+        let update = self
             .session
             .request_edge_pick(self.pointer)
-            .expect("edge press requests a real pick")
-            .into_dispatch();
-        assert!(dispatch.effects.is_empty());
-        let mut queries = dispatch.queries;
-        assert_eq!(queries.len(), 1, "edge press emits one opaque query");
-        let resolved = self
-            .session
-            .resolve_query(queries.remove(0))
-            .expect("edge pick resolution applies");
-        self.process_update(resolved);
+            .expect("edge press requests a real pick");
+        assert!(update.effects().is_empty());
+        assert!(update.query_work_pending());
+        self.process_update(update);
         let picked = self
             .session
             .presentation()
@@ -614,10 +606,10 @@ impl RuntimeInteractionBridge {
     }
 
     fn process_update(&mut self, update: CanvasInteractionUpdate) -> ConformanceEffect {
-        let mut pending = VecDeque::from([update]);
+        let mut update = update;
         let mut observed = ConformanceEffect::None;
         let mut resolved_probe = false;
-        while let Some(update) = pending.pop_front() {
+        loop {
             let dispatch = update.into_dispatch();
             for effect in dispatch.effects {
                 match effect {
@@ -637,29 +629,31 @@ impl RuntimeInteractionBridge {
                     }
                 }
             }
-            for query in dispatch.queries {
-                match self.session.presentation().phase() {
-                    CanvasInteractionPhase::ConnectionDrag | CanvasInteractionPhase::Committing => {
-                        resolved_probe = true;
-                    }
-                    CanvasInteractionPhase::Marquee => {
-                        self.node_intersection_pages =
-                            self.node_intersection_pages.saturating_add(1);
-                    }
-                    CanvasInteractionPhase::Idle
-                    | CanvasInteractionPhase::Closed
-                    | CanvasInteractionPhase::Armed
-                    | CanvasInteractionPhase::NodeDrag
-                    | CanvasInteractionPhase::ConnectionSearch
-                    | CanvasInteractionPhase::EdgeActive
-                    | CanvasInteractionPhase::Pan => {}
-                }
-                let next = self
-                    .session
-                    .resolve_query(query)
-                    .expect("runtime-owned interaction query resolves");
-                pending.push_back(next);
+            if !dispatch.query_work_pending {
+                break;
             }
+            match self.session.presentation().phase() {
+                CanvasInteractionPhase::ConnectionDrag | CanvasInteractionPhase::Committing => {
+                    resolved_probe = true;
+                }
+                CanvasInteractionPhase::Marquee => {
+                    self.node_intersection_pages = self.node_intersection_pages.saturating_add(1);
+                }
+                CanvasInteractionPhase::Idle
+                | CanvasInteractionPhase::Closed
+                | CanvasInteractionPhase::Armed
+                | CanvasInteractionPhase::NodeDrag
+                | CanvasInteractionPhase::ConnectionSearch
+                | CanvasInteractionPhase::EdgeActive
+                | CanvasInteractionPhase::Pan => {}
+            }
+            let (next, needs_tick, receipt, terminal_error) =
+                self.session.advance_query_work(1).into_parts();
+            assert_eq!(receipt.pages_granted(), 1);
+            assert_eq!(receipt.pages_attempted(), 1);
+            assert!(terminal_error.is_none());
+            assert_eq!(needs_tick, next.query_work_pending());
+            update = next;
         }
         if observed == ConformanceEffect::None && resolved_probe {
             ConformanceEffect::ProbeConnection

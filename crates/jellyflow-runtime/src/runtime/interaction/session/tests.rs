@@ -99,7 +99,7 @@ fn attached_session_rejects_foreign_before_reprojecting_stale_samples_without_st
         .press(CanvasPressTarget::NativeControl, first_sample)
         .expect("same-view stale samples are reprojected internally");
     assert!(stale.effects().is_empty());
-    assert!(stale.queries().is_empty());
+    assert!(!stale.query_work_pending());
     assert_eq!(session_fingerprint(&session), before);
 
     let current = first
@@ -237,7 +237,7 @@ fn selection_commit_failure_has_explicit_press_query_and_marquee_policies() {
             press,
         )
         .expect("edge-pick press");
-    let query = edge_query_id(&pressed);
+    let query = edge_query_id(&edge_pick, &pressed);
     edge_pick.selection_commit_failure = Some(CanvasInteractionError::ViewUnavailable);
     assert!(matches!(
         edge_pick.resolve_canvas_press_edge_resolution(
@@ -268,7 +268,8 @@ fn selection_commit_failure_has_explicit_press_query_and_marquee_policies() {
     let moved = view
         .viewport_pointer_sample(ViewPoint::new(40.0, 32.0))
         .expect("marquee move");
-    let query = marquee_query_id(&marquee.move_to(moved).expect("marquee query"));
+    let query_update = marquee.move_to(moved).expect("marquee query");
+    let query = marquee_query_id(&marquee, &query_update);
     let snapshot = runtime.snapshot().expect("marquee snapshot");
     let before = session_fingerprint(&marquee);
     marquee.selection_commit_failure = Some(CanvasInteractionError::ViewUnavailable);
@@ -289,7 +290,8 @@ fn selection_commit_failure_has_explicit_press_query_and_marquee_policies() {
     let retry = view
         .viewport_pointer_sample(ViewPoint::new(44.0, 36.0))
         .expect("marquee retry move");
-    let retry_query = marquee_query_id(&marquee.move_to(retry).expect("retry query"));
+    let retry_update = marquee.move_to(retry).expect("retry query");
+    let retry_query = marquee_query_id(&marquee, &retry_update);
     marquee
         .resolve_node_intersection_current(
             retry_query,
@@ -481,13 +483,15 @@ fn external_viewport_rebase_preserves_no_move_release_across_pointer_states() {
         marquee.move_to(pointer).unwrap();
         view.set_viewport(external).unwrap();
         let released = marquee.release(pointer).unwrap();
+        let pending = marquee
+            .query_work
+            .pending_for_test()
+            .expect("release must retain one node-intersection query");
         assert!(matches!(
-            released.queries(),
-            [query] if matches!(
-                query.kind_for_test(),
-                CanvasInteractionQueryKind::NodeIntersection { .. }
-            )
+            &pending.kind,
+            PendingInteractionQueryKind::NodeIntersection { .. }
         ));
+        assert!(released.query_work_pending());
         let rect = marquee
             .presentation()
             .marquee()
@@ -508,7 +512,7 @@ fn external_viewport_rebase_preserves_no_move_release_across_pointer_states() {
                 press,
             )
             .unwrap();
-        let query = edge_query_id(&pressed);
+        let query = edge_query_id(&edge_pick, &pressed);
         let external_snapshot = view.set_viewport(external).unwrap();
         edge_pick.release(press).unwrap();
         let resolved = edge_pick
@@ -615,7 +619,7 @@ fn connection_stays_armed_below_threshold_and_release_is_a_noop() {
         session.presentation().phase(),
         CanvasInteractionPhase::Armed
     );
-    assert!(moved.queries().is_empty());
+    assert!(!moved.query_work_pending());
     assert_eq!(moved.tick_demand(), InteractionTickDemand::None);
 
     let released = session.release(position(3.0, 0.0)).unwrap();
@@ -758,7 +762,7 @@ fn blank_canvas_click_clears_only_for_replace_mode() {
             .unwrap();
         session
             .resolve_canvas_press_edge_resolution(
-                edge_query_id(&pressed),
+                edge_query_id(&session, &pressed),
                 CanvasEdgePickResolution::Complete(None),
             )
             .unwrap();
@@ -836,13 +840,13 @@ fn direct_connection_reprobes_on_release_and_keeps_preview_until_terminal_receip
         .press_for_test(connection_target(false), position(0.0, 0.0))
         .unwrap();
     let moved = session.move_to(position(8.0, 0.0)).unwrap();
-    let move_query = connection_query_id(&moved);
+    let move_query = connection_query_id(&session, &moved);
     session
         .resolve_connection_probe_for_test(move_query, complete(valid_probe(target_port())))
         .unwrap();
 
     let released = session.release(position(20.0, 0.0)).unwrap();
-    let release_query = connection_query_id(&released);
+    let release_query = connection_query_id(&session, &released);
     assert_ne!(move_query, release_query);
     assert!(
         session
@@ -916,7 +920,7 @@ fn connection_wire_projection_uses_probe_time_geometry_and_stable_pointer_direct
         diagnostics: Vec::new(),
     };
     session
-        .resolve_connection_probe_for_test(connection_query_id(&moved), complete(invalid))
+        .resolve_connection_probe_for_test(connection_query_id(&session, &moved), complete(invalid))
         .unwrap();
     let invalid = session
         .presentation()
@@ -945,7 +949,7 @@ fn connection_wire_projection_uses_probe_time_geometry_and_stable_pointer_direct
         ),
     };
     session
-        .resolve_connection_probe_for_test(connection_query_id(&moved), complete(valid))
+        .resolve_connection_probe_for_test(connection_query_id(&session, &moved), complete(valid))
         .unwrap();
     let valid = session
         .presentation()
@@ -976,17 +980,17 @@ fn released_connection_at_auto_pan_edge_preserves_its_final_probe() {
     let moved = session.move_to(position(190.0, 40.0)).unwrap();
     session
         .resolve_connection_probe_for_test(
-            connection_query_id(&moved),
+            connection_query_id(&session, &moved),
             complete(valid_probe(target_port())),
         )
         .unwrap();
 
     let released = session.release(position(195.0, 40.0)).unwrap();
-    let release_query = connection_query_id(&released);
+    let release_query = connection_query_id(&session, &released);
     let tick = session.tick(0.1, ViewSize::new(200.0, 120.0)).unwrap();
 
     assert!(tick.effects().is_empty());
-    assert!(tick.queries().is_empty());
+    assert_eq!(connection_query_id(&session, &tick), release_query);
     assert!(
         session
             .presentation()
@@ -1014,10 +1018,10 @@ fn stale_drag_probe_restart_replaces_identity_and_ignores_the_old_page() {
         .press_for_test(connection_target(false), position(0.0, 0.0))
         .unwrap();
     let started = session.move_to(position(12.0, 4.0)).unwrap();
-    let stale_id = connection_query_id(&started);
+    let stale_id = connection_query_id(&session, &started);
 
     let restarted = session.restart_stale_query(stale_id).unwrap();
-    let fresh_id = connection_query_id(&restarted);
+    let fresh_id = connection_query_id(&session, &restarted);
     assert_ne!(fresh_id, stale_id);
     assert_eq!(
         session.presentation().phase(),
@@ -1027,7 +1031,7 @@ fn stale_drag_probe_restart_replaces_identity_and_ignores_the_old_page() {
     let late = session
         .resolve_connection_probe_for_test(stale_id, complete(valid_probe(target_port())))
         .unwrap();
-    assert!(late.queries().is_empty());
+    assert_eq!(connection_query_id(&session, &late), fresh_id);
     assert!(late.effects().is_empty());
     let resolved = session
         .resolve_connection_probe_for_test(fresh_id, complete(valid_probe(target_port())))
@@ -1055,15 +1059,15 @@ fn stale_release_probe_restart_preserves_release_pending_until_commit() {
     let moved = session.move_to(position(8.0, 0.0)).unwrap();
     session
         .resolve_connection_probe_for_test(
-            connection_query_id(&moved),
+            connection_query_id(&session, &moved),
             complete(valid_probe(target_port())),
         )
         .unwrap();
     let released = session.release(position(20.0, 0.0)).unwrap();
-    let stale_id = connection_query_id(&released);
+    let stale_id = connection_query_id(&session, &released);
 
     let restarted = session.restart_stale_query(stale_id).unwrap();
-    let fresh_id = connection_query_id(&restarted);
+    let fresh_id = connection_query_id(&session, &restarted);
     assert_ne!(fresh_id, stale_id);
     assert!(
         session
@@ -1096,9 +1100,9 @@ fn stale_commit_revalidation_restart_reuses_ticket_and_keeps_budget_terminal() {
     let requested = session
         .request_connection_commit_revalidation(ticket)
         .unwrap();
-    let stale_id = connection_query_id(&requested);
+    let stale_id = connection_query_id(&session, &requested);
     let restarted = session.restart_stale_query(stale_id).unwrap();
-    let fresh_id = connection_query_id(&restarted);
+    let fresh_id = connection_query_id(&session, &restarted);
     assert_ne!(fresh_id, stale_id);
     assert_eq!(
         session
@@ -1132,9 +1136,9 @@ fn stale_edge_pick_restart_replaces_identity_without_relaxing_budget_failure() {
         ..CanvasInteractionConfig::default()
     });
     let requested = session.request_edge_pick(position(20.0, 10.0)).unwrap();
-    let stale_id = edge_query_id(&requested);
+    let stale_id = edge_query_id(&session, &requested);
     let restarted = session.restart_stale_query(stale_id).unwrap();
-    let fresh_id = edge_query_id(&restarted);
+    let fresh_id = edge_query_id(&session, &restarted);
     assert_ne!(fresh_id, stale_id);
 
     let late = session
@@ -1146,7 +1150,7 @@ fn stale_edge_pick_restart_replaces_identity_without_relaxing_budget_failure() {
             },
         )
         .unwrap();
-    assert!(late.queries().is_empty());
+    assert_eq!(edge_query_id(&session, &late), fresh_id);
     let exhausted = session
         .resolve_edge_pick_for_test(
             fresh_id,
@@ -1169,15 +1173,15 @@ fn repeated_stale_drag_probe_restarts_are_bounded_per_pointer_query() {
         .press_for_test(connection_target(false), position(0.0, 0.0))
         .unwrap();
     let started = session.move_to(position(12.0, 4.0)).unwrap();
-    let mut current = connection_query_id(&started);
+    let mut current = connection_query_id(&session, &started);
 
     for _ in 0..MAX_STALE_QUERY_RESTARTS {
         let restarted = session.restart_stale_query(current).unwrap();
-        current = connection_query_id(&restarted);
+        current = connection_query_id(&session, &restarted);
     }
     let exhausted = session.restart_stale_query(current).unwrap();
 
-    assert!(exhausted.queries().is_empty());
+    assert!(!exhausted.query_work_pending());
     assert!(exhausted.effects().is_empty());
     assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
     assert_eq!(
@@ -1190,15 +1194,15 @@ fn repeated_stale_drag_probe_restarts_are_bounded_per_pointer_query() {
 fn repeated_stale_hover_edge_picks_are_bounded() {
     let mut session = test_session(CanvasInteractionConfig::default());
     let requested = session.request_edge_pick(position(20.0, 10.0)).unwrap();
-    let mut current = edge_query_id(&requested);
+    let mut current = edge_query_id(&session, &requested);
 
     for _ in 0..MAX_STALE_QUERY_RESTARTS {
         let restarted = session.restart_stale_query(current).unwrap();
-        current = edge_query_id(&restarted);
+        current = edge_query_id(&session, &restarted);
     }
     let exhausted = session.restart_stale_query(current).unwrap();
 
-    assert!(exhausted.queries().is_empty());
+    assert!(!exhausted.query_work_pending());
     assert!(exhausted.effects().is_empty());
     assert_eq!(session.presentation().hovered_edge(), None);
     assert_eq!(
@@ -1214,15 +1218,15 @@ fn repeated_stale_commit_revalidation_rejects_without_graph_mutation() {
     let requested = session
         .request_connection_commit_revalidation(ticket)
         .unwrap();
-    let mut current = connection_query_id(&requested);
+    let mut current = connection_query_id(&session, &requested);
 
     for _ in 0..MAX_STALE_QUERY_RESTARTS {
         let restarted = session.restart_stale_query(current).unwrap();
-        current = connection_query_id(&restarted);
+        current = connection_query_id(&session, &restarted);
     }
     let exhausted = session.restart_stale_query(current).unwrap();
 
-    assert!(exhausted.queries().is_empty());
+    assert!(!exhausted.query_work_pending());
     assert!(exhausted.effects().is_empty());
     assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
     assert_eq!(
@@ -1244,7 +1248,7 @@ fn exact_canvas_press_selects_its_resolved_edge_instead_of_a_previous_hover() {
             position(20.0, 10.0),
         )
         .unwrap();
-    let query = edge_query_id(&pressed);
+    let query = edge_query_id(&session, &pressed);
     assert_eq!(session.presentation().hovered_edge(), None);
     assert_eq!(
         session.presentation().phase(),
@@ -1289,7 +1293,7 @@ fn empty_exact_pick_activates_marquee_from_press_to_latest_pointer() {
             position(2.0, 3.0),
         )
         .unwrap();
-    let query = edge_query_id(&pressed);
+    let query = edge_query_id(&session, &pressed);
     let moved = session.move_to(position(14.0, 11.0)).unwrap();
     assert!(moved.effects().is_empty());
 
@@ -1332,7 +1336,7 @@ fn release_before_exact_pick_completion_suppresses_delayed_edge_click_and_finish
             position(0.0, 0.0),
         )
         .unwrap();
-    let query = edge_query_id(&pressed);
+    let query = edge_query_id(&edge_session, &pressed);
     let released = edge_session.release(position(12.0, 0.0)).unwrap();
     assert!(released.effects().is_empty());
     let resolved = edge_session
@@ -1354,7 +1358,7 @@ fn release_before_exact_pick_completion_suppresses_delayed_edge_click_and_finish
             position(0.0, 0.0),
         )
         .unwrap();
-    let query = edge_query_id(&pressed);
+    let query = edge_query_id(&empty_session, &pressed);
     empty_session.release(position(12.0, 8.0)).unwrap();
     let resolved = empty_session
         .resolve_canvas_press_edge_resolution(query, CanvasEdgePickResolution::Complete(None))
@@ -1384,7 +1388,7 @@ fn exact_press_pagination_latches_maximum_displacement_until_completion() {
             position(4.0, 5.0),
         )
         .unwrap();
-    let query = edge_query_id(&pressed);
+    let query = edge_query_id(&session, &pressed);
     session.move_to(position(40.0, 50.0)).unwrap();
     let continued = session
         .resolve_canvas_press_edge_resolution(
@@ -1396,7 +1400,7 @@ fn exact_press_pagination_latches_maximum_displacement_until_completion() {
             )),
         )
         .unwrap();
-    assert_eq!(edge_query_id(&continued), query);
+    assert_eq!(edge_query_id(&session, &continued), query);
     assert!(continued.effects().is_empty());
     let InteractionState::EdgePickPending(pending) = &session.state else {
         panic!("exact press must remain pending between query pages");
@@ -1425,7 +1429,7 @@ fn exact_press_latches_a_far_move_even_after_returning_to_the_press_point() {
             position(4.0, 5.0),
         )
         .unwrap();
-    let query = edge_query_id(&pressed);
+    let query = edge_query_id(&session, &pressed);
     session.move_to(position(40.0, 50.0)).unwrap();
     session.move_to(position(4.0, 5.0)).unwrap();
     session.release(position(4.0, 5.0)).unwrap();
@@ -1450,11 +1454,11 @@ fn stale_exact_press_restart_requeries_the_press_point_and_ignores_the_old_ident
             position(4.0, 5.0),
         )
         .unwrap();
-    let stale = edge_query_id(&pressed);
+    let stale = edge_query_id(&session, &pressed);
     session.move_to(position(40.0, 50.0)).unwrap();
 
     let restarted = session.restart_stale_query(stale).unwrap();
-    let fresh = edge_query_id(&restarted);
+    let fresh = edge_query_id(&session, &restarted);
     assert_ne!(fresh, stale);
     let InteractionState::EdgePickPending(pending) = &session.state else {
         panic!("exact press restart must remain pending");
@@ -1485,14 +1489,14 @@ fn exact_press_supersedes_fast_hover_without_accepting_its_late_result() {
     let pressed_edge = EdgeId::from_u128(63);
     let mut session = test_session(CanvasInteractionConfig::default());
     let hover = session.request_edge_pick(position(2.0, 3.0)).unwrap();
-    let hover_query = edge_query_id(&hover);
+    let hover_query = edge_query_id(&session, &hover);
     let pressed = session
         .press_for_test(
             canvas_marquee_target(SelectionMode::Replace),
             position(8.0, 9.0),
         )
         .unwrap();
-    let press_query = edge_query_id(&pressed);
+    let press_query = edge_query_id(&session, &pressed);
     assert_ne!(press_query, hover_query);
 
     let late_hover = session
@@ -1543,7 +1547,7 @@ fn exact_press_budget_geometry_cancel_and_late_results_never_select() {
             )
             .unwrap();
         let resolved = session
-            .resolve_canvas_press_edge_resolution(edge_query_id(&pressed), resolution)
+            .resolve_canvas_press_edge_resolution(edge_query_id(&session, &pressed), resolution)
             .unwrap();
         assert!(resolved.effects().is_empty());
         assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
@@ -1558,7 +1562,7 @@ fn exact_press_budget_geometry_cancel_and_late_results_never_select() {
             position(0.0, 0.0),
         )
         .unwrap();
-    let query = edge_query_id(&pressed);
+    let query = edge_query_id(&session, &pressed);
     let cancelled = session.cancel().unwrap();
     assert!(cancelled.effects().is_empty());
     assert_eq!(
@@ -1581,7 +1585,7 @@ fn exact_press_budget_geometry_cancel_and_late_results_never_select() {
             position(0.0, 0.0),
         )
         .unwrap();
-    let query = edge_query_id(&pressed);
+    let query = edge_query_id(&closed_session, &pressed);
     let closed = closed_session.close();
     assert!(closed.effects().is_empty());
     assert_eq!(
@@ -1609,7 +1613,7 @@ fn empty_exact_pick_can_activate_pan_without_a_second_press() {
             position(1.0, 2.0),
         )
         .unwrap();
-    let query = edge_query_id(&pressed);
+    let query = edge_query_id(&session, &pressed);
     session.move_to(position(11.0, 14.0)).unwrap();
     let resolved = session
         .resolve_canvas_press_edge_resolution(query, CanvasEdgePickResolution::Complete(None))
@@ -1634,7 +1638,7 @@ fn reconnect_suppresses_old_edge_through_commit_and_restores_it_after_conflict()
     let moved = session.move_to(position(8.0, 0.0)).unwrap();
     session
         .resolve_connection_probe_for_test(
-            connection_query_id(&moved),
+            connection_query_id(&session, &moved),
             complete(valid_probe(target_port())),
         )
         .unwrap();
@@ -1650,7 +1654,7 @@ fn reconnect_suppresses_old_edge_through_commit_and_restores_it_after_conflict()
     let released = session.release(position(20.0, 0.0)).unwrap();
     let committing = session
         .resolve_connection_probe_for_test(
-            connection_query_id(&released),
+            connection_query_id(&session, &released),
             complete(valid_probe(target_port())),
         )
         .unwrap();
@@ -1686,14 +1690,14 @@ fn connection_commit_revalidation_reuses_ticket_and_refreshes_optimistic_preview
     let moved = session.move_to(position(8.0, 0.0)).unwrap();
     session
         .resolve_connection_probe_for_test(
-            connection_query_id(&moved),
+            connection_query_id(&session, &moved),
             complete(valid_probe(target_port())),
         )
         .unwrap();
     let released = session.release(position(20.0, 0.0)).unwrap();
     let committing = session
         .resolve_connection_probe_for_test(
-            connection_query_id(&released),
+            connection_query_id(&session, &released),
             complete(valid_probe(target_port())),
         )
         .unwrap();
@@ -1709,7 +1713,7 @@ fn connection_commit_revalidation_reuses_ticket_and_refreshes_optimistic_preview
     let requested = session
         .request_connection_commit_revalidation(ticket)
         .unwrap();
-    let query = connection_query_id(&requested);
+    let query = connection_query_id(&session, &requested);
     assert_eq!(
         session
             .presentation()
@@ -1757,7 +1761,7 @@ fn invalid_commit_revalidation_conflicts_without_emitting_a_mutation() {
     let requested = session
         .request_connection_commit_revalidation(ticket)
         .unwrap();
-    let query = connection_query_id(&requested);
+    let query = connection_query_id(&session, &requested);
     let rejected = session
         .resolve_connection_probe_for_test(query, complete(invalid))
         .unwrap();
@@ -1971,7 +1975,7 @@ fn stale_connection_revalidation_ticket_does_not_change_pending_commit() {
     let stale = session
         .request_connection_commit_revalidation(stale_ticket)
         .unwrap();
-    assert!(stale.queries().is_empty());
+    assert!(!stale.query_work_pending());
     assert!(stale.effects().is_empty());
     assert_eq!(stale.damage(), InteractionDamage::default());
     let presentation = session.presentation();
@@ -1983,7 +1987,7 @@ fn stale_connection_revalidation_ticket_does_not_change_pending_commit() {
     let requested = session
         .request_connection_commit_revalidation(ticket)
         .unwrap();
-    assert_eq!(requested.queries().len(), 1);
+    assert!(requested.query_work_pending());
 }
 
 #[test]
@@ -2003,7 +2007,7 @@ fn ordinary_connection_cannot_bypass_probe_with_revision_refresh() {
     let requested = session
         .request_connection_commit_revalidation(ticket)
         .unwrap();
-    assert_eq!(requested.queries().len(), 1);
+    assert!(requested.query_work_pending());
 }
 
 #[test]
@@ -2015,7 +2019,7 @@ fn connection_commit_revalidation_budget_exhaustion_is_terminal() {
         .unwrap();
     let exhausted = session
         .resolve_connection_probe_for_test(
-            connection_query_id(&requested),
+            connection_query_id(&session, &requested),
             ConnectionProbeQueryOutcome::BudgetExhausted {
                 work: ConnectionProbeWork::default(),
             },
@@ -2039,14 +2043,14 @@ fn release_budget_exhaustion_is_terminal_without_graph_mutation() {
     let moved = session.move_to(position(8.0, 0.0)).unwrap();
     session
         .resolve_connection_probe_for_test(
-            connection_query_id(&moved),
+            connection_query_id(&session, &moved),
             complete(valid_probe(target_port())),
         )
         .unwrap();
     let released = session.release(position(20.0, 0.0)).unwrap();
     let exhausted = session
         .resolve_connection_probe_for_test(
-            connection_query_id(&released),
+            connection_query_id(&session, &released),
             ConnectionProbeQueryOutcome::BudgetExhausted {
                 work: ConnectionProbeWork::default(),
             },
@@ -2070,14 +2074,14 @@ fn search_failure_retry_and_rejected_selection_keep_one_search_owner() {
     let moved = session.move_to(position(8.0, 0.0)).unwrap();
     session
         .resolve_connection_probe_for_test(
-            connection_query_id(&moved),
+            connection_query_id(&session, &moved),
             complete(ConnectionProbe::None),
         )
         .unwrap();
     let released = session.release(position(20.0, 0.0)).unwrap();
     let searching = session
         .resolve_connection_probe_for_test(
-            connection_query_id(&released),
+            connection_query_id(&session, &released),
             complete(ConnectionProbe::None),
         )
         .unwrap();
@@ -2237,16 +2241,14 @@ fn interaction_identities_are_namespaced_per_canvas_session() {
 
     let mut first_query_session = test_session(CanvasInteractionConfig::default());
     let mut second_query_session = test_session(CanvasInteractionConfig::default());
-    let first_query = edge_query_id(
-        &first_query_session
-            .request_edge_pick(position(0.0, 0.0))
-            .unwrap(),
-    );
-    let second_query = edge_query_id(
-        &second_query_session
-            .request_edge_pick(position(0.0, 0.0))
-            .unwrap(),
-    );
+    let first_update = first_query_session
+        .request_edge_pick(position(0.0, 0.0))
+        .unwrap();
+    let first_query = edge_query_id(&first_query_session, &first_update);
+    let second_update = second_query_session
+        .request_edge_pick(position(0.0, 0.0))
+        .unwrap();
+    let second_query = edge_query_id(&second_query_session, &second_update);
     assert_eq!(first_query.0.sequence, 1);
     assert_eq!(second_query.0.sequence, 1);
     assert_ne!(first_query, second_query);
@@ -2435,16 +2437,65 @@ fn callback_authority_orders_foreign_stale_closed_then_view_unavailable() {
 }
 
 #[test]
+fn zero_page_grant_preserves_runtime_owned_query_without_accessing_the_view() {
+    let (_runtime, view, mut session) = bound_test_session();
+    let issued = session
+        .request_edge_pick(bound_position(&session, &view, 2.0, 2.0))
+        .expect("issue runtime-owned query");
+    let query = edge_query_id(&session, &issued);
+
+    view.with_state_borrowed_for_test(|| {
+        let (update, needs_tick, receipt, terminal_error) =
+            session.advance_query_work(0).into_parts();
+        assert_eq!(receipt.pages_granted(), 0);
+        assert_eq!(receipt.pages_attempted(), 0);
+        assert!(receipt.page_receipts().is_empty());
+        assert!(terminal_error.is_none());
+        assert!(needs_tick);
+        assert!(update.query_work_pending());
+    });
+
+    assert_eq!(edge_query_id(&session, &issued), query);
+}
+
+#[test]
+fn edge_pick_view_failure_clears_query_and_hover_with_terminal_damage() {
+    let (_runtime, view, mut session) = bound_test_session();
+    let issued = session
+        .request_edge_pick(bound_position(&session, &view, 2.0, 2.0))
+        .expect("issue runtime-owned edge pick");
+    assert!(issued.query_work_pending());
+    session.hovered_edge = Some(edge_instance(EdgeId::from_u128(77)));
+
+    let (update, needs_tick, receipt, terminal_error) =
+        view.with_state_borrowed_for_test(|| session.advance_query_work(1).into_parts());
+
+    assert_eq!(receipt.pages_granted(), 1);
+    assert_eq!(receipt.pages_attempted(), 1);
+    assert!(receipt.page_receipts().is_empty());
+    assert_eq!(
+        terminal_error,
+        Some(CanvasInteractionError::ViewUnavailable)
+    );
+    assert!(!needs_tick);
+    assert!(!update.query_work_pending());
+    assert!(update.damage().presentation);
+    assert!(update.damage().edges);
+    assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
+    assert!(session.presentation().hovered_edge().is_none());
+}
+
+#[test]
 fn late_same_session_callbacks_keep_their_stale_semantics_while_the_view_is_busy() {
     let (_runtime, view, mut query_session) = bound_test_session();
-    let query = take_opaque_query(
-        query_session
-            .request_edge_pick(bound_position(&query_session, &view, 2.0, 2.0))
-            .expect("issue opaque query"),
-    );
+    let issued = query_session
+        .request_edge_pick(bound_position(&query_session, &view, 2.0, 2.0))
+        .expect("issue runtime-owned query");
+    assert!(issued.query_work_pending());
     query_session
         .clear_edge_hover()
-        .expect("supersede opaque query");
+        .expect("supersede runtime-owned query");
+    assert!(!query_session.query_work_pending());
 
     let mut settle_session =
         CanvasInteractionSession::attach(&view, CanvasInteractionConfig::default())
@@ -2480,22 +2531,26 @@ fn late_same_session_callbacks_keep_their_stale_semantics_while_the_view_is_busy
     let prefix_before = session_fingerprint(&prefix_session);
     let search_before = session_fingerprint(&search_session);
     view.with_state_borrowed_for_test(|| {
-        let query_update = query_session
-            .resolve_query(query)
-            .expect("stale opaque query is a no-op");
-        assert!(query_update.queries().is_empty());
+        let (query_update, needs_tick, receipt, terminal_error) =
+            query_session.advance_query_work(1).into_parts();
+        assert_eq!(receipt.pages_granted(), 1);
+        assert_eq!(receipt.pages_attempted(), 0);
+        assert!(receipt.page_receipts().is_empty());
+        assert!(!needs_tick);
+        assert!(terminal_error.is_none());
+        assert!(!query_update.query_work_pending());
         assert!(query_update.effects().is_empty());
 
         let settle_update = settle_session
             .submission_outcome_unknown(stale_ticket)
             .expect("stale settlement is a no-op");
-        assert!(settle_update.queries().is_empty());
+        assert!(!settle_update.query_work_pending());
         assert!(settle_update.effects().is_empty());
 
         let prefix_update = prefix_session
             .resume_submission_after_prefix(stale_prefix)
             .expect("stale prefix continuation is a no-op");
-        assert!(prefix_update.queries().is_empty());
+        assert!(!prefix_update.query_work_pending());
         assert!(prefix_update.effects().is_empty());
 
         assert!(matches!(
@@ -2510,7 +2565,7 @@ fn late_same_session_callbacks_keep_their_stale_semantics_while_the_view_is_busy
 }
 
 #[test]
-fn opaque_query_resolution_is_session_owned_and_superseded_work_is_a_noop() {
+fn runtime_owned_query_work_is_isolated_per_session_and_cancel_clears_it() {
     let runtime = GraphRuntime::builder(Default::default())
         .build(prospective_graph())
         .expect("query receipt runtime");
@@ -2526,31 +2581,58 @@ fn opaque_query_resolution_is_session_owned_and_superseded_work_is_a_noop() {
         CanvasInteractionSession::attach(&view, CanvasInteractionConfig::default())
             .expect("second query session");
     let first_position = bound_position(&first_session, &view, 3.0, 0.0);
-    let first_query = take_opaque_query(first_session.request_edge_pick(first_position).unwrap());
+    let first_update = first_session.request_edge_pick(first_position).unwrap();
+    let first_query = edge_query_id(&first_session, &first_update);
     let second_position = bound_position(&second_session, &view, 4.0, 0.0);
-    let second_query =
-        take_opaque_query(second_session.request_edge_pick(second_position).unwrap());
-    let before = session_fingerprint(&second_session);
-    assert!(matches!(
-        second_session.resolve_query(first_query),
-        Err(CanvasInteractionError::ForeignInteractionSession { .. })
-    ));
-    assert_eq!(session_fingerprint(&second_session), before);
-    let resolved = second_session
-        .resolve_query(second_query)
-        .expect("the bound session resolves its own opaque query");
-    assert!(resolved.effects().is_empty());
+    let second_update = second_session.request_edge_pick(second_position).unwrap();
+    let second_query = edge_query_id(&second_session, &second_update);
+    assert_ne!(first_query, second_query);
 
-    let stale_update = session
+    let (resolved, needs_tick, receipt, terminal_error) =
+        second_session.advance_query_work(1).into_parts();
+    assert_eq!(receipt.pages_granted(), 1);
+    assert_eq!(receipt.pages_attempted(), 1);
+    assert!(matches!(
+        receipt.page_receipts(),
+        [CanvasInteractionQueryPageReceipt::EdgePick(_)]
+    ));
+    assert!(!needs_tick);
+    assert!(terminal_error.is_none());
+    assert!(resolved.effects().is_empty());
+    assert!(!second_session.query_work_pending());
+    assert!(first_session.query_work_pending());
+    assert_eq!(edge_query_id(&first_session, &first_update), first_query);
+
+    let (resolved, needs_tick, receipt, terminal_error) =
+        first_session.advance_query_work(1).into_parts();
+    assert_eq!(receipt.pages_granted(), 1);
+    assert_eq!(receipt.pages_attempted(), 1);
+    assert!(matches!(
+        receipt.page_receipts(),
+        [CanvasInteractionQueryPageReceipt::EdgePick(_)]
+    ));
+    assert!(!needs_tick);
+    assert!(terminal_error.is_none());
+    assert!(resolved.effects().is_empty());
+    assert!(!first_session.query_work_pending());
+
+    let pending = session
         .request_edge_pick(bound_position(&session, &view, 2.0, 0.0))
         .unwrap();
-    let stale_query = take_opaque_query(stale_update);
-    session.clear_edge_hover().unwrap();
-    let before_stale = session_fingerprint(&session);
-    let stale = session.resolve_query(stale_query).unwrap();
+    assert!(pending.query_work_pending());
+    let cancelled = session.cancel().unwrap();
+    assert!(!cancelled.query_work_pending());
+    assert!(!session.query_work_pending());
+    let before_advance = session_fingerprint(&session);
+    let (stale, needs_tick, receipt, terminal_error) = session.advance_query_work(1).into_parts();
+    assert_eq!(receipt.pages_granted(), 1);
+    assert_eq!(receipt.pages_attempted(), 0);
+    assert!(receipt.page_receipts().is_empty());
+    assert!(!needs_tick);
+    assert!(terminal_error.is_none());
     assert!(stale.effects().is_empty());
-    assert!(stale.queries().is_empty());
-    assert_eq!(session_fingerprint(&session), before_stale);
+    assert!(!stale.query_work_pending());
+    assert_eq!(session_fingerprint(&session), before_advance);
 }
 
 #[test]
@@ -2896,23 +2978,25 @@ fn marquee_auto_pan_reprojects_before_requery_and_rejects_superseded_selection()
             )
             .unwrap();
         let moved = session.move_to(at(195.0, 100.0)).unwrap();
-        let superseded = marquee_query_id(&moved);
+        let superseded = marquee_query_id(&session, &moved);
         assert_eq!(moved.tick_demand(), InteractionTickDemand::WhileActive);
 
         let ticked = session
             .tick(1.0 / 60.0, ViewSize::new(200.0, 120.0))
             .unwrap();
-        let replacement = marquee_query_id(&ticked);
+        let replacement = marquee_query_id(&session, &ticked);
         assert_ne!(replacement, superseded);
         let dispatch = ticked.into_dispatch();
         assert!(dispatch.effects.is_empty());
         assert!(dispatch.damage.viewport);
+        assert!(dispatch.query_work_pending);
+        let pending = session
+            .query_work
+            .pending_for_test()
+            .expect("auto-pan must retain its replacement query");
         assert!(matches!(
-            dispatch.queries.as_slice(),
-            [query] if matches!(
-                query.kind_for_test(),
-                CanvasInteractionQueryKind::NodeIntersection { .. }
-            )
+            &pending.kind,
+            PendingInteractionQueryKind::NodeIntersection { .. }
         ));
 
         let late = session
@@ -2961,7 +3045,7 @@ fn connection_target_lock_obeys_invalidation_and_retirement_boundaries() {
     let first = session.move_to(position(20.0, 0.0)).unwrap();
     session
         .resolve_connection_probe_for_test(
-            connection_query_id(&first),
+            connection_query_id(&session, &first),
             complete(valid_probe(target_port())),
         )
         .unwrap();
@@ -2973,14 +3057,14 @@ fn connection_target_lock_obeys_invalidation_and_retirement_boundaries() {
     let graph_stale = session.move_to(position(21.0, 0.0)).unwrap();
     let restarted = session
         .restart_stale_connection_query(
-            connection_query_id(&graph_stale),
+            connection_query_id(&session, &graph_stale),
             ConnectionProbeCursorStaleReason::GraphRevision,
         )
         .unwrap();
     assert!(drag_target_lock(&session).is_none());
     session
         .resolve_connection_probe_for_test(
-            connection_query_id(&restarted),
+            connection_query_id(&session, &restarted),
             complete(ConnectionProbe::Invalid {
                 version: test_graph_version(),
                 target: probe_target(target_port(), CanvasPoint { x: 21.0, y: 0.0 }),
@@ -2997,14 +3081,14 @@ fn connection_target_lock_obeys_invalidation_and_retirement_boundaries() {
     let retained = drag_target_lock(&session);
     let viewport_restarted = session
         .restart_stale_connection_query(
-            connection_query_id(&viewport_stale),
+            connection_query_id(&session, &viewport_stale),
             ConnectionProbeCursorStaleReason::ViewportTransform,
         )
         .unwrap();
     assert_eq!(drag_target_lock(&session), retained);
     session
         .resolve_connection_probe_for_test(
-            connection_query_id(&viewport_restarted),
+            connection_query_id(&session, &viewport_restarted),
             complete(valid_probe(target_port())),
         )
         .unwrap();
@@ -3013,14 +3097,14 @@ fn connection_target_lock_obeys_invalidation_and_retirement_boundaries() {
     let retained = drag_target_lock(&session);
     let paint_restarted = session
         .restart_stale_connection_query(
-            connection_query_id(&paint_stale),
+            connection_query_id(&session, &paint_stale),
             ConnectionProbeCursorStaleReason::PaintOrder,
         )
         .unwrap();
     assert_eq!(drag_target_lock(&session), retained);
     session
         .resolve_connection_probe_for_test(
-            connection_query_id(&paint_restarted),
+            connection_query_id(&session, &paint_restarted),
             complete(valid_probe(target_port())),
         )
         .unwrap();
@@ -3028,7 +3112,7 @@ fn connection_target_lock_obeys_invalidation_and_retirement_boundaries() {
     let geometry_stale = session.move_to(position(24.0, 0.0)).unwrap();
     session
         .restart_stale_connection_query(
-            connection_query_id(&geometry_stale),
+            connection_query_id(&session, &geometry_stale),
             ConnectionProbeCursorStaleReason::PortGeometry,
         )
         .unwrap();
@@ -3037,7 +3121,7 @@ fn connection_target_lock_obeys_invalidation_and_retirement_boundaries() {
     let moved = session.move_to(position(25.0, 0.0)).unwrap();
     session
         .resolve_connection_probe_for_test(
-            connection_query_id(&moved),
+            connection_query_id(&session, &moved),
             complete(valid_probe(target_port())),
         )
         .unwrap();
@@ -3055,7 +3139,7 @@ fn connection_target_lock_obeys_invalidation_and_retirement_boundaries() {
 fn foreign_connection_start_rejection_preserves_pending_interaction_state() {
     let mut session = test_session(CanvasInteractionConfig::default());
     let pending = session.request_edge_pick(position(4.0, 5.0)).unwrap();
-    let pending_query = edge_query_id(&pending);
+    let pending_query = edge_query_id(&session, &pending);
     let before = session.presentation();
     let before_phase = before.phase();
     let before_terminal = before.terminal();
@@ -3125,9 +3209,9 @@ fn superseded_marquee_query_cannot_publish_selection() {
         .unwrap();
 
     let first = session.move_to(position(20.0, 16.0)).unwrap();
-    let stale = marquee_query_id(&first);
+    let stale = marquee_query_id(&session, &first);
     let second = session.move_to(position(30.0, 24.0)).unwrap();
-    let current = marquee_query_id(&second);
+    let current = marquee_query_id(&session, &second);
     assert_ne!(stale, current);
 
     let late = session
@@ -3176,10 +3260,10 @@ fn released_marquee_waits_for_the_final_query_before_becoming_idle() {
         )
         .unwrap();
     let moved = session.move_to(position(20.0, 16.0)).unwrap();
-    let superseded = marquee_query_id(&moved);
+    let superseded = marquee_query_id(&session, &moved);
 
     let released = session.release(position(24.0, 18.0)).unwrap();
-    let final_query = marquee_query_id(&released);
+    let final_query = marquee_query_id(&session, &released);
     assert_ne!(superseded, final_query);
     assert!(released.effects().is_empty());
     assert_eq!(
@@ -3233,7 +3317,7 @@ fn marquee_budget_exhaustion_never_publishes_partial_selection() {
     let query = session.move_to(position(20.0, 16.0)).unwrap();
     let exhausted = session
         .resolve_node_intersection_for_test(
-            marquee_query_id(&query),
+            marquee_query_id(&session, &query),
             NodeIntersectionQueryOutcome::BudgetExhausted {
                 work: Default::default(),
             },
@@ -3311,12 +3395,14 @@ fn node_release_waits_for_the_final_alignment_query_without_requesting_ticks() {
     session.move_to(position(12.0, 0.0)).unwrap();
 
     let released = session.release(position(16.0, 0.0)).unwrap();
-    let [query] = released.queries() else {
-        panic!("release must request one final alignment result");
-    };
-    let CanvasInteractionQueryKind::AlignmentSnap { id, generation, .. } = query.kind_for_test()
-    else {
-        panic!("release must request one final alignment result");
+    assert!(released.query_work_pending());
+    let query = session
+        .query_work
+        .pending_for_test()
+        .expect("release must retain one final alignment result");
+    let (query_id, generation) = match &query.kind {
+        PendingInteractionQueryKind::AlignmentSnap { id, generation, .. } => (*id, *generation),
+        _ => panic!("release must request one final alignment result"),
     };
     assert!(released.effects().is_empty());
     assert_eq!(released.tick_demand(), InteractionTickDemand::None);
@@ -3330,11 +3416,8 @@ fn node_release_waits_for_the_final_alignment_query_without_requesting_ticks() {
 
     let committed = session
         .resolve_alignment_snap_for_test(
-            *id,
-            AlignmentSnapQueryOutcome::GeometryIndeterminate(AlignmentSnapWork::new(
-                *generation,
-                0,
-            )),
+            query_id,
+            AlignmentSnapQueryOutcome::GeometryIndeterminate(AlignmentSnapWork::new(generation, 0)),
         )
         .unwrap();
     assert!(matches!(
@@ -3366,16 +3449,18 @@ fn auto_pan_commits_viewport_before_issuing_alignment_query() {
         .into_dispatch();
     assert!(dispatch.effects.is_empty());
     assert!(dispatch.damage.viewport);
+    assert!(dispatch.query_work_pending);
     assert_ne!(
         session.test_viewport.revision(),
         ViewportRevision::initial()
     );
+    let pending = session
+        .query_work
+        .pending_for_test()
+        .expect("auto-pan must retain one alignment query");
     assert!(matches!(
-        dispatch.queries.as_slice(),
-        [query] if matches!(
-            query.kind_for_test(),
-            CanvasInteractionQueryKind::AlignmentSnap { .. }
-        )
+        &pending.kind,
+        PendingInteractionQueryKind::AlignmentSnap { .. }
     ));
 }
 
@@ -4341,14 +4426,14 @@ fn begin_direct_connection_submission(
     let moved = session.move_to(position(8.0, 0.0)).unwrap();
     session
         .resolve_connection_probe_for_test(
-            connection_query_id(&moved),
+            connection_query_id(session, &moved),
             complete(valid_probe(target_port())),
         )
         .unwrap();
     let released = session.release(position(20.0, 0.0)).unwrap();
     let committing = session
         .resolve_connection_probe_for_test(
-            connection_query_id(&released),
+            connection_query_id(session, &released),
             complete(valid_probe(target_port())),
         )
         .unwrap();
@@ -4362,14 +4447,14 @@ fn begin_search_connection_commit(session: &mut CanvasInteractionSession) -> Int
     let moved = session.move_to(position(8.0, 0.0)).unwrap();
     session
         .resolve_connection_probe_for_test(
-            connection_query_id(&moved),
+            connection_query_id(session, &moved),
             complete(ConnectionProbe::None),
         )
         .unwrap();
     let released = session.release(position(20.0, 0.0)).unwrap();
     session
         .resolve_connection_probe_for_test(
-            connection_query_id(&released),
+            connection_query_id(session, &released),
             complete(ConnectionProbe::None),
         )
         .unwrap();
@@ -4454,11 +4539,16 @@ fn complete(probe: ConnectionProbe) -> ConnectionProbeQueryOutcome {
     }
 }
 
-fn connection_query_id(update: &CanvasInteractionUpdate) -> InteractionQueryId {
-    let [query] = update.queries() else {
-        panic!("expected one connection probe query");
-    };
-    let CanvasInteractionQueryKind::ConnectionProbe { id, .. } = query.kind_for_test() else {
+fn connection_query_id(
+    session: &CanvasInteractionSession,
+    update: &CanvasInteractionUpdate,
+) -> InteractionQueryId {
+    assert!(update.query_work_pending());
+    let query = session
+        .query_work
+        .pending_for_test()
+        .expect("expected one connection probe query");
+    let PendingInteractionQueryKind::ConnectionProbe { id, .. } = &query.kind else {
         panic!("expected one connection probe query");
     };
     *id
@@ -4470,36 +4560,44 @@ fn resolve_bound_connection_query(
 ) -> CanvasInteractionUpdate {
     let dispatch = update.into_dispatch();
     assert!(dispatch.effects.is_empty());
-    let mut queries = dispatch.queries.into_iter();
-    let Some(query) = queries.next() else {
-        panic!("expected one bound connection query");
-    };
-    assert!(queries.next().is_none());
-    session.resolve_query(query).expect("bound probe resolves")
+    assert!(dispatch.query_work_pending);
+    let (update, needs_tick, receipt, terminal_error) = session.advance_query_work(1).into_parts();
+    assert_eq!(receipt.pages_granted(), 1);
+    assert_eq!(receipt.pages_attempted(), 1);
+    assert!(matches!(
+        receipt.page_receipts(),
+        [CanvasInteractionQueryPageReceipt::ConnectionProbe(_)]
+    ));
+    assert!(!needs_tick);
+    assert!(terminal_error.is_none());
+    update
 }
 
-fn edge_query_id(update: &CanvasInteractionUpdate) -> InteractionQueryId {
-    let [query] = update.queries() else {
-        panic!("expected one edge-pick query");
-    };
-    let CanvasInteractionQueryKind::EdgePick { id, .. } = query.kind_for_test() else {
+fn edge_query_id(
+    session: &CanvasInteractionSession,
+    update: &CanvasInteractionUpdate,
+) -> InteractionQueryId {
+    assert!(update.query_work_pending());
+    let query = session
+        .query_work
+        .pending_for_test()
+        .expect("expected one edge-pick query");
+    let PendingInteractionQueryKind::EdgePick { id, .. } = &query.kind else {
         panic!("expected one edge-pick query");
     };
     *id
 }
 
-fn take_opaque_query(update: CanvasInteractionUpdate) -> CanvasInteractionQuery {
-    let mut queries = update.into_dispatch().queries.into_iter();
-    let query = queries.next().expect("expected one opaque query");
-    assert!(queries.next().is_none());
-    query
-}
-
-fn marquee_query_id(update: &CanvasInteractionUpdate) -> InteractionQueryId {
-    let [query] = update.queries() else {
-        panic!("expected one node-intersection query");
-    };
-    let CanvasInteractionQueryKind::NodeIntersection { id, .. } = query.kind_for_test() else {
+fn marquee_query_id(
+    session: &CanvasInteractionSession,
+    update: &CanvasInteractionUpdate,
+) -> InteractionQueryId {
+    assert!(update.query_work_pending());
+    let query = session
+        .query_work
+        .pending_for_test()
+        .expect("expected one node-intersection query");
+    let PendingInteractionQueryKind::NodeIntersection { id, .. } = &query.kind else {
         panic!("expected one node-intersection query");
     };
     *id
@@ -4519,7 +4617,7 @@ fn resolve_marquee_query(
 ) -> CanvasInteractionUpdate {
     session
         .resolve_node_intersection_for_test(
-            marquee_query_id(update),
+            marquee_query_id(session, update),
             NodeIntersectionQueryOutcome::Complete {
                 nodes: nodes.into_iter().collect(),
                 work: Default::default(),

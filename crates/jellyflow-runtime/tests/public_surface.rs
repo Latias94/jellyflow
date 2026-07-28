@@ -190,19 +190,27 @@ fn graph_runtime_and_view_session_are_the_public_adapter_seam() {
         .unwrap();
     let edge_query = interaction.request_edge_pick(sample).unwrap();
     let dispatch = edge_query.into_dispatch();
-    let mut queries = dispatch.queries;
     let effects = dispatch.effects;
     let damage = dispatch.damage;
     let tick_demand = dispatch.tick_demand;
-    assert_eq!(queries.len(), 1, "edge picking emits one opaque query");
+    assert!(
+        dispatch.query_work_pending,
+        "edge picking leaves its query continuation inside the session"
+    );
+    assert!(interaction.query_work_pending());
     assert!(effects.is_empty());
     assert_eq!(damage, InteractionDamage::default());
     assert_eq!(tick_demand, InteractionTickDemand::None);
-    let resolved = interaction
-        .resolve_query(queries.pop().expect("one opaque edge query"))
-        .expect("the session resolves its bound query");
+    let (resolved, needs_tick, receipt, terminal_error) =
+        interaction.advance_query_work(1).into_parts();
+    assert_eq!(receipt.pages_granted(), 1);
+    assert_eq!(receipt.pages_attempted(), 1);
+    assert_eq!(receipt.page_receipts().len(), 1);
+    assert!(terminal_error.is_none());
+    assert!(!needs_tick);
     assert!(resolved.effects().is_empty());
-    assert!(resolved.queries().is_empty());
+    assert!(!resolved.query_work_pending());
+    assert!(!interaction.query_work_pending());
 
     assert!(
         view.set_adapter_environment(AdapterEnvironment::new(2, 3, 4, 5))

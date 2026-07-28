@@ -27,7 +27,7 @@ use crate::runtime::graph_runtime::{
     reset_port_incarnation_entry_clone_count_for_test,
 };
 use crate::runtime::interaction::{
-    CanvasInteractionConfig, CanvasInteractionPhase, CanvasInteractionQueryKind,
+    CanvasInteractionConfig, CanvasInteractionPhase, CanvasInteractionQueryPageReceipt,
     CanvasInteractionSession, CanvasPressTarget, SelectionMode,
 };
 use crate::runtime::view_session::{
@@ -118,21 +118,23 @@ fn marquee_interaction_publishes_only_after_all_query_pages_complete() {
     let mut update = interaction.move_to(end).unwrap();
     let mut pages = 0_u64;
     loop {
-        let dispatch = update.into_dispatch();
-        assert!(dispatch.effects.is_empty());
-        let mut queries = dispatch.queries.into_iter();
-        let Some(query) = queries.next() else {
-            panic!("an incomplete marquee owns exactly one query page");
-        };
+        assert!(update.effects().is_empty());
+        assert!(update.query_work_pending());
+        assert!(interaction.query_work_pending());
+        let (next_update, needs_tick, receipt, terminal_error) =
+            interaction.advance_query_work(1).into_parts();
+        assert!(terminal_error.is_none());
+        assert_eq!(receipt.pages_granted(), 1);
+        assert_eq!(receipt.pages_attempted(), 1);
         assert!(matches!(
-            query.kind_for_test(),
-            CanvasInteractionQueryKind::NodeIntersection { .. }
+            receipt.page_receipts(),
+            [CanvasInteractionQueryPageReceipt::NodeIntersection(_)]
         ));
-        assert!(queries.next().is_none());
         pages += 1;
-        update = interaction.resolve_query(query).unwrap();
-        let incomplete = !update.queries().is_empty();
-        if incomplete {
+        update = next_update;
+        assert_eq!(needs_tick, interaction.query_work_pending());
+        assert_eq!(update.query_work_pending(), needs_tick);
+        if needs_tick {
             assert!(update.effects().is_empty());
             assert_eq!(
                 interaction.presentation().phase(),

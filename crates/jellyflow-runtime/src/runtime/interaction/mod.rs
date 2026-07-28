@@ -4,6 +4,7 @@ mod connection;
 mod intent;
 mod navigation;
 mod presentation;
+mod query_work;
 mod session;
 
 pub use connection::{
@@ -23,7 +24,8 @@ pub use presentation::{
 pub(crate) use session::SelectionMutation;
 pub use session::{
     AlignmentSnapConfig, CanvasInteractionConfig, CanvasInteractionDispatch,
-    CanvasInteractionEffect, CanvasInteractionError, CanvasInteractionQuery,
+    CanvasInteractionEffect, CanvasInteractionError, CanvasInteractionQueryAdvance,
+    CanvasInteractionQueryAdvanceReceipt, CanvasInteractionQueryPageReceipt,
     CanvasInteractionSession, CanvasInteractionUpdate, CanvasPressFallback, CanvasPressTarget,
     ConnectionInteractionStart, ConnectionSearchRequest, ConnectionSearchSelection,
     InteractionDamage, InteractionGeneration, InteractionGraphSubmission,
@@ -31,6 +33,3 @@ pub use session::{
     InteractionSessionId, InteractionTickDemand, InteractionTicketId, KeyboardConnectionFeedback,
     KeyboardConnectionPort, NodeDragStart, NodeNudgeDirection, SelectionMode,
 };
-
-#[cfg(test)]
-pub(crate) use session::CanvasInteractionQueryKind;

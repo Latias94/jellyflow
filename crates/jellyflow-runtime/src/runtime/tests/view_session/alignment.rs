@@ -3,9 +3,8 @@ use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize};
 use crate::runtime::adapter_protocol::ViewPoint;
 use crate::runtime::graph_runtime::GraphRuntime;
 use crate::runtime::interaction::{
-    AlignmentSnapConfig, AlignmentSnapQueryOutcome, CanvasInteractionConfig,
-    CanvasInteractionEffect, CanvasInteractionQuery, CanvasInteractionQueryKind,
-    CanvasInteractionSession, CanvasPressTarget, SelectionMode,
+    AlignmentSnapConfig, CanvasInteractionConfig, CanvasInteractionEffect,
+    CanvasInteractionQueryPageReceipt, CanvasInteractionSession, CanvasPressTarget, SelectionMode,
 };
 use crate::runtime::tests::fixtures::node_drag_start_by_id;
 use crate::runtime::view_session::{ViewSession, ViewSessionOptions};
@@ -18,17 +17,14 @@ fn alignment_tolerance_is_screen_pixel_invariant_across_zoom() {
     for (zoom, canvas_gap) in [(0.5, 12.0), (1.0, 6.0), (2.0, 3.0)] {
         let (_runtime, view, ids) = alignment_view(2, zoom, &[0.0, 200.0 + canvas_gap]);
         let mut interaction = interaction_session(&view, 64);
-        let outcome = move_and_resolve(&view, &mut interaction, ids[0], 100.0, zoom);
+        move_and_resolve(&view, &mut interaction, ids[0], 100.0, zoom);
 
-        let result = match outcome {
-            AlignmentSnapQueryOutcome::Complete(result) => result,
-            other => panic!("small fixture must resolve alignment: {other:?}"),
-        };
-        let screen_adjustment = (result.delta().x - 100.0) * zoom;
+        let presentation = interaction.presentation();
+        let drag = presentation.node_drag().unwrap();
+        let screen_adjustment = (drag.delta().x - 100.0) * zoom;
         assert!((screen_adjustment - 6.0).abs() < 0.001);
         assert!(
-            result
-                .guides()
+            drag.guides()
                 .iter()
                 .all(|guide| guide.canvas_coordinate().is_finite())
         );
@@ -39,13 +35,12 @@ fn alignment_tolerance_is_screen_pixel_invariant_across_zoom() {
 fn alignment_uses_stable_node_order_for_equal_distance_candidates() {
     let (_runtime, view, ids) = alignment_view(3, 1.0, &[0.0, 205.0, 195.0]);
     let mut interaction = interaction_session(&view, 64);
-    let outcome = move_and_resolve(&view, &mut interaction, ids[0], 100.0, 1.0);
+    move_and_resolve(&view, &mut interaction, ids[0], 100.0, 1.0);
 
-    let AlignmentSnapQueryOutcome::Complete(result) = outcome else {
-        panic!("small fixture must resolve alignment");
-    };
-    assert_eq!(result.delta().x, 105.0);
-    assert_eq!(result.candidates_examined(), 2);
+    assert_eq!(
+        interaction.presentation().node_drag().unwrap().delta().x,
+        105.0
+    );
 }
 
 #[test]
@@ -68,13 +63,12 @@ fn alignment_feature_index_finds_columns_across_large_perpendicular_distance() {
         )],
     );
     let mut interaction = interaction_session(&view, 64);
-    let outcome = move_and_resolve(&view, &mut interaction, ids[0], 100.0, 1.0);
+    move_and_resolve(&view, &mut interaction, ids[0], 100.0, 1.0);
 
-    let AlignmentSnapQueryOutcome::Complete(result) = outcome else {
-        panic!("axis feature buckets must resolve the distant column");
-    };
-    assert_eq!(result.delta().x, 105.0);
-    assert_eq!(result.delta().y, 0.0);
+    assert_eq!(
+        interaction.presentation().node_drag().unwrap().delta(),
+        CanvasPoint { x: 105.0, y: 0.0 }
+    );
 }
 
 #[test]
@@ -97,25 +91,25 @@ fn alignment_feature_index_removes_old_axis_membership_after_geometry_moves() {
         )],
     );
     let mut interaction = interaction_session(&view, 64);
-    let outcome = move_and_resolve(&view, &mut interaction, ids[0], 100.0, 1.0);
+    move_and_resolve(&view, &mut interaction, ids[0], 100.0, 1.0);
 
-    let AlignmentSnapQueryOutcome::Complete(result) = outcome else {
-        panic!("bounded query should complete without a candidate");
-    };
-    assert_eq!(result.delta(), CanvasPoint { x: 100.0, y: 0.0 });
-    assert_eq!(result.candidates_examined(), 0);
+    let presentation = interaction.presentation();
+    let drag = presentation.node_drag().unwrap();
+    assert_eq!(drag.delta(), CanvasPoint { x: 100.0, y: 0.0 });
+    assert!(drag.guides().is_empty());
 }
 
 #[test]
-fn alignment_budget_exhaustion_is_terminal_for_the_query_and_does_not_scan_unboundedly() {
+fn alignment_budget_exhaustion_is_terminal_and_falls_back_to_raw_delta() {
     let (_runtime, view, ids) = alignment_view(2, 1.0, &[0.0, 206.0]);
     let mut interaction = interaction_session(&view, 1);
-    let outcome = move_and_resolve(&view, &mut interaction, ids[0], 100.0, 1.0);
+    move_and_resolve(&view, &mut interaction, ids[0], 100.0, 1.0);
 
-    let AlignmentSnapQueryOutcome::BudgetExhausted(work) = outcome else {
-        panic!("one entry cannot admit both the moving node and candidate");
-    };
-    assert!(work.entries_examined() <= 1);
+    let presentation = interaction.presentation();
+    let drag = presentation.node_drag().unwrap();
+    assert_eq!(drag.delta(), CanvasPoint { x: 100.0, y: 0.0 });
+    assert!(drag.guides().is_empty());
+    assert!(!interaction.query_work_pending());
 }
 
 #[test]
@@ -165,8 +159,7 @@ fn released_node_drag_waits_for_runtime_alignment_before_submitting() {
 
     let released = interaction.release(released_position).unwrap();
     assert!(released.effects().is_empty());
-    let query = take_only_query(released);
-    let committed = interaction.resolve_query(query).unwrap();
+    let committed = advance_alignment_query(&mut interaction, released);
     assert!(matches!(
         committed.effects(),
         [CanvasInteractionEffect::SubmitGraph { .. }]
@@ -190,11 +183,7 @@ fn runtime_owned_alignment_query_resolves_against_latest_node_spatial_index() {
         .press(CanvasPressTarget::NodeDrag(start), start_position)
         .unwrap();
     let moved = interaction.move_to(moved_position).unwrap();
-    let query = take_only_query(moved);
-    assert!(matches!(
-        query.kind_for_test(),
-        CanvasInteractionQueryKind::AlignmentSnap { .. }
-    ));
+    assert!(moved.query_work_pending());
 
     publish_node_layouts(
         &view,
@@ -209,8 +198,8 @@ fn runtime_owned_alignment_query_resolves_against_latest_node_spatial_index() {
             },
         )],
     );
-    let resolved = interaction.resolve_query(query).unwrap();
-    assert!(resolved.queries().is_empty());
+    let resolved = advance_alignment_query(&mut interaction, moved);
+    assert!(!resolved.query_work_pending());
     assert_eq!(
         interaction.presentation().node_drag().unwrap().delta().x,
         100.0
@@ -269,7 +258,7 @@ fn move_and_resolve(
     node: jellyflow_core::core::NodeId,
     delta_in_canvas: f32,
     zoom: f32,
-) -> AlignmentSnapQueryOutcome {
+) {
     let start = node_drag_start_by_id(view, node, SelectionMode::Replace)
         .unwrap()
         .unwrap();
@@ -279,47 +268,45 @@ fn move_and_resolve(
         .press(CanvasPressTarget::NodeDrag(start), start_position)
         .unwrap();
     let update = interaction.move_to(moved_position).unwrap();
-    let query = take_alignment_query(update);
-    assert_eq!(query.moving_nodes(), &[node]);
+    assert!(update.effects().is_empty());
+    advance_alignment_query(interaction, update);
+    let presentation = interaction.presentation();
+    let drag = presentation.node_drag().unwrap();
+    assert_eq!(drag.nodes(), &[node]);
     assert_eq!(
-        query.delta(),
-        CanvasPoint {
-            x: delta_in_canvas,
-            y: 0.0
-        }
+        drag.delta().y,
+        0.0,
+        "alignment must preserve an exclusively horizontal drag"
     );
-    assert_eq!(query.view(), view.id());
-    assert_eq!(query.view_generation(), view.generation().unwrap());
-    assert!(query.entry_budget() > 0);
-    assert_eq!(query.acquire_tolerance_in_view(), 6.0);
-    assert_eq!(query.release_tolerance_in_view(), 9.0);
     assert_eq!(view.viewport_transform().unwrap().zoom, zoom);
-    view.alignment_snap(query).unwrap()
 }
 
 fn resolve_update(
     interaction: &mut CanvasInteractionSession,
     update: crate::runtime::interaction::CanvasInteractionUpdate,
 ) {
-    interaction.resolve_query(take_only_query(update)).unwrap();
+    advance_alignment_query(interaction, update);
 }
 
-fn take_alignment_query(
+fn advance_alignment_query(
+    interaction: &mut CanvasInteractionSession,
     update: crate::runtime::interaction::CanvasInteractionUpdate,
-) -> crate::runtime::interaction::AlignmentSnapQuery {
-    let query = take_only_query(update);
-    let CanvasInteractionQueryKind::AlignmentSnap { query, .. } = query.into_kind_for_test() else {
-        panic!("expected one alignment query");
-    };
-    query
-}
-
-fn take_only_query(
-    update: crate::runtime::interaction::CanvasInteractionUpdate,
-) -> CanvasInteractionQuery {
-    let mut queries = update.into_dispatch().queries;
-    assert_eq!(queries.len(), 1, "expected exactly one interaction query");
-    queries.remove(0)
+) -> crate::runtime::interaction::CanvasInteractionUpdate {
+    assert!(update.query_work_pending());
+    assert!(interaction.query_work_pending());
+    let (resolved, needs_tick, receipt, terminal_error) =
+        interaction.advance_query_work(1).into_parts();
+    assert!(terminal_error.is_none());
+    assert_eq!(receipt.pages_granted(), 1);
+    assert_eq!(receipt.pages_attempted(), 1);
+    assert!(matches!(
+        receipt.page_receipts(),
+        [CanvasInteractionQueryPageReceipt::AlignmentSnap(_)]
+    ));
+    assert!(!needs_tick);
+    assert!(!interaction.query_work_pending());
+    assert!(!resolved.query_work_pending());
+    resolved
 }
 
 fn canvas_pointer_sample(view: &ViewSession, x: f32, zoom: f32) -> ViewportPointerSample {

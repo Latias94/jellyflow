@@ -4459,7 +4459,7 @@ fn while_active_empty_update_preserves_the_registered_tick_and_frame_request(
                 .tick(1.0 / 60.0, host.surface_size.expect("measured surface"))
                 .expect("active no-op tick");
             assert_eq!(update.tick_demand(), InteractionTickDemand::WhileActive);
-            assert!(update.queries().is_empty());
+            assert!(!update.query_work_pending());
             assert!(update.effects().is_empty());
             assert_eq!(update.damage(), Default::default());
 

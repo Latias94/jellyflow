@@ -1,5 +1,3 @@
-use std::collections::VecDeque;
-
 use egui::{Context, Event, Id, Key, PointerButton, Pos2, Rect, Response};
 use jellyflow_core::{EdgeId, NodeGraphConnectionMode, PortId};
 use jellyflow_runtime::commands::{CommandExecutionCompletion, GraphCommand};
@@ -7,17 +5,17 @@ use jellyflow_runtime::geometry::{HandlePosition, ViewPoint, ViewSize};
 use jellyflow_runtime::graph::{NodeLifetimeKey, PortInstanceKey};
 use jellyflow_runtime::interaction::{
     CanvasInteractionConfig, CanvasInteractionEffect, CanvasInteractionError,
-    CanvasInteractionPhase, CanvasInteractionPresentation, CanvasInteractionQuery,
-    CanvasInteractionSession, CanvasInteractionUpdate, CanvasPressTarget,
-    ConnectionInteractionStart, ConnectionSearchRequest, ConnectionSearchSelection,
-    InteractionDamage, InteractionGraphSubmission, InteractionGraphSubmissionBindError,
-    InteractionOwner, InteractionTickDemand, InteractionTicketId, SelectionMode,
+    CanvasInteractionPhase, CanvasInteractionPresentation, CanvasInteractionSession,
+    CanvasInteractionUpdate, CanvasPressTarget, ConnectionInteractionStart,
+    ConnectionSearchRequest, ConnectionSearchSelection, InteractionDamage,
+    InteractionGraphSubmission, InteractionGraphSubmissionBindError, InteractionOwner,
+    InteractionTickDemand, InteractionTicketId, SelectionMode,
 };
 use jellyflow_runtime::schema::NodeCreation;
 use jellyflow_runtime::view::{ViewSession, ViewSessionError, WeakViewSession};
 use jellyflow_runtime::viewport::ViewportPointerSample;
 
-const MAX_RENDERER_QUERY_PAGES_PER_FRAME: usize = 1;
+const DEFAULT_QUERY_PAGES_PER_FRAME: usize = 1;
 
 /// Ordered semantic work emitted while translating egui input.
 ///
@@ -28,6 +26,7 @@ const MAX_RENDERER_QUERY_PAGES_PER_FRAME: usize = 1;
 pub struct EguiInteractionOutput {
     effects: Vec<CanvasInteractionEffect>,
     resolved_query_count: usize,
+    terminal_query_error: Option<CanvasInteractionError>,
     damage: InteractionDamage,
     tick_demand: InteractionTickDemand,
     released_native_ownership: bool,
@@ -47,9 +46,14 @@ impl EguiInteractionOutput {
         self.effects
     }
 
-    /// Returns how many opaque query pages the adapter handed back to the bound session.
+    /// Returns how many runtime-owned query pages were attempted during this output.
     pub fn resolved_query_count(&self) -> usize {
         self.resolved_query_count
+    }
+
+    /// Returns a terminal query failure after its cleanup update has already been applied.
+    pub fn terminal_query_error(&self) -> Option<CanvasInteractionError> {
+        self.terminal_query_error
     }
 
     pub fn damage(&self) -> InteractionDamage {
@@ -64,7 +68,7 @@ impl EguiInteractionOutput {
         self.released_native_ownership
     }
 
-    /// Returns whether a bounded renderer query has continuation work for a later frame.
+    /// Returns whether runtime-owned query continuation work remains for a later frame.
     pub fn renderer_work_pending(&self) -> bool {
         self.renderer_work_pending
     }
@@ -72,6 +76,7 @@ impl EguiInteractionOutput {
     pub fn has_work(&self) -> bool {
         !self.effects.is_empty()
             || self.resolved_query_count != 0
+            || self.terminal_query_error.is_some()
             || self.damage != InteractionDamage::default()
             || self.tick_demand != InteractionTickDemand::None
             || self.released_native_ownership
@@ -80,13 +85,18 @@ impl EguiInteractionOutput {
 
     pub fn merge(&mut self, other: Self) {
         self.effects.extend(other.effects);
-        self.resolved_query_count += other.resolved_query_count;
+        self.resolved_query_count = self
+            .resolved_query_count
+            .saturating_add(other.resolved_query_count);
+        if other.terminal_query_error.is_some() {
+            self.terminal_query_error = other.terminal_query_error;
+        }
         merge_damage(&mut self.damage, other.damage);
         if other.tick_demand == InteractionTickDemand::WhileActive {
             self.tick_demand = InteractionTickDemand::WhileActive;
         }
         self.released_native_ownership |= other.released_native_ownership;
-        self.renderer_work_pending |= other.renderer_work_pending;
+        self.renderer_work_pending = other.renderer_work_pending;
     }
 }
 
@@ -121,6 +131,7 @@ struct EguiInteractionFrame {
     tracked_response_seen: bool,
     tracked_response_down: bool,
     tracked_response_pointer: Option<Pos2>,
+    renderer_query_pages_remaining: usize,
     output: EguiInteractionOutput,
 }
 
@@ -138,8 +149,6 @@ pub struct EguiCanvasInteraction {
     tracked_owner: Option<InteractionOwner>,
     native_capture: bool,
     last_position: Option<ViewportPointerSample>,
-    pending_queries: VecDeque<CanvasInteractionQuery>,
-    renderer_query_pages_remaining: usize,
     frame: Option<EguiInteractionFrame>,
 }
 
@@ -156,8 +165,6 @@ impl EguiCanvasInteraction {
             tracked_owner: None,
             native_capture: false,
             last_position: None,
-            pending_queries: VecDeque::new(),
-            renderer_query_pages_remaining: MAX_RENDERER_QUERY_PAGES_PER_FRAME,
             frame: None,
         })
     }
@@ -243,15 +250,29 @@ impl EguiCanvasInteraction {
         let update = self
             .session
             .activate_connection_port(port, prospective_edge, mode)?;
-        self.process_update(update, &mut output)?;
+        self.process_update_with_current_budget(update, &mut output);
         self.sync_tracked_response(ctx, &mut output);
-        Ok(finish_output(ctx, output))
+        Ok(self.finish_output(ctx, output))
     }
 
     pub fn begin_frame(
         &mut self,
         ctx: &Context,
         scene_rect: Rect,
+    ) -> Result<(), EguiInteractionError> {
+        self.begin_frame_with_query_page_budget(ctx, scene_rect, DEFAULT_QUERY_PAGES_PER_FRAME)
+    }
+
+    /// Begins one native frame with an explicit runtime-query page grant.
+    ///
+    /// The grant belongs to this frame and is consumed at most once across every semantic update
+    /// collected before [`Self::end_frame`]. A zero grant keeps runtime-owned continuation work
+    /// pending without touching the bound view.
+    pub fn begin_frame_with_query_page_budget(
+        &mut self,
+        ctx: &Context,
+        scene_rect: Rect,
+        query_page_budget: usize,
     ) -> Result<(), EguiInteractionError> {
         if self.frame.is_some() {
             return Err(EguiInteractionError::FrameAlreadyOpen);
@@ -263,7 +284,6 @@ impl EguiCanvasInteraction {
         {
             return Err(EguiInteractionError::InvalidSceneRect);
         }
-        self.renderer_query_pages_remaining = MAX_RENDERER_QUERY_PAGES_PER_FRAME;
         let (
             pointer_pos,
             primary_pressed,
@@ -302,6 +322,7 @@ impl EguiCanvasInteraction {
             tracked_response_seen: false,
             tracked_response_down: false,
             tracked_response_pointer: None,
+            renderer_query_pages_remaining: query_page_budget,
             output: EguiInteractionOutput::default(),
         });
         Ok(())
@@ -345,7 +366,7 @@ impl EguiCanvasInteraction {
         let native_control = matches!(target, CanvasPressTarget::NativeControl);
         let update = self.session.press(target, position)?;
         let mut output = EguiInteractionOutput::default();
-        self.process_update(update, &mut output)?;
+        self.process_update_with_current_budget(update, &mut output);
 
         if !native_control && self.session.presentation().phase() != CanvasInteractionPhase::Idle {
             response.ctx.set_dragged_id(response.id);
@@ -396,7 +417,7 @@ impl EguiCanvasInteraction {
             .selection_delete_handled = true;
         let update = self.session.delete_selection()?;
         let mut output = EguiInteractionOutput::default();
-        self.process_update(update, &mut output)?;
+        self.process_update_with_current_budget(update, &mut output);
         self.frame
             .as_mut()
             .expect("the interaction frame remains open while merging keyboard output")
@@ -415,26 +436,23 @@ impl EguiCanvasInteraction {
             .take()
             .ok_or(EguiInteractionError::FrameNotOpen)?;
         if view_closed {
-            self.pending_queries.clear();
             let update = self.session.close();
             collect_terminal_update(update, &mut frame.output);
             self.release_native_ownership(ctx, &mut frame.output);
             self.clear_tracked_response();
-            return Ok(finish_output(ctx, frame.output));
+            return Ok(self.finish_output(ctx, frame.output));
         }
 
         if frame.escape_pressed || frame.pointer_gone {
-            self.pending_queries.clear();
             let update = self.session.cancel()?;
-            self.process_update(update, &mut frame.output)?;
+            self.process_frame_update(update, &mut frame);
             self.release_native_ownership(ctx, &mut frame.output);
         } else if self.tracked_response.is_some() && !frame.tracked_response_seen {
             let update = match self.tracked_owner {
                 Some(owner) => self.session.owner_retired(owner),
                 None => self.session.cancel()?,
             };
-            self.process_update(update, &mut frame.output)?;
-            self.discard_pending_work_if_terminal();
+            self.process_frame_update(update, &mut frame);
             self.release_native_ownership(ctx, &mut frame.output);
         } else if self.native_capture
             && frame.primary_down
@@ -443,9 +461,8 @@ impl EguiCanvasInteraction {
                     .dragged_id()
                     .is_some_and(|id| Some(id) != self.tracked_response))
         {
-            self.pending_queries.clear();
             let update = self.session.cancel()?;
-            self.process_update(update, &mut frame.output)?;
+            self.process_frame_update(update, &mut frame);
             self.release_native_ownership(ctx, &mut frame.output);
         } else if self.native_capture {
             let pointer = frame
@@ -459,43 +476,39 @@ impl EguiCanvasInteraction {
                 let position = pointer.ok_or(CanvasInteractionError::InvalidPosition)?;
                 self.last_position = Some(position);
                 let update = self.session.release(position)?;
-                self.process_update(update, &mut frame.output)?;
-                self.discard_pending_work_if_terminal();
+                self.process_frame_update(update, &mut frame);
                 self.release_native_ownership(ctx, &mut frame.output);
             } else if frame.primary_down {
                 let position = pointer.ok_or(CanvasInteractionError::InvalidPosition)?;
                 if self.last_position != Some(position) || !self.has_pending_renderer_query() {
                     self.last_position = Some(position);
                     let update = self.session.move_to(position)?;
-                    self.process_update(update, &mut frame.output)?;
+                    self.process_frame_update(update, &mut frame);
                 }
                 let tick = self.session.tick(
                     frame.elapsed_seconds,
                     ViewSize::new(frame.scene_rect.width(), frame.scene_rect.height()),
                 )?;
-                self.process_update(tick, &mut frame.output)?;
+                self.process_frame_update(tick, &mut frame);
             } else {
-                self.pending_queries.clear();
                 let update = self.session.cancel()?;
-                self.process_update(update, &mut frame.output)?;
+                self.process_frame_update(update, &mut frame);
                 self.release_native_ownership(ctx, &mut frame.output);
             }
         }
 
-        self.process_pending_work(&mut frame.output)?;
+        self.process_frame_pending_work(&mut frame);
         self.sync_tracked_response(ctx, &mut frame.output);
-        Ok(finish_output(ctx, frame.output))
+        Ok(self.finish_output(ctx, frame.output))
     }
 
     pub fn cancel(&mut self, ctx: &Context) -> Result<EguiInteractionOutput, EguiInteractionError> {
         let mut output = self.drain_frame_output();
-        self.pending_queries.clear();
         let update = self.session.cancel()?;
-        self.process_update(update, &mut output)?;
-        self.discard_pending_work_if_terminal();
+        self.process_update_with_current_budget(update, &mut output);
         self.release_native_ownership(ctx, &mut output);
         self.sync_tracked_response(ctx, &mut output);
-        Ok(finish_output(ctx, output))
+        Ok(self.finish_output(ctx, output))
     }
 
     pub fn owner_retired(
@@ -505,10 +518,9 @@ impl EguiCanvasInteraction {
     ) -> Result<EguiInteractionOutput, EguiInteractionError> {
         let mut output = self.drain_frame_output();
         let update = self.session.owner_retired(owner);
-        self.process_update(update, &mut output)?;
-        self.discard_pending_work_if_terminal();
+        self.process_update_with_current_budget(update, &mut output);
         self.sync_tracked_response(ctx, &mut output);
-        Ok(finish_output(ctx, output))
+        Ok(self.finish_output(ctx, output))
     }
 
     pub fn complete_submission(
@@ -554,10 +566,9 @@ impl EguiCanvasInteraction {
         update: CanvasInteractionUpdate,
     ) -> Result<EguiInteractionOutput, EguiInteractionError> {
         let mut output = self.drain_frame_output();
-        self.process_update(update, &mut output)?;
-        self.discard_pending_work_if_terminal();
+        self.process_update_with_current_budget(update, &mut output);
         self.sync_tracked_response(ctx, &mut output);
-        Ok(finish_output(ctx, output))
+        Ok(self.finish_output(ctx, output))
     }
 
     /// Accepts one current graph submission into the application's command transport.
@@ -581,8 +592,8 @@ impl EguiCanvasInteraction {
     ) -> Result<EguiInteractionOutput, EguiInteractionError> {
         let mut output = self.drain_frame_output();
         let update = self.session.search_ready(request, result_count)?;
-        self.process_update(update, &mut output)?;
-        Ok(finish_output(ctx, output))
+        self.process_update_with_current_budget(update, &mut output);
+        Ok(self.finish_output(ctx, output))
     }
 
     /// Creates one sealed search selection through the bound headless interaction session.
@@ -604,8 +615,8 @@ impl EguiCanvasInteraction {
     ) -> Result<EguiInteractionOutput, EguiInteractionError> {
         let mut output = self.drain_frame_output();
         let update = self.session.select_search_result(selection)?;
-        self.process_update(update, &mut output)?;
-        Ok(finish_output(ctx, output))
+        self.process_update_with_current_budget(update, &mut output);
+        Ok(self.finish_output(ctx, output))
     }
 
     /// Resumes one opaque graph submission after an application-owned command prefix settles.
@@ -616,50 +627,81 @@ impl EguiCanvasInteraction {
     ) -> Result<EguiInteractionOutput, EguiInteractionError> {
         let mut output = self.drain_frame_output();
         let update = self.session.resume_submission_after_prefix(submission)?;
-        self.process_update(update, &mut output)?;
-        Ok(finish_output(ctx, output))
+        self.process_update_with_current_budget(update, &mut output);
+        Ok(self.finish_output(ctx, output))
     }
 
     pub fn close(&mut self, ctx: &Context) -> EguiInteractionOutput {
         let mut output = self.drain_frame_output();
-        self.pending_queries.clear();
         collect_terminal_update(self.session.close(), &mut output);
         self.release_native_ownership(ctx, &mut output);
         self.clear_tracked_response();
-        finish_output(ctx, output)
+        self.finish_output(ctx, output)
     }
 
     fn process_update(
         &mut self,
         update: CanvasInteractionUpdate,
         output: &mut EguiInteractionOutput,
-    ) -> Result<(), EguiInteractionError> {
+        page_budget: &mut usize,
+    ) {
         self.collect_update(update, output);
-        self.process_pending_work(output)
+        self.process_pending_work(output, page_budget);
+    }
+
+    fn process_update_with_current_budget(
+        &mut self,
+        update: CanvasInteractionUpdate,
+        output: &mut EguiInteractionOutput,
+    ) {
+        let mut page_budget = self.take_current_query_page_budget();
+        self.process_update(update, output, &mut page_budget);
+        self.restore_current_query_page_budget(page_budget);
+    }
+
+    fn process_frame_update(
+        &mut self,
+        update: CanvasInteractionUpdate,
+        frame: &mut EguiInteractionFrame,
+    ) {
+        self.process_update(
+            update,
+            &mut frame.output,
+            &mut frame.renderer_query_pages_remaining,
+        );
+    }
+
+    fn process_frame_pending_work(&mut self, frame: &mut EguiInteractionFrame) {
+        self.process_pending_work(&mut frame.output, &mut frame.renderer_query_pages_remaining);
     }
 
     fn process_pending_work(
         &mut self,
         output: &mut EguiInteractionOutput,
-    ) -> Result<(), EguiInteractionError> {
-        while let Some(query) = self.pending_queries.pop_front() {
-            if self.renderer_query_pages_remaining == 0 {
-                self.pending_queries.push_front(query);
-                break;
-            }
-            self.renderer_query_pages_remaining -= 1;
-            match self.resolve_renderer_query(query, output) {
-                Ok(next) => self.collect_update(next, output),
-                Err(error) => {
-                    self.pending_queries.clear();
-                    let cancelled = self.session.cancel()?;
-                    self.collect_update(cancelled, output);
-                    return Err(error);
-                }
-            }
+        page_budget: &mut usize,
+    ) {
+        if !self.session.query_work_pending() || *page_budget == 0 {
+            output.renderer_work_pending = self.session.query_work_pending();
+            return;
         }
-        output.renderer_work_pending = !self.pending_queries.is_empty();
-        Ok(())
+
+        let pages_granted = *page_budget;
+        let advance = self.session.advance_query_work(pages_granted);
+        let (update, needs_tick, receipt, terminal_error) = advance.into_parts();
+
+        // Query advancement can publish damage and effects even when it terminates with an error.
+        // Preserve those facts before recording the terminal failure for the native host.
+        self.collect_update(update, output);
+        debug_assert_eq!(receipt.pages_granted(), pages_granted);
+        *page_budget = (*page_budget).saturating_sub(receipt.pages_attempted());
+        output.resolved_query_count = output
+            .resolved_query_count
+            .saturating_add(receipt.pages_attempted());
+        if terminal_error.is_some() {
+            output.terminal_query_error = terminal_error;
+        }
+        output.renderer_work_pending = self.session.query_work_pending();
+        debug_assert_eq!(needs_tick, output.renderer_work_pending);
     }
 
     fn collect_update(
@@ -673,35 +715,25 @@ impl EguiCanvasInteraction {
             output.tick_demand = InteractionTickDemand::WhileActive;
         }
         output.effects.extend(dispatch.effects);
-        for query in dispatch.queries {
-            self.queue_renderer_query(query);
-        }
-    }
-
-    fn queue_renderer_query(&mut self, query: CanvasInteractionQuery) {
-        self.pending_queries.push_back(query);
+        output.renderer_work_pending = dispatch.query_work_pending;
     }
 
     fn has_pending_renderer_query(&self) -> bool {
-        !self.pending_queries.is_empty()
+        self.session.query_work_pending()
     }
 
-    fn discard_pending_work_if_terminal(&mut self) {
-        if matches!(
-            self.session.presentation().phase(),
-            CanvasInteractionPhase::Idle | CanvasInteractionPhase::Closed
-        ) {
-            self.pending_queries.clear();
+    fn take_current_query_page_budget(&mut self) -> usize {
+        self.frame
+            .as_mut()
+            .map_or(DEFAULT_QUERY_PAGES_PER_FRAME, |frame| {
+                std::mem::take(&mut frame.renderer_query_pages_remaining)
+            })
+    }
+
+    fn restore_current_query_page_budget(&mut self, page_budget: usize) {
+        if let Some(frame) = self.frame.as_mut() {
+            frame.renderer_query_pages_remaining = page_budget;
         }
-    }
-
-    fn resolve_renderer_query(
-        &mut self,
-        query: CanvasInteractionQuery,
-        output: &mut EguiInteractionOutput,
-    ) -> Result<CanvasInteractionUpdate, EguiInteractionError> {
-        output.resolved_query_count += 1;
-        Ok(self.session.resolve_query(query)?)
     }
 
     fn drain_frame_output(&mut self) -> EguiInteractionOutput {
@@ -736,6 +768,18 @@ impl EguiCanvasInteraction {
         self.tracked_response = None;
         self.tracked_owner = None;
         self.last_position = None;
+    }
+
+    fn finish_output(
+        &self,
+        ctx: &Context,
+        mut output: EguiInteractionOutput,
+    ) -> EguiInteractionOutput {
+        output.renderer_work_pending = self.session.query_work_pending();
+        if output.has_work() {
+            ctx.request_repaint();
+        }
+        output
     }
 }
 
@@ -781,11 +825,12 @@ fn interaction_owner(target: &CanvasPressTarget) -> Option<InteractionOwner> {
 fn collect_terminal_update(update: CanvasInteractionUpdate, output: &mut EguiInteractionOutput) {
     let dispatch = update.into_dispatch();
     debug_assert!(dispatch.effects.is_empty());
-    debug_assert!(dispatch.queries.is_empty());
+    debug_assert!(!dispatch.query_work_pending);
     merge_damage(&mut output.damage, dispatch.damage);
     if dispatch.tick_demand == InteractionTickDemand::WhileActive {
         output.tick_demand = InteractionTickDemand::WhileActive;
     }
+    output.renderer_work_pending = dispatch.query_work_pending;
 }
 
 fn merge_damage(target: &mut InteractionDamage, other: InteractionDamage) {
@@ -795,11 +840,4 @@ fn merge_damage(target: &mut InteractionDamage, other: InteractionDamage) {
     target.edges |= other.edges;
     target.viewport |= other.viewport;
     target.selection |= other.selection;
-}
-
-fn finish_output(ctx: &Context, output: EguiInteractionOutput) -> EguiInteractionOutput {
-    if output.has_work() {
-        ctx.request_repaint();
-    }
-    output
 }

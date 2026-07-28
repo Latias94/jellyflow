@@ -707,9 +707,7 @@ fn typed_connection_graph(ty: jellyflow_core::TypeDesc, connected: bool) -> jell
 }
 
 #[open_gpui::test]
-fn query_from_replaced_interaction_generation_is_inert_before_view_access(
-    cx: &mut open_gpui::TestAppContext,
-) {
+fn stale_query_callback_cannot_advance_a_successor_generation(cx: &mut open_gpui::TestAppContext) {
     let (runtime, host, cx) = mount_connection_scene_for_graph(cx, unconnected_graph());
     draw(cx);
     let graph_before = runtime.snapshot().expect("graph before stale query");
@@ -733,15 +731,15 @@ fn query_from_replaced_interaction_generation_is_inert_before_view_access(
                 .interaction_owner
                 .press(target(), sample)
                 .expect("G1 canvas press");
-            host.queue_interaction_queries(update.into_dispatch().queries);
+            assert!(update.query_work_pending());
             let generation_one = host
                 .interaction_presentation()
                 .generation()
                 .expect("G1 semantic generation");
-            let stale_query = host
+            let (_, stale_callback) = host
                 .interaction_owner
-                .test_take_query_probe()
-                .expect("G1 queued edge pick");
+                .prepare_query_frame_callback()
+                .expect("G1 query callback");
 
             let cancelled = host.interaction_owner.cancel();
             assert!(host.apply_canvas_interaction_result(cancelled, window, cx));
@@ -754,25 +752,28 @@ fn query_from_replaced_interaction_generation_is_inert_before_view_access(
                 .interaction_owner
                 .press(target(), sample)
                 .expect("G2 canvas press");
-            host.apply_canvas_interaction_update(update, window, cx);
+            assert!(update.query_work_pending());
             let generation_two = host
                 .interaction_presentation()
                 .generation()
                 .expect("G2 semantic generation");
             assert_ne!(generation_two, generation_one);
-            let current_query_count = host.interaction_owner.test_pending_query_count();
-            assert_eq!(
-                current_query_count, 0,
-                "the current generation query resolves within the bounded interaction frame"
+            let (_, current_callback) = host
+                .interaction_owner
+                .prepare_query_frame_callback()
+                .expect("G2 query callback replaces G1 callback authority");
+            assert_ne!(current_callback, stale_callback);
+            assert!(
+                !host
+                    .interaction_owner
+                    .consume_query_frame_callback(stale_callback)
+            );
+            assert!(
+                host.interaction_owner
+                    .consume_query_frame_callback(current_callback)
             );
 
-            host.interaction_owner.test_restore_query_front(stale_query);
-            host.process_one_interaction_query(window, cx);
-            assert_eq!(
-                host.interaction_owner.test_pending_query_count(),
-                current_query_count,
-                "processing stale G1 work must not consume or replace G2 work",
-            );
+            host.apply_canvas_interaction_update(update, window, cx);
             assert_eq!(
                 host.interaction_presentation().generation(),
                 Some(generation_two),
@@ -787,7 +788,7 @@ fn query_from_replaced_interaction_generation_is_inert_before_view_access(
     draw_once(cx);
     cx.read_entity(&host, |host, _| {
         assert!(
-            host.interaction_owner.test_pending_queries_empty(),
+            !host.interaction_owner.test_query_work_pending(),
             "stale work must not create a continuation",
         );
         assert_eq!(
@@ -811,7 +812,7 @@ fn query_from_replaced_interaction_generation_is_inert_before_view_access(
 }
 
 #[open_gpui::test]
-fn queued_query_reintroduced_after_close_cannot_mutate_or_enqueue_follow_up_work(
+fn query_callback_after_close_cannot_advance_retired_runtime_work(
     cx: &mut open_gpui::TestAppContext,
 ) {
     let (runtime, host, cx) = mount_connection_scene_for_graph(cx, unconnected_graph());
@@ -836,14 +837,18 @@ fn queued_query_reintroduced_after_close_cannot_mutate_or_enqueue_follow_up_work
                     sample,
                 )
                 .expect("canvas press before close");
-            host.queue_interaction_queries(update.into_dispatch().queries);
-            let stale_query = host
+            assert!(update.query_work_pending());
+            let (_, stale_callback) = host
                 .interaction_owner
-                .test_take_query_probe()
-                .expect("queued edge pick before close");
+                .prepare_query_frame_callback()
+                .expect("query callback before close");
 
             host.close_in_window(window, cx).expect("close query host");
-            host.interaction_owner.test_restore_query_back(stale_query);
+            assert!(
+                !host
+                    .interaction_owner
+                    .consume_query_frame_callback(stale_callback)
+            );
             host.process_one_interaction_query(window, cx);
 
             assert!(host.interaction_owner.test_pending_work_empty());
@@ -912,7 +917,7 @@ fn paged_connection_probe_restarts_after_viewport_change_without_cancelling_drag
             CanvasInteractionPhase::ConnectionDrag
         );
         assert!(
-            host.interaction_owner.test_front_query().is_some(),
+            host.interaction_owner.test_query_work_pending(),
             "one-entry first page must leave a probe continuation",
         );
     });
@@ -932,21 +937,21 @@ fn paged_connection_probe_restarts_after_viewport_change_without_cancelling_drag
             "a stale continuation must not cancel the semantic drag"
         );
         assert!(
-            host.interaction_owner.test_front_query().is_some(),
+            host.interaction_owner.test_query_work_pending(),
             "stale continuation must restart from page one",
         );
     });
 
     for _ in 0..16 {
         if cx.read_entity(&host, |host, _| {
-            host.interaction_owner.test_pending_queries_empty()
+            !host.interaction_owner.test_query_work_pending()
         }) {
             break;
         }
         draw_once(cx);
     }
     cx.read_entity(&host, |host, _| {
-        assert!(host.interaction_owner.test_pending_queries_empty());
+        assert!(!host.interaction_owner.test_query_work_pending());
         assert_eq!(
             host.interaction_presentation().phase(),
             CanvasInteractionPhase::ConnectionDrag
@@ -1003,7 +1008,7 @@ fn paged_edge_pick_restarts_after_paint_order_change_without_terminal_failure(
     draw_once(cx);
     cx.read_entity(&host, |host, _| {
         assert!(
-            host.interaction_owner.test_front_query().is_some(),
+            host.interaction_owner.test_query_work_pending(),
             "one-entry first page must leave an edge-pick continuation",
         );
     });
@@ -1016,21 +1021,21 @@ fn paged_edge_pick_restarts_after_paint_order_change_without_terminal_failure(
     draw_once(cx);
     cx.read_entity(&host, |host, _| {
         assert!(
-            host.interaction_owner.test_front_query().is_some(),
+            host.interaction_owner.test_query_work_pending(),
             "stale edge-pick continuation must restart from page one",
         );
     });
 
     for _ in 0..32 {
         if cx.read_entity(&host, |host, _| {
-            host.interaction_owner.test_pending_queries_empty()
+            !host.interaction_owner.test_query_work_pending()
         }) {
             break;
         }
         draw_once(cx);
     }
     cx.read_entity(&host, |host, _| {
-        assert!(host.interaction_owner.test_pending_queries_empty());
+        assert!(!host.interaction_owner.test_query_work_pending());
         assert_eq!(
             host.interaction_presentation().phase(),
             CanvasInteractionPhase::Idle
@@ -1070,7 +1075,7 @@ fn hold_released_connection_at_adapter_boundary(
             == jellyflow_runtime::interaction::CanvasInteractionPhase::Committing
         {
             host.discard_pending_interaction_submission();
-            host.interaction_owner.test_clear_queries();
+            assert!(!host.interaction_owner.test_query_work_pending());
             return;
         }
 
@@ -1081,27 +1086,25 @@ fn hold_released_connection_at_adapter_boundary(
             .interaction_owner
             .release(sample)
             .expect("release active connection");
-        host.queue_interaction_queries(release.into_dispatch().queries);
-
-        let mut pending = host.interaction_owner.test_take_query().unwrap_or_else(|| {
-            panic!(
-                "release schedules a fresh connection probe from {:?}",
-                host.interaction_presentation().phase()
-            )
-        });
+        assert!(
+            release.query_work_pending(),
+            "release schedules a fresh connection probe from {:?}",
+            host.interaction_presentation().phase()
+        );
         loop {
-            let update = host
-                .interaction_owner
-                .resolve_query(pending)
-                .expect("resolve opaque connection query");
+            let (update, needs_tick, receipt, terminal_error) =
+                host.interaction_owner.advance_query_work(1).into_parts();
+            assert_eq!(receipt.pages_granted(), 1);
+            assert_eq!(receipt.pages_attempted(), 1);
+            assert!(terminal_error.is_none());
             let dispatch = update.into_dispatch();
-            let queries = dispatch.queries;
             let effects = dispatch.effects;
 
             if host.interaction_presentation().phase()
                 == jellyflow_runtime::interaction::CanvasInteractionPhase::Committing
             {
-                assert!(queries.is_empty());
+                assert!(!needs_tick);
+                assert!(!dispatch.query_work_pending);
                 assert!(matches!(
                     effects.as_slice(),
                     [jellyflow_runtime::interaction::CanvasInteractionEffect::SubmitGraph { .. }]
@@ -1109,9 +1112,9 @@ fn hold_released_connection_at_adapter_boundary(
                 break;
             }
 
-            let [query] = <[_; 1]>::try_from(queries)
-                .expect("an incomplete probe schedules exactly one continuation");
-            pending = query;
+            assert!(needs_tick);
+            assert!(dispatch.query_work_pending);
+            assert!(effects.is_empty());
         }
     });
 }

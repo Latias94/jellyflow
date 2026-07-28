@@ -20,8 +20,9 @@ use crate::runtime::geometry::{EdgePathAnchor, HandlePosition};
 use crate::runtime::graph_runtime::GraphRuntime;
 use crate::runtime::interaction::{
     CanvasInteractionConfig, CanvasInteractionError, CanvasInteractionPhase,
-    CanvasInteractionQueryKind, CanvasInteractionSession, CanvasPressTarget,
-    ConnectionGestureBinding, ConnectionInteractionStart, ConnectionProbe, SelectionMode,
+    CanvasInteractionQueryPageReceipt, CanvasInteractionSession, CanvasInteractionUpdate,
+    CanvasPressTarget, ConnectionGestureBinding, ConnectionInteractionStart, ConnectionProbe,
+    SelectionMode,
 };
 use crate::runtime::tests::fixtures::{port_connection_drag_intent_by_id, set_selection_by_id};
 use crate::runtime::view_session::{
@@ -68,6 +69,28 @@ fn connection_binding(view: &ViewSession, port: PortId, edge: EdgeId) -> Connect
 fn pointer_sample(view: &ViewSession, point: ViewPoint) -> ViewportPointerSample {
     view.viewport_pointer_sample(point)
         .expect("fixture pointer is valid")
+}
+
+fn advance_terminal_query_page(
+    interaction: &mut CanvasInteractionSession,
+    update: CanvasInteractionUpdate,
+    expected: impl FnOnce(&CanvasInteractionQueryPageReceipt) -> bool,
+) -> CanvasInteractionUpdate {
+    assert!(update.query_work_pending());
+    assert!(interaction.query_work_pending());
+    let (resolved, needs_tick, receipt, terminal_error) =
+        interaction.advance_query_work(1).into_parts();
+    assert!(terminal_error.is_none());
+    assert_eq!(receipt.pages_granted(), 1);
+    assert_eq!(receipt.pages_attempted(), 1);
+    let [page] = receipt.page_receipts() else {
+        panic!("one terminal query page must issue exactly one receipt");
+    };
+    assert!(expected(page), "unexpected interaction query page receipt");
+    assert!(!needs_tick);
+    assert!(!interaction.query_work_pending());
+    assert!(!resolved.query_work_pending());
+    resolved
 }
 
 #[derive(Clone)]
@@ -653,14 +676,10 @@ fn hovered_edge_instance_does_not_alias_an_edge_id_restored_by_undo() {
         CanvasInteractionSession::attach(&view, CanvasInteractionConfig::default()).unwrap();
     let pointer = pointer_sample(&view, ViewPoint::new(screen.x, screen.y));
     let requested = interaction.request_edge_pick(pointer).unwrap();
-    let mut queries = requested.into_dispatch().queries;
-    let query = queries.remove(0);
-    assert!(matches!(
-        query.kind_for_test(),
-        CanvasInteractionQueryKind::EdgePick { .. }
-    ));
-    assert!(queries.is_empty());
-    interaction.resolve_query(query).unwrap();
+    assert!(requested.effects().is_empty());
+    advance_terminal_query_page(&mut interaction, requested, |page| {
+        matches!(page, CanvasInteractionQueryPageReceipt::EdgePick(_))
+    });
     assert_eq!(
         interaction.presentation().hovered_edge(),
         Some(old_route.instance())
@@ -708,17 +727,13 @@ fn runtime_owned_edge_pick_resolves_against_latest_view_facts() {
         CanvasInteractionSession::attach(&view, CanvasInteractionConfig::default()).unwrap();
     let pointer = pointer_sample(&view, ViewPoint::new(210.0, 78.0));
     let requested = interaction.request_edge_pick(pointer).unwrap();
-    let mut queries = requested.into_dispatch().queries;
-    let query = queries.remove(0);
-    assert!(matches!(
-        query.kind_for_test(),
-        CanvasInteractionQueryKind::EdgePick { .. }
-    ));
-    assert!(queries.is_empty());
+    assert!(requested.query_work_pending());
 
     set_selection_by_id(&view, [], [ids.edge], Vec::new()).unwrap();
-    let resolved = interaction.resolve_query(query).unwrap();
-    assert!(resolved.queries().is_empty());
+    let resolved = advance_terminal_query_page(&mut interaction, requested, |page| {
+        matches!(page, CanvasInteractionQueryPageReceipt::EdgePick(_))
+    });
+    assert!(resolved.effects().is_empty());
     assert!(interaction.presentation().hovered_edge().is_some());
 }
 
@@ -755,13 +770,7 @@ fn runtime_owned_connection_probe_resolves_against_latest_graph_revision() {
         .press(CanvasPressTarget::Connection(start), source)
         .unwrap();
     let moved = interaction.move_to(target).unwrap();
-    let mut queries = moved.into_dispatch().queries;
-    let query = queries.remove(0);
-    assert!(matches!(
-        query.kind_for_test(),
-        CanvasInteractionQueryKind::ConnectionProbe { .. }
-    ));
-    assert!(queries.is_empty());
+    assert!(moved.query_work_pending());
 
     let version = runtime.snapshot().unwrap().version();
     runtime
@@ -774,8 +783,10 @@ fn runtime_owned_connection_probe_resolves_against_latest_graph_revision() {
         .unwrap()
         .applied()
         .expect("unrelated graph mutation advances the revision");
-    let resolved = interaction.resolve_query(query).unwrap();
-    assert!(resolved.queries().is_empty());
+    let resolved = advance_terminal_query_page(&mut interaction, moved, |page| {
+        matches!(page, CanvasInteractionQueryPageReceipt::ConnectionProbe(_))
+    });
+    assert!(resolved.effects().is_empty());
 }
 
 #[test]
@@ -796,18 +807,14 @@ fn runtime_owned_node_intersection_resolves_after_viewport_change() {
         )
         .unwrap();
     let moved = interaction.move_to(end).unwrap();
-    let mut queries = moved.into_dispatch().queries;
-    let query = queries.remove(0);
-    assert!(matches!(
-        query.kind_for_test(),
-        CanvasInteractionQueryKind::NodeIntersection { .. }
-    ));
-    assert!(queries.is_empty());
+    assert!(moved.query_work_pending());
 
     view.set_viewport(ViewportTransform::new(CanvasPoint { x: 1.0, y: 0.0 }, 1.0).unwrap())
         .unwrap();
-    let resolved = interaction.resolve_query(query).unwrap();
-    assert!(resolved.queries().is_empty());
+    let resolved = advance_terminal_query_page(&mut interaction, moved, |page| {
+        matches!(page, CanvasInteractionQueryPageReceipt::NodeIntersection(_))
+    });
+    assert!(resolved.effects().is_empty());
 }
 
 #[test]
@@ -857,13 +864,7 @@ fn runtime_owned_node_intersection_resolves_against_latest_node_index() {
         )
         .unwrap();
     let moved = interaction.move_to(end).unwrap();
-    let mut queries = moved.into_dispatch().queries;
-    let query = queries.remove(0);
-    assert!(matches!(
-        query.kind_for_test(),
-        CanvasInteractionQueryKind::NodeIntersection { .. }
-    ));
-    assert!(queries.is_empty());
+    assert!(moved.query_work_pending());
 
     publish_node_layouts(
         &view,
@@ -878,8 +879,10 @@ fn runtime_owned_node_intersection_resolves_against_latest_node_index() {
             },
         )],
     );
-    let resolved = interaction.resolve_query(query).unwrap();
-    assert!(resolved.queries().is_empty());
+    let resolved = advance_terminal_query_page(&mut interaction, moved, |page| {
+        matches!(page, CanvasInteractionQueryPageReceipt::NodeIntersection(_))
+    });
+    assert!(resolved.effects().is_empty());
 }
 
 #[test]
@@ -1457,20 +1460,11 @@ fn view_space_layout_uses_the_issued_transform_for_all_canvas_geometry() {
         CanvasInteractionSession::attach(&session, CanvasInteractionConfig::default()).unwrap();
     let pointer_in_view = ViewPoint::new(440.0, 118.0);
     let pointer = pointer_sample(&session, pointer_in_view);
-    let dispatch = interaction
-        .request_edge_pick(pointer)
-        .unwrap()
-        .into_dispatch();
-    let mut queries = dispatch.queries;
-    let effects = dispatch.effects;
-    assert!(effects.is_empty());
-    let query = queries.remove(0);
-    assert!(matches!(
-        query.kind_for_test(),
-        CanvasInteractionQueryKind::EdgePick { .. }
-    ));
-    assert!(queries.is_empty());
-    interaction.resolve_query(query).unwrap();
+    let requested = interaction.request_edge_pick(pointer).unwrap();
+    assert!(requested.effects().is_empty());
+    advance_terminal_query_page(&mut interaction, requested, |page| {
+        matches!(page, CanvasInteractionQueryPageReceipt::EdgePick(_))
+    });
     assert_eq!(
         interaction.presentation().hovered_edge(),
         session.edge_instance_key(ids.edge).unwrap()

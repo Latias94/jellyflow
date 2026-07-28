@@ -851,7 +851,7 @@ impl OpenGpuiSceneHost {
             let update = self.interaction_owner.cancel();
             self.discard_pending_interaction_submission();
             match update {
-                Ok(update) => self.queue_interaction_queries(update.into_dispatch().queries),
+                Ok(_update) => {}
                 Err(error) => self.record_command_diagnostic(error.to_string()),
             }
         }

@@ -33,11 +33,11 @@ use jellyflow_runtime::graph::{
     EdgeEndpoint, GraphRuntime, GraphRuntimeMiddleware, GraphRuntimeMiddlewareSnapshot,
 };
 use jellyflow_runtime::interaction::{
-    CanvasInteractionConfig, CanvasInteractionEffect, CanvasInteractionError,
-    CanvasInteractionPhase, CanvasInteractionQuery, CanvasInteractionSession,
-    CanvasInteractionUpdate, CanvasPressTarget, ConnectionGestureBinding, ConnectionProbe,
-    InteractionDamage, InteractionGraphSubmission, InteractionOwner, InteractionTerminalReason,
-    InteractionTicketId, SelectionMode,
+    CanvasInteractionConfig, CanvasInteractionEffect, CanvasInteractionPhase,
+    CanvasInteractionQueryAdvanceReceipt, CanvasInteractionQueryPageReceipt,
+    CanvasInteractionSession, CanvasInteractionUpdate, CanvasPressTarget, ConnectionGestureBinding,
+    ConnectionProbe, InteractionDamage, InteractionGraphSubmission, InteractionOwner,
+    InteractionTerminalReason, InteractionTicketId, SelectionMode,
 };
 use jellyflow_runtime::profile::ApplyPipelineError;
 use jellyflow_runtime::schema::{NodeCatalog, NodeCreation, NodeKindSpec, NodePortSpec};
@@ -245,7 +245,7 @@ fn interaction_session_owns_selection_and_pan() {
     let update = session.move_to(end).unwrap();
     assert!(update.damage().viewport);
     assert!(update.effects().is_empty());
-    assert!(update.queries().is_empty());
+    assert!(!update.query_work_pending());
     let after = harness.view.viewport_snapshot().unwrap();
     assert_ne!(after.revision(), before.revision());
     assert_eq!(after.transform().zoom, before.transform().zoom);
@@ -268,7 +268,7 @@ fn interaction_session_owns_selection_and_pan() {
 }
 
 #[test]
-fn opaque_queries_are_session_bound_and_superseded_queries_are_noops() {
+fn runtime_owned_queries_are_session_local_single_slot_and_cancel_discards_work() {
     let harness = TraceHarness::new();
     let mut first =
         CanvasInteractionSession::attach(&harness.view, CanvasInteractionConfig::default())
@@ -278,21 +278,63 @@ fn opaque_queries_are_session_bound_and_superseded_queries_are_noops() {
             .unwrap();
     let pointer = pointer_sample(&harness.view, ViewPoint::new(400.0, 80.0));
 
-    let foreign_query = take_single_query(first.request_edge_pick(pointer).unwrap());
-    let second_phase = second.presentation().phase();
-    assert!(matches!(
-        second.resolve_query(foreign_query),
-        Err(CanvasInteractionError::ForeignInteractionSession { .. })
-    ));
-    assert_eq!(second.presentation().phase(), second_phase);
+    let first_request = first.request_edge_pick(pointer).unwrap();
+    assert!(first_request.query_work_pending());
+    assert!(first.query_work_pending());
 
-    let stale_query = take_single_query(first.request_edge_pick(pointer).unwrap());
+    let second_request = second.request_edge_pick(pointer).unwrap();
+    assert!(second_request.query_work_pending());
+    assert!(second.query_work_pending());
+
+    let second_phase = second.presentation().phase();
+    let (second_update, second_receipt) = advance_successful_query_page(&mut second);
+    assert_eq!(second.presentation().phase(), second_phase);
+    assert!(matches!(
+        second_receipt.page_receipts(),
+        [CanvasInteractionQueryPageReceipt::EdgePick(_)]
+    ));
+    assert!(!second_update.query_work_pending());
+    assert!(!second.query_work_pending());
+    assert!(
+        first.query_work_pending(),
+        "advancing another session cannot consume the first session's work"
+    );
+
     let replacement = first.request_edge_pick(pointer).unwrap();
-    let stale = first.resolve_query(stale_query).unwrap();
-    assert!(stale.queries().is_empty());
-    assert!(stale.effects().is_empty());
-    assert_eq!(stale.damage(), InteractionDamage::default());
-    let _ = drive_query_pages(&mut first, replacement);
+    assert!(replacement.query_work_pending());
+    let (superseded, needs_tick, receipt, terminal_error) =
+        first.advance_query_work(2).into_parts();
+    assert_eq!(receipt.pages_granted(), 2);
+    assert_eq!(
+        receipt.pages_attempted(),
+        1,
+        "a replacement query supersedes the prior single-slot continuation"
+    );
+    assert!(matches!(
+        receipt.page_receipts(),
+        [CanvasInteractionQueryPageReceipt::EdgePick(_)]
+    ));
+    assert!(terminal_error.is_none());
+    assert!(!needs_tick);
+    assert!(!superseded.query_work_pending());
+    assert!(!first.query_work_pending());
+
+    let cancellable = first.request_edge_pick(pointer).unwrap();
+    assert!(cancellable.query_work_pending());
+    let cancelled = first.cancel().unwrap();
+    assert!(!cancelled.query_work_pending());
+    assert!(!first.query_work_pending());
+
+    let (after_cancel, needs_tick, receipt, terminal_error) =
+        first.advance_query_work(1).into_parts();
+    assert_eq!(receipt.pages_granted(), 1);
+    assert_eq!(receipt.pages_attempted(), 0);
+    assert!(receipt.page_receipts().is_empty());
+    assert!(terminal_error.is_none());
+    assert!(!needs_tick);
+    assert!(!after_cancel.query_work_pending());
+    assert!(after_cancel.effects().is_empty());
+    assert_eq!(after_cancel.damage(), InteractionDamage::default());
 }
 
 #[test]
@@ -357,10 +399,17 @@ fn connection_commit_revalidation_resumes_real_view_query_before_resubmission() 
             assert_eq!(submission.ticket(), ticket);
             break;
         }
-        let [query] = <[_; 1]>::try_from(dispatch.queries)
-            .expect("pending revalidation owns one opaque query page");
+        assert!(
+            dispatch.query_work_pending,
+            "pending revalidation remains owned by the interaction session"
+        );
         query_pages += 1;
-        update = session.resolve_query(query).unwrap();
+        let (next, receipt) = advance_successful_query_page(&mut session);
+        assert!(matches!(
+            receipt.page_receipts(),
+            [CanvasInteractionQueryPageReceipt::ConnectionProbe(_)]
+        ));
+        update = next;
     }
     assert!(query_pages > 1, "the bounded revalidation must paginate");
     assert_eq!(
@@ -403,17 +452,24 @@ fn paged_connection_queries_restart_after_viewport_layout_and_graph_changes() {
         .unwrap();
 
     let moved = session.move_to(target).unwrap();
-    let drag_query = take_single_query(moved);
-    let drag_resume = session.resolve_query(drag_query).unwrap();
-    let drag_resume_query = take_single_query(drag_resume);
+    assert!(moved.query_work_pending());
+    let (drag_resume, drag_receipt) = advance_successful_query_page(&mut session);
+    assert!(matches!(
+        drag_receipt.page_receipts(),
+        [CanvasInteractionQueryPageReceipt::ConnectionProbe(_)]
+    ));
+    assert!(drag_resume.query_work_pending());
     harness
         .view
         .set_viewport(ViewportTransform::new(CanvasPoint { x: 2.0, y: -1.0 }, 1.0).unwrap())
         .unwrap();
-    let restarted_drag = session.resolve_query(drag_resume_query).unwrap();
-    assert_eq!(
-        restarted_drag.queries().len(),
-        1,
+    let (restarted_drag, stale_drag_receipt) = advance_query_page(&mut session);
+    assert!(
+        stale_drag_receipt.page_receipts().is_empty(),
+        "a viewport-stale cursor restarts without claiming a successful view page"
+    );
+    assert!(
+        restarted_drag.query_work_pending(),
         "the session restarts a viewport-stale cursor from page one"
     );
     assert!(drive_query_pages(&mut session, restarted_drag).is_empty());
@@ -424,18 +480,25 @@ fn paged_connection_queries_restart_after_viewport_layout_and_graph_changes() {
 
     let release_position = pointer_sample(&harness.view, harness.anchors.valid);
     let released = session.release(release_position).unwrap();
-    let release_query = take_single_query(released);
-    let release_resume = session.resolve_query(release_query).unwrap();
-    let release_resume_query = take_single_query(release_resume);
+    assert!(released.query_work_pending());
+    let (release_resume, release_receipt) = advance_successful_query_page(&mut session);
+    assert!(matches!(
+        release_receipt.page_receipts(),
+        [CanvasInteractionQueryPageReceipt::ConnectionProbe(_)]
+    ));
+    assert!(release_resume.query_work_pending());
     let changed_anchors = TraceAnchors {
         valid: ViewPoint::new(harness.anchors.valid.x + 2.0, harness.anchors.valid.y),
         ..harness.anchors
     };
     publish_trace_geometry(&harness.view, harness.ids, changed_anchors);
-    let restarted_release = session.resolve_query(release_resume_query).unwrap();
-    assert_eq!(
-        restarted_release.queries().len(),
-        1,
+    let (restarted_release, stale_release_receipt) = advance_query_page(&mut session);
+    assert!(
+        stale_release_receipt.page_receipts().is_empty(),
+        "a geometry-stale cursor restarts without claiming a successful view page"
+    );
+    assert!(
+        restarted_release.query_work_pending(),
         "the session restarts a geometry-stale cursor from page one"
     );
     let mut release_effects = drive_query_pages(&mut session, restarted_release).into_iter();
@@ -446,9 +509,13 @@ fn paged_connection_queries_restart_after_viewport_layout_and_graph_changes() {
     let ticket = submission.ticket();
 
     let revalidation = session.resume_submission_after_prefix(submission).unwrap();
-    let revalidation_query = take_single_query(revalidation);
-    let revalidation_resume = session.resolve_query(revalidation_query).unwrap();
-    let revalidation_resume_query = take_single_query(revalidation_resume);
+    assert!(revalidation.query_work_pending());
+    let (revalidation_resume, revalidation_receipt) = advance_successful_query_page(&mut session);
+    assert!(matches!(
+        revalidation_receipt.page_receipts(),
+        [CanvasInteractionQueryPageReceipt::ConnectionProbe(_)]
+    ));
+    assert!(revalidation_resume.query_work_pending());
     let version = harness.runtime.snapshot().unwrap().version();
     harness
         .runtime
@@ -460,10 +527,13 @@ fn paged_connection_queries_restart_after_viewport_layout_and_graph_changes() {
         .into_result()
         .unwrap();
     publish_trace_geometry(&harness.view, harness.ids, changed_anchors);
-    let restarted_revalidation = session.resolve_query(revalidation_resume_query).unwrap();
-    assert_eq!(
-        restarted_revalidation.queries().len(),
-        1,
+    let (restarted_revalidation, stale_revalidation_receipt) = advance_query_page(&mut session);
+    assert!(
+        stale_revalidation_receipt.page_receipts().is_empty(),
+        "a graph-stale cursor restarts without claiming a successful view page"
+    );
+    assert!(
+        restarted_revalidation.query_work_pending(),
         "the session restarts a graph-stale cursor from page one"
     );
     let revalidation_effects = drive_query_pages(&mut session, restarted_revalidation);
@@ -485,7 +555,6 @@ struct TraceHarness {
     ids: TraceGraphIds,
     anchors: TraceAnchors,
     pointer: ViewportPointerSample,
-    pending_probe: Option<CanvasInteractionQuery>,
     ticket: Option<InteractionTicketId>,
     submission: Option<InteractionGraphSubmission>,
     initial_revision: u64,
@@ -636,7 +705,6 @@ impl TraceHarness {
             ids,
             anchors,
             pointer,
-            pending_probe: None,
             ticket: None,
             submission: None,
             initial_revision: 0,
@@ -949,10 +1017,16 @@ impl TraceHarness {
                     .into_dispatch();
                 let effects = dispatch.effects;
                 assert!(effects.is_empty());
-                let [query] = <[_; 1]>::try_from(dispatch.queries)
-                    .expect("edge trace requests one opaque query");
-                let resolved = self.session.resolve_query(query).unwrap();
-                assert!(resolved.queries().is_empty());
+                assert!(
+                    dispatch.query_work_pending,
+                    "edge trace leaves its pick query inside the session"
+                );
+                let (resolved, receipt) = advance_successful_query_page(&mut self.session);
+                assert!(matches!(
+                    receipt.page_receipts(),
+                    [CanvasInteractionQueryPageReceipt::EdgePick(_)]
+                ));
+                assert!(!resolved.query_work_pending());
                 assert!(resolved.effects().is_empty());
                 let picked = self
                     .session
@@ -977,7 +1051,7 @@ impl TraceHarness {
 
     fn resolve_candidate(&mut self, candidate: TraceCandidate) -> TraceEffect {
         let queried = match candidate {
-            TraceCandidate::None => self.pending_probe.is_some(),
+            TraceCandidate::None => self.session.query_work_pending(),
             TraceCandidate::Invalid => {
                 self.pointer = pointer_sample(&self.view, self.invalid_anchor());
                 let update = self.session.move_to(self.pointer).unwrap();
@@ -990,11 +1064,16 @@ impl TraceHarness {
             }
         };
         assert!(queried, "candidate action must issue a real view query");
-        let Some(query) = self.pending_probe.take() else {
-            panic!("candidate follows a probe");
-        };
-        let update = self.session.resolve_query(query).unwrap();
-        assert!(update.queries().is_empty());
+        assert!(
+            self.session.query_work_pending(),
+            "candidate follows session-owned probe work"
+        );
+        let (update, receipt) = advance_successful_query_page(&mut self.session);
+        assert!(matches!(
+            receipt.page_receipts(),
+            [CanvasInteractionQueryPageReceipt::ConnectionProbe(_)]
+        ));
+        assert!(!update.query_work_pending());
         assert!(update.effects().is_empty());
         let presentation = self.session.presentation();
         let probe = presentation
@@ -1041,13 +1120,12 @@ impl TraceHarness {
     fn capture_probe(&mut self, update: CanvasInteractionUpdate) -> TraceEffect {
         let dispatch = update.into_dispatch();
         assert!(dispatch.effects.is_empty());
-        let mut queries = dispatch.queries.into_iter();
-        self.pending_probe = queries.next();
-        assert!(
-            queries.next().is_none(),
-            "one connection interaction owns one opaque query page"
+        assert_eq!(
+            dispatch.query_work_pending,
+            self.session.query_work_pending(),
+            "dispatch exposes only whether the session owns query continuation work"
         );
-        if self.pending_probe.is_some() {
+        if dispatch.query_work_pending {
             TraceEffect::ProbeConnection
         } else {
             TraceEffect::None
@@ -1061,8 +1139,8 @@ impl TraceHarness {
     ) -> TraceEffect {
         let dispatch = update.into_dispatch();
         assert!(
-            dispatch.queries.is_empty(),
-            "submission capture requires all opaque queries to be resolved"
+            !dispatch.query_work_pending,
+            "submission capture requires all session-owned queries to be resolved"
         );
         self.capture_submit_effects(dispatch.effects, semantic_effect)
     }
@@ -1085,7 +1163,7 @@ impl TraceHarness {
     fn apply_view_local_effects(&self, update: CanvasInteractionUpdate) {
         let dispatch = update.into_dispatch();
         assert!(
-            dispatch.queries.is_empty(),
+            !dispatch.query_work_pending,
             "selection press issued a query"
         );
         assert!(
@@ -1420,17 +1498,6 @@ impl TraceHarness {
     }
 }
 
-fn take_single_query(update: CanvasInteractionUpdate) -> CanvasInteractionQuery {
-    let dispatch = update.into_dispatch();
-    assert!(
-        dispatch.effects.is_empty(),
-        "query continuation must not emit application effects"
-    );
-    let [query] = <[_; 1]>::try_from(dispatch.queries)
-        .unwrap_or_else(|queries| panic!("expected one opaque query, got {queries:?}"));
-    query
-}
-
 fn drive_query_pages(
     session: &mut CanvasInteractionSession,
     mut update: CanvasInteractionUpdate,
@@ -1439,17 +1506,52 @@ fn drive_query_pages(
     loop {
         let dispatch = update.into_dispatch();
         emitted.extend(dispatch.effects);
-        let mut queries = dispatch.queries.into_iter();
-        let Some(query) = queries.next() else {
-            assert!(queries.next().is_none());
+        if !dispatch.query_work_pending {
+            assert!(!session.query_work_pending());
             return emitted;
-        };
-        assert!(
-            queries.next().is_none(),
-            "one interaction owns one opaque query page"
+        }
+        let (next, receipt) = advance_successful_query_page(session);
+        assert_eq!(
+            receipt.page_receipts().len(),
+            1,
+            "each successful page grant returns typed runtime proof"
         );
-        update = session.resolve_query(query).unwrap();
+        update = next;
     }
+}
+
+fn advance_query_page(
+    session: &mut CanvasInteractionSession,
+) -> (
+    CanvasInteractionUpdate,
+    CanvasInteractionQueryAdvanceReceipt,
+) {
+    assert!(
+        session.query_work_pending(),
+        "a native page grant requires runtime-owned query work"
+    );
+    let (update, needs_tick, receipt, terminal_error) = session.advance_query_work(1).into_parts();
+    assert_eq!(receipt.pages_granted(), 1);
+    assert_eq!(receipt.pages_attempted(), 1);
+    assert!(terminal_error.is_none());
+    assert_eq!(needs_tick, update.query_work_pending());
+    assert_eq!(needs_tick, session.query_work_pending());
+    (update, receipt)
+}
+
+fn advance_successful_query_page(
+    session: &mut CanvasInteractionSession,
+) -> (
+    CanvasInteractionUpdate,
+    CanvasInteractionQueryAdvanceReceipt,
+) {
+    let (update, receipt) = advance_query_page(session);
+    assert_eq!(
+        receipt.page_receipts().len(),
+        1,
+        "a successful view page returns one typed runtime proof"
+    );
+    (update, receipt)
 }
 
 fn scenario_settlement(id: TraceScenarioId) -> Option<TraceReceipt> {

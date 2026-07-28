@@ -140,7 +140,7 @@ impl OpenGpuiSceneHost {
         cx: &mut Context<Self>,
     ) {
         if self.pending_blank_canvas_context.is_none()
-            || self.interaction_owner.has_pending_queries()
+            || self.interaction_owner.query_work_pending()
             || self.interaction_owner.query_resolution_active()
         {
             return;

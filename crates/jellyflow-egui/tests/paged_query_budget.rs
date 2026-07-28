@@ -23,6 +23,7 @@ struct PagedMarqueeState {
     nodes: Vec<NodeId>,
     response_visible: bool,
     close_host_during_frame: bool,
+    query_page_budget: usize,
     output: Option<EguiInteractionOutput>,
 }
 
@@ -59,15 +60,17 @@ impl PagedMarqueeState {
             nodes,
             response_visible: true,
             close_host_during_frame: false,
+            query_page_budget: 1,
             output: None,
         }
     }
 }
 
 fn render_paged_marquee(ui: &mut Ui, state: &mut PagedMarqueeState) {
+    let query_page_budget = state.query_page_budget;
     state
         .interaction
-        .begin_frame(ui.ctx(), ui.max_rect())
+        .begin_frame_with_query_page_budget(ui.ctx(), ui.max_rect(), query_page_budget)
         .expect("begin paged marquee frame");
     if state.response_visible {
         let response = ui.interact(
@@ -103,6 +106,46 @@ fn render_paged_marquee(ui: &mut Ui, state: &mut PagedMarqueeState) {
             .end_frame(ui.ctx())
             .expect("end paged marquee frame"),
     );
+}
+
+#[test]
+fn zero_page_grant_preserves_runtime_owned_work_for_a_later_frame() {
+    let mut harness = Harness::builder()
+        .with_size(Vec2::new(480.0, 320.0))
+        .build_ui_state(render_paged_marquee, PagedMarqueeState::new());
+    harness.state_mut().output.take();
+
+    harness.hover_at(PRESS);
+    harness.step();
+    harness.state_mut().output.take();
+    harness.drag_at(PRESS);
+    harness.step();
+    harness.state_mut().output.take();
+
+    harness.state_mut().query_page_budget = 0;
+    harness.hover_at(DRAG);
+    harness.step();
+    let deferred = harness
+        .state_mut()
+        .output
+        .take()
+        .expect("zero-grant drag output");
+    assert_eq!(deferred.resolved_query_count(), 0);
+    assert!(deferred.renderer_work_pending());
+    assert!(deferred.terminal_query_error().is_none());
+    assert!(!deferred.damage().selection);
+    assert_selection_is_empty_and_marquee_is_active(harness.state());
+
+    harness.state_mut().query_page_budget = 1;
+    harness.step();
+    let advanced = harness
+        .state_mut()
+        .output
+        .take()
+        .expect("one-grant continuation output");
+    assert_query_page_continues(&advanced);
+    assert!(!advanced.damage().selection);
+    assert_selection_is_empty_and_marquee_is_active(harness.state());
 }
 
 #[test]
@@ -191,7 +234,9 @@ fn retired_marquee_response_discards_its_pending_page_without_partial_selection(
         .output
         .take()
         .expect("retired response output");
+    assert_eq!(retired.resolved_query_count(), 0);
     assert!(!retired.renderer_work_pending());
+    assert!(retired.terminal_query_error().is_none());
     assert!(retired.released_native_ownership());
     assert_eq!(
         harness.state().interaction.presentation().phase(),
@@ -331,7 +376,9 @@ fn escape_discards_pending_marquee_pages() {
         .output
         .take()
         .expect("escape cancellation output");
+    assert_eq!(cancelled.resolved_query_count(), 0);
     assert!(!cancelled.renderer_work_pending());
+    assert!(cancelled.terminal_query_error().is_none());
     assert!(cancelled.released_native_ownership());
     assert_marquee_cancelled_without_selection(harness.state());
 
@@ -341,6 +388,7 @@ fn escape_discards_pending_marquee_pages() {
         .output
         .take()
         .expect("frame after escape cancellation");
+    assert_eq!(following.resolved_query_count(), 0);
     assert!(!following.renderer_work_pending());
 }
 
@@ -363,7 +411,9 @@ fn explicit_cancel_discards_pending_marquee_pages() {
         .interaction
         .cancel(&ctx)
         .expect("explicitly cancel paged marquee");
+    assert_eq!(cancelled.resolved_query_count(), 0);
     assert!(!cancelled.renderer_work_pending());
+    assert!(cancelled.terminal_query_error().is_none());
     assert!(cancelled.released_native_ownership());
     assert_marquee_cancelled_without_selection(harness.state());
 
@@ -373,6 +423,7 @@ fn explicit_cancel_discards_pending_marquee_pages() {
         .output
         .take()
         .expect("frame after explicit cancellation");
+    assert_eq!(following.resolved_query_count(), 0);
     assert!(!following.renderer_work_pending());
 }
 
@@ -396,7 +447,9 @@ fn host_close_during_frame_discards_pending_marquee_pages() {
         .output
         .take()
         .expect("host-close output");
+    assert_eq!(closed.resolved_query_count(), 0);
     assert!(!closed.renderer_work_pending());
+    assert!(closed.terminal_query_error().is_none());
     assert!(closed.released_native_ownership());
     assert_eq!(
         harness.state().interaction.presentation().phase(),
@@ -421,8 +474,9 @@ fn assert_query_page_continues(output: &EguiInteractionOutput) {
     assert_eq!(
         output.resolved_query_count(),
         1,
-        "the adapter must hand at most one opaque query page to the session per frame"
+        "the adapter must grant at most one runtime-owned query page per frame"
     );
+    assert!(output.terminal_query_error().is_none());
     assert!(
         output.renderer_work_pending(),
         "the one-page renderer budget must leave the marquee continuation pending"
@@ -439,8 +493,9 @@ fn drain_marquee_queries(harness: &mut Harness<'_, PagedMarqueeState>) -> usize 
             .expect("marquee continuation frame output");
         assert!(
             output.resolved_query_count() <= 1,
-            "the adapter may hand at most one opaque query page to the session per frame"
+            "the adapter may grant at most one runtime-owned query page per frame"
         );
+        assert!(output.terminal_query_error().is_none());
         if output.renderer_work_pending() {
             assert_query_page_continues(&output);
             assert!(!output.damage().selection);
@@ -448,6 +503,7 @@ fn drain_marquee_queries(harness: &mut Harness<'_, PagedMarqueeState>) -> usize 
             continue;
         }
         assert_eq!(output.resolved_query_count(), 1);
+        assert!(!output.renderer_work_pending());
         assert!(output.damage().selection);
         return usize::from(output.damage().selection);
     }

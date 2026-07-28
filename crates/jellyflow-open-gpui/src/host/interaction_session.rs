@@ -15,7 +15,7 @@ use jellyflow_runtime::{
     graph::NodeLifetimeKey, interaction::CanvasInteractionConfig,
     interaction::CanvasInteractionEffect, interaction::CanvasInteractionError,
     interaction::CanvasInteractionPhase, interaction::CanvasInteractionPresentation,
-    interaction::CanvasInteractionQuery, interaction::CanvasInteractionSession,
+    interaction::CanvasInteractionQueryAdvance, interaction::CanvasInteractionSession,
     interaction::CanvasInteractionUpdate, interaction::CanvasPressTarget,
     interaction::ConnectionGestureBinding, interaction::ConnectionInteractionStart,
     interaction::ConnectionSearchRequest, interaction::ConnectionSearchSelection,
@@ -56,7 +56,6 @@ use super::focus_navigation::{
 pub(super) struct OpenGpuiNativeInteractionOwner {
     native: OpenGpuiNativeInteractionAuthority,
     session: CanvasInteractionSession,
-    pending_queries: VecDeque<QueuedInteractionQuery>,
     pending_submission: Option<PendingInteractionSubmission>,
     ready_prefixes: VecDeque<ReadyInteractionPrefix>,
     node_drag_residency: Option<NodeDragResidency>,
@@ -104,7 +103,7 @@ struct PendingTerminalWindowCleanup {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct CallbackToken {
+pub(super) struct CallbackToken {
     epoch: u64,
     semantic_generation: Option<InteractionGeneration>,
 }
@@ -144,11 +143,6 @@ pub(super) struct InteractionTickDiagnostics {
     pub(super) native_query_wake_active: bool,
 }
 
-struct QueuedInteractionQuery {
-    token: CallbackToken,
-    query: CanvasInteractionQuery,
-}
-
 struct QueryResolutionGuard(Rc<Cell<bool>>);
 
 impl Drop for QueryResolutionGuard {
@@ -156,9 +150,6 @@ impl Drop for QueryResolutionGuard {
         self.0.set(false);
     }
 }
-
-#[cfg(test)]
-pub(super) struct QueuedInteractionQueryProbe(QueuedInteractionQuery);
 
 struct ReadyInteractionPrefix {
     token: CallbackToken,
@@ -350,7 +341,6 @@ impl OpenGpuiNativeInteractionOwner {
         Self {
             native: OpenGpuiNativeInteractionAuthority::new(),
             session,
-            pending_queries: VecDeque::new(),
             pending_submission: None,
             ready_prefixes: VecDeque::new(),
             node_drag_residency: None,
@@ -632,18 +622,18 @@ impl OpenGpuiNativeInteractionOwner {
         self.session.clear_edge_hover()
     }
 
-    /// Returns runtime-issued opaque query work to the same semantic session.
+    /// Grants runtime a bounded query advancement opportunity from the native frame clock.
     ///
-    /// Open GPUI only schedules the work; it neither inspects the payload nor recreates view-query
-    /// or stale-restart branches. Reconcile drag residency after every page because an alignment
-    /// result may complete the drag commit.
-    pub(super) fn resolve_query(
+    /// Query identity, payload, cursor, stale policy, and cleanup remain in the semantic session.
+    /// Reconcile drag residency after every grant because an alignment result may complete the
+    /// drag commit.
+    pub(super) fn advance_query_work(
         &mut self,
-        query: CanvasInteractionQuery,
-    ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
-        let update = self.session.resolve_query(query)?;
+        page_budget: usize,
+    ) -> CanvasInteractionQueryAdvance {
+        let advance = self.session.advance_query_work(page_budget);
         self.reconcile_node_drag_residency();
-        Ok(update)
+        advance
     }
 
     pub(super) fn search_request(&self) -> Option<ConnectionSearchRequest> {
@@ -1072,29 +1062,8 @@ impl OpenGpuiNativeInteractionOwner {
             && self.semantic_generation() == token.semantic_generation
     }
 
-    fn enqueue_queries(
-        &mut self,
-        queries: impl IntoIterator<Item = CanvasInteractionQuery>,
-    ) -> bool {
-        if self.terminal() {
-            return false;
-        }
-        let token = self.callback_token();
-        let mut queued_any = false;
-        for query in queries {
-            self.pending_queries
-                .push_back(QueuedInteractionQuery { token, query });
-            queued_any = true;
-        }
-        queued_any
-    }
-
-    fn take_next_query(&mut self) -> Option<QueuedInteractionQuery> {
-        self.pending_queries.pop_front()
-    }
-
-    pub(super) fn has_pending_queries(&self) -> bool {
-        !self.pending_queries.is_empty()
+    pub(super) fn query_work_pending(&self) -> bool {
+        self.session.query_work_pending()
     }
 
     pub(super) fn query_resolution_active(&self) -> bool {
@@ -1110,8 +1079,10 @@ impl OpenGpuiNativeInteractionOwner {
         )))
     }
 
-    fn prepare_query_frame_callback(&mut self) -> Option<(Weak<Cell<u64>>, CallbackToken)> {
-        if !self.has_pending_queries() || self.terminal() {
+    pub(super) fn prepare_query_frame_callback(
+        &mut self,
+    ) -> Option<(Weak<Cell<u64>>, CallbackToken)> {
+        if !self.query_work_pending() || self.terminal() {
             return None;
         }
         let token = self.callback_token();
@@ -1122,7 +1093,7 @@ impl OpenGpuiNativeInteractionOwner {
         Some((Rc::downgrade(&self.epoch), token))
     }
 
-    fn consume_query_frame_callback(&mut self, token: CallbackToken) -> bool {
+    pub(super) fn consume_query_frame_callback(&mut self, token: CallbackToken) -> bool {
         if self.query_frame_scheduled != Some(token) {
             return false;
         }
@@ -1131,7 +1102,7 @@ impl OpenGpuiNativeInteractionOwner {
         {
             self.native_query_frame_wake = None;
         }
-        self.callback_is_current(token) && self.has_pending_queries()
+        self.callback_is_current(token) && self.query_work_pending()
     }
 
     #[cfg(target_os = "macos")]
@@ -1141,7 +1112,7 @@ impl OpenGpuiNativeInteractionOwner {
             NativeFrameFallbackToken::Query(token) => {
                 self.query_frame_scheduled == Some(token)
                     && self.callback_is_current(token)
-                    && self.has_pending_queries()
+                    && self.query_work_pending()
             }
         }
     }
@@ -1195,12 +1166,6 @@ impl OpenGpuiNativeInteractionOwner {
 
     fn take_ready_prefix(&mut self) -> Option<ReadyInteractionPrefix> {
         self.ready_prefixes.pop_front()
-    }
-
-    fn pending_submission_ticket(&self) -> Option<InteractionTicketId> {
-        self.pending_submission
-            .as_ref()
-            .map(|pending| pending.ticket)
     }
 
     fn clear_submission_for_ticket(&mut self, ticket: InteractionTicketId) -> bool {
@@ -1315,7 +1280,7 @@ impl OpenGpuiNativeInteractionOwner {
             callback_entries: self.tick_callback_entries.get(),
             frame_requests: self.tick_frame_requests,
             callback_epoch: self.epoch(),
-            pending_queries: self.pending_queries.len(),
+            pending_queries: usize::from(self.session.query_work_pending()),
             pending_submission: self.pending_submission.is_some(),
             ready_prefixes: self.ready_prefixes.len(),
             tick_scheduled: self.tick_scheduled.is_some(),
@@ -1335,6 +1300,17 @@ impl OpenGpuiNativeInteractionOwner {
             self.native_tick_frame_wake = None;
         }
         self.last_tick_at = None;
+    }
+
+    fn stop_query_scheduling_if_idle(&mut self) {
+        if self.query_work_pending() {
+            return;
+        }
+        self.query_frame_scheduled = None;
+        #[cfg(target_os = "macos")]
+        {
+            self.native_query_frame_wake = None;
+        }
     }
 
     #[cfg(target_os = "macos")]
@@ -1370,7 +1346,6 @@ impl OpenGpuiNativeInteractionOwner {
         }
         let window_cleanup_required = window_cleanup_required || self.requires_window_cleanup();
         self.epoch.set(self.epoch().saturating_add(1));
-        self.pending_queries.clear();
         self.query_frame_scheduled = None;
         #[cfg(target_os = "macos")]
         {
@@ -1453,7 +1428,6 @@ impl OpenGpuiNativeInteractionOwner {
     pub(super) fn test_replace_session(&mut self, session: CanvasInteractionSession) {
         self.epoch.set(self.epoch().saturating_add(1));
         self.session = session;
-        self.pending_queries.clear();
         self.query_frame_scheduled = None;
         #[cfg(target_os = "macos")]
         {
@@ -1467,45 +1441,8 @@ impl OpenGpuiNativeInteractionOwner {
     }
 
     #[cfg(test)]
-    pub(super) fn test_pending_query_count(&self) -> usize {
-        self.pending_queries.len()
-    }
-
-    #[cfg(test)]
-    pub(super) fn test_pending_queries_empty(&self) -> bool {
-        self.pending_queries.is_empty()
-    }
-
-    #[cfg(test)]
-    pub(super) fn test_front_query(&self) -> Option<&CanvasInteractionQuery> {
-        self.pending_queries.front().map(|queued| &queued.query)
-    }
-
-    #[cfg(test)]
-    pub(super) fn test_take_query_probe(&mut self) -> Option<QueuedInteractionQueryProbe> {
-        self.pending_queries
-            .pop_front()
-            .map(QueuedInteractionQueryProbe)
-    }
-
-    #[cfg(test)]
-    pub(super) fn test_restore_query_front(&mut self, probe: QueuedInteractionQueryProbe) {
-        self.pending_queries.push_front(probe.0);
-    }
-
-    #[cfg(test)]
-    pub(super) fn test_restore_query_back(&mut self, probe: QueuedInteractionQueryProbe) {
-        self.pending_queries.push_back(probe.0);
-    }
-
-    #[cfg(test)]
-    pub(super) fn test_take_query(&mut self) -> Option<CanvasInteractionQuery> {
-        self.pending_queries.pop_front().map(|queued| queued.query)
-    }
-
-    #[cfg(test)]
-    pub(super) fn test_clear_queries(&mut self) {
-        self.pending_queries.clear();
+    pub(super) fn test_query_work_pending(&self) -> bool {
+        self.session.query_work_pending()
     }
 
     #[cfg(test)]
@@ -1563,7 +1500,7 @@ impl OpenGpuiNativeInteractionOwner {
 
     #[cfg(test)]
     pub(super) fn test_pending_work_empty(&self) -> bool {
-        self.pending_queries.is_empty()
+        !self.session.query_work_pending()
             && self.pending_submission.is_none()
             && self.ready_prefixes.is_empty()
     }
@@ -1800,14 +1737,15 @@ impl OpenGpuiSceneHost {
         }
         let dispatch = update.into_dispatch();
         let effects = dispatch.effects;
-        let queries = dispatch.queries;
         let damage = dispatch.damage;
         let tick_demand = dispatch.tick_demand;
+        debug_assert_eq!(
+            dispatch.query_work_pending,
+            self.interaction_owner.query_work_pending()
+        );
         let has_damage = damage != Default::default();
-        let mut effects_succeeded = true;
         for effect in effects {
             if let Err(error) = self.apply_canvas_interaction_effect(effect, cx) {
-                effects_succeeded = false;
                 self.record_command_diagnostic(error);
                 if matches!(
                     self.interaction_owner.presentation().phase(),
@@ -1822,16 +1760,13 @@ impl OpenGpuiSceneHost {
                     self.discard_pending_interaction_submission();
                     match cancelled {
                         Ok(cancelled) => {
-                            self.queue_interaction_queries(cancelled.into_dispatch().queries)
+                            self.apply_canvas_interaction_update(cancelled, window, cx)
                         }
                         Err(error) => self.record_command_diagnostic(error.to_string()),
                     }
                 }
                 break;
             }
-        }
-        if effects_succeeded {
-            self.queue_interaction_queries(queries);
         }
         self.discard_orphaned_interaction_revalidation();
         self.sync_native_connection_state(window, cx);
@@ -1840,16 +1775,18 @@ impl OpenGpuiSceneHost {
         } else {
             self.interaction_owner.stop_ticking();
         }
-        if self.interaction_owner.has_pending_queries()
+        if self.interaction_owner.query_work_pending()
             && !self.interaction_owner.query_resolution_active()
         {
             self.process_one_interaction_query(window, cx);
         }
-        let has_pending_queries = self.interaction_owner.has_pending_queries();
-        if has_pending_queries {
+        let query_work_pending = self.interaction_owner.query_work_pending();
+        if query_work_pending {
             self.schedule_interaction_query_frame(window, cx);
+        } else {
+            self.interaction_owner.stop_query_scheduling_if_idle();
         }
-        if has_damage || has_pending_queries {
+        if has_damage || query_work_pending {
             cx.notify();
         }
         self.finish_blank_canvas_context_query(window, cx);
@@ -1888,60 +1825,34 @@ impl OpenGpuiSceneHost {
         }
     }
 
-    pub(super) fn queue_interaction_queries(
-        &mut self,
-        queries: impl IntoIterator<Item = CanvasInteractionQuery>,
-    ) {
-        self.interaction_owner.enqueue_queries(queries);
-    }
-
     pub(super) fn process_one_interaction_query(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if self.interaction_owner.terminal() {
-            let _ = self.interaction_owner.take_next_query();
             return;
         }
         let Some(_resolution) = self.interaction_owner.begin_query_resolution() else {
             return;
         };
-        let Some(queued) = self.interaction_owner.take_next_query() else {
-            return;
-        };
-        if !self.interaction_owner.callback_is_current(queued.token) {
-            if self.interaction_owner.has_pending_queries() {
-                cx.notify();
-            }
+        if !self.interaction_owner.query_work_pending() {
             return;
         }
-        let update = self
-            .interaction_owner
-            .resolve_query(queued.query)
-            .map_err(|error| error.to_string());
-        match update {
-            Ok(update) => self.apply_canvas_interaction_update(update, window, cx),
-            Err(error) => {
-                self.record_command_diagnostic(format!(
-                    "native canvas interaction query failed: {error}"
-                ));
-                if self.interaction_owner.presentation().phase()
-                    == CanvasInteractionPhase::Committing
-                    && let Some(ticket) = self.interaction_owner.pending_submission_ticket()
-                {
-                    self.discard_pending_interaction_submission();
-                    self.interaction_submission_not_dispatched(ticket);
-                    self.sync_native_connection_state(window, cx);
-                } else {
-                    self.interaction_owner
-                        .cancel_native_for_query_failure(window, cx);
-                    let update = self.interaction_owner.cancel();
-                    self.discard_pending_interaction_submission();
-                    self.apply_canvas_interaction_result(update, window, cx);
-                }
-            }
+        let (update, needs_tick, receipt, terminal_error) =
+            self.interaction_owner.advance_query_work(1).into_parts();
+        debug_assert_eq!(receipt.pages_granted(), 1);
+        debug_assert!(receipt.pages_attempted() <= 1);
+        debug_assert_eq!(needs_tick, self.interaction_owner.query_work_pending());
+        if let Some(error) = terminal_error {
+            self.record_command_diagnostic(format!(
+                "native canvas interaction query failed: {error}"
+            ));
+            self.interaction_owner
+                .cancel_native_for_query_failure(window, cx);
+            self.discard_pending_interaction_submission();
         }
+        self.apply_canvas_interaction_update(update, window, cx);
     }
 
     fn submit_interaction_submission(
@@ -2177,7 +2088,7 @@ impl OpenGpuiSceneHost {
         result: Result<CanvasInteractionUpdate, CanvasInteractionError>,
     ) {
         match result {
-            Ok(update) => self.queue_interaction_queries(update.into_dispatch().queries),
+            Ok(_update) => {}
             Err(error) => self.record_command_diagnostic(format!(
                 "failed to settle native canvas interaction: {error}"
             )),
@@ -2239,13 +2150,12 @@ impl OpenGpuiSceneHost {
     }
 
     pub(super) fn retire_canvas_interaction_owner(&mut self, owner: InteractionOwner) {
-        let update = self.interaction_owner.owner_retired(owner);
+        let _update = self.interaction_owner.owner_retired(owner);
         if self.interaction_owner.presentation().terminal()
             == Some(InteractionTerminalReason::OwnerRetired)
         {
             self.discard_pending_interaction_submission();
         }
-        self.queue_interaction_queries(update.into_dispatch().queries);
     }
 
     pub(super) fn cancel_invalid_node_drag_residency(&mut self) -> bool {
@@ -2276,7 +2186,7 @@ impl OpenGpuiSceneHost {
                 let update = self.interaction_owner.cancel();
                 self.discard_pending_interaction_submission();
                 match update {
-                    Ok(update) => self.queue_interaction_queries(update.into_dispatch().queries),
+                    Ok(_update) => {}
                     Err(error) => self.record_command_diagnostic(error.to_string()),
                 }
                 self.record_command_diagnostic(format!(
@@ -2550,11 +2460,7 @@ mod tests {
             .owner
             .request_edge_pick(pointer_sample(&fixture.view, 20.0, 20.0))
             .unwrap();
-        assert!(
-            fixture
-                .owner
-                .enqueue_queries(update.into_dispatch().queries)
-        );
+        assert!(update.query_work_pending());
         let (_, token) = fixture
             .owner
             .prepare_query_frame_callback()
@@ -2570,6 +2476,27 @@ mod tests {
         fixture.owner.prepare_terminal(false);
         assert!(!fixture.owner.consume_query_frame_callback(retired));
         assert!(fixture.owner.query_frame_scheduled.is_none());
+    }
+
+    #[test]
+    fn completed_query_lifetime_retires_its_native_callback_without_waiting_for_entry() {
+        let mut fixture = node_drag_fixture(1);
+        let update = fixture
+            .owner
+            .request_edge_pick(pointer_sample(&fixture.view, 20.0, 20.0))
+            .unwrap();
+        assert!(update.query_work_pending());
+        let (_, stale) = fixture
+            .owner
+            .prepare_query_frame_callback()
+            .expect("pending edge pick owns a native callback");
+
+        fixture.owner.cancel().expect("cancel pending edge pick");
+        fixture.owner.stop_query_scheduling_if_idle();
+
+        assert!(!fixture.owner.query_work_pending());
+        assert!(fixture.owner.query_frame_scheduled.is_none());
+        assert!(!fixture.owner.consume_query_frame_callback(stale));
     }
 
     #[cfg(target_os = "macos")]
