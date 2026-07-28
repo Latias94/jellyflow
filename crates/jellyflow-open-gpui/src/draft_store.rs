@@ -5,12 +5,17 @@ use std::rc::{Rc, Weak};
 
 use jellyflow_core::NodeId;
 use jellyflow_runtime::{
-    graph::GraphRevision, graph::NodeLifetimeKey, view::NodeInstanceKey, view::ViewId,
-    view::ViewProvenance, view::ViewSessionError, view::ViewSessionEvent,
-    view::ViewSubscriptionToken, view::WeakViewSession,
+    graph::GraphRevision,
+    graph::NodeLifetimeKey,
+    reconciliation::{FieldExternalization, FieldPhase, FieldReconciler, FieldRestore},
+    view::NodeInstanceKey,
+    view::ViewId,
+    view::ViewProvenance,
+    view::ViewSessionError,
+    view::ViewSessionEvent,
+    view::ViewSubscriptionToken,
+    view::WeakViewSession,
 };
-
-use crate::draft::{DraftPhase, DraftRestore, ExternalizedDraft, RevisionedDraft};
 
 /// Default maximum number of externalized field identities retained by one store.
 pub const OPEN_GPUI_DEFAULT_RETAINED_FIELD_STORE_CAPACITY: usize = 1_024;
@@ -38,8 +43,10 @@ struct RetainedFieldStoreBinding {
 
 struct RetainedFieldStoreState<T> {
     bindings: BTreeMap<ViewId, RetainedFieldStoreBinding>,
-    entries:
-        BTreeMap<(ViewProvenance, NodeId), BTreeMap<RetainedFieldStoreKey, ExternalizedDraft<T>>>,
+    entries: BTreeMap<
+        (ViewProvenance, NodeId),
+        BTreeMap<RetainedFieldStoreKey, FieldExternalization<T>>,
+    >,
     len: usize,
     capacity: usize,
 }
@@ -117,12 +124,16 @@ mod tests {
         CanvasPoint, CanvasRect, CanvasSize, GraphBuilder, GraphId, Node, NodeId, NodeKindKey,
     };
     use jellyflow_runtime::{
-        graph::GraphRuntime, view::FrameRequest, view::NodeInstanceKey, view::RendererStamp,
-        view::ViewSession, view::ViewSessionOptions,
+        graph::GraphRuntime,
+        reconciliation::{FieldPhase, FieldReconciler},
+        view::FrameRequest,
+        view::NodeInstanceKey,
+        view::RendererStamp,
+        view::ViewSession,
+        view::ViewSessionOptions,
     };
 
     use super::{RetainedFieldStore, RetainedFieldStoreError};
-    use crate::draft::{DraftPhase, RevisionedDraft};
 
     fn node_id() -> NodeId {
         NodeId::from_u128(0x0057_07e1)
@@ -175,8 +186,8 @@ mod tests {
         frame.nodes()[0].instance().clone()
     }
 
-    fn dirty_draft(local: &str) -> RevisionedDraft<String> {
-        let mut draft = RevisionedDraft::new(1, "remote".to_owned());
+    fn dirty_draft(local: &str) -> FieldReconciler<String> {
+        let mut draft = FieldReconciler::new(1, "remote".to_owned());
         draft.edit_local(local.to_owned());
         draft
     }
@@ -299,15 +310,15 @@ mod tests {
         let absent = store
             .restore(&instance, "second", 2, "second remote".to_owned())
             .expect("restore absent second field")
-            .into_draft();
+            .into_reconciler();
         assert_eq!(absent.local(), "second remote");
-        assert_eq!(absent.phase(), DraftPhase::Clean);
+        assert_eq!(absent.phase(), FieldPhase::Clean);
         assert_eq!(store.len(), 1);
 
         let preserved = store
             .restore(&instance, "first", 2, "first remote".to_owned())
             .expect("restore preserved first field")
-            .into_draft();
+            .into_reconciler();
         assert_eq!(preserved.local(), "first local");
         assert_eq!(store.len(), 0);
     }
@@ -335,7 +346,7 @@ mod tests {
         let restored = store
             .restore(&instance, "field", 2, "remote".to_owned())
             .expect("restore latest draft")
-            .into_draft();
+            .into_reconciler();
         assert_eq!(restored.local(), "latest local");
         assert_eq!(store.len(), 0);
     }
@@ -362,7 +373,7 @@ mod tests {
             let restored = store
                 .restore(&instance, "field", 2, "remote".to_owned())
                 .expect("restore cycle draft")
-                .into_draft();
+                .into_reconciler();
             assert_eq!(restored.local(), &local);
             assert!(store.is_empty());
         }
@@ -561,15 +572,15 @@ where
         &self,
         instance: &NodeInstanceKey,
         field: impl Into<String>,
-        draft: &RevisionedDraft<T>,
+        draft: &FieldReconciler<T>,
     ) -> Result<bool, RetainedFieldStoreError> {
         let key = RetainedFieldStoreKey::new(instance.clone(), field);
         let mut state = self.state.borrow_mut();
         let provenance = state.ensure_bound_instance(instance)?;
-        if draft.phase() == DraftPhase::Clean && draft.pending_attempt().is_none() {
+        if draft.phase() == FieldPhase::Clean && draft.pending_attempt().is_none() {
             return Ok(state.remove(provenance, &key));
         }
-        state.insert(provenance, key, draft.externalized_snapshot())?;
+        state.insert(provenance, key, draft.externalize())?;
         Ok(true)
     }
 
@@ -580,7 +591,7 @@ where
         field: impl Into<String>,
         revision: GraphRevision,
         authoritative: T,
-    ) -> Result<DraftRestore<T>, RetainedFieldStoreError> {
+    ) -> Result<FieldRestore<T>, RetainedFieldStoreError> {
         let key = RetainedFieldStoreKey::new(instance.clone(), field);
         let snapshot = {
             let mut state = self.state.borrow_mut();
@@ -590,7 +601,7 @@ where
         };
         Ok(match snapshot {
             Some(snapshot) => snapshot.restore_against(revision, authoritative),
-            None => DraftRestore::fresh(revision, authoritative),
+            None => FieldRestore::fresh(revision, authoritative),
         })
     }
 }
@@ -669,8 +680,8 @@ impl<T> RetainedFieldStoreState<T> {
         &mut self,
         provenance: ViewProvenance,
         key: RetainedFieldStoreKey,
-        draft: ExternalizedDraft<T>,
-    ) -> Result<Option<ExternalizedDraft<T>>, RetainedFieldStoreError> {
+        draft: FieldExternalization<T>,
+    ) -> Result<Option<FieldExternalization<T>>, RetainedFieldStoreError> {
         let bucket = (provenance, key.instance.node());
         let already_present = self
             .entries
@@ -692,7 +703,7 @@ impl<T> RetainedFieldStoreState<T> {
         &mut self,
         provenance: ViewProvenance,
         key: &RetainedFieldStoreKey,
-    ) -> Option<ExternalizedDraft<T>> {
+    ) -> Option<FieldExternalization<T>> {
         let bucket = (provenance, key.instance.node());
         let entries = self.entries.get_mut(&bucket)?;
         let draft = entries.remove(key);

@@ -10,9 +10,21 @@ use std::task::{Context as TaskContext, Poll};
 use futures_util::FutureExt;
 use jellyflow_core::NodeId;
 use jellyflow_runtime::{
-    commands::CommandExecutionCompletion, commands::CommandExecutionKind, commands::GraphCommand,
-    commands::GraphCommandIdentity, graph::GraphRevision, graph::GraphVersion,
-    graph::RuntimeProvenance, view::NodeInstanceKey, view::ViewCloseReason,
+    commands::CommandExecutionCompletion,
+    commands::CommandExecutionKind,
+    commands::GraphCommand,
+    commands::GraphCommandIdentity,
+    graph::GraphRevision,
+    graph::GraphVersion,
+    graph::RuntimeProvenance,
+    reconciliation::{
+        FieldAttempt, FieldConflict, FieldConflictResolution, FieldIntentRejection, FieldPhase,
+        FieldReceiptDecision, FieldReconcileDecision, FieldReconciler, FieldRecovery,
+        FieldResolutionDecision, FieldRestore, FieldSubmissionDecision, FieldSubmissionIntent,
+        FieldSubmissionKind,
+    },
+    view::NodeInstanceKey,
+    view::ViewCloseReason,
 };
 use open_gpui::{App, Task};
 
@@ -26,12 +38,6 @@ use crate::authoring::{
 };
 use crate::binding::{OpenGpuiMountContext, OpenGpuiMountValidationError};
 use crate::command_journal::{OpenGpuiCommandTicket, OpenGpuiCommandTicketResult};
-use crate::draft::{
-    DraftAttempt, DraftConflict, DraftConflictResolution, DraftIntentRejection, DraftPhase,
-    DraftReceiptDecision, DraftReconcileDecision, DraftRecovery, DraftResolutionDecision,
-    DraftRestore, DraftSubmissionDecision, DraftSubmissionIntent, DraftSubmissionKind,
-    RevisionedDraft,
-};
 pub use crate::draft_store::{
     OPEN_GPUI_DEFAULT_RETAINED_FIELD_STORE_CAPACITY, RetainedFieldStore, RetainedFieldStoreError,
 };
@@ -85,11 +91,11 @@ impl RetainedFieldKey {
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct RetainedFieldAttempt {
     draft_nonce: u64,
-    sequence: DraftAttempt,
+    sequence: FieldAttempt,
 }
 
 impl RetainedFieldAttempt {
-    const fn new(draft_nonce: u64, sequence: DraftAttempt) -> Self {
+    const fn new(draft_nonce: u64, sequence: FieldAttempt) -> Self {
         Self {
             draft_nonce,
             sequence,
@@ -112,14 +118,14 @@ pub enum RetainedFieldPhase {
     ComposingConflict,
 }
 
-impl From<DraftPhase> for RetainedFieldPhase {
-    fn from(value: DraftPhase) -> Self {
+impl From<FieldPhase> for RetainedFieldPhase {
+    fn from(value: FieldPhase) -> Self {
         match value {
-            DraftPhase::Clean => Self::Clean,
-            DraftPhase::Dirty => Self::Dirty,
-            DraftPhase::Composing => Self::Composing,
-            DraftPhase::Conflict => Self::Conflict,
-            DraftPhase::ComposingConflict => Self::ComposingConflict,
+            FieldPhase::Clean => Self::Clean,
+            FieldPhase::Dirty => Self::Dirty,
+            FieldPhase::Composing => Self::Composing,
+            FieldPhase::Conflict => Self::Conflict,
+            FieldPhase::ComposingConflict => Self::ComposingConflict,
         }
     }
 }
@@ -143,8 +149,8 @@ impl RetainedFieldConflict {
     }
 }
 
-impl From<DraftConflict> for RetainedFieldConflict {
-    fn from(value: DraftConflict) -> Self {
+impl From<FieldConflict> for RetainedFieldConflict {
+    fn from(value: FieldConflict) -> Self {
         Self {
             base_revision: value.base_revision(),
             remote_revision: value.remote_revision(),
@@ -163,7 +169,7 @@ pub enum RetainedFieldSubmitMode {
 #[derive(Clone, Debug, PartialEq)]
 pub struct RetainedFieldIntent<T> {
     draft_nonce: u64,
-    inner: DraftSubmissionIntent<T>,
+    inner: FieldSubmissionIntent<T>,
 }
 
 impl<T> RetainedFieldIntent<T> {
@@ -175,8 +181,8 @@ impl<T> RetainedFieldIntent<T> {
     #[must_use]
     pub const fn mode(&self) -> RetainedFieldSubmitMode {
         match self.inner.kind() {
-            DraftSubmissionKind::Commit => RetainedFieldSubmitMode::Commit,
-            DraftSubmissionKind::Reapply => RetainedFieldSubmitMode::Reapply,
+            FieldSubmissionKind::Commit => RetainedFieldSubmitMode::Commit,
+            FieldSubmissionKind::Reapply => RetainedFieldSubmitMode::Reapply,
         }
     }
 
@@ -420,7 +426,7 @@ impl RetainedFieldRecovery {
 }
 
 impl RetainedFieldRecovery {
-    fn from_draft(value: DraftRecovery, draft_nonce: Option<u64>) -> Self {
+    fn from_draft(value: FieldRecovery, draft_nonce: Option<u64>) -> Self {
         if value.is_empty() {
             return Self::default();
         }
@@ -437,7 +443,7 @@ impl RetainedFieldRecovery {
 #[derive(Clone)]
 struct RevisionedField<T> {
     draft_nonce: Option<u64>,
-    draft: RevisionedDraft<T>,
+    draft: FieldReconciler<T>,
     attempt_state: RetainedFieldAttemptState,
     notice: Option<String>,
 }
@@ -464,16 +470,16 @@ where
     pub fn new(revision: GraphRevision, authoritative: T) -> Self {
         Self {
             draft_nonce: allocate_retained_draft_nonce(),
-            draft: RevisionedDraft::new(revision, authoritative),
+            draft: FieldReconciler::new(revision, authoritative),
             attempt_state: RetainedFieldAttemptState::Idle,
             notice: None,
         }
     }
 
-    fn from_restore(restored: DraftRestore<T>) -> (Self, RetainedFieldRecovery) {
+    fn from_restore(restored: FieldRestore<T>) -> (Self, RetainedFieldRecovery) {
         let draft_nonce = allocate_retained_draft_nonce();
         let recovery = RetainedFieldRecovery::from_draft(restored.recovery(), draft_nonce);
-        let draft = restored.into_draft();
+        let draft = restored.into_reconciler();
         let attempt_state =
             recovery
                 .interrupted_attempt()
@@ -495,7 +501,7 @@ where
         )
     }
 
-    fn retained_attempt(&self, sequence: DraftAttempt) -> Option<RetainedFieldAttempt> {
+    fn retained_attempt(&self, sequence: FieldAttempt) -> Option<RetainedFieldAttempt> {
         self.draft_nonce
             .map(|draft_nonce| RetainedFieldAttempt::new(draft_nonce, sequence))
     }
@@ -532,7 +538,7 @@ where
             RetainedFieldAttemptState::SnapshotFirst { .. }
         ) && self.draft.pending_matching_snapshot_revision().is_some()
         {
-            return if matches!(self.draft.phase(), DraftPhase::ComposingConflict) {
+            return if matches!(self.draft.phase(), FieldPhase::ComposingConflict) {
                 RetainedFieldPhase::Composing
             } else {
                 RetainedFieldPhase::Dirty
@@ -621,15 +627,15 @@ where
         }
 
         let update = match decision {
-            DraftReconcileDecision::Unchanged { .. } => RetainedFieldUpdate::Unchanged,
-            DraftReconcileDecision::IgnoredStale { .. } => RetainedFieldUpdate::IgnoredStale,
-            DraftReconcileDecision::InconsistentSnapshot { .. } => {
+            FieldReconcileDecision::Unchanged { .. } => RetainedFieldUpdate::Unchanged,
+            FieldReconcileDecision::IgnoredStale { .. } => RetainedFieldUpdate::IgnoredStale,
+            FieldReconcileDecision::InconsistentSnapshot { .. } => {
                 RetainedFieldUpdate::InconsistentSnapshot
             }
-            DraftReconcileDecision::RemoteApplied { .. } => RetainedFieldUpdate::RemoteApplied,
-            DraftReconcileDecision::BaseAdvanced { .. } => RetainedFieldUpdate::BaseAdvanced,
-            DraftReconcileDecision::Conflict { .. } => RetainedFieldUpdate::Conflict,
-            DraftReconcileDecision::SelfAcknowledged {
+            FieldReconcileDecision::RemoteApplied { .. } => RetainedFieldUpdate::RemoteApplied,
+            FieldReconcileDecision::BaseAdvanced { .. } => RetainedFieldUpdate::BaseAdvanced,
+            FieldReconcileDecision::Conflict { .. } => RetainedFieldUpdate::Conflict,
+            FieldReconcileDecision::SelfAcknowledged {
                 attempt: sequence,
                 revision,
                 local_changed_after_submission,
@@ -674,7 +680,7 @@ where
             return Err(RetainedFieldError::AttemptIdentityExhausted);
         };
         match self.draft.plan_submission_at(command_revision) {
-            DraftSubmissionDecision::Submit(inner) => {
+            FieldSubmissionDecision::Submit(inner) => {
                 let intent = RetainedFieldIntent { draft_nonce, inner };
                 self.attempt_state = RetainedFieldAttemptState::Pending {
                     attempt: intent.attempt(),
@@ -682,7 +688,7 @@ where
                 self.notice = None;
                 Ok(intent)
             }
-            DraftSubmissionDecision::Rejected(reason) => {
+            FieldSubmissionDecision::Rejected(reason) => {
                 Err(map_plan_error(reason, self.draft_nonce))
             }
         }
@@ -699,24 +705,24 @@ where
             });
         }
         let choice = match choice {
-            RetainedFieldConflictChoice::AcceptRemote => DraftConflictResolution::AcceptRemote,
-            RetainedFieldConflictChoice::KeepLocal => DraftConflictResolution::KeepLocal,
-            RetainedFieldConflictChoice::ReapplyLocal => DraftConflictResolution::ReapplyLocal,
+            RetainedFieldConflictChoice::AcceptRemote => FieldConflictResolution::AcceptRemote,
+            RetainedFieldConflictChoice::KeepLocal => FieldConflictResolution::KeepLocal,
+            RetainedFieldConflictChoice::ReapplyLocal => FieldConflictResolution::ReapplyLocal,
         };
-        if choice == DraftConflictResolution::ReapplyLocal && self.draft_nonce.is_none() {
+        if choice == FieldConflictResolution::ReapplyLocal && self.draft_nonce.is_none() {
             return Err(RetainedFieldError::AttemptIdentityExhausted);
         }
         match self.draft.resolve_at(choice, command_revision) {
-            DraftResolutionDecision::AcceptedRemote { revision } => {
+            FieldResolutionDecision::AcceptedRemote { revision } => {
                 self.notice = None;
                 Ok(RetainedFieldResolution::AcceptedRemote { revision })
             }
-            DraftResolutionDecision::KeptLocal { conflict } => {
+            FieldResolutionDecision::KeptLocal { conflict } => {
                 Ok(RetainedFieldResolution::KeptLocal {
                     conflict: conflict.into(),
                 })
             }
-            DraftResolutionDecision::Reapply(inner) => {
+            FieldResolutionDecision::Reapply(inner) => {
                 let Some(draft_nonce) = self.draft_nonce else {
                     return Err(RetainedFieldError::AttemptIdentityExhausted);
                 };
@@ -727,7 +733,7 @@ where
                 self.notice = None;
                 Ok(RetainedFieldResolution::Reapply(intent))
             }
-            DraftResolutionDecision::Rejected(reason) => {
+            FieldResolutionDecision::Rejected(reason) => {
                 Err(map_plan_error(reason, self.draft_nonce))
             }
         }
@@ -885,7 +891,7 @@ where
             .draft
             .record_self_receipt(attempt.sequence, committed_revision)
         {
-            DraftReceiptDecision::Acknowledged {
+            FieldReceiptDecision::Acknowledged {
                 revision,
                 local_changed_after_submission,
                 ..
@@ -898,10 +904,10 @@ where
                     local_changed_after_submission,
                 }
             }
-            DraftReceiptDecision::Recorded {
+            FieldReceiptDecision::Recorded {
                 committed_revision, ..
             }
-            | DraftReceiptDecision::AlreadyRecorded {
+            | FieldReceiptDecision::AlreadyRecorded {
                 committed_revision, ..
             } => {
                 self.attempt_state = RetainedFieldAttemptState::ReceiptFirst {
@@ -913,15 +919,15 @@ where
                     committed_revision,
                 }
             }
-            DraftReceiptDecision::Superseded {
+            FieldReceiptDecision::Superseded {
                 current_revision, ..
             } => self.receipt_requires_refresh(
                 attempt,
                 current_revision,
                 "field receipt was superseded by a newer authoritative revision",
             ),
-            DraftReceiptDecision::UnknownAttempt { .. }
-            | DraftReceiptDecision::InvalidCommittedRevision { .. } => self
+            FieldReceiptDecision::UnknownAttempt { .. }
+            | FieldReceiptDecision::InvalidCommittedRevision { .. } => self
                 .receipt_requires_refresh(
                     attempt,
                     committed_revision,
@@ -1012,7 +1018,7 @@ where
         }
     }
 
-    pub(crate) fn reducer(&self) -> &RevisionedDraft<T> {
+    pub(crate) fn reducer(&self) -> &FieldReconciler<T> {
         &self.draft
     }
 }
@@ -2311,25 +2317,25 @@ fn map_authoring_error(error: OpenGpuiNodeAuthoringError) -> RetainedFieldError 
     }
 }
 
-fn map_plan_error(reason: DraftIntentRejection, draft_nonce: Option<u64>) -> RetainedFieldError {
+fn map_plan_error(reason: FieldIntentRejection, draft_nonce: Option<u64>) -> RetainedFieldError {
     match reason {
-        DraftIntentRejection::Clean => RetainedFieldError::Clean,
-        DraftIntentRejection::CompositionActive => RetainedFieldError::CompositionActive,
-        DraftIntentRejection::ConflictRequiresResolution => {
+        FieldIntentRejection::Clean => RetainedFieldError::Clean,
+        FieldIntentRejection::CompositionActive => RetainedFieldError::CompositionActive,
+        FieldIntentRejection::ConflictRequiresResolution => {
             RetainedFieldError::ConflictRequiresResolution
         }
-        DraftIntentRejection::NoConflict => RetainedFieldError::NoConflict,
-        DraftIntentRejection::UnreconciledRevision {
+        FieldIntentRejection::NoConflict => RetainedFieldError::NoConflict,
+        FieldIntentRejection::UnreconciledRevision {
             observed_revision,
             requested_revision,
         } => RetainedFieldError::RevisionMismatch {
             observed_revision,
             requested_revision,
         },
-        DraftIntentRejection::SubmissionPending { attempt } => RetainedFieldError::AttemptPending {
+        FieldIntentRejection::SubmissionPending { attempt } => RetainedFieldError::AttemptPending {
             attempt: draft_nonce.map(|draft_nonce| RetainedFieldAttempt::new(draft_nonce, attempt)),
         },
-        DraftIntentRejection::AttemptIdentityExhausted => {
+        FieldIntentRejection::AttemptIdentityExhausted => {
             RetainedFieldError::AttemptIdentityExhausted
         }
     }
@@ -2632,7 +2638,7 @@ mod tests {
         store
             .ensure_bound(&view.downgrade())
             .expect("bind retained field store");
-        let mut occupied = RevisionedDraft::new(0, "occupied remote".to_owned());
+        let mut occupied = FieldReconciler::new(0, "occupied remote".to_owned());
         occupied.edit_local("occupied local".to_owned());
         store
             .externalize_overflow(&instance, "occupied", &occupied)
@@ -2672,7 +2678,7 @@ mod tests {
         store
             .ensure_bound(&view.downgrade())
             .expect("bind retained field store");
-        let mut draft = RevisionedDraft::new(0, "authoritative".to_owned());
+        let mut draft = FieldReconciler::new(0, "authoritative".to_owned());
         draft.edit_local("unsaved".to_owned());
         store
             .externalize_overflow(&instance, "target", &draft)

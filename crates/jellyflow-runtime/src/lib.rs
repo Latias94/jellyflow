@@ -1,8 +1,8 @@
 //! Headless graph runtime, interaction protocol, schema, and persistence for Jellyflow.
 //!
 //! Every public concept has one owning module. Applications compose [`graph`], [`commands`],
-//! [`view`], [`interaction`], [`geometry`], and [`viewport`] without depending on the private
-//! implementation tree or a UI framework.
+//! [`view`], [`interaction`], [`geometry`], [`reconciliation`], and [`viewport`] without depending
+//! on the private implementation tree or a UI framework.
 //!
 //! Root-level type aliases are intentionally absent:
 //!
@@ -61,6 +61,10 @@ pub mod io;
 pub mod profile;
 mod rules;
 mod runtime;
+/// Pure, renderer-neutral reconciliation reducers for product-owned authoring.
+pub mod reconciliation {
+    pub use crate::runtime::reconciliation::*;
+}
 pub mod schema;
 pub mod view;
 pub mod viewport;

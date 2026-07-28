@@ -1,8 +1,8 @@
-use jellyflow_runtime::graph::GraphRevision;
+use crate::runtime::graph_runtime::GraphRevision;
 
 /// The local editing phase of a revision-aware retained value.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DraftPhase {
+pub enum FieldPhase {
     Clean,
     Dirty,
     Composing,
@@ -12,12 +12,12 @@ pub enum DraftPhase {
 
 /// Revision metadata for a local value that diverged from authoritative data.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct DraftConflict {
+pub struct FieldConflict {
     base_revision: GraphRevision,
     remote_revision: GraphRevision,
 }
 
-impl DraftConflict {
+impl FieldConflict {
     pub const fn new(base_revision: GraphRevision, remote_revision: GraphRevision) -> Self {
         Self {
             base_revision,
@@ -34,19 +34,19 @@ impl DraftConflict {
     }
 }
 
-/// Stable identity for one caller-dispatched draft submission.
+/// Stable identity for one caller-dispatched field submission.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct DraftAttempt(u64);
+pub struct FieldAttempt(u64);
 
-impl DraftAttempt {
+impl FieldAttempt {
     pub const fn get(self) -> u64 {
         self.0
     }
 }
 
-/// Why a draft value is being submitted.
+/// Why a local field value is being submitted.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DraftSubmissionKind {
+pub enum FieldSubmissionKind {
     Commit,
     Reapply,
 }
@@ -55,19 +55,19 @@ pub enum DraftSubmissionKind {
 ///
 /// Planning this value never dispatches, retries, or mutates the graph.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DraftSubmissionIntent<T> {
-    attempt: DraftAttempt,
-    kind: DraftSubmissionKind,
+pub struct FieldSubmissionIntent<T> {
+    attempt: FieldAttempt,
+    kind: FieldSubmissionKind,
     expected_revision: GraphRevision,
     value: T,
 }
 
-impl<T> DraftSubmissionIntent<T> {
-    pub const fn attempt(&self) -> DraftAttempt {
+impl<T> FieldSubmissionIntent<T> {
+    pub const fn attempt(&self) -> FieldAttempt {
         self.attempt
     }
 
-    pub const fn kind(&self) -> DraftSubmissionKind {
+    pub const fn kind(&self) -> FieldSubmissionKind {
         self.kind
     }
 
@@ -82,7 +82,7 @@ impl<T> DraftSubmissionIntent<T> {
 
 /// A reason no submission intent was produced.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DraftIntentRejection {
+pub enum FieldIntentRejection {
     Clean,
     CompositionActive,
     ConflictRequiresResolution,
@@ -92,21 +92,21 @@ pub enum DraftIntentRejection {
         requested_revision: GraphRevision,
     },
     SubmissionPending {
-        attempt: DraftAttempt,
+        attempt: FieldAttempt,
     },
     AttemptIdentityExhausted,
 }
 
 /// Result of explicitly planning an ordinary dirty-value submission.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum DraftSubmissionDecision<T> {
-    Submit(DraftSubmissionIntent<T>),
-    Rejected(DraftIntentRejection),
+pub enum FieldSubmissionDecision<T> {
+    Submit(FieldSubmissionIntent<T>),
+    Rejected(FieldIntentRejection),
 }
 
 /// Explicit choices offered when local and authoritative values conflict.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DraftConflictResolution {
+pub enum FieldConflictResolution {
     AcceptRemote,
     KeepLocal,
     ReapplyLocal,
@@ -114,28 +114,28 @@ pub enum DraftConflictResolution {
 
 /// Result of applying an explicit conflict choice.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum DraftResolutionDecision<T> {
+pub enum FieldResolutionDecision<T> {
     AcceptedRemote { revision: GraphRevision },
-    KeptLocal { conflict: DraftConflict },
-    Reapply(DraftSubmissionIntent<T>),
-    Rejected(DraftIntentRejection),
+    KeptLocal { conflict: FieldConflict },
+    Reapply(FieldSubmissionIntent<T>),
+    Rejected(FieldIntentRejection),
 }
 
 /// Effect of reconciling one authoritative field snapshot.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DraftReconcileDecision {
+pub enum FieldReconcileDecision {
     Unchanged {
         revision: GraphRevision,
-        phase: DraftPhase,
+        phase: FieldPhase,
     },
     IgnoredStale {
         current_revision: GraphRevision,
         received_revision: GraphRevision,
-        phase: DraftPhase,
+        phase: FieldPhase,
     },
     InconsistentSnapshot {
         revision: GraphRevision,
-        phase: DraftPhase,
+        phase: FieldPhase,
     },
     RemoteApplied {
         from_revision: GraphRevision,
@@ -144,44 +144,44 @@ pub enum DraftReconcileDecision {
     BaseAdvanced {
         from_revision: GraphRevision,
         to_revision: GraphRevision,
-        phase: DraftPhase,
+        phase: FieldPhase,
     },
     Conflict {
-        conflict: DraftConflict,
+        conflict: FieldConflict,
     },
     SelfAcknowledged {
-        attempt: DraftAttempt,
+        attempt: FieldAttempt,
         revision: GraphRevision,
         local_changed_after_submission: bool,
     },
 }
 
-/// Effect of recording a receipt known by the caller to belong to this draft.
+/// Effect of recording a receipt known by the caller to belong to this field.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DraftReceiptDecision {
+pub enum FieldReceiptDecision {
     Recorded {
-        attempt: DraftAttempt,
+        attempt: FieldAttempt,
         committed_revision: GraphRevision,
     },
     Acknowledged {
-        attempt: DraftAttempt,
+        attempt: FieldAttempt,
         revision: GraphRevision,
         local_changed_after_submission: bool,
     },
     AlreadyRecorded {
-        attempt: DraftAttempt,
+        attempt: FieldAttempt,
         committed_revision: GraphRevision,
     },
     UnknownAttempt {
-        attempt: DraftAttempt,
+        attempt: FieldAttempt,
     },
     InvalidCommittedRevision {
-        attempt: DraftAttempt,
+        attempt: FieldAttempt,
         expected_revision: GraphRevision,
         committed_revision: GraphRevision,
     },
     Superseded {
-        attempt: DraftAttempt,
+        attempt: FieldAttempt,
         committed_revision: GraphRevision,
         current_revision: GraphRevision,
     },
@@ -189,78 +189,78 @@ pub enum DraftReceiptDecision {
 
 /// Effect of a stale expected-revision rejection reported by the caller.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DraftStaleRejectionDecision {
+pub enum FieldStaleRejectionDecision {
     ConflictPreserved {
-        conflict: DraftConflict,
+        conflict: FieldConflict,
     },
     DirtyPreserved {
         base_revision: GraphRevision,
     },
     LocalMatchesRemote {
         revision: GraphRevision,
-        phase: DraftPhase,
+        phase: FieldPhase,
     },
     IgnoredOlderRevision {
         current_revision: GraphRevision,
         received_revision: GraphRevision,
-        phase: DraftPhase,
+        phase: FieldPhase,
     },
     InconsistentSnapshot {
         revision: GraphRevision,
-        phase: DraftPhase,
+        phase: FieldPhase,
     },
     UnknownAttempt {
-        attempt: DraftAttempt,
+        attempt: FieldAttempt,
     },
     ReceiptAlreadyAccepted {
-        attempt: DraftAttempt,
+        attempt: FieldAttempt,
         committed_revision: GraphRevision,
     },
 }
 
 /// Effect of explicitly rejecting a caller-dispatched submission.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DraftSubmissionRejectionDecision {
+pub enum FieldSubmissionRejectionDecision {
     Rejected {
-        attempt: DraftAttempt,
-        phase: DraftPhase,
+        attempt: FieldAttempt,
+        phase: FieldPhase,
     },
     UnknownAttempt {
-        attempt: DraftAttempt,
+        attempt: FieldAttempt,
     },
     ReceiptAlreadyAccepted {
-        attempt: DraftAttempt,
+        attempt: FieldAttempt,
         committed_revision: GraphRevision,
     },
 }
 
 /// Effect of changing local input.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DraftEditDecision {
-    Unchanged { phase: DraftPhase },
-    Updated { phase: DraftPhase },
+pub enum FieldEditDecision {
+    Unchanged { phase: FieldPhase },
+    Updated { phase: FieldPhase },
 }
 
 /// Effect of changing the framework-owned composition marker.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DraftCompositionDecision {
-    Marked { phase: DraftPhase },
-    Unmarked { phase: DraftPhase },
-    Unchanged { phase: DraftPhase },
+pub enum FieldCompositionDecision {
+    Marked { phase: FieldPhase },
+    Unmarked { phase: FieldPhase },
+    Unchanged { phase: FieldPhase },
 }
 
-/// Diagnostic metadata retained when an evicted native editor is restored.
+/// Diagnostic metadata retained when a field owner is restored.
 ///
-/// Neither field recreates framework or command ownership. Applications may surface recovery
-/// state, but a new submission or IME session must always be started explicitly.
+/// Restoration recreates neither framework nor command ownership. Applications may surface
+/// recovery state, but a new submission or composition session must always start explicitly.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct DraftRecovery {
-    interrupted_attempt: Option<DraftAttempt>,
+pub struct FieldRecovery {
+    interrupted_attempt: Option<FieldAttempt>,
     composition_interrupted: bool,
 }
 
-impl DraftRecovery {
-    pub const fn interrupted_attempt(self) -> Option<DraftAttempt> {
+impl FieldRecovery {
+    pub const fn interrupted_attempt(self) -> Option<FieldAttempt> {
         self.interrupted_attempt
     }
 
@@ -273,66 +273,64 @@ impl DraftRecovery {
     }
 }
 
-/// Adapter-local snapshot held by `RetainedFieldStore` while a retained owner is reclaimed.
+/// Framework-neutral snapshot retained while a field owner is reclaimed.
 ///
 /// A pending attempt is diagnostic state only. Restoring or dispatching it is
 /// deliberately outside this type so retirement cannot retry a graph command.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ExternalizedDraft<T> {
+pub struct FieldExternalization<T> {
     local: T,
     remote: T,
     base_revision: GraphRevision,
     remote_revision: GraphRevision,
     dirty: bool,
-    conflict: Option<DraftConflict>,
-    pending_attempt: Option<DraftAttempt>,
+    conflict: Option<FieldConflict>,
+    pending_attempt: Option<FieldAttempt>,
     was_composing: bool,
     next_attempt: Option<u64>,
 }
 
-impl<T> ExternalizedDraft<T> {
-    /// Restores adapter-local state and immediately reconciles it with current graph facts.
-    pub(crate) fn restore_against(
-        self,
-        revision: GraphRevision,
-        authoritative: T,
-    ) -> DraftRestore<T>
+impl<T> FieldExternalization<T> {
+    /// Restores field state and immediately reconciles it with current authoritative facts.
+    pub fn restore_against(self, revision: GraphRevision, authoritative: T) -> FieldRestore<T>
     where
         T: Clone + PartialEq,
     {
-        let mut restored = DraftRestore::from_externalized(self);
-        restored.draft.reconcile_remote(revision, authoritative);
-        if restored.draft.phase() == DraftPhase::Clean {
+        let mut restored = FieldRestore::from_externalized(self);
+        restored
+            .reconciler
+            .reconcile_remote(revision, authoritative);
+        if restored.reconciler.phase() == FieldPhase::Clean {
             restored.recovery.interrupted_attempt = None;
         }
         restored
     }
 }
 
-/// Result of restoring an externalized draft.
+/// Result of restoring an externalized field.
 ///
 /// The restored state has no pending submission. The optional attempt is retained separately so
 /// an application can surface an honest recovery diagnostic without accidentally retrying it.
 #[derive(Clone, Debug)]
-pub struct DraftRestore<T> {
-    draft: RevisionedDraft<T>,
-    recovery: DraftRecovery,
+pub struct FieldRestore<T> {
+    reconciler: FieldReconciler<T>,
+    recovery: FieldRecovery,
 }
 
-impl<T> DraftRestore<T> {
-    pub const fn recovery(&self) -> DraftRecovery {
+impl<T> FieldRestore<T> {
+    pub const fn recovery(&self) -> FieldRecovery {
         self.recovery
     }
 
-    pub fn into_draft(self) -> RevisionedDraft<T> {
-        self.draft
+    pub fn into_reconciler(self) -> FieldReconciler<T> {
+        self.reconciler
     }
 
-    fn from_externalized(externalized: ExternalizedDraft<T>) -> Self
+    fn from_externalized(externalized: FieldExternalization<T>) -> Self
     where
         T: Clone + PartialEq,
     {
-        let recovery = DraftRecovery {
+        let recovery = FieldRecovery {
             interrupted_attempt: externalized.pending_attempt,
             composition_interrupted: externalized.was_composing,
         };
@@ -346,13 +344,13 @@ impl<T> DraftRestore<T> {
             externalized.base_revision
         };
         Self {
-            draft: RevisionedDraft {
+            reconciler: FieldReconciler {
                 local: externalized.local,
                 remote: externalized.remote,
                 base_revision,
                 remote_revision: externalized.remote_revision,
                 dirty,
-                // GPUI's marked range and IME ownership were tied to the reclaimed entity.
+                // Composition ownership belongs to the reclaimed framework control.
                 composing: false,
                 conflict: externalized.conflict,
                 // A pending command is deliberately not reconstructed. It may already have
@@ -365,45 +363,45 @@ impl<T> DraftRestore<T> {
     }
 }
 
-impl<T> DraftRestore<T>
+impl<T> FieldRestore<T>
 where
     T: Clone + PartialEq,
 {
-    pub(crate) fn fresh(revision: GraphRevision, authoritative: T) -> Self {
+    pub fn fresh(revision: GraphRevision, authoritative: T) -> Self {
         Self {
-            draft: RevisionedDraft::new(revision, authoritative),
-            recovery: DraftRecovery::default(),
+            reconciler: FieldReconciler::new(revision, authoritative),
+            recovery: FieldRecovery::default(),
         }
     }
 }
 
 #[derive(Clone, Debug)]
-struct PendingSubmission<T> {
-    intent: DraftSubmissionIntent<T>,
+struct PendingFieldSubmission<T> {
+    intent: FieldSubmissionIntent<T>,
     accepted_revision: Option<GraphRevision>,
     matching_snapshot_revision: Option<GraphRevision>,
     local_changed_after_submission: bool,
 }
 
-/// Pure revision-aware draft reconciliation for retained native controls.
+/// Pure revision-aware reconciliation for retained editable fields.
 ///
 /// The state machine knows only graph revisions and field values. UI focus,
 /// framework entities, command construction, dispatch, and retry policy remain
 /// owned by the caller.
 #[derive(Clone, Debug)]
-pub struct RevisionedDraft<T> {
+pub struct FieldReconciler<T> {
     local: T,
     remote: T,
     base_revision: GraphRevision,
     remote_revision: GraphRevision,
     dirty: bool,
     composing: bool,
-    conflict: Option<DraftConflict>,
-    pending: Option<PendingSubmission<T>>,
+    conflict: Option<FieldConflict>,
+    pending: Option<PendingFieldSubmission<T>>,
     next_attempt: Option<u64>,
 }
 
-impl<T> RevisionedDraft<T>
+impl<T> FieldReconciler<T>
 where
     T: Clone + PartialEq,
 {
@@ -437,40 +435,40 @@ where
         self.remote_revision
     }
 
-    pub const fn conflict(&self) -> Option<DraftConflict> {
+    pub const fn conflict(&self) -> Option<FieldConflict> {
         self.conflict
     }
 
-    pub fn pending_attempt(&self) -> Option<DraftAttempt> {
+    pub fn pending_attempt(&self) -> Option<FieldAttempt> {
         self.pending.as_ref().map(|pending| pending.intent.attempt)
     }
 
-    pub(crate) fn pending_expected_revision(&self) -> Option<GraphRevision> {
+    pub fn pending_expected_revision(&self) -> Option<GraphRevision> {
         self.pending
             .as_ref()
             .map(|pending| pending.intent.expected_revision)
     }
 
-    pub(crate) fn pending_value(&self) -> Option<&T> {
+    pub fn pending_value(&self) -> Option<&T> {
         self.pending.as_ref().map(|pending| &pending.intent.value)
     }
 
-    pub(crate) fn pending_accepted_revision(&self) -> Option<GraphRevision> {
+    pub fn pending_accepted_revision(&self) -> Option<GraphRevision> {
         self.pending
             .as_ref()
             .and_then(|pending| pending.accepted_revision)
     }
 
-    pub(crate) fn pending_matching_snapshot_revision(&self) -> Option<GraphRevision> {
+    pub fn pending_matching_snapshot_revision(&self) -> Option<GraphRevision> {
         self.pending
             .as_ref()
             .and_then(|pending| pending.matching_snapshot_revision)
     }
 
-    /// Captures adapter-local state without transferring ownership or creating a retryable
-    /// submission. The snapshot is safe to keep while the retained native entity is reclaimed.
-    pub(crate) fn externalized_snapshot(&self) -> ExternalizedDraft<T> {
-        ExternalizedDraft {
+    /// Captures framework-neutral state without transferring ownership or creating a retryable
+    /// submission. The snapshot is safe to keep while a retained field owner is reclaimed.
+    pub fn externalize(&self) -> FieldExternalization<T> {
+        FieldExternalization {
             local: self.local.clone(),
             remote: self.remote.clone(),
             base_revision: self.base_revision,
@@ -483,19 +481,19 @@ where
         }
     }
 
-    pub fn phase(&self) -> DraftPhase {
+    pub fn phase(&self) -> FieldPhase {
         match (self.composing, self.conflict.is_some(), self.dirty) {
-            (true, true, _) => DraftPhase::ComposingConflict,
-            (false, true, _) => DraftPhase::Conflict,
-            (true, false, _) => DraftPhase::Composing,
-            (false, false, true) => DraftPhase::Dirty,
-            (false, false, false) => DraftPhase::Clean,
+            (true, true, _) => FieldPhase::ComposingConflict,
+            (false, true, _) => FieldPhase::Conflict,
+            (true, false, _) => FieldPhase::Composing,
+            (false, false, true) => FieldPhase::Dirty,
+            (false, false, false) => FieldPhase::Clean,
         }
     }
 
-    pub fn edit_local(&mut self, value: T) -> DraftEditDecision {
+    pub fn edit_local(&mut self, value: T) -> FieldEditDecision {
         if self.local == value {
-            return DraftEditDecision::Unchanged {
+            return FieldEditDecision::Unchanged {
                 phase: self.phase(),
             };
         }
@@ -506,31 +504,31 @@ where
         }
         self.normalize_local_against_remote();
 
-        DraftEditDecision::Updated {
+        FieldEditDecision::Updated {
             phase: self.phase(),
         }
     }
 
-    pub fn mark_composing(&mut self) -> DraftCompositionDecision {
+    pub fn mark_composing(&mut self) -> FieldCompositionDecision {
         if self.composing {
-            return DraftCompositionDecision::Unchanged {
+            return FieldCompositionDecision::Unchanged {
                 phase: self.phase(),
             };
         }
         self.composing = true;
-        DraftCompositionDecision::Marked {
+        FieldCompositionDecision::Marked {
             phase: self.phase(),
         }
     }
 
-    pub fn unmark_composing(&mut self) -> DraftCompositionDecision {
+    pub fn unmark_composing(&mut self) -> FieldCompositionDecision {
         if !self.composing {
-            return DraftCompositionDecision::Unchanged {
+            return FieldCompositionDecision::Unchanged {
                 phase: self.phase(),
             };
         }
         self.composing = false;
-        DraftCompositionDecision::Unmarked {
+        FieldCompositionDecision::Unmarked {
             phase: self.phase(),
         }
     }
@@ -539,9 +537,9 @@ where
         &mut self,
         revision: GraphRevision,
         value: T,
-    ) -> DraftReconcileDecision {
+    ) -> FieldReconcileDecision {
         if revision < self.remote_revision {
-            return DraftReconcileDecision::IgnoredStale {
+            return FieldReconcileDecision::IgnoredStale {
                 current_revision: self.remote_revision,
                 received_revision: revision,
                 phase: self.phase(),
@@ -550,7 +548,7 @@ where
 
         if revision == self.remote_revision {
             if value != self.remote {
-                return DraftReconcileDecision::InconsistentSnapshot {
+                return FieldReconcileDecision::InconsistentSnapshot {
                     revision,
                     phase: self.phase(),
                 };
@@ -559,7 +557,7 @@ where
             if self.pending_is_acknowledged_by(revision) {
                 return self.finish_snapshot_acknowledgement(revision);
             }
-            return DraftReconcileDecision::Unchanged {
+            return FieldReconcileDecision::Unchanged {
                 revision,
                 phase: self.phase(),
             };
@@ -590,12 +588,12 @@ where
             && self.normalize_local_against_remote()
         {
             if remote_value_changed || accepted_attempt_was_superseded || had_conflict {
-                return DraftReconcileDecision::RemoteApplied {
+                return FieldReconcileDecision::RemoteApplied {
                     from_revision,
                     to_revision: revision,
                 };
             }
-            return DraftReconcileDecision::BaseAdvanced {
+            return FieldReconcileDecision::BaseAdvanced {
                 from_revision,
                 to_revision: revision,
                 phase: self.phase(),
@@ -603,14 +601,14 @@ where
         }
 
         if let Some(conflict) = self.conflict {
-            let conflict = DraftConflict::new(conflict.base_revision, revision);
+            let conflict = FieldConflict::new(conflict.base_revision, revision);
             self.conflict = Some(conflict);
-            return DraftReconcileDecision::Conflict { conflict };
+            return FieldReconcileDecision::Conflict { conflict };
         }
 
         if !remote_value_changed && !accepted_attempt_was_superseded {
             self.base_revision = revision;
-            return DraftReconcileDecision::BaseAdvanced {
+            return FieldReconcileDecision::BaseAdvanced {
                 from_revision,
                 to_revision: revision,
                 phase: self.phase(),
@@ -620,83 +618,83 @@ where
         if !self.dirty && !self.composing && self.pending.is_none() {
             self.local = self.remote.clone();
             self.base_revision = revision;
-            return DraftReconcileDecision::RemoteApplied {
+            return FieldReconcileDecision::RemoteApplied {
                 from_revision,
                 to_revision: revision,
             };
         }
 
-        let conflict = DraftConflict::new(self.base_revision, revision);
+        let conflict = FieldConflict::new(self.base_revision, revision);
         self.conflict = Some(conflict);
-        DraftReconcileDecision::Conflict { conflict }
+        FieldReconcileDecision::Conflict { conflict }
     }
 
     pub fn plan_submission_at(
         &mut self,
         command_revision: GraphRevision,
-    ) -> DraftSubmissionDecision<T> {
+    ) -> FieldSubmissionDecision<T> {
         if command_revision != self.remote_revision {
-            return DraftSubmissionDecision::Rejected(DraftIntentRejection::UnreconciledRevision {
+            return FieldSubmissionDecision::Rejected(FieldIntentRejection::UnreconciledRevision {
                 observed_revision: self.remote_revision,
                 requested_revision: command_revision,
             });
         }
         if self.composing {
-            return DraftSubmissionDecision::Rejected(DraftIntentRejection::CompositionActive);
+            return FieldSubmissionDecision::Rejected(FieldIntentRejection::CompositionActive);
         }
         if self.conflict.is_some() {
-            return DraftSubmissionDecision::Rejected(
-                DraftIntentRejection::ConflictRequiresResolution,
+            return FieldSubmissionDecision::Rejected(
+                FieldIntentRejection::ConflictRequiresResolution,
             );
         }
         if !self.dirty {
-            return DraftSubmissionDecision::Rejected(DraftIntentRejection::Clean);
+            return FieldSubmissionDecision::Rejected(FieldIntentRejection::Clean);
         }
-        self.plan_intent(DraftSubmissionKind::Commit, command_revision)
+        self.plan_intent(FieldSubmissionKind::Commit, command_revision)
     }
 
     pub fn resolve_at(
         &mut self,
-        resolution: DraftConflictResolution,
+        resolution: FieldConflictResolution,
         command_revision: GraphRevision,
-    ) -> DraftResolutionDecision<T> {
+    ) -> FieldResolutionDecision<T> {
         let Some(conflict) = self.conflict else {
-            return DraftResolutionDecision::Rejected(DraftIntentRejection::NoConflict);
+            return FieldResolutionDecision::Rejected(FieldIntentRejection::NoConflict);
         };
         if let Some(attempt) = self.pending_attempt() {
-            return DraftResolutionDecision::Rejected(DraftIntentRejection::SubmissionPending {
+            return FieldResolutionDecision::Rejected(FieldIntentRejection::SubmissionPending {
                 attempt,
             });
         }
 
         match resolution {
-            DraftConflictResolution::AcceptRemote => {
+            FieldConflictResolution::AcceptRemote => {
                 self.local = self.remote.clone();
                 self.base_revision = self.remote_revision;
                 self.dirty = false;
                 self.composing = false;
                 self.conflict = None;
-                DraftResolutionDecision::AcceptedRemote {
+                FieldResolutionDecision::AcceptedRemote {
                     revision: self.remote_revision,
                 }
             }
-            DraftConflictResolution::KeepLocal => DraftResolutionDecision::KeptLocal { conflict },
-            DraftConflictResolution::ReapplyLocal if self.composing => {
-                DraftResolutionDecision::Rejected(DraftIntentRejection::CompositionActive)
+            FieldConflictResolution::KeepLocal => FieldResolutionDecision::KeptLocal { conflict },
+            FieldConflictResolution::ReapplyLocal if self.composing => {
+                FieldResolutionDecision::Rejected(FieldIntentRejection::CompositionActive)
             }
-            DraftConflictResolution::ReapplyLocal if command_revision != self.remote_revision => {
-                DraftResolutionDecision::Rejected(DraftIntentRejection::UnreconciledRevision {
+            FieldConflictResolution::ReapplyLocal if command_revision != self.remote_revision => {
+                FieldResolutionDecision::Rejected(FieldIntentRejection::UnreconciledRevision {
                     observed_revision: self.remote_revision,
                     requested_revision: command_revision,
                 })
             }
-            DraftConflictResolution::ReapplyLocal => {
-                match self.plan_intent(DraftSubmissionKind::Reapply, command_revision) {
-                    DraftSubmissionDecision::Submit(intent) => {
-                        DraftResolutionDecision::Reapply(intent)
+            FieldConflictResolution::ReapplyLocal => {
+                match self.plan_intent(FieldSubmissionKind::Reapply, command_revision) {
+                    FieldSubmissionDecision::Submit(intent) => {
+                        FieldResolutionDecision::Reapply(intent)
                     }
-                    DraftSubmissionDecision::Rejected(rejection) => {
-                        DraftResolutionDecision::Rejected(rejection)
+                    FieldSubmissionDecision::Rejected(rejection) => {
+                        FieldResolutionDecision::Rejected(rejection)
                     }
                 }
             }
@@ -705,24 +703,24 @@ where
 
     pub fn record_self_receipt(
         &mut self,
-        attempt: DraftAttempt,
+        attempt: FieldAttempt,
         committed_revision: GraphRevision,
-    ) -> DraftReceiptDecision {
+    ) -> FieldReceiptDecision {
         let Some(pending) = &self.pending else {
-            return DraftReceiptDecision::UnknownAttempt { attempt };
+            return FieldReceiptDecision::UnknownAttempt { attempt };
         };
         if pending.intent.attempt != attempt {
-            return DraftReceiptDecision::UnknownAttempt { attempt };
+            return FieldReceiptDecision::UnknownAttempt { attempt };
         }
         if committed_revision < pending.intent.expected_revision {
-            return DraftReceiptDecision::InvalidCommittedRevision {
+            return FieldReceiptDecision::InvalidCommittedRevision {
                 attempt,
                 expected_revision: pending.intent.expected_revision,
                 committed_revision,
             };
         }
         if let Some(recorded_revision) = pending.accepted_revision {
-            return DraftReceiptDecision::AlreadyRecorded {
+            return FieldReceiptDecision::AlreadyRecorded {
                 attempt,
                 committed_revision: recorded_revision,
             };
@@ -742,7 +740,7 @@ where
             if !self.normalize_local_against_remote() {
                 self.ensure_conflict(self.remote_revision);
             }
-            return DraftReceiptDecision::Superseded {
+            return FieldReceiptDecision::Superseded {
                 attempt,
                 committed_revision,
                 current_revision: self.remote_revision,
@@ -756,16 +754,16 @@ where
 
         if let Some(observation_revision) = matching_observation_revision {
             if let Some(acknowledged) = self.finish_acknowledgement(observation_revision) {
-                return DraftReceiptDecision::Acknowledged {
+                return FieldReceiptDecision::Acknowledged {
                     attempt: acknowledged.attempt,
                     revision: observation_revision,
                     local_changed_after_submission: acknowledged.local_changed_after_submission,
                 };
             }
-            return DraftReceiptDecision::UnknownAttempt { attempt };
+            return FieldReceiptDecision::UnknownAttempt { attempt };
         }
 
-        DraftReceiptDecision::Recorded {
+        FieldReceiptDecision::Recorded {
             attempt,
             committed_revision,
         }
@@ -773,18 +771,18 @@ where
 
     pub fn reject_stale(
         &mut self,
-        attempt: DraftAttempt,
+        attempt: FieldAttempt,
         current_revision: GraphRevision,
         current_value: T,
-    ) -> DraftStaleRejectionDecision {
+    ) -> FieldStaleRejectionDecision {
         let Some(pending) = &self.pending else {
-            return DraftStaleRejectionDecision::UnknownAttempt { attempt };
+            return FieldStaleRejectionDecision::UnknownAttempt { attempt };
         };
         if pending.intent.attempt != attempt {
-            return DraftStaleRejectionDecision::UnknownAttempt { attempt };
+            return FieldStaleRejectionDecision::UnknownAttempt { attempt };
         }
         if let Some(committed_revision) = pending.accepted_revision {
-            return DraftStaleRejectionDecision::ReceiptAlreadyAccepted {
+            return FieldStaleRejectionDecision::ReceiptAlreadyAccepted {
                 attempt,
                 committed_revision,
             };
@@ -793,7 +791,7 @@ where
 
         if current_revision < self.remote_revision {
             self.normalize_local_against_remote();
-            return DraftStaleRejectionDecision::IgnoredOlderRevision {
+            return FieldStaleRejectionDecision::IgnoredOlderRevision {
                 current_revision: self.remote_revision,
                 received_revision: current_revision,
                 phase: self.phase(),
@@ -801,7 +799,7 @@ where
         }
         if current_revision == self.remote_revision && current_value != self.remote {
             self.normalize_local_against_remote();
-            return DraftStaleRejectionDecision::InconsistentSnapshot {
+            return FieldStaleRejectionDecision::InconsistentSnapshot {
                 revision: current_revision,
                 phase: self.phase(),
             };
@@ -812,40 +810,40 @@ where
         self.remote = current_value;
 
         if self.normalize_local_against_remote() {
-            return DraftStaleRejectionDecision::LocalMatchesRemote {
+            return FieldStaleRejectionDecision::LocalMatchesRemote {
                 revision: current_revision,
                 phase: self.phase(),
             };
         }
 
         if let Some(conflict) = self.conflict {
-            let conflict = DraftConflict::new(conflict.base_revision, current_revision);
+            let conflict = FieldConflict::new(conflict.base_revision, current_revision);
             self.conflict = Some(conflict);
-            return DraftStaleRejectionDecision::ConflictPreserved { conflict };
+            return FieldStaleRejectionDecision::ConflictPreserved { conflict };
         }
 
         if remote_value_changed {
-            let conflict = DraftConflict::new(self.base_revision, current_revision);
+            let conflict = FieldConflict::new(self.base_revision, current_revision);
             self.conflict = Some(conflict);
-            return DraftStaleRejectionDecision::ConflictPreserved { conflict };
+            return FieldStaleRejectionDecision::ConflictPreserved { conflict };
         }
 
         self.base_revision = current_revision;
-        DraftStaleRejectionDecision::DirtyPreserved {
+        FieldStaleRejectionDecision::DirtyPreserved {
             base_revision: current_revision,
         }
     }
 
     /// Ends one explicitly rejected attempt without dispatching or planning a retry.
-    pub fn reject_submission(&mut self, attempt: DraftAttempt) -> DraftSubmissionRejectionDecision {
+    pub fn reject_submission(&mut self, attempt: FieldAttempt) -> FieldSubmissionRejectionDecision {
         let Some(pending) = &self.pending else {
-            return DraftSubmissionRejectionDecision::UnknownAttempt { attempt };
+            return FieldSubmissionRejectionDecision::UnknownAttempt { attempt };
         };
         if pending.intent.attempt != attempt {
-            return DraftSubmissionRejectionDecision::UnknownAttempt { attempt };
+            return FieldSubmissionRejectionDecision::UnknownAttempt { attempt };
         }
         if let Some(committed_revision) = pending.accepted_revision {
-            return DraftSubmissionRejectionDecision::ReceiptAlreadyAccepted {
+            return FieldSubmissionRejectionDecision::ReceiptAlreadyAccepted {
                 attempt,
                 committed_revision,
             };
@@ -853,7 +851,7 @@ where
 
         self.pending = None;
         self.normalize_local_against_remote();
-        DraftSubmissionRejectionDecision::Rejected {
+        FieldSubmissionRejectionDecision::Rejected {
             attempt,
             phase: self.phase(),
         }
@@ -861,34 +859,34 @@ where
 
     fn plan_intent(
         &mut self,
-        kind: DraftSubmissionKind,
+        kind: FieldSubmissionKind,
         expected_revision: GraphRevision,
-    ) -> DraftSubmissionDecision<T> {
+    ) -> FieldSubmissionDecision<T> {
         if let Some(attempt) = self.pending_attempt() {
-            return DraftSubmissionDecision::Rejected(DraftIntentRejection::SubmissionPending {
+            return FieldSubmissionDecision::Rejected(FieldIntentRejection::SubmissionPending {
                 attempt,
             });
         }
         let Some(attempt_id) = self.next_attempt else {
-            return DraftSubmissionDecision::Rejected(
-                DraftIntentRejection::AttemptIdentityExhausted,
+            return FieldSubmissionDecision::Rejected(
+                FieldIntentRejection::AttemptIdentityExhausted,
             );
         };
-        let attempt = DraftAttempt(attempt_id);
+        let attempt = FieldAttempt(attempt_id);
         self.next_attempt = attempt_id.checked_add(1);
-        let intent = DraftSubmissionIntent {
+        let intent = FieldSubmissionIntent {
             attempt,
             kind,
             expected_revision,
             value: self.local.clone(),
         };
-        self.pending = Some(PendingSubmission {
+        self.pending = Some(PendingFieldSubmission {
             intent: intent.clone(),
             accepted_revision: None,
             matching_snapshot_revision: None,
             local_changed_after_submission: false,
         });
-        DraftSubmissionDecision::Submit(intent)
+        FieldSubmissionDecision::Submit(intent)
     }
 
     fn observe_matching_pending_snapshot(&mut self, revision: GraphRevision) {
@@ -914,14 +912,14 @@ where
     fn finish_snapshot_acknowledgement(
         &mut self,
         revision: GraphRevision,
-    ) -> DraftReconcileDecision {
+    ) -> FieldReconcileDecision {
         match self.finish_acknowledgement(revision) {
-            Some(acknowledged) => DraftReconcileDecision::SelfAcknowledged {
+            Some(acknowledged) => FieldReconcileDecision::SelfAcknowledged {
                 attempt: acknowledged.attempt,
                 revision,
                 local_changed_after_submission: acknowledged.local_changed_after_submission,
             },
-            None => DraftReconcileDecision::Unchanged {
+            None => FieldReconcileDecision::Unchanged {
                 revision,
                 phase: self.phase(),
             },
@@ -931,7 +929,7 @@ where
     fn finish_acknowledgement(
         &mut self,
         revision: GraphRevision,
-    ) -> Option<AcknowledgedSubmission> {
+    ) -> Option<AcknowledgedFieldSubmission> {
         let pending = self.pending.take()?;
         self.base_revision = revision;
         self.conflict = None;
@@ -939,7 +937,7 @@ where
             self.local = self.remote.clone();
         }
         self.normalize_local_against_remote();
-        Some(AcknowledgedSubmission {
+        Some(AcknowledgedFieldSubmission {
             attempt: pending.intent.attempt,
             local_changed_after_submission: pending.local_changed_after_submission,
         })
@@ -961,11 +959,172 @@ where
         let base_revision = self
             .conflict
             .map_or(self.base_revision, |conflict| conflict.base_revision);
-        self.conflict = Some(DraftConflict::new(base_revision, remote_revision));
+        self.conflict = Some(FieldConflict::new(base_revision, remote_revision));
     }
 }
 
-struct AcknowledgedSubmission {
-    attempt: DraftAttempt,
+struct AcknowledgedFieldSubmission {
+    attempt: FieldAttempt,
     local_changed_after_submission: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn planned_field() -> (FieldReconciler<String>, FieldAttempt) {
+        let mut field = FieldReconciler::new(1, "remote".to_owned());
+        field.edit_local("submitted".to_owned());
+        let FieldSubmissionDecision::Submit(intent) = field.plan_submission_at(1) else {
+            panic!("dirty field should produce a submission intent");
+        };
+        (field, intent.attempt())
+    }
+
+    #[test]
+    fn composition_retains_local_value_until_conflict_is_resolved_explicitly() {
+        let mut field = FieldReconciler::new(1, "remote".to_owned());
+        field.mark_composing();
+        field.edit_local("partial composition".to_owned());
+
+        assert_eq!(
+            field.reconcile_remote(2, "new remote".to_owned()),
+            FieldReconcileDecision::Conflict {
+                conflict: FieldConflict::new(1, 2),
+            }
+        );
+        assert_eq!(field.phase(), FieldPhase::ComposingConflict);
+        assert_eq!(field.local(), "partial composition");
+        assert_eq!(field.remote(), "new remote");
+
+        field.unmark_composing();
+        let FieldResolutionDecision::Reapply(intent) =
+            field.resolve_at(FieldConflictResolution::ReapplyLocal, 2)
+        else {
+            panic!("explicit reapply should produce an inert submission intent");
+        };
+        assert_eq!(intent.kind(), FieldSubmissionKind::Reapply);
+        assert_eq!(intent.expected_revision(), 2);
+        assert_eq!(intent.value(), "partial composition");
+    }
+
+    #[test]
+    fn receipt_first_and_snapshot_first_converge_to_clean_state() {
+        let (mut receipt_first, receipt_first_attempt) = planned_field();
+        assert_eq!(
+            receipt_first.record_self_receipt(receipt_first_attempt, 2),
+            FieldReceiptDecision::Recorded {
+                attempt: receipt_first_attempt,
+                committed_revision: 2,
+            }
+        );
+        assert_eq!(
+            receipt_first.reconcile_remote(2, "submitted".to_owned()),
+            FieldReconcileDecision::SelfAcknowledged {
+                attempt: receipt_first_attempt,
+                revision: 2,
+                local_changed_after_submission: false,
+            }
+        );
+
+        let (mut snapshot_first, snapshot_first_attempt) = planned_field();
+        assert!(matches!(
+            snapshot_first.reconcile_remote(2, "submitted".to_owned()),
+            FieldReconcileDecision::Conflict { .. }
+        ));
+        assert_eq!(snapshot_first.pending_matching_snapshot_revision(), Some(2));
+        assert_eq!(
+            snapshot_first.record_self_receipt(snapshot_first_attempt, 2),
+            FieldReceiptDecision::Acknowledged {
+                attempt: snapshot_first_attempt,
+                revision: 2,
+                local_changed_after_submission: false,
+            }
+        );
+
+        assert_eq!(receipt_first.phase(), FieldPhase::Clean);
+        assert_eq!(snapshot_first.phase(), FieldPhase::Clean);
+        assert_eq!(receipt_first.local(), snapshot_first.local());
+        assert_eq!(receipt_first.remote(), snapshot_first.remote());
+        assert_eq!(receipt_first.pending_attempt(), None);
+        assert_eq!(snapshot_first.pending_attempt(), None);
+    }
+
+    #[test]
+    fn acknowledgement_preserves_a_newer_local_edit() {
+        let (mut field, attempt) = planned_field();
+        field.edit_local("newer local".to_owned());
+        assert!(matches!(
+            field.record_self_receipt(attempt, 2),
+            FieldReceiptDecision::Recorded { .. }
+        ));
+        assert_eq!(
+            field.reconcile_remote(2, "submitted".to_owned()),
+            FieldReconcileDecision::SelfAcknowledged {
+                attempt,
+                revision: 2,
+                local_changed_after_submission: true,
+            }
+        );
+        assert_eq!(field.local(), "newer local");
+        assert_eq!(field.remote(), "submitted");
+        assert_eq!(field.phase(), FieldPhase::Dirty);
+    }
+
+    #[test]
+    fn superseded_receipt_cannot_acknowledge_a_newer_authoritative_value() {
+        let (mut field, attempt) = planned_field();
+        assert!(matches!(
+            field.reconcile_remote(3, "other".to_owned()),
+            FieldReconcileDecision::Conflict { .. }
+        ));
+        assert_eq!(
+            field.record_self_receipt(attempt, 2),
+            FieldReceiptDecision::Superseded {
+                attempt,
+                committed_revision: 2,
+                current_revision: 3,
+            }
+        );
+        assert_eq!(field.pending_attempt(), None);
+        assert_eq!(field.local(), "submitted");
+        assert_eq!(field.remote(), "other");
+        assert_eq!(field.phase(), FieldPhase::Conflict);
+    }
+
+    #[test]
+    fn externalization_does_not_restore_command_or_composition_ownership() {
+        let (mut field, attempt) = planned_field();
+        field.mark_composing();
+
+        let restored = field
+            .externalize()
+            .restore_against(2, "new remote".to_owned());
+        assert_eq!(restored.recovery().interrupted_attempt(), Some(attempt));
+        assert!(restored.recovery().composition_interrupted());
+
+        let field = restored.into_reconciler();
+        assert_eq!(field.pending_attempt(), None);
+        assert_eq!(field.phase(), FieldPhase::Conflict);
+        assert_eq!(field.local(), "submitted");
+        assert_eq!(field.remote(), "new remote");
+    }
+
+    #[test]
+    fn stale_and_inconsistent_observations_do_not_mutate_authoritative_state() {
+        let mut field = FieldReconciler::new(4, "remote".to_owned());
+        field.edit_local("local".to_owned());
+
+        assert!(matches!(
+            field.reconcile_remote(3, "older".to_owned()),
+            FieldReconcileDecision::IgnoredStale { .. }
+        ));
+        assert!(matches!(
+            field.reconcile_remote(4, "inconsistent".to_owned()),
+            FieldReconcileDecision::InconsistentSnapshot { .. }
+        ));
+        assert_eq!(field.remote_revision(), 4);
+        assert_eq!(field.remote(), "remote");
+        assert_eq!(field.local(), "local");
+    }
 }

@@ -11,7 +11,6 @@ pub mod authoring;
 mod binding;
 pub mod chrome;
 mod command_journal;
-mod draft;
 mod draft_store;
 pub mod host;
 pub mod interaction;

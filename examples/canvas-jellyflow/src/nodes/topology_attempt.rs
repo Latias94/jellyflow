@@ -13,8 +13,12 @@ use jellyflow_open_gpui::authoring::{
     OpenGpuiCommandTicket, OpenGpuiCommandTicketResult, OpenGpuiNodeAuthoring,
     OpenGpuiNodeAuthoringError,
 };
-use jellyflow_runtime::commands::{CommandExecutionKind, GraphCommand};
+use jellyflow_runtime::commands::GraphCommand;
 use jellyflow_runtime::graph::GraphRevision;
+use jellyflow_runtime::reconciliation::{
+    MutationAttemptId, MutationBeginError, MutationCommandResult, MutationPhase,
+    MutationReconciler, MutationRetry, MutationTransition,
+};
 use jellyflow_runtime::view::{NodeInstanceKey, ViewCloseReason};
 use open_gpui::{Context, Task};
 
@@ -38,6 +42,11 @@ pub(super) enum TopologyAttemptPhase {
 #[derive(Debug)]
 pub(super) enum TopologyAttemptDispatchError {
     Busy,
+    RetryExpired,
+    StaleRetryBase {
+        required_revision: GraphRevision,
+        received_revision: GraphRevision,
+    },
     IdentityExhausted,
     Retired,
     Closed { reason: ViewCloseReason },
@@ -49,6 +58,16 @@ impl std::fmt::Display for TopologyAttemptDispatchError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Busy => formatter.write_str("another topology edit is already active"),
+            Self::RetryExpired => {
+                formatter.write_str("the topology retry capability is no longer current")
+            }
+            Self::StaleRetryBase {
+                required_revision,
+                received_revision,
+            } => write!(
+                formatter,
+                "topology retry requires revision {required_revision} or newer, received {received_revision}"
+            ),
             Self::IdentityExhausted => {
                 formatter.write_str("topology attempt identity space is exhausted")
             }
@@ -73,90 +92,19 @@ impl std::fmt::Display for TopologyAttemptDispatchError {
 
 impl std::error::Error for TopologyAttemptDispatchError {}
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct Observation {
-    revision: GraphRevision,
-    satisfied: bool,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum AttemptState<I> {
-    Idle,
-    Pending {
-        attempt: u64,
-        intent: I,
-        base_revision: GraphRevision,
-        observation: Option<Observation>,
-    },
-    AwaitingSnapshot {
-        attempt: u64,
-        intent: I,
-        base_revision: GraphRevision,
-        minimum_revision: GraphRevision,
-        observation: Option<Observation>,
-    },
-    Recoverable {
-        attempt: u64,
-        intent: I,
-        base_revision: GraphRevision,
-        diagnostic: String,
-    },
-    Uncertain {
-        attempt: u64,
-        intent: I,
-        base_revision: GraphRevision,
-        observation: Option<Observation>,
-        diagnostic: String,
-    },
-    Retired {
-        intent: Option<I>,
-        diagnostic: Option<String>,
-    },
-    Closed {
-        reason: ViewCloseReason,
-        intent: Option<I>,
-        diagnostic: Option<String>,
-    },
-}
-
-struct AttemptMachine<I> {
-    state: AttemptState<I>,
-    next_attempt: Option<u64>,
-}
-
-impl<I> Default for AttemptMachine<I> {
-    fn default() -> Self {
-        Self {
-            state: AttemptState::Idle,
-            next_attempt: Some(1),
-        }
-    }
-}
-
-enum TicketSettlement {
-    Applied(GraphRevision),
-    Noop(GraphRevision),
-    Conflict {
-        revision: GraphRevision,
-        diagnostic: String,
-    },
-    Rejected(String),
-    Uncertain(String),
-}
-
 enum TopologyTaskCompletion {
     Ticket {
-        attempt: u64,
+        attempt: MutationAttemptId,
         result: Box<OpenGpuiCommandTicketResult>,
     },
     OutcomeUnknown {
-        attempt: u64,
+        attempt: MutationAttemptId,
         message: &'static str,
     },
 }
 
 impl TopologyTaskCompletion {
-    fn attempt(&self) -> u64 {
+    fn attempt(&self) -> MutationAttemptId {
         match self {
             Self::Ticket { attempt, .. } | Self::OutcomeUnknown { attempt, .. } => *attempt,
         }
@@ -164,12 +112,9 @@ impl TopologyTaskCompletion {
 }
 
 /// The sole capability that can await an enqueued topology ticket.
-///
-/// It records terminal ticket evidence into the owning attempt. Dropping it before completion
-/// records an uncertain outcome, so a retained task can never silently abandon a pending command.
 #[must_use = "a dispatched topology ticket capability must remain owned by its supervisor"]
 struct TopologyDispatchedAttempt {
-    attempt: u64,
+    attempt: MutationAttemptId,
     ticket: Pin<Box<OpenGpuiCommandTicket>>,
     completion: Rc<RefCell<Option<TopologyTaskCompletion>>>,
     ticket_settled: bool,
@@ -228,22 +173,21 @@ impl TopologyTransitionEffect {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum TopologyRetryKind {
-    Recoverable,
-    ConfirmedUncertain,
+impl From<MutationTransition> for TopologyTransitionEffect {
+    fn from(transition: MutationTransition) -> Self {
+        Self {
+            receipt_recorded: transition.completion_recorded(),
+            topology_became_visible: transition.became_satisfied(),
+        }
+    }
 }
 
 /// A read-only retry plan. Dropping it leaves the retryable intent untouched.
-pub(super) struct TopologyRetry<I> {
-    source_attempt: u64,
-    intent: I,
-    kind: TopologyRetryKind,
-}
+pub(super) struct TopologyRetry<I>(MutationRetry<I>);
 
 impl<I> TopologyRetry<I> {
     pub(super) const fn intent(&self) -> &I {
-        &self.intent
+        self.0.intent()
     }
 }
 
@@ -269,437 +213,35 @@ impl<I> TopologyDispatchRequest<I> {
     }
 }
 
-impl<I: Clone> AttemptMachine<I> {
-    fn phase(&self) -> TopologyAttemptPhase {
-        match &self.state {
-            AttemptState::Idle => TopologyAttemptPhase::Idle,
-            AttemptState::Pending { .. } => TopologyAttemptPhase::Pending,
-            AttemptState::AwaitingSnapshot { .. } => TopologyAttemptPhase::AwaitingSnapshot,
-            AttemptState::Recoverable { .. } => TopologyAttemptPhase::Recoverable,
-            AttemptState::Uncertain { .. } => TopologyAttemptPhase::Uncertain,
-            AttemptState::Retired { .. } => TopologyAttemptPhase::Retired,
-            AttemptState::Closed { .. } => TopologyAttemptPhase::Closed,
+enum TopologyTerminal<I> {
+    Retired {
+        intent: Option<I>,
+        diagnostic: String,
+    },
+    Closed {
+        reason: ViewCloseReason,
+        intent: Option<I>,
+        diagnostic: String,
+    },
+}
+
+impl<I> TopologyTerminal<I> {
+    const fn phase(&self) -> TopologyAttemptPhase {
+        match self {
+            Self::Retired { .. } => TopologyAttemptPhase::Retired,
+            Self::Closed { .. } => TopologyAttemptPhase::Closed,
         }
     }
 
-    fn allocate_attempt(&mut self) -> Result<u64, TopologyAttemptDispatchError> {
-        let attempt = self
-            .next_attempt
-            .ok_or(TopologyAttemptDispatchError::IdentityExhausted)?;
-        self.next_attempt = attempt.checked_add(1);
-        Ok(attempt)
-    }
-
-    fn retry_is_eligible(&self, retry: &TopologyRetry<I>) -> bool {
-        match (&self.state, retry.kind) {
-            (AttemptState::Recoverable { attempt, .. }, TopologyRetryKind::Recoverable) => {
-                *attempt == retry.source_attempt
-            }
-            (
-                AttemptState::Uncertain {
-                    attempt,
-                    base_revision,
-                    observation: Some(observation),
-                    ..
-                },
-                TopologyRetryKind::ConfirmedUncertain,
-            ) => {
-                *attempt == retry.source_attempt
-                    && observation.revision > *base_revision
-                    && !observation.satisfied
-            }
-            _ => false,
+    fn intent(&self) -> Option<&I> {
+        match self {
+            Self::Retired { intent, .. } | Self::Closed { intent, .. } => intent.as_ref(),
         }
     }
 
-    fn begin_new(
-        &mut self,
-        intent: I,
-        base_revision: GraphRevision,
-    ) -> Result<u64, TopologyAttemptDispatchError> {
-        match &self.state {
-            AttemptState::Idle => {}
-            AttemptState::Retired { .. } => return Err(TopologyAttemptDispatchError::Retired),
-            AttemptState::Closed { reason, .. } => {
-                return Err(TopologyAttemptDispatchError::Closed { reason: *reason });
-            }
-            _ => return Err(TopologyAttemptDispatchError::Busy),
-        }
-        let attempt = self.allocate_attempt()?;
-        self.state = AttemptState::Pending {
-            attempt,
-            intent,
-            base_revision,
-            observation: None,
-        };
-        Ok(attempt)
-    }
-
-    fn begin_retry(
-        &mut self,
-        retry: TopologyRetry<I>,
-        base_revision: GraphRevision,
-    ) -> Result<u64, TopologyAttemptDispatchError> {
-        if !self.retry_is_eligible(&retry) {
-            return Err(TopologyAttemptDispatchError::Busy);
-        }
-
-        let attempt = self.allocate_attempt()?;
-        let state = std::mem::replace(&mut self.state, AttemptState::Idle);
-        let intent = match state {
-            AttemptState::Recoverable { intent, .. } | AttemptState::Uncertain { intent, .. } => {
-                intent
-            }
-            state => {
-                self.state = state;
-                return Err(TopologyAttemptDispatchError::Busy);
-            }
-        };
-        self.state = AttemptState::Pending {
-            attempt,
-            intent,
-            base_revision,
-            observation: None,
-        };
-        Ok(attempt)
-    }
-
-    fn begin_request(
-        &mut self,
-        request: TopologyDispatchRequest<I>,
-        base_revision: GraphRevision,
-    ) -> Result<u64, TopologyAttemptDispatchError> {
-        match request {
-            TopologyDispatchRequest::New(intent) => self.begin_new(intent, base_revision),
-            TopologyDispatchRequest::Retry(retry) => self.begin_retry(retry, base_revision),
-        }
-    }
-
-    fn fail_dispatch(&mut self, attempt: u64, diagnostic: String) {
-        let state = std::mem::replace(&mut self.state, AttemptState::Idle);
-        self.state = match state {
-            AttemptState::Pending {
-                attempt: active_attempt,
-                intent,
-                base_revision,
-                ..
-            } if active_attempt == attempt => AttemptState::Recoverable {
-                attempt: active_attempt,
-                intent,
-                base_revision,
-                diagnostic,
-            },
-            state => state,
-        };
-    }
-
-    fn mark_uncertain(&mut self, attempt: u64, diagnostic: String) {
-        let state = std::mem::replace(&mut self.state, AttemptState::Idle);
-        self.state = match state {
-            AttemptState::Pending {
-                attempt: active_attempt,
-                intent,
-                base_revision,
-                observation,
-            } if active_attempt == attempt => AttemptState::Uncertain {
-                attempt: active_attempt,
-                intent,
-                base_revision,
-                observation,
-                diagnostic,
-            },
-            state => state,
-        };
-    }
-
-    fn settle(&mut self, attempt: u64, settlement: TicketSettlement) -> TopologyTransitionEffect {
-        let state = std::mem::replace(&mut self.state, AttemptState::Idle);
-        let AttemptState::Pending {
-            attempt: active_attempt,
-            intent,
-            base_revision,
-            observation,
-        } = state
-        else {
-            self.state = state;
-            return TopologyTransitionEffect::default();
-        };
-        if active_attempt != attempt {
-            self.state = AttemptState::Pending {
-                attempt: active_attempt,
-                intent,
-                base_revision,
-                observation,
-            };
-            return TopologyTransitionEffect::default();
-        }
-
-        let mut effect = TopologyTransitionEffect {
-            receipt_recorded: true,
-            topology_became_visible: false,
-        };
-        self.state = match settlement {
-            TicketSettlement::Applied(minimum_revision)
-            | TicketSettlement::Noop(minimum_revision) => {
-                if observation.as_ref().is_some_and(|observation| {
-                    observation.revision >= minimum_revision && observation.satisfied
-                }) {
-                    effect.topology_became_visible = true;
-                    AttemptState::Idle
-                } else {
-                    AttemptState::AwaitingSnapshot {
-                        attempt: active_attempt,
-                        intent,
-                        base_revision,
-                        minimum_revision,
-                        observation,
-                    }
-                }
-            }
-            TicketSettlement::Conflict {
-                revision,
-                diagnostic,
-            } => {
-                if observation.as_ref().is_some_and(|observation| {
-                    observation.revision >= revision && observation.satisfied
-                }) {
-                    effect.topology_became_visible = true;
-                    AttemptState::Idle
-                } else {
-                    AttemptState::Recoverable {
-                        attempt: active_attempt,
-                        intent,
-                        base_revision,
-                        diagnostic,
-                    }
-                }
-            }
-            TicketSettlement::Rejected(diagnostic) => {
-                if observation
-                    .as_ref()
-                    .is_some_and(|observation| observation.satisfied)
-                {
-                    effect.topology_became_visible = true;
-                    AttemptState::Idle
-                } else {
-                    AttemptState::Recoverable {
-                        attempt: active_attempt,
-                        intent,
-                        base_revision,
-                        diagnostic,
-                    }
-                }
-            }
-            TicketSettlement::Uncertain(diagnostic) => AttemptState::Uncertain {
-                attempt: active_attempt,
-                intent,
-                base_revision,
-                observation,
-                diagnostic,
-            },
-        };
-        effect
-    }
-
-    fn observe(
-        &mut self,
-        revision: GraphRevision,
-        satisfied: impl FnOnce(&I) -> bool,
-    ) -> TopologyTransitionEffect {
-        let mut effect = TopologyTransitionEffect::default();
-        let state = std::mem::replace(&mut self.state, AttemptState::Idle);
-        self.state = match state {
-            AttemptState::Pending {
-                attempt,
-                intent,
-                base_revision,
-                ..
-            } => {
-                let observation = Observation {
-                    revision,
-                    satisfied: satisfied(&intent),
-                };
-                AttemptState::Pending {
-                    attempt,
-                    intent,
-                    base_revision,
-                    observation: Some(observation),
-                }
-            }
-            AttemptState::AwaitingSnapshot {
-                attempt,
-                intent,
-                base_revision,
-                minimum_revision,
-                observation,
-            } => {
-                if revision < minimum_revision {
-                    AttemptState::AwaitingSnapshot {
-                        attempt,
-                        intent,
-                        base_revision,
-                        minimum_revision,
-                        observation,
-                    }
-                } else if satisfied(&intent) {
-                    effect.topology_became_visible = true;
-                    AttemptState::Idle
-                } else {
-                    AttemptState::Recoverable {
-                        attempt,
-                        intent,
-                        base_revision,
-                        diagnostic: format!(
-                            "topology edit was not reflected by authoritative revision {revision}"
-                        ),
-                    }
-                }
-            }
-            AttemptState::Recoverable {
-                attempt,
-                intent,
-                base_revision,
-                diagnostic,
-            } => {
-                if satisfied(&intent) {
-                    effect.topology_became_visible = true;
-                    AttemptState::Idle
-                } else {
-                    AttemptState::Recoverable {
-                        attempt,
-                        intent,
-                        base_revision,
-                        diagnostic,
-                    }
-                }
-            }
-            AttemptState::Uncertain {
-                attempt,
-                intent,
-                base_revision,
-                diagnostic,
-                ..
-            } => {
-                let observation = Observation {
-                    revision,
-                    satisfied: satisfied(&intent),
-                };
-                if observation.satisfied {
-                    effect.topology_became_visible = true;
-                    AttemptState::Idle
-                } else {
-                    AttemptState::Uncertain {
-                        attempt,
-                        intent,
-                        base_revision,
-                        observation: Some(observation),
-                        diagnostic,
-                    }
-                }
-            }
-            state => state,
-        };
-        effect
-    }
-
-    fn prepare_retry(&self, confirm_uncertain: bool) -> Option<TopologyRetry<I>> {
-        match &self.state {
-            AttemptState::Recoverable {
-                attempt, intent, ..
-            } if !confirm_uncertain => Some(TopologyRetry {
-                source_attempt: *attempt,
-                intent: intent.clone(),
-                kind: TopologyRetryKind::Recoverable,
-            }),
-            AttemptState::Uncertain {
-                attempt,
-                intent,
-                base_revision,
-                observation: Some(observation),
-                ..
-            } if confirm_uncertain
-                && observation.revision > *base_revision
-                && !observation.satisfied =>
-            {
-                Some(TopologyRetry {
-                    source_attempt: *attempt,
-                    intent: intent.clone(),
-                    kind: TopologyRetryKind::ConfirmedUncertain,
-                })
-            }
-            _ => None,
-        }
-    }
-
-    fn can_confirm_uncertain_retry(&self) -> bool {
-        matches!(
-            &self.state,
-            AttemptState::Uncertain {
-                base_revision,
-                observation: Some(observation),
-                ..
-            } if observation.revision > *base_revision && !observation.satisfied
-        )
-    }
-
-    fn active_intent(&self) -> Option<&I> {
-        match &self.state {
-            AttemptState::Pending { intent, .. }
-            | AttemptState::AwaitingSnapshot { intent, .. }
-            | AttemptState::Recoverable { intent, .. }
-            | AttemptState::Uncertain { intent, .. } => Some(intent),
-            AttemptState::Retired { intent, .. } | AttemptState::Closed { intent, .. } => {
-                intent.as_ref()
-            }
-            AttemptState::Idle => None,
-        }
-    }
-
-    fn diagnostic(&self) -> Option<&str> {
-        match &self.state {
-            AttemptState::Recoverable { diagnostic, .. }
-            | AttemptState::Uncertain { diagnostic, .. } => Some(diagnostic),
-            AttemptState::Retired { diagnostic, .. } | AttemptState::Closed { diagnostic, .. } => {
-                diagnostic.as_deref()
-            }
-            _ => None,
-        }
-    }
-
-    fn retire(&mut self, retirement_diagnostic: String) {
-        let state = std::mem::replace(&mut self.state, AttemptState::Idle);
-        let (intent, diagnostic) = Self::into_readonly(state);
-        self.state = AttemptState::Retired {
-            intent,
-            diagnostic: diagnostic.or(Some(retirement_diagnostic)),
-        };
-    }
-
-    fn close(&mut self, reason: ViewCloseReason) {
-        let state = std::mem::replace(&mut self.state, AttemptState::Idle);
-        let (intent, diagnostic) = Self::into_readonly(state);
-        self.state = AttemptState::Closed {
-            reason,
-            intent,
-            diagnostic: diagnostic.or_else(|| Some(format!("topology owner closed: {reason:?}"))),
-        };
-    }
-
-    fn into_readonly(state: AttemptState<I>) -> (Option<I>, Option<String>) {
-        match state {
-            AttemptState::Idle => (None, None),
-            AttemptState::Pending { intent, .. }
-            | AttemptState::AwaitingSnapshot { intent, .. } => (Some(intent), None),
-            AttemptState::Recoverable {
-                intent, diagnostic, ..
-            }
-            | AttemptState::Uncertain {
-                intent, diagnostic, ..
-            } => (Some(intent), Some(diagnostic)),
-            AttemptState::Retired { intent, diagnostic }
-            | AttemptState::Closed {
-                intent, diagnostic, ..
-            } => (intent, diagnostic),
+    fn diagnostic(&self) -> &str {
+        match self {
+            Self::Retired { diagnostic, .. } | Self::Closed { diagnostic, .. } => diagnostic,
         }
     }
 }
@@ -707,26 +249,23 @@ impl<I: Clone> AttemptMachine<I> {
 /// Owns one node instance's topology command lifecycle and all native async resources.
 pub(super) struct TopologyAttempt<I> {
     owner: NodeInstanceKey,
-    machine: AttemptMachine<I>,
+    reconciler: MutationReconciler<I>,
+    terminal: Option<TopologyTerminal<I>>,
     task_completion: Rc<RefCell<Option<TopologyTaskCompletion>>>,
     task: Option<Task<()>>,
     task_lease: Option<OpenGpuiActivityLease>,
     retention_lease: Option<OpenGpuiActivityLease>,
 }
 
-/// Covers the interval after journal admission and before the task is retained by the node.
-///
-/// Native supervisor installation may unwind. Once the command is enqueued, that must never
-/// strand the attempt in `Pending`: dropping this guard records an uncertain outcome and releases
-/// task-scoped activity ownership.
+/// Covers journal admission until the native task is retained by the node owner.
 struct TopologyPostEnqueueGuard<'a, I>
 where
     I: Clone,
 {
-    machine: &'a mut AttemptMachine<I>,
+    reconciler: &'a mut MutationReconciler<I>,
     task: &'a mut Option<Task<()>>,
     task_lease: &'a mut Option<OpenGpuiActivityLease>,
-    attempt: u64,
+    attempt: MutationAttemptId,
     diagnostic: Option<String>,
 }
 
@@ -735,14 +274,14 @@ where
     I: Clone,
 {
     fn new(
-        machine: &'a mut AttemptMachine<I>,
+        reconciler: &'a mut MutationReconciler<I>,
         task: &'a mut Option<Task<()>>,
         task_lease: &'a mut Option<OpenGpuiActivityLease>,
-        attempt: u64,
+        attempt: MutationAttemptId,
         diagnostic: String,
     ) -> Self {
         Self {
-            machine,
+            reconciler,
             task,
             task_lease,
             attempt,
@@ -751,13 +290,9 @@ where
     }
 
     fn retain_task(&mut self, task: Task<()>) {
-        if matches!(
-            &self.machine.state,
-            AttemptState::Pending {
-                attempt: active_attempt,
-                ..
-            } if *active_attempt == self.attempt
-        ) {
+        if self.reconciler.phase() == MutationPhase::Pending
+            && self.reconciler.active_attempt() == Some(self.attempt)
+        {
             *self.task = Some(task);
         }
     }
@@ -775,7 +310,10 @@ where
         let Some(diagnostic) = self.diagnostic.take() else {
             return;
         };
-        self.machine.mark_uncertain(self.attempt, diagnostic);
+        let _ = self.reconciler.complete(
+            self.attempt,
+            MutationCommandResult::Uncertain { diagnostic },
+        );
         self.task.take();
         self.task_lease.take();
     }
@@ -785,7 +323,8 @@ impl<I: Clone> TopologyAttempt<I> {
     pub(super) fn new(owner: NodeInstanceKey) -> Self {
         Self {
             owner,
-            machine: AttemptMachine::default(),
+            reconciler: MutationReconciler::default(),
+            terminal: None,
             task_completion: Rc::new(RefCell::new(None)),
             task: None,
             task_lease: None,
@@ -794,26 +333,37 @@ impl<I: Clone> TopologyAttempt<I> {
     }
 
     pub(super) fn phase(&self) -> TopologyAttemptPhase {
-        self.machine.phase()
+        match &self.terminal {
+            Some(terminal) => terminal.phase(),
+            None => match self.reconciler.phase() {
+                MutationPhase::Idle => TopologyAttemptPhase::Idle,
+                MutationPhase::Pending => TopologyAttemptPhase::Pending,
+                MutationPhase::AwaitingSnapshot => TopologyAttemptPhase::AwaitingSnapshot,
+                MutationPhase::Retryable => TopologyAttemptPhase::Recoverable,
+                MutationPhase::Uncertain => TopologyAttemptPhase::Uncertain,
+            },
+        }
     }
 
     pub(super) fn active_intent(&self) -> Option<&I> {
-        self.machine.active_intent()
+        match &self.terminal {
+            Some(terminal) => terminal.intent(),
+            None => self.reconciler.active_intent(),
+        }
     }
 
     pub(super) fn diagnostic(&self) -> Option<&str> {
-        self.machine.diagnostic()
+        match &self.terminal {
+            Some(terminal) => Some(terminal.diagnostic()),
+            None => self.reconciler.diagnostic(),
+        }
     }
 
     pub(super) fn can_confirm_uncertain_retry(&self) -> bool {
-        self.machine.can_confirm_uncertain_retry()
+        self.terminal.is_none() && self.reconciler.can_confirm_uncertain_retry()
     }
 
     /// Enqueues one topology command and retains the supervisor that settles its ticket.
-    ///
-    /// The ticket is immediately wrapped in an internal capability and is never exposed to a
-    /// product callback. This keeps journal admission, ticket polling, panic recovery, and task
-    /// ownership in one lifecycle boundary.
     pub(super) fn dispatch<N: 'static>(
         &mut self,
         authoring: OpenGpuiNodeAuthoring,
@@ -822,12 +372,26 @@ impl<I: Clone> TopologyAttempt<I> {
         activity: &OpenGpuiNodeActivityHandle,
         cx: &mut Context<N>,
     ) -> Result<(), TopologyAttemptDispatchError> {
-        // Allocate before admission so the post-enqueue guard can transition without allocating
-        // while an unwind is already in progress.
+        if let Some(terminal) = &self.terminal {
+            return Err(match terminal {
+                TopologyTerminal::Retired { .. } => TopologyAttemptDispatchError::Retired,
+                TopologyTerminal::Closed { reason, .. } => {
+                    TopologyAttemptDispatchError::Closed { reason: *reason }
+                }
+            });
+        }
+
         let task_installation_unwound = TASK_INSTALLATION_UNWOUND_MESSAGE.to_owned();
         let version = authoring.version();
         let base_revision = version.revision();
-        let attempt = self.machine.begin_request(request, base_revision)?;
+        let attempt = match request {
+            TopologyDispatchRequest::New(intent) => self.reconciler.begin(intent, base_revision),
+            TopologyDispatchRequest::Retry(retry) => {
+                self.reconciler.begin_retry(retry.0, base_revision)
+            }
+        }
+        .map_err(map_begin_error)?;
+
         if authoring.instance() != &self.owner {
             self.retire_with(format!(
                 "topology owner {:?} was replaced by {:?}",
@@ -837,26 +401,24 @@ impl<I: Clone> TopologyAttempt<I> {
             return Err(TopologyAttemptDispatchError::Retired);
         }
         if command.expected_version() != version {
-            let diagnostic = format!(
-                "command version {:?} does not match topology owner version {version:?}",
-                command.expected_version()
-            );
             let error = TopologyAttemptDispatchError::NotDispatched {
-                message: diagnostic,
+                message: format!(
+                    "command version {:?} does not match topology owner version {version:?}",
+                    command.expected_version()
+                ),
             };
             return Err(self.fail_not_dispatched(attempt, error));
         }
         if self.retention_lease.is_none() {
-            let retention_lease = match activity.acquire(OpenGpuiActivityKind::Draft) {
-                Ok(lease) => lease,
-                Err(error) => {
-                    let error = TopologyAttemptDispatchError::Activity {
-                        message: error.to_string(),
-                    };
-                    return Err(self.fail_not_dispatched(attempt, error));
-                }
-            };
-            self.retention_lease = Some(retention_lease);
+            let retention_lease = activity
+                .acquire(OpenGpuiActivityKind::Draft)
+                .map_err(|error| TopologyAttemptDispatchError::Activity {
+                    message: error.to_string(),
+                });
+            match retention_lease {
+                Ok(lease) => self.retention_lease = Some(lease),
+                Err(error) => return Err(self.fail_not_dispatched(attempt, error)),
+            }
         }
         let task_lease = match activity.acquire(OpenGpuiActivityKind::Task) {
             Ok(lease) => lease,
@@ -891,6 +453,7 @@ impl<I: Clone> TopologyAttempt<I> {
                 };
             }
         };
+
         self.task_lease = Some(task_lease);
         let dispatched = TopologyDispatchedAttempt {
             attempt,
@@ -899,7 +462,7 @@ impl<I: Clone> TopologyAttempt<I> {
             ticket_settled: false,
         };
         let mut post_enqueue = TopologyPostEnqueueGuard::new(
-            &mut self.machine,
+            &mut self.reconciler,
             &mut self.task,
             &mut self.task_lease,
             attempt,
@@ -928,10 +491,15 @@ impl<I: Clone> TopologyAttempt<I> {
 
     fn fail_not_dispatched(
         &mut self,
-        attempt: u64,
+        attempt: MutationAttemptId,
         error: TopologyAttemptDispatchError,
     ) -> TopologyAttemptDispatchError {
-        self.machine.fail_dispatch(attempt, error.to_string());
+        let _ = self.reconciler.complete(
+            attempt,
+            MutationCommandResult::NotDispatched {
+                diagnostic: error.to_string(),
+            },
+        );
         self.sync_resources();
         error
     }
@@ -944,10 +512,16 @@ impl<I: Clone> TopologyAttempt<I> {
         let attempt = completion.attempt();
         let effect = match completion {
             TopologyTaskCompletion::Ticket { result, .. } => self.settle_ticket(attempt, *result),
-            TopologyTaskCompletion::OutcomeUnknown { message, .. } => {
-                self.machine.mark_uncertain(attempt, message.to_owned());
-                TopologyTransitionEffect::default()
-            }
+            TopologyTaskCompletion::OutcomeUnknown { message, .. } => self
+                .reconciler
+                .complete(
+                    attempt,
+                    MutationCommandResult::Uncertain {
+                        diagnostic: message.to_owned(),
+                    },
+                )
+                .map(TopologyTransitionEffect::from)
+                .unwrap_or_default(),
         };
         self.sync_resources();
         effect
@@ -955,50 +529,22 @@ impl<I: Clone> TopologyAttempt<I> {
 
     fn settle_ticket(
         &mut self,
-        attempt: u64,
+        attempt: MutationAttemptId,
         result: OpenGpuiCommandTicketResult,
     ) -> TopologyTransitionEffect {
-        let settlement = match result {
-            Ok(completion) => match completion.kind() {
-                CommandExecutionKind::Applied => TicketSettlement::Applied(
-                    completion
-                        .applied_revision()
-                        .expect("applied command completion carries a revision"),
+        let completion = match result {
+            Ok(completion) => MutationCommandResult::from_runtime(&completion),
+            Err(error) => MutationCommandResult::Uncertain {
+                diagnostic: format!(
+                    "topology edit outcome is uncertain: {error}; inspect the refreshed graph before retry"
                 ),
-                CommandExecutionKind::Noop => TicketSettlement::Noop(
-                    completion
-                        .observed_revision()
-                        .expect("noop command completion carries a revision"),
-                ),
-                CommandExecutionKind::Conflict => {
-                    let revision = completion
-                        .observed_revision()
-                        .expect("conflict command completion carries a revision");
-                    TicketSettlement::Conflict {
-                        revision,
-                        diagnostic: format!(
-                            "topology changed at revision {revision}; refresh before retry"
-                        ),
-                    }
-                }
-                CommandExecutionKind::Rejected => TicketSettlement::Rejected(format!(
-                    "topology edit was rejected: {}",
-                    completion
-                        .diagnostic_message()
-                        .unwrap_or_else(|| "command rejected".to_owned())
-                )),
-                CommandExecutionKind::Failed => TicketSettlement::Uncertain(format!(
-                    "topology edit outcome is uncertain: {}; inspect the refreshed graph before retry",
-                    completion
-                        .diagnostic_message()
-                        .unwrap_or_else(|| "command execution failed".to_owned())
-                )),
             },
-            Err(error) => TicketSettlement::Uncertain(format!(
-                "topology edit outcome is uncertain: {error}; inspect the refreshed graph before retry"
-            )),
         };
-        let effect = self.machine.settle(attempt, settlement);
+        let effect = self
+            .reconciler
+            .complete(attempt, completion)
+            .map(TopologyTransitionEffect::from)
+            .unwrap_or_default();
         if effect.receipt_recorded {
             self.task.take();
             self.task_lease.take();
@@ -1019,8 +565,12 @@ impl<I: Clone> TopologyAttempt<I> {
             ));
             return TopologyTransitionEffect::default();
         }
+        if self.terminal.is_some() {
+            return TopologyTransitionEffect::default();
+        }
         let completion = self.drain_task_completion();
-        let observation = self.machine.observe(revision, satisfied);
+        let observation =
+            TopologyTransitionEffect::from(self.reconciler.observe(revision, satisfied));
         self.sync_resources();
         completion.combine(observation)
     }
@@ -1036,42 +586,79 @@ impl<I: Clone> TopologyAttempt<I> {
     }
 
     pub(super) fn retry(&self) -> Option<TopologyRetry<I>> {
-        self.machine.prepare_retry(false)
+        self.terminal
+            .is_none()
+            .then(|| self.reconciler.retry(false))
+            .flatten()
+            .map(TopologyRetry)
     }
 
     pub(super) fn confirm_uncertain_retry(&self) -> Option<TopologyRetry<I>> {
-        self.machine.prepare_retry(true)
+        self.terminal
+            .is_none()
+            .then(|| self.reconciler.retry(true))
+            .flatten()
+            .map(TopologyRetry)
     }
 
-    fn retire_with(&mut self, diagnostic: String) {
-        self.task.take();
-        self.task_completion.borrow_mut().take();
-        self.task_lease.take();
-        self.retention_lease.take();
-        self.machine.retire(diagnostic);
+    fn retire_with(&mut self, retirement_diagnostic: String) {
+        let intent = self.reconciler.active_intent().cloned();
+        let diagnostic = self
+            .reconciler
+            .diagnostic()
+            .map(ToOwned::to_owned)
+            .unwrap_or(retirement_diagnostic);
+        self.release_native_resources();
+        self.reconciler = MutationReconciler::default();
+        self.terminal = Some(TopologyTerminal::Retired { intent, diagnostic });
     }
 
     pub(super) fn close(&mut self, reason: ViewCloseReason) {
+        let intent = self.reconciler.active_intent().cloned();
+        let diagnostic = self
+            .reconciler
+            .diagnostic()
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| format!("topology owner closed: {reason:?}"));
+        self.release_native_resources();
+        self.reconciler = MutationReconciler::default();
+        self.terminal = Some(TopologyTerminal::Closed {
+            reason,
+            intent,
+            diagnostic,
+        });
+    }
+
+    fn release_native_resources(&mut self) {
         self.task.take();
         self.task_completion.borrow_mut().take();
         self.task_lease.take();
         self.retention_lease.take();
-        self.machine.close(reason);
     }
 
     fn sync_resources(&mut self) {
-        if self.machine.phase() != TopologyAttemptPhase::Pending {
+        if self.reconciler.phase() != MutationPhase::Pending {
             self.task.take();
             self.task_lease.take();
         }
-        if matches!(
-            self.machine.phase(),
-            TopologyAttemptPhase::Idle
-                | TopologyAttemptPhase::Retired
-                | TopologyAttemptPhase::Closed
-        ) {
+        if self.reconciler.phase() == MutationPhase::Idle || self.terminal.is_some() {
             self.retention_lease.take();
         }
+    }
+}
+
+fn map_begin_error(error: MutationBeginError) -> TopologyAttemptDispatchError {
+    match error {
+        MutationBeginError::IdentityExhausted => TopologyAttemptDispatchError::IdentityExhausted,
+        MutationBeginError::Busy => TopologyAttemptDispatchError::Busy,
+        MutationBeginError::RetryExpired => TopologyAttemptDispatchError::RetryExpired,
+        MutationBeginError::StaleRetryBase {
+            required_revision,
+            received_revision,
+        } => TopologyAttemptDispatchError::StaleRetryBase {
+            required_revision,
+            received_revision,
+        },
     }
 }
 
@@ -1079,178 +666,16 @@ impl<I: Clone> TopologyAttempt<I> {
 mod tests {
     use super::*;
 
-    #[derive(Clone, Debug, Eq, PartialEq)]
-    struct Intent(&'static str);
-
-    fn pending(intent: Intent, revision: GraphRevision) -> (AttemptMachine<Intent>, u64) {
-        let mut machine = AttemptMachine::default();
-        let attempt = machine.begin_new(intent, revision).expect("begin attempt");
-        (machine, attempt)
-    }
-
     #[test]
-    fn receipt_first_waits_for_matching_authoritative_snapshot() {
-        let (mut machine, attempt) = pending(Intent("add"), 4);
-        let receipt = machine.settle(attempt, TicketSettlement::Applied(5));
-        assert!(receipt.receipt_recorded);
-        assert!(!receipt.topology_became_visible());
-        assert_eq!(machine.phase(), TopologyAttemptPhase::AwaitingSnapshot);
-
-        assert!(!machine.observe(4, |_| true).topology_became_visible());
-        assert_eq!(machine.phase(), TopologyAttemptPhase::AwaitingSnapshot);
-        assert!(
-            machine
-                .observe(5, |intent| intent.0 == "add")
-                .topology_became_visible()
-        );
-        assert_eq!(machine.phase(), TopologyAttemptPhase::Idle);
-        assert!(!machine.observe(5, |_| true).topology_became_visible());
-    }
-
-    #[test]
-    fn snapshot_first_is_retained_until_the_receipt_arrives() {
-        let (mut machine, attempt) = pending(Intent("reorder"), 9);
-        assert!(
-            !machine
-                .observe(10, |intent| intent.0 == "reorder")
-                .topology_became_visible()
-        );
-        assert_eq!(machine.phase(), TopologyAttemptPhase::Pending);
-
-        assert!(
-            machine
-                .settle(attempt, TicketSettlement::Applied(10))
-                .topology_became_visible()
-        );
-        assert_eq!(machine.phase(), TopologyAttemptPhase::Idle);
-        assert!(
-            !machine
-                .settle(attempt, TicketSettlement::Applied(10))
-                .topology_became_visible()
-        );
-    }
-
-    #[test]
-    fn noop_receipt_waits_for_the_same_matching_snapshot_evidence() {
-        let (mut machine, attempt) = pending(Intent("already-applied"), 20);
-        let receipt = machine.settle(attempt, TicketSettlement::Noop(21));
-        assert!(receipt.receipt_recorded);
-        assert!(!receipt.topology_became_visible());
-
-        assert!(
-            machine
-                .observe(21, |intent| intent.0 == "already-applied")
-                .topology_became_visible()
-        );
-        assert_eq!(machine.phase(), TopologyAttemptPhase::Idle);
-    }
-
-    #[test]
-    fn unknown_ticket_result_never_becomes_automatically_retryable() {
-        let (mut machine, attempt) = pending(Intent("remove"), 12);
-        machine.settle(
-            attempt,
-            TicketSettlement::Uncertain("receipt lost".to_owned()),
-        );
-        assert_eq!(machine.phase(), TopologyAttemptPhase::Uncertain);
-        assert!(machine.prepare_retry(false).is_none());
-        assert!(!machine.can_confirm_uncertain_retry());
-
-        machine.observe(13, |_| false);
-        assert_eq!(machine.phase(), TopologyAttemptPhase::Uncertain);
-        assert!(machine.prepare_retry(false).is_none());
-        assert!(machine.can_confirm_uncertain_retry());
-        let retry = machine
-            .prepare_retry(true)
-            .expect("fresh observation permits explicit retry");
-        assert_eq!(retry.intent(), &Intent("remove"));
-        assert_eq!(machine.phase(), TopologyAttemptPhase::Uncertain);
-        assert_eq!(machine.active_intent(), Some(&Intent("remove")));
-
-        machine
-            .begin_retry(retry, 13)
-            .expect("confirmed retry commits after planning");
-        assert_eq!(machine.phase(), TopologyAttemptPhase::Pending);
-    }
-
-    #[test]
-    fn conflict_is_recoverable_but_does_not_retry_itself() {
-        let (mut machine, attempt) = pending(Intent("add"), 2);
-        machine.settle(
-            attempt,
-            TicketSettlement::Conflict {
-                revision: 3,
-                diagnostic: "conflict".to_owned(),
-            },
-        );
-        assert_eq!(machine.phase(), TopologyAttemptPhase::Recoverable);
-        assert_eq!(machine.active_intent(), Some(&Intent("add")));
-        let retry = machine
-            .prepare_retry(false)
-            .expect("conflict exposes retry intent");
-        assert_eq!(retry.intent(), &Intent("add"));
-        assert_eq!(machine.phase(), TopologyAttemptPhase::Recoverable);
-        assert_eq!(machine.active_intent(), Some(&Intent("add")));
-    }
-
-    #[test]
-    fn failed_retry_planning_does_not_consume_recoverable_intent() {
-        let (mut machine, attempt) = pending(Intent("add"), 2);
-        machine.settle(
-            attempt,
-            TicketSettlement::Rejected("planner must be retried".to_owned()),
-        );
-
-        {
-            let abandoned_plan = machine
-                .prepare_retry(false)
-                .expect("recoverable attempt prepares a retry");
-            assert_eq!(abandoned_plan.intent(), &Intent("add"));
-        }
-
-        assert_eq!(machine.phase(), TopologyAttemptPhase::Recoverable);
-        assert_eq!(machine.active_intent(), Some(&Intent("add")));
-        assert_eq!(machine.diagnostic(), Some("planner must be retried"));
-
-        let retry = machine
-            .prepare_retry(false)
-            .expect("retry remains available after planning failure");
-        let retried_attempt = machine
-            .begin_retry(retry, 3)
-            .expect("successful planning commits the retry");
-        assert!(retried_attempt > attempt);
-        assert_eq!(machine.phase(), TopologyAttemptPhase::Pending);
-        assert_eq!(machine.active_intent(), Some(&Intent("add")));
-    }
-
-    #[test]
-    fn not_dispatched_transition_preserves_new_stable_intent() {
-        for diagnostic in ["activity lease unavailable", "command enqueue unavailable"] {
-            let (mut machine, attempt) = pending(Intent("stable-port-id"), 2);
-            machine.fail_dispatch(attempt, diagnostic.to_owned());
-
-            assert_eq!(machine.phase(), TopologyAttemptPhase::Recoverable);
-            assert_eq!(machine.active_intent(), Some(&Intent("stable-port-id")));
-            assert_eq!(machine.diagnostic(), Some(diagnostic));
-            assert_eq!(
-                machine
-                    .prepare_retry(false)
-                    .expect("not-dispatched intent remains retryable")
-                    .intent(),
-                &Intent("stable-port-id")
-            );
-        }
-    }
-
-    #[test]
-    fn task_installation_unwind_becomes_uncertain_until_a_fresh_snapshot_confirms_retry() {
-        let (mut machine, attempt) = pending(Intent("stable-port-id"), 2);
+    fn post_enqueue_guard_turns_abandoned_task_installation_into_uncertainty() {
+        let mut reconciler = MutationReconciler::default();
+        let attempt = reconciler.begin("add-port", 2).expect("begin attempt");
         let mut task: Option<Task<()>> = None;
         let mut task_lease: Option<OpenGpuiActivityLease> = None;
 
         {
-            let _post_enqueue = TopologyPostEnqueueGuard::new(
-                &mut machine,
+            let _guard = TopologyPostEnqueueGuard::new(
+                &mut reconciler,
                 &mut task,
                 &mut task_lease,
                 attempt,
@@ -1258,65 +683,47 @@ mod tests {
             );
         }
 
-        assert_eq!(machine.phase(), TopologyAttemptPhase::Uncertain);
-        assert_eq!(machine.active_intent(), Some(&Intent("stable-port-id")));
+        assert_eq!(reconciler.phase(), MutationPhase::Uncertain);
         assert_eq!(
-            machine.diagnostic(),
+            reconciler.diagnostic(),
             Some(TASK_INSTALLATION_UNWOUND_MESSAGE)
         );
-        assert!(machine.prepare_retry(false).is_none());
-        assert!(!machine.can_confirm_uncertain_retry());
         assert!(task.is_none());
         assert!(task_lease.is_none());
-
-        machine.observe(3, |_| false);
-        assert!(machine.can_confirm_uncertain_retry());
     }
 
     #[test]
-    fn stale_completion_cannot_settle_the_current_attempt() {
-        let (mut machine, attempt) = pending(Intent("add"), 7);
-        let effect = machine.settle(attempt + 1, TicketSettlement::Applied(8));
-        assert_eq!(effect, TopologyTransitionEffect::default());
-        assert_eq!(machine.phase(), TopologyAttemptPhase::Pending);
-
-        let effect = machine.settle(attempt, TicketSettlement::Applied(8));
-        assert!(effect.receipt_recorded);
-        assert!(!effect.topology_became_visible());
-        assert_eq!(machine.phase(), TopologyAttemptPhase::AwaitingSnapshot);
-    }
-
-    #[test]
-    fn old_incarnation_retains_diagnostics_and_ignores_late_snapshot_and_ticket() {
-        let (mut retired, attempt) = pending(Intent("stable-port-id"), 1);
-        retired.retire("node incarnation was replaced".to_owned());
+    fn terminal_projection_preserves_intent_diagnostic_and_close_reason() {
+        let retired = TopologyTerminal::Retired {
+            intent: Some("edit"),
+            diagnostic: "owner replaced".to_owned(),
+        };
         assert_eq!(retired.phase(), TopologyAttemptPhase::Retired);
-        assert_eq!(retired.active_intent(), Some(&Intent("stable-port-id")));
-        assert_eq!(retired.diagnostic(), Some("node incarnation was replaced"));
+        assert_eq!(retired.intent(), Some(&"edit"));
+        assert_eq!(retired.diagnostic(), "owner replaced");
 
-        assert!(!retired.observe(2, |_| true).topology_became_visible());
-        assert_eq!(
-            retired.settle(attempt, TicketSettlement::Applied(2)),
-            TopologyTransitionEffect::default()
-        );
-        assert_eq!(retired.phase(), TopologyAttemptPhase::Retired);
-        assert_eq!(retired.active_intent(), Some(&Intent("stable-port-id")));
+        let closed = TopologyTerminal::Closed {
+            reason: ViewCloseReason::HostClosed,
+            intent: Some("edit"),
+            diagnostic: "host closed".to_owned(),
+        };
+        assert_eq!(closed.phase(), TopologyAttemptPhase::Closed);
+        assert_eq!(closed.intent(), Some(&"edit"));
+        assert_eq!(closed.diagnostic(), "host closed");
         assert!(matches!(
-            retired.begin_new(Intent("again"), 2),
-            Err(TopologyAttemptDispatchError::Retired)
+            closed,
+            TopologyTerminal::Closed {
+                reason: ViewCloseReason::HostClosed,
+                ..
+            }
         ));
     }
 
     #[test]
-    fn close_is_terminal() {
-        let mut closed = AttemptMachine::<Intent>::default();
-        closed.close(ViewCloseReason::HostClosed);
-        assert_eq!(closed.phase(), TopologyAttemptPhase::Closed);
+    fn expired_retry_has_a_distinct_dispatch_error() {
         assert!(matches!(
-            closed.begin_new(Intent("again"), 2),
-            Err(TopologyAttemptDispatchError::Closed {
-                reason: ViewCloseReason::HostClosed
-            })
+            map_begin_error(MutationBeginError::RetryExpired),
+            TopologyAttemptDispatchError::RetryExpired
         ));
     }
 }

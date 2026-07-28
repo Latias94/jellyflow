@@ -10,6 +10,7 @@ pub mod graph_runtime;
 pub mod interaction;
 pub mod middleware;
 pub mod policy;
+pub mod reconciliation;
 pub(crate) mod transaction_gate;
 mod unwind;
 pub mod view_session;
