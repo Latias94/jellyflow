@@ -7,14 +7,13 @@ use std::sync::Arc;
 use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize, Graph, Node, NodeId, NodeKindKey};
 
 use crate::runtime::adapter_protocol::{
-    FrameRequest, GeometrySnapshot, LayoutNodeStatus, LayoutOperationReceipt,
+    FeedbackLayoutWork, FrameRequest, GeometrySnapshot, LayoutNodeStatus, LayoutOperationReceipt,
     LayoutPublicationReceipt, PortLayoutOutcome, PublishedNodeGeometry, PublishedPortGeometry,
     PublishedPortOutcome,
 };
 use crate::runtime::geometry::CanvasBounds;
 use crate::runtime::graph_runtime::{
     AdapterNodeRuntimeFacts, GeometryImpact, GraphSnapshot, IncidentEdgeSnapshot,
-    IncidentSnapshotWork,
 };
 use crate::runtime::interaction::{
     AlignmentSnapQuery, AlignmentSnapQueryOutcome, AlignmentSnapWork, resolve_alignment_snap,
@@ -994,7 +993,7 @@ pub(super) fn publish_layouts(
     layouts: Vec<PendingLayout>,
     receipts: &mut [LayoutOperationReceipt],
     global_stale: bool,
-) -> (Option<LayoutPublicationReceipt>, IncidentSnapshotWork) {
+) -> (Option<LayoutPublicationReceipt>, FeedbackLayoutWork) {
     const GEOMETRY_EPSILON: f32 = 1.0 / 64.0;
 
     let mut node_layout_counts = BTreeMap::<NodeId, usize>::new();
@@ -1097,15 +1096,12 @@ pub(super) fn publish_layouts(
         })
         .collect();
     let policy = state.policy;
-    state
-        .derived
-        .record_layout_candidate_impact(impact_candidates_checked, impact_candidates_stale);
     let ViewState {
         derived,
         selected_edge_membership,
         ..
     } = state;
-    derived.publish_complete_layout(
+    let (publication, work) = derived.publish_complete_layout(
         snapshot,
         staged,
         withdrawals,
@@ -1113,6 +1109,19 @@ pub(super) fn publish_layouts(
         request_refresh,
         policy,
         selected_edge_membership,
+    );
+    (
+        publication,
+        FeedbackLayoutWork::new(
+            impact_candidates_checked,
+            impact_candidates_stale,
+            work.incident_snapshot.entries_read(),
+            work.incident_snapshot.materializations(),
+            work.spatial_updates,
+            work.route_invalidations,
+            work.route_recomputations,
+            work.refresh_requested,
+        ),
     )
 }
 

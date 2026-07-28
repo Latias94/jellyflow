@@ -313,7 +313,9 @@ impl RuntimeInteractionBridge {
                     .expect("source port is current");
                 let drag_intent = view
                     .port_connection_drag_intent(source)
-                    .expect("source port starts a connection");
+                    .expect("source port starts a connection")
+                    .into_outcome()
+                    .expect("source port remains current");
                 let start = view
                     .connection_start_from_port_drag_intent(
                         drag_intent,

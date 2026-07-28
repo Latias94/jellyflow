@@ -12,6 +12,7 @@ pub use crate::runtime::geometry::HandlePosition;
 use crate::runtime::view_session::{ViewId, ViewSessionError};
 
 use super::frame::{FrameToken, NodeLayoutTarget, PortLayoutTarget};
+use super::work::GeometryImpactMergeWork;
 use super::{ViewPoint, ViewRect};
 
 /// Framework view-space geometry for one rendered real graph port.
@@ -542,8 +543,6 @@ pub struct LayoutPublicationReceipt {
     after_revision: u64,
     published_nodes: Vec<NodeId>,
     withdrawn_nodes: Vec<NodeId>,
-    spatial_updates: u64,
-    route_recomputations: u64,
 }
 
 impl LayoutPublicationReceipt {
@@ -552,16 +551,12 @@ impl LayoutPublicationReceipt {
         after_revision: u64,
         published_nodes: Vec<NodeId>,
         withdrawn_nodes: Vec<NodeId>,
-        spatial_updates: u64,
-        route_recomputations: u64,
     ) -> Self {
         Self {
             before_revision,
             after_revision,
             published_nodes,
             withdrawn_nodes,
-            spatial_updates,
-            route_recomputations,
         }
     }
 
@@ -584,13 +579,126 @@ impl LayoutPublicationReceipt {
     pub fn withdrawn_nodes(&self) -> &[NodeId] {
         &self.withdrawn_nodes
     }
+}
 
-    pub fn spatial_updates(&self) -> u64 {
+/// Work performed while validating and publishing layouts from one feedback submission.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FeedbackLayoutWork {
+    candidates_checked: u64,
+    candidates_stale: u64,
+    incident_snapshot_entries_read: u64,
+    incident_snapshot_materializations: u64,
+    spatial_updates: u64,
+    route_invalidations: u64,
+    route_recomputations: u64,
+    refresh_requested: bool,
+}
+
+impl FeedbackLayoutWork {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) const fn new(
+        candidates_checked: u64,
+        candidates_stale: u64,
+        incident_snapshot_entries_read: u64,
+        incident_snapshot_materializations: u64,
+        spatial_updates: u64,
+        route_invalidations: u64,
+        route_recomputations: u64,
+        refresh_requested: bool,
+    ) -> Self {
+        Self {
+            candidates_checked,
+            candidates_stale,
+            incident_snapshot_entries_read,
+            incident_snapshot_materializations,
+            spatial_updates,
+            route_invalidations,
+            route_recomputations,
+            refresh_requested,
+        }
+    }
+
+    pub(crate) const fn empty() -> Self {
+        Self::new(0, 0, 0, 0, 0, 0, 0, false)
+    }
+
+    /// Returns the number of submitted node-layout candidates validated.
+    #[must_use]
+    pub const fn candidates_checked(self) -> u64 {
+        self.candidates_checked
+    }
+
+    /// Returns the candidates rejected because their frame facts were stale.
+    #[must_use]
+    pub const fn candidates_stale(self) -> u64 {
+        self.candidates_stale
+    }
+
+    /// Returns incident-edge snapshot entries read for accepted candidates.
+    #[must_use]
+    pub const fn incident_snapshot_entries_read(self) -> u64 {
+        self.incident_snapshot_entries_read
+    }
+
+    /// Returns new incident-edge snapshots materialized for accepted candidates.
+    #[must_use]
+    pub const fn incident_snapshot_materializations(self) -> u64 {
+        self.incident_snapshot_materializations
+    }
+
+    /// Returns unique node geometry entries inserted, replaced, or withdrawn.
+    #[must_use]
+    pub const fn spatial_updates(self) -> u64 {
         self.spatial_updates
     }
 
-    pub fn route_recomputations(&self) -> u64 {
+    /// Returns route identities submitted for invalidation.
+    #[must_use]
+    pub const fn route_invalidations(self) -> u64 {
+        self.route_invalidations
+    }
+
+    /// Returns route recomputation attempts, including unresolved routes.
+    #[must_use]
+    pub const fn route_recomputations(self) -> u64 {
         self.route_recomputations
+    }
+
+    /// Returns whether the accepted feedback requested a follow-up frame.
+    #[must_use]
+    pub const fn refresh_requested(self) -> bool {
+        self.refresh_requested
+    }
+}
+
+/// Operation-scoped work evidence for one accepted feedback submission.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FeedbackWorkReceipt {
+    command_impact: GeometryImpactMergeWork,
+    layout: FeedbackLayoutWork,
+}
+
+impl FeedbackWorkReceipt {
+    pub(crate) const fn new(
+        command_impact: GeometryImpactMergeWork,
+        layout: FeedbackLayoutWork,
+    ) -> Self {
+        Self {
+            command_impact,
+            layout,
+        }
+    }
+
+    /// Returns work spent merging patches produced by commands in this feedback submission.
+    #[must_use]
+    pub const fn command_impact(self) -> GeometryImpactMergeWork {
+        self.command_impact
+    }
+
+    /// Returns work spent validating and publishing this submission's layout candidates.
+    #[must_use]
+    pub const fn layout(self) -> FeedbackLayoutWork {
+        self.layout
     }
 }
 
@@ -599,6 +707,7 @@ pub struct FeedbackReceipt {
     command_completions: CommandExecutionCompletions,
     layouts: Vec<LayoutOperationReceipt>,
     publication: Option<LayoutPublicationReceipt>,
+    work: FeedbackWorkReceipt,
 }
 
 impl FeedbackReceipt {
@@ -606,6 +715,7 @@ impl FeedbackReceipt {
         command_completions: Vec<CommandExecutionCompletion>,
         layouts: Vec<LayoutOperationReceipt>,
         publication: Option<LayoutPublicationReceipt>,
+        work: FeedbackWorkReceipt,
     ) -> Self {
         Self {
             command_completions: CommandExecutionCompletions::from_prevalidated_ordered(
@@ -613,6 +723,7 @@ impl FeedbackReceipt {
             ),
             layouts,
             publication,
+            work,
         }
     }
 
@@ -656,10 +767,13 @@ impl FeedbackReceipt {
         self.publication.as_ref()
     }
 
+    #[must_use]
+    pub const fn work(&self) -> &FeedbackWorkReceipt {
+        &self.work
+    }
+
     pub fn request_next_frame(&self) -> bool {
-        self.publication
-            .as_ref()
-            .is_some_and(|publication| publication.route_recomputations() > 0)
+        self.work.layout.route_recomputations > 0
             || self
                 .layouts
                 .iter()

@@ -302,6 +302,7 @@ pub(super) fn free_connection_port(view: &WeakViewSession) -> Result<Option<Port
         let Some(summary) = view
             .port_connection_summary(port)
             .map_err(|_| "input_port_summary_failed")?
+            .into_outcome()
         else {
             continue;
         };

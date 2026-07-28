@@ -138,17 +138,27 @@ fn empty_or_unchanged_batch_geometry_is_a_zero_side_effect_noop() {
         .unwrap();
     let version = runtime.snapshot().unwrap().version();
 
-    for command in [
-        GraphCommand::set_node_geometry(version, []),
-        GraphCommand::set_node_geometry(
-            version,
-            [NodeGeometryEdit::new(nodes[0])
-                .with_position(original.pos)
-                .with_size(original.size)],
+    for (expected_fact_reads, command) in [
+        (0, GraphCommand::set_node_geometry(version, [])),
+        (
+            1,
+            GraphCommand::set_node_geometry(
+                version,
+                [NodeGeometryEdit::new(nodes[0])
+                    .with_position(original.pos)
+                    .with_size(original.size)],
+            ),
         ),
     ] {
         let outcome = runtime.execute(command).into_result().unwrap();
-        assert!(matches!(outcome, GraphCommandOutcome::Noop(_)));
+        let GraphCommandOutcome::Noop(noop) = outcome else {
+            panic!("unchanged geometry must be a no-op");
+        };
+        assert_eq!(noop.planning_work().fact_reads(), expected_fact_reads);
+        assert_eq!(noop.planning_work().index_bucket_reads(), 0);
+        assert_eq!(noop.planning_work().index_entries_read(), 0);
+        assert_eq!(noop.planning_work().operations_emitted(), 0);
+        assert_eq!(noop.planning_work().full_type_revalidations(), 0);
         assert_eq!(runtime.snapshot().unwrap().revision(), 0);
         assert_eq!(runtime.history_state().unwrap().undo_len(), 0);
     }
@@ -196,7 +206,7 @@ fn batch_geometry_planning_reads_only_declared_nodes_at_scale() {
         .build(graph)
         .unwrap();
 
-    runtime
+    let outcome = runtime
         .execute(GraphCommand::set_node_geometry(
             runtime.snapshot().unwrap().version(),
             [
@@ -206,13 +216,14 @@ fn batch_geometry_planning_reads_only_declared_nodes_at_scale() {
             ],
         ))
         .into_result()
-        .unwrap()
+        .unwrap();
+    let planning_work = outcome
         .applied()
-        .expect("geometry batch applies");
+        .expect("geometry batch applies")
+        .planning_work();
 
-    let stats = runtime.stats().unwrap();
-    assert_eq!(stats.command_planning_fact_reads, 3);
-    assert_eq!(stats.command_planning_index_bucket_reads, 0);
-    assert_eq!(stats.command_planning_index_entries_read, 0);
-    assert_eq!(stats.command_planning_operations_emitted, 3);
+    assert_eq!(planning_work.fact_reads(), 3);
+    assert_eq!(planning_work.index_bucket_reads(), 0);
+    assert_eq!(planning_work.index_entries_read(), 0);
+    assert_eq!(planning_work.operations_emitted(), 3);
 }

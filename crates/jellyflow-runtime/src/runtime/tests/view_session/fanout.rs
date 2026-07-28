@@ -9,12 +9,32 @@ use crate::runtime::commands::{GraphCommand, IncidentEdgePolicy, TopologyEdit};
 use crate::runtime::graph_runtime::{
     GraphRuntime, GraphRuntimeError, GraphRuntimeEvent, RuntimePatch, RuntimePatchKind,
 };
-use crate::runtime::view_session::{ViewCloseReason, ViewSession, ViewSessionEvent};
+use crate::runtime::view_session::{
+    RuntimePatchReconciliationReceipt, ViewCloseReason, ViewSession, ViewSessionEvent,
+};
 use crate::schema::NodeCatalog;
 
 use super::fixtures::{graph_with_nodes, publish_graph_layouts, view_options};
 
 struct PanicIfDropped;
+
+type ObservedRuntimePatches = Rc<RefCell<Vec<(RuntimePatch, RuntimePatchReconciliationReceipt)>>>;
+
+fn observe_runtime_patches(view: &ViewSession) -> ObservedRuntimePatches {
+    let observed = Rc::new(RefCell::new(Vec::new()));
+    let callback_observed = observed.clone();
+    view.subscribe(move |event| {
+        if let ViewSessionEvent::RuntimePatched {
+            patch,
+            reconciliation,
+        } = event
+        {
+            callback_observed.borrow_mut().push((patch, reconciliation));
+        }
+    })
+    .unwrap();
+    observed
+}
 
 impl Drop for PanicIfDropped {
     fn drop(&mut self) {
@@ -187,7 +207,6 @@ fn subscriber_panics_do_not_truncate_committed_patch_fanout() {
     assert_eq!(later_runtime_calls.get(), 1);
     assert_eq!(later_view_calls.get(), 1);
     assert_eq!(node_calls.get(), 1);
-    assert_eq!(view.stats().unwrap().runtime_patches, 1);
 }
 
 #[test]
@@ -415,17 +434,7 @@ fn document_replacement_fans_out_one_reset_patch_and_retires_every_old_incarnati
         .collect::<Vec<_>>();
     let observed = views
         .iter()
-        .map(|view| {
-            let patches = Rc::new(RefCell::new(Vec::<RuntimePatch>::new()));
-            let observer = patches.clone();
-            view.subscribe(move |event| {
-                if let ViewSessionEvent::RuntimePatched { patch } = event {
-                    observer.borrow_mut().push(patch);
-                }
-            })
-            .unwrap();
-            patches
-        })
+        .map(observe_runtime_patches)
         .collect::<Vec<_>>();
     let (replacement, _) = graph_with_nodes(1);
     let replacement = runtime.catalog().canonicalize_graph(&replacement).unwrap();
@@ -446,13 +455,13 @@ fn document_replacement_fans_out_one_reset_patch_and_retires_every_old_incarnati
     );
     assert_eq!(patch.node_lifetime_change(ids[1]), Some(None));
     assert_eq!(runtime.node_lifetime_key(ids[1]).unwrap(), None);
-    assert_eq!(runtime.stats().unwrap().patch_deliveries, 2);
     for (view, patches) in views.iter().zip(&observed) {
         assert_eq!(view.graph_snapshot().unwrap().revision(), 2);
         let patches = patches.borrow();
         assert_eq!(patches.len(), 1);
-        assert_eq!(patches[0].kind(), RuntimePatchKind::DocumentReset);
-        assert!(patch.ptr_eq(&patches[0]));
+        assert_eq!(patches[0].0.kind(), RuntimePatchKind::DocumentReset);
+        assert!(patch.ptr_eq(&patches[0].0));
+        assert!(patches[0].1.pending_frame_impact().is_none());
     }
 }
 
@@ -482,7 +491,6 @@ fn foreign_catalog_document_replacement_has_zero_side_effects() {
         .unwrap();
     let before = runtime.snapshot().unwrap();
     let history_before = runtime.history_state().unwrap();
-    let stats_before = runtime.stats().unwrap();
     let lifetime_before = runtime.node_lifetime_key(ids[0]).unwrap();
     let foreign_catalog = NodeCatalog::new();
     let replacement = foreign_catalog
@@ -495,7 +503,6 @@ fn foreign_catalog_document_replacement_has_zero_side_effects() {
     ));
     assert!(before.ptr_eq(&runtime.snapshot().unwrap()));
     assert_eq!(runtime.history_state().unwrap(), history_before);
-    assert_eq!(runtime.stats().unwrap(), stats_before);
     assert_eq!(runtime.node_lifetime_key(ids[0]).unwrap(), lifetime_before);
     assert_eq!(view_events.get(), 0);
     assert_eq!(runtime_events.get(), 0);
@@ -536,14 +543,7 @@ fn one_node_change_has_bounded_four_view_fanout_in_ten_thousand_node_graph() {
             view.subscribe_node(node, move |_| counter.set(counter.get() + 1))
                 .unwrap();
         }
-        let patches = Rc::new(RefCell::new(Vec::<RuntimePatch>::new()));
-        let patches_observer = patches.clone();
-        view.subscribe(move |event| {
-            if let ViewSessionEvent::RuntimePatched { patch } = event {
-                patches_observer.borrow_mut().push(patch);
-            }
-        })
-        .unwrap();
+        let patches = observe_runtime_patches(&view);
         views.push(view);
         observed.push(patches);
         binding_counts.push(counters);
@@ -570,24 +570,21 @@ fn one_node_change_has_bounded_four_view_fanout_in_ten_thousand_node_graph() {
         serde_json::Value::Null
     );
 
-    let runtime_stats = runtime.stats().unwrap();
-    assert_eq!(runtime_stats.patch_builds, 1);
-    assert_eq!(runtime_stats.patch_deliveries, 4);
-    assert_eq!(runtime_stats.command_planning_fact_reads, 1);
-    assert_eq!(runtime_stats.command_planning_operations_emitted, 1);
+    assert_eq!(receipt.planning_work().fact_reads(), 1);
+    assert_eq!(receipt.planning_work().operations_emitted(), 1);
 
     for ((view, patches), counters) in views.iter().zip(&observed).zip(&binding_counts) {
-        let stats = view.stats().unwrap();
-        assert_eq!(stats.runtime_patches, 1);
-        assert_eq!(stats.node_invalidations, 1);
-        assert_eq!(stats.fact_records_visited, 1);
-        assert_eq!(stats.node_binding_notifications, 1);
-        assert_eq!(stats.spatial_updates, 0);
-        assert_eq!(stats.route_invalidations, 0);
-        assert_eq!(stats.view_state_sanitizations, 0);
         assert_eq!(view.export_seed().unwrap().stacking().nodes().len(), 10_000);
-        assert_eq!(patches.borrow().len(), 1);
-        assert_eq!(patches.borrow()[0].affected_nodes().len(), 1);
+        let patches = patches.borrow();
+        assert_eq!(patches.len(), 1);
+        assert_eq!(patches[0].0.affected_nodes().len(), 1);
+        let reconciliation = &patches[0].1;
+        assert_eq!(reconciliation.facts().fact_records_visited(), 1);
+        assert_eq!(reconciliation.facts().route_impact_entries_visited(), 0);
+        assert_eq!(reconciliation.geometry().node_invalidations(), 1);
+        assert_eq!(reconciliation.geometry().spatial_updates(), 0);
+        assert_eq!(reconciliation.geometry().route_invalidations(), 0);
+        assert!(!reconciliation.selection().reconciled());
         for (index, counter) in counters.iter().enumerate() {
             assert_eq!(counter.get(), usize::from(index == 4_321));
         }
@@ -595,7 +592,7 @@ fn one_node_change_has_bounded_four_view_fanout_in_ten_thousand_node_graph() {
 
     let first = observed[0].borrow();
     for patches in observed.iter().skip(1) {
-        assert!(first[0].ptr_eq(&patches.borrow()[0]));
+        assert!(first[0].0.ptr_eq(&patches.borrow()[0].0));
     }
 }
 
@@ -618,6 +615,10 @@ fn one_retirement_uses_exact_tombstones_across_four_ten_thousand_item_draw_order
                 .expect("view")
         })
         .collect::<Vec<_>>();
+    let observed = views
+        .iter()
+        .map(observe_runtime_patches)
+        .collect::<Vec<_>>();
 
     runtime
         .execute(GraphCommand::topology(
@@ -629,10 +630,12 @@ fn one_retirement_uses_exact_tombstones_across_four_ten_thousand_item_draw_order
         .applied()
         .expect("retirement applies");
 
-    for view in views {
+    for (view, observed) in views.into_iter().zip(observed) {
         assert_eq!(view.draw_order_storage_counts_for_test(), (10_000, 1));
-        let stats = view.stats().unwrap();
-        assert_eq!(stats.view_state_sanitizations, 1);
+        let observed = observed.borrow();
+        assert_eq!(observed.len(), 1);
+        assert!(observed[0].1.selection().reconciled());
+        assert!(observed[0].1.selection().membership_rebuilt());
         let seed = view.export_seed().unwrap();
         assert!(seed.selection().nodes().is_empty());
         assert_eq!(seed.stacking().nodes().len(), 9_999);
@@ -659,6 +662,10 @@ fn unselected_retirement_skips_full_selection_sanitation_in_four_large_views() {
                 .expect("view")
         })
         .collect::<Vec<_>>();
+    let observed = views
+        .iter()
+        .map(observe_runtime_patches)
+        .collect::<Vec<_>>();
 
     runtime
         .execute(GraphCommand::topology(
@@ -670,10 +677,13 @@ fn unselected_retirement_skips_full_selection_sanitation_in_four_large_views() {
         .applied()
         .expect("unselected retirement applies");
 
-    for view in views {
+    for (view, observed) in views.into_iter().zip(observed) {
         let seed = view.export_seed().expect("selection remains available");
         assert_eq!(seed.selection().nodes(), selected);
-        assert_eq!(view.stats().unwrap().view_state_sanitizations, 0);
+        let observed = observed.borrow();
+        assert_eq!(observed.len(), 1);
+        assert!(!observed[0].1.selection().reconciled());
+        assert!(!observed[0].1.selection().membership_rebuilt());
     }
 }
 

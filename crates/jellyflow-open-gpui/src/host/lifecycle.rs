@@ -6,9 +6,9 @@ use std::task::{Poll, Waker};
 
 use jellyflow_core::NodeId;
 use jellyflow_runtime::{
-    graph::GraphRevision, graph::NodeLifetimeKey, view::NodeInstanceKey, view::ViewCloseOutcome,
-    view::ViewCloseReason, view::ViewCloseRequest, view::ViewSession, view::ViewSessionError,
-    view::ViewSessionEvent, view::ViewSubscriptionToken,
+    graph::GraphRevision, graph::NodeLifetimeKey, graph::RuntimePatch, view::NodeInstanceKey,
+    view::ViewCloseOutcome, view::ViewCloseReason, view::ViewCloseRequest, view::ViewSession,
+    view::ViewSessionError, view::ViewSessionEvent, view::ViewSubscriptionToken,
 };
 use open_gpui::{AsyncWindowContext, Context, Task, WeakEntity, Window};
 
@@ -126,18 +126,8 @@ impl HostLifecycleSignal {
 
     pub(super) fn publish(&self, event: ViewSessionEvent) {
         match event {
-            ViewSessionEvent::RuntimePatched { patch } => {
-                let nodes = patch.affected_nodes().iter().copied().map(|node| {
-                    let current_lifetime = match patch.node_lifetime_change(node) {
-                        Some(_) => patch
-                            .snapshot()
-                            .node_lifetime_key(node)
-                            .map_or(CurrentNodeLifetime::Retired, CurrentNodeLifetime::Live),
-                        None => CurrentNodeLifetime::Unavailable,
-                    };
-                    (node, current_lifetime)
-                });
-                self.publish_patch(patch.to_revision(), nodes);
+            ViewSessionEvent::RuntimePatched { patch, .. } => {
+                self.publish_runtime_patch(patch);
             }
             ViewSessionEvent::ViewportChanged { .. }
             | ViewSessionEvent::SelectionChanged { .. } => self.publish_view_changed(),
@@ -168,6 +158,25 @@ impl HostLifecycleSignal {
             .patch_pending
             .replace(false)
             .then(|| NodeChanges(std::mem::take(&mut *self.state.node_changes.borrow_mut())))
+    }
+
+    fn publish_runtime_patch(&self, patch: RuntimePatch) {
+        let nodes = patch.affected_nodes().iter().copied().map(|node| {
+            let current_lifetime = match patch.node_lifetime_change(node) {
+                Some(_) => patch
+                    .snapshot()
+                    .node_lifetime_key(node)
+                    .map_or(CurrentNodeLifetime::Retired, CurrentNodeLifetime::Live),
+                None => CurrentNodeLifetime::Unavailable,
+            };
+            (node, current_lifetime)
+        });
+        self.publish_patch(patch.to_revision(), nodes);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn publish_runtime_patch_for_test(&self, patch: RuntimePatch) {
+        self.publish_runtime_patch(patch);
     }
 
     fn publish_patch(

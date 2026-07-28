@@ -115,8 +115,6 @@ fn duplicate_command_identity_rejects_before_consuming_the_frame_or_mutating_sta
 
     let before_snapshot = runtime.snapshot().unwrap();
     let before_history = runtime.history_state().unwrap();
-    let before_runtime_stats = runtime.stats().unwrap();
-    let before_view_stats = session.stats().unwrap();
 
     let error = session
         .submit_feedback(invalid_feedback)
@@ -128,8 +126,6 @@ fn duplicate_command_identity_rejects_before_consuming_the_frame_or_mutating_sta
     assert_eq!(identity, command_identity);
     assert!(runtime.snapshot().unwrap().ptr_eq(&before_snapshot));
     assert_eq!(runtime.history_state().unwrap(), before_history);
-    assert_eq!(runtime.stats().unwrap(), before_runtime_stats);
-    assert_eq!(session.stats().unwrap(), before_view_stats);
 
     let receipt = session
         .submit_feedback(retry_feedback)
@@ -694,7 +690,7 @@ fn feedback_notifications_observe_completed_command_log_before_conflicted_follow
     let weak = session.downgrade();
     session
         .subscribe(move |event| {
-            let ViewSessionEvent::RuntimePatched { patch } = event else {
+            let ViewSessionEvent::RuntimePatched { patch, .. } = event else {
                 return;
             };
             callback_observations.borrow_mut().push((

@@ -10,7 +10,9 @@ use crate::runtime::policy::GraphRuntimePolicy;
 use crate::runtime::transaction_gate::GraphTransactionGate;
 use crate::schema::NodeCatalog;
 
-use super::model::{GraphCommand, GraphCommandAction, IncidentEdgePolicy};
+use super::model::{
+    GraphCommand, GraphCommandAction, GraphCommandPlanningWork, IncidentEdgePolicy,
+};
 
 mod connection;
 mod context;
@@ -25,7 +27,7 @@ pub(crate) struct PlannedGraphCommand {
     pub(crate) transaction: GraphTransaction,
     pub(crate) footprint: GraphMutationFootprint,
     pub(crate) graph: Graph,
-    pub(crate) planning_stats: GraphCommandPlanningStats,
+    pub(crate) planning_work: GraphCommandPlanningWork,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -38,6 +40,16 @@ pub(crate) struct GraphCommandPlanningStats {
 }
 
 impl GraphCommandPlanningStats {
+    fn into_work(self) -> GraphCommandPlanningWork {
+        GraphCommandPlanningWork::new(
+            self.fact_reads,
+            self.index_bucket_reads,
+            self.index_entries_read,
+            self.operations_emitted,
+            self.full_type_revalidations,
+        )
+    }
+
     fn read_facts(&mut self, count: usize) {
         self.fact_reads = self.fact_reads.saturating_add(count as u64);
     }
@@ -213,7 +225,7 @@ pub(crate) fn plan_graph_command(
         transaction,
         footprint,
         graph,
-        planning_stats,
+        planning_work: planning_stats.into_work(),
     })
 }
 

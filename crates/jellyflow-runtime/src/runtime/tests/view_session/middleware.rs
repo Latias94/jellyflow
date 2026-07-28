@@ -132,7 +132,7 @@ fn close_before_middleware_panic_after_prior_commit_still_terminalizes() {
     let callback_revisions = observed_revisions.clone();
     observer
         .subscribe(move |event| {
-            if let ViewSessionEvent::RuntimePatched { patch } = event {
+            if let ViewSessionEvent::RuntimePatched { patch, .. } = event {
                 callback_revisions.borrow_mut().push(patch.to_revision());
             }
         })
@@ -242,7 +242,7 @@ fn panicking_after_middleware_is_restored_and_preserves_committed_state() {
     let view_revisions = Rc::new(RefCell::new(Vec::new()));
     let observed_view_revisions = view_revisions.clone();
     view.subscribe(move |event| {
-        let ViewSessionEvent::RuntimePatched { patch } = event else {
+        let ViewSessionEvent::RuntimePatched { patch, .. } = event else {
             return;
         };
         observed_view_revisions
@@ -291,7 +291,6 @@ fn panicking_after_middleware_is_restored_and_preserves_committed_state() {
     assert_eq!(&*runtime_revisions.borrow(), &[1]);
     assert_eq!(&*view_revisions.borrow(), &[1]);
     assert_eq!(&*binding_revisions.borrow(), &[1]);
-    assert_eq!(view.stats().unwrap().runtime_patches, 1);
     let after_panic_frame = view.frame(frame_request()).unwrap();
     assert_eq!(after_panic_frame.graph_revision(), 1);
     assert_eq!(after_panic_frame.nodes()[0].binding_revision(), 1);
@@ -360,7 +359,7 @@ fn close_after_middleware_panic_fans_out_committed_patch_and_terminalizes_view()
     let observed_observer_revisions = observer_revisions.clone();
     observer
         .subscribe(move |event| {
-            let ViewSessionEvent::RuntimePatched { patch } = event else {
+            let ViewSessionEvent::RuntimePatched { patch, .. } = event else {
                 return;
             };
             observed_observer_revisions
@@ -416,7 +415,6 @@ fn close_after_middleware_panic_fans_out_committed_patch_and_terminalizes_view()
     assert_eq!(&*runtime_revisions.borrow(), &[1, 2]);
     assert_eq!(&*observer_revisions.borrow(), &[1, 2]);
     assert_eq!(&*binding_revisions.borrow(), &[1, 2]);
-    assert_eq!(observer.stats().unwrap().runtime_patches, 2);
     let frame = observer.frame(frame_request()).unwrap();
     assert_eq!(frame.graph_revision(), 2);
     assert_eq!(frame.nodes()[0].binding_revision(), 2);
@@ -521,6 +519,11 @@ fn graph_runtime_middleware_rejection_has_zero_side_effects() {
         .unwrap()
         .with_middleware(RejectMiddleware);
     let before = runtime.snapshot().unwrap();
+    let event_count = Rc::new(Cell::new(0));
+    let callback_count = event_count.clone();
+    runtime
+        .subscribe(move |_| callback_count.set(callback_count.get() + 1))
+        .unwrap();
 
     let result = runtime
         .execute(GraphCommand::set_node_data(
@@ -533,7 +536,7 @@ fn graph_runtime_middleware_rejection_has_zero_side_effects() {
     assert!(result.unwrap().rejection().is_some());
     assert!(runtime.snapshot().unwrap().ptr_eq(&before));
     assert_eq!(runtime.history_state().unwrap().undo_len(), 0);
-    assert_eq!(runtime.stats().unwrap().patch_builds, 0);
+    assert_eq!(event_count.get(), 0);
 }
 
 struct CountBeforeMiddleware(Rc<Cell<usize>>);
@@ -726,7 +729,6 @@ fn assert_history_middleware_rejection(rejected_label: &'static str) {
     }
     let before = runtime.snapshot().unwrap();
     let history_before = runtime.history_state().unwrap();
-    let stats_before = runtime.stats().unwrap();
     let event_count = Rc::new(Cell::new(0));
     let callback_count = event_count.clone();
     runtime
@@ -750,6 +752,5 @@ fn assert_history_middleware_rejection(rejected_label: &'static str) {
     );
     assert!(before.ptr_eq(&runtime.snapshot().unwrap()));
     assert_eq!(runtime.history_state().unwrap(), history_before);
-    assert_eq!(runtime.stats().unwrap(), stats_before);
     assert_eq!(event_count.get(), 0);
 }

@@ -69,7 +69,9 @@ pub(crate) fn port_connection_drag_intent_by_id(
     view: &ViewSession,
     port: PortId,
 ) -> Result<PortConnectionDragIntent, ViewSessionError> {
-    view.port_connection_drag_intent(current_port_instance(view, port))
+    view.port_connection_drag_intent(current_port_instance(view, port))?
+        .into_outcome()
+        .ok_or(ViewSessionError::StaleInteractionFacts)
 }
 
 pub(crate) fn keyboard_connection_port_by_id(

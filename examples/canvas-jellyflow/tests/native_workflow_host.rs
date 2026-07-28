@@ -78,7 +78,9 @@ fn exec_create_from_wire_finds_both_workflow_kinds() {
         .expect("workflow output is current");
     let intent = view
         .port_connection_drag_intent(success)
-        .expect("connectable workflow output");
+        .expect("connectable workflow output")
+        .into_outcome()
+        .expect("workflow output remains current");
     let binding =
         jellyflow_runtime::interaction::ConnectionInteractionStart::binding_from_port_drag(
             intent,

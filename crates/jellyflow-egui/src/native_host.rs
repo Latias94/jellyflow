@@ -41,7 +41,7 @@ impl EguiNativeFrameHost {
         let weak_lifecycle = Rc::downgrade(&lifecycle);
         let terminal_subscription = view
             .subscribe(move |event| match event {
-                ViewSessionEvent::RuntimePatched { patch } => {
+                ViewSessionEvent::RuntimePatched { patch, .. } => {
                     if let Some(lifecycle) = weak_lifecycle.upgrade() {
                         reconcile_lifecycle_patch(&lifecycle, &patch);
                     }

@@ -35,7 +35,7 @@ impl OpenGpuiPresentationPortCache {
         if self.revision == Some(revision) && self.requested == requested {
             return Ok(false);
         }
-        let batch = view.port_connection_summaries(requested)?;
+        let batch = view.port_connection_summaries(requested)?.into_outcome();
         if batch.revision() != revision {
             return Err(OpenGpuiPresentationSyncError::IncoherentRevision {
                 graph_revision: revision,

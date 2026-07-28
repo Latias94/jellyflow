@@ -10,7 +10,8 @@ mod subscriptions;
 
 pub use create_from_wire::{CreateFromWireCandidates, CreateFromWireQueryError};
 pub use port_connection_facts::{
-    PortConnectionDragFacts, PortConnectionDragIntent, PortConnectionFacts, PortConnectionSummary,
+    PortConnectionDragFacts, PortConnectionDragIntent, PortConnectionFacts,
+    PortConnectionQueryResult, PortConnectionQueryWork, PortConnectionSummary,
     PortConnectionSummaryBatch, PortIncidentConnectionFacts,
 };
 
@@ -37,8 +38,9 @@ use crate::schema::{CanonicalGraph, NodeCatalog, NodeCatalogMigrationError};
 pub use crate::runtime::policy::GraphRuntimePolicy;
 
 use crate::runtime::view_session::{
-    AttachViewError, ViewCloseOutcome, ViewCloseReason, ViewCloseRequest, ViewGeneration, ViewId,
-    ViewSession, ViewSessionError, ViewSessionOptions, ViewShared,
+    AttachViewError, RuntimePatchReconciliationReceipt, ViewCloseOutcome, ViewCloseReason,
+    ViewCloseRequest, ViewGeneration, ViewId, ViewSession, ViewSessionError, ViewSessionOptions,
+    ViewShared,
 };
 
 use self::execution::collect_live_sessions;
@@ -556,22 +558,6 @@ impl HistoryState {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct GraphRuntimeStats {
-    pub patch_builds: u64,
-    pub patch_deliveries: u64,
-    pub command_planning_fact_reads: u64,
-    pub command_planning_index_bucket_reads: u64,
-    pub command_planning_index_entries_read: u64,
-    pub command_planning_operations_emitted: u64,
-    pub command_planning_full_type_revalidations: u64,
-    pub connection_query_fact_reads: u64,
-    pub connection_query_index_bucket_reads: u64,
-    pub connection_query_index_entries_read: u64,
-    pub feedback_incident_snapshot_entries_read: u64,
-    pub feedback_incident_snapshot_materializations: u64,
-}
-
 #[derive(Debug, Clone)]
 pub enum GraphRuntimeEvent {
     Patched { patch: RuntimePatch },
@@ -621,7 +607,6 @@ struct RuntimeState {
     next_incarnation: u64,
     sessions: BTreeMap<ViewId, Weak<ViewShared>>,
     next_view_id: u64,
-    stats: GraphRuntimeStats,
 }
 
 fn node_lifetime_key_from_state(
@@ -687,6 +672,7 @@ enum QueuedNotification {
         generation: ViewGeneration,
         patch: RuntimePatch,
         selection_changed: Option<ViewSelectionSeed>,
+        reconciliation: RuntimePatchReconciliationReceipt,
     },
 }
 
@@ -913,7 +899,6 @@ impl GraphRuntime {
                     next_incarnation,
                     sessions: BTreeMap::new(),
                     next_view_id: 1,
-                    stats: GraphRuntimeStats::default(),
                 }),
                 notifications: NotificationPump::default(),
                 subscriptions: subscriptions::RuntimeEventHub::new(runtime_id),
@@ -979,15 +964,6 @@ impl GraphRuntime {
     #[cfg(test)]
     pub(crate) fn clear_history(&self) -> Result<(), GraphRuntimeError> {
         self.shared.clear_history()
-    }
-
-    pub fn stats(&self) -> Result<GraphRuntimeStats, GraphRuntimeError> {
-        let state = self
-            .shared
-            .state
-            .try_borrow()
-            .map_err(|_| GraphRuntimeError::Busy)?;
-        Ok(state.stats)
     }
 
     pub fn attach_view(&self, options: ViewSessionOptions) -> Result<ViewSession, AttachViewError> {
@@ -1213,25 +1189,6 @@ impl RuntimeShared {
                 ))
             })
             .collect())
-    }
-
-    pub(crate) fn record_feedback_incident_snapshot_work(
-        &self,
-        work: IncidentSnapshotWork,
-    ) -> Result<(), GraphRuntimeError> {
-        let mut state = self
-            .state
-            .try_borrow_mut()
-            .map_err(|_| GraphRuntimeError::Busy)?;
-        state.stats.feedback_incident_snapshot_entries_read = state
-            .stats
-            .feedback_incident_snapshot_entries_read
-            .saturating_add(work.entries_read);
-        state.stats.feedback_incident_snapshot_materializations = state
-            .stats
-            .feedback_incident_snapshot_materializations
-            .saturating_add(work.materializations);
-        Ok(())
     }
 
     pub(crate) fn adapter_frame_incident_routing_dependencies(
@@ -1481,12 +1438,7 @@ impl RuntimeShared {
             state.edge_incarnations = edge_incarnations;
             state.port_incarnations = next_port_incarnations;
             state.next_incarnation = next_incarnation;
-            state.stats.patch_builds = state.stats.patch_builds.saturating_add(1);
             let sessions = collect_live_sessions(&mut state);
-            state.stats.patch_deliveries = state
-                .stats
-                .patch_deliveries
-                .saturating_add(sessions.len() as u64);
             (patch, sessions)
         };
         self.apply_and_queue_patch(&patch, &sessions);
@@ -1594,6 +1546,7 @@ impl RuntimeShared {
                 patch,
                 sessions,
                 footprint,
+                planning_work,
             } => {
                 let middleware_panic =
                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1607,6 +1560,7 @@ impl RuntimeShared {
                         GraphVersion::new(RuntimeProvenance::new(self.id), patch.to_revision()),
                         patch,
                         footprint,
+                        planning_work,
                     )),
                     middleware_panic,
                 }
@@ -1621,12 +1575,15 @@ impl RuntimeShared {
     ) {
         let view_patches = sessions
             .iter()
-            .map(|(session, generation)| {
-                (
+            .filter_map(|(session, generation)| {
+                let (selection_changed, reconciliation) =
+                    session.apply_runtime_patch(patch)?.into_parts();
+                Some((
                     Rc::downgrade(session),
                     *generation,
-                    session.apply_runtime_patch(patch),
-                )
+                    selection_changed,
+                    reconciliation,
+                ))
             })
             .collect::<Vec<_>>();
         let mut queue = self.notifications.queue.borrow_mut();
@@ -1635,18 +1592,15 @@ impl RuntimeShared {
                 patch: patch.clone(),
             },
         ));
-        queue.extend(
-            view_patches
-                .into_iter()
-                .map(
-                    |(view, generation, selection_changed)| QueuedNotification::ViewPatch {
-                        view,
-                        generation,
-                        patch: patch.clone(),
-                        selection_changed,
-                    },
-                ),
-        );
+        queue.extend(view_patches.into_iter().map(
+            |(view, generation, selection_changed, reconciliation)| QueuedNotification::ViewPatch {
+                view,
+                generation,
+                patch: patch.clone(),
+                selection_changed,
+                reconciliation,
+            },
+        ));
     }
 
     fn run_after_command_middleware(&self, patch: &RuntimePatch) {
@@ -1687,11 +1641,17 @@ impl RuntimeShared {
                     generation,
                     patch,
                     selection_changed,
+                    reconciliation,
                 } => {
                     let Some(view) = view.upgrade() else {
                         continue;
                     };
-                    panics.record(view.publish_runtime_patch(generation, patch, selection_changed));
+                    panics.record(view.publish_runtime_patch(
+                        generation,
+                        patch,
+                        selection_changed,
+                        reconciliation,
+                    ));
                 }
             }
         }

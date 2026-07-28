@@ -8,16 +8,18 @@ mod coordinates;
 mod feedback;
 mod frame;
 mod geometry;
+mod work;
 
 #[cfg(feature = "adapter-conformance")]
 pub mod conformance;
 
 pub use coordinates::{ViewDelta, ViewPoint, ViewRect, ViewSize, side_anchor};
 pub use feedback::{
-    FeedbackCollector, FeedbackCollectorError, FeedbackReceipt, FeedbackSubmissionError,
-    FrameFeedback, FrameMaterializationError, LayoutNodeStatus, LayoutOperationReceipt,
-    LayoutPublicationReceipt, NodeLayout, NodeLayoutBuilder, NodeLayoutBuilderError,
-    PortLayoutOutcome, RenderedPortLayout, StaleFrameReason,
+    FeedbackCollector, FeedbackCollectorError, FeedbackLayoutWork, FeedbackReceipt,
+    FeedbackSubmissionError, FeedbackWorkReceipt, FrameFeedback, FrameMaterializationError,
+    LayoutNodeStatus, LayoutOperationReceipt, LayoutPublicationReceipt, NodeLayout,
+    NodeLayoutBuilder, NodeLayoutBuilderError, PortLayoutOutcome, RenderedPortLayout,
+    StaleFrameReason,
 };
 pub use frame::{
     AdapterEnvironment, AdapterFrame, DEFAULT_FRAME_REQUIRED_NODE_BUDGET,
@@ -34,6 +36,7 @@ pub use geometry::{
     GeometrySnapshot, PublishedEdgeRoute, PublishedNodeGeometry, PublishedPortGeometry,
     PublishedPortOutcome,
 };
+pub use work::GeometryImpactMergeWork;
 
 pub(crate) use feedback::FeedbackOperation;
 pub(crate) use frame::FrameToken;

@@ -12,7 +12,8 @@ pub use completion::{
 pub(crate) use model::GraphCommandExecutionKind;
 pub use model::{
     ConnectionEdit, ConnectionEvaluation, GraphCommand, GraphCommandConflict, GraphCommandIdentity,
-    GraphCommandNoop, GraphCommandOutcome, GraphCommandReceipt, GraphCommandRejection,
-    IncidentEdgePolicy, NodeGeometryEdit, SymbolEdit, TopologyEdit, TopologyPort,
+    GraphCommandNoop, GraphCommandOutcome, GraphCommandPlanningWork, GraphCommandReceipt,
+    GraphCommandRejection, IncidentEdgePolicy, NodeGeometryEdit, SymbolEdit, TopologyEdit,
+    TopologyPort,
 };
 pub(crate) use planning::{GraphCommandPlanningError, PlannedGraphCommand, plan_graph_command};

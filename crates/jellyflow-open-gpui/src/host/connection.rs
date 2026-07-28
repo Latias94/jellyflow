@@ -542,7 +542,11 @@ impl OpenGpuiSceneHost {
         cx: &mut Context<Self>,
     ) {
         let source = owner.port();
-        let Ok(drag_intent) = self.view.port_connection_drag_intent(owner.port_instance()) else {
+        let Ok(query) = self.view.port_connection_drag_intent(owner.port_instance()) else {
+            self.reject_native_connection_start(owner, mount, window, cx);
+            return;
+        };
+        let Some(drag_intent) = query.into_outcome() else {
             self.reject_native_connection_start(owner, mount, window, cx);
             return;
         };

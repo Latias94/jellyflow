@@ -1,3 +1,6 @@
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize, NodeId, PortDirection};
 use jellyflow_core::interaction::NodeGraphConnectionMode;
 
@@ -9,7 +12,10 @@ use crate::runtime::adapter_protocol::{
 use crate::runtime::commands::{GraphCommand, GraphCommandOutcome};
 use crate::runtime::geometry::HandlePosition;
 use crate::runtime::graph_runtime::{GraphRuntime, RuntimePatch};
-use crate::runtime::view_session::ViewSessionOptions;
+use crate::runtime::view_session::{
+    RuntimePatchReconciliationReceipt, ViewSession, ViewSessionEvent, ViewSessionOptions,
+    ViewSubscriptionToken,
+};
 
 use super::fixtures::{graph_with_nodes, graph_with_routed_edge};
 
@@ -83,6 +89,24 @@ fn applied_patch(runtime: &GraphRuntime, command: GraphCommand) -> RuntimePatch 
     }
 }
 
+fn collect_patch_receipts(
+    session: &ViewSession,
+) -> (
+    ViewSubscriptionToken,
+    Rc<RefCell<Vec<RuntimePatchReconciliationReceipt>>>,
+) {
+    let receipts = Rc::new(RefCell::new(Vec::new()));
+    let callback_receipts = receipts.clone();
+    let subscription = session
+        .subscribe(move |event| {
+            if let ViewSessionEvent::RuntimePatched { reconciliation, .. } = event {
+                callback_receipts.borrow_mut().push(reconciliation);
+            }
+        })
+        .unwrap();
+    (subscription, receipts)
+}
+
 #[test]
 fn runtime_patch_geometry_impact_covers_payload_move_size_and_topology() {
     let (graph, ids) = graph_with_routed_edge();
@@ -154,6 +178,7 @@ fn unrelated_external_patch_publishes_only_unaffected_layout_and_counts_work() {
         .build(graph)
         .unwrap();
     let session = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    let (_subscription, patch_receipts) = collect_patch_receipts(&session);
     let frame = session.frame(request()).unwrap();
 
     applied_patch(
@@ -179,11 +204,18 @@ fn unrelated_external_patch_publishes_only_unaffected_layout_and_counts_work() {
         receipt.publication().unwrap().published_nodes(),
         &[nodes[0]]
     );
-    let stats = session.stats().unwrap();
-    assert_eq!(stats.geometry_impact_patches_merged, 1);
-    assert_eq!(stats.geometry_impact_global_fallbacks, 0);
-    assert_eq!(stats.layout_impact_candidates_checked, 2);
-    assert_eq!(stats.layout_impact_candidates_stale, 1);
+    let patch_receipts = patch_receipts.borrow();
+    assert_eq!(patch_receipts.len(), 1);
+    let patch_work = patch_receipts[0]
+        .pending_frame_impact()
+        .expect("the external patch must merge into the outstanding frame");
+    assert_eq!(patch_work.patches_merged(), 1);
+    assert_eq!(patch_work.records_merged(), 1);
+    assert_eq!(patch_work.global_fallbacks(), 0);
+    let feedback_work = *receipt.work();
+    assert_eq!(feedback_work.command_impact().patches_merged(), 0);
+    assert_eq!(feedback_work.layout().candidates_checked(), 2);
+    assert_eq!(feedback_work.layout().candidates_stale(), 1);
 }
 
 #[test]
@@ -223,10 +255,12 @@ fn same_frame_applied_command_stales_only_intersecting_candidate() {
         receipt.publication().unwrap().published_nodes(),
         &[nodes[1]]
     );
-    let stats = session.stats().unwrap();
-    assert_eq!(stats.geometry_impact_patches_merged, 1);
-    assert_eq!(stats.layout_impact_candidates_checked, 2);
-    assert_eq!(stats.layout_impact_candidates_stale, 1);
+    let work = *receipt.work();
+    assert_eq!(work.command_impact().patches_merged(), 1);
+    assert_eq!(work.command_impact().records_merged(), 1);
+    assert_eq!(work.command_impact().global_fallbacks(), 0);
+    assert_eq!(work.layout().candidates_checked(), 2);
+    assert_eq!(work.layout().candidates_stale(), 1);
 }
 
 #[test]
@@ -374,10 +408,12 @@ fn noop_rejected_and_conflicting_commands_do_not_create_geometry_impact() {
         receipt.layout_receipts().next().unwrap().status().unwrap(),
         LayoutNodeStatus::Published
     );
-    let stats = session.stats().unwrap();
-    assert_eq!(stats.geometry_impact_patches_merged, 0);
-    assert_eq!(stats.layout_impact_candidates_checked, 1);
-    assert_eq!(stats.layout_impact_candidates_stale, 0);
+    let work = *receipt.work();
+    assert_eq!(work.command_impact().patches_merged(), 0);
+    assert_eq!(work.command_impact().records_merged(), 0);
+    assert_eq!(work.command_impact().global_fallbacks(), 0);
+    assert_eq!(work.layout().candidates_checked(), 1);
+    assert_eq!(work.layout().candidates_stale(), 0);
 }
 
 #[test]
@@ -388,6 +424,8 @@ fn multi_view_pending_impacts_are_scoped_per_candidate() {
         .unwrap();
     let first = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     let second = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    let (_first_subscription, first_patch_receipts) = collect_patch_receipts(&first);
+    let (_second_subscription, second_patch_receipts) = collect_patch_receipts(&second);
     let first_frame = first.frame(request()).unwrap();
     let second_frame = second.frame(request()).unwrap();
 
@@ -433,8 +471,26 @@ fn multi_view_pending_impacts_are_scoped_per_candidate() {
             .unwrap(),
         LayoutNodeStatus::Published
     );
-    assert_eq!(first.stats().unwrap().geometry_impact_patches_merged, 1);
-    assert_eq!(second.stats().unwrap().geometry_impact_patches_merged, 1);
+    for receipts in [&first_patch_receipts, &second_patch_receipts] {
+        let receipts = receipts.borrow();
+        assert_eq!(receipts.len(), 1);
+        let merge = receipts[0]
+            .pending_frame_impact()
+            .expect("each view has an outstanding frame");
+        assert_eq!(merge.patches_merged(), 1);
+        assert_eq!(merge.records_merged(), 1);
+        assert_eq!(merge.global_fallbacks(), 0);
+    }
+    assert_eq!(
+        first_receipt.work().layout().candidates_stale(),
+        1,
+        "the first view's candidate intersects the patch",
+    );
+    assert_eq!(
+        second_receipt.work().layout().candidates_stale(),
+        0,
+        "the second view's candidate remains independent",
+    );
 }
 
 #[test]
@@ -444,6 +500,7 @@ fn ten_thousand_pending_single_node_patches_merge_each_affected_record_once() {
         .build(graph)
         .unwrap();
     let session = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    let (_subscription, patch_receipts) = collect_patch_receipts(&session);
     let _pending_frame = session.frame(request()).unwrap();
 
     for (revision, node) in nodes.iter().copied().enumerate() {
@@ -458,10 +515,23 @@ fn ten_thousand_pending_single_node_patches_merge_each_affected_record_once() {
         assert!(matches!(outcome, GraphCommandOutcome::Applied(_)));
     }
 
-    let stats = session.stats().unwrap();
-    assert_eq!(stats.geometry_impact_patches_merged, 10_000);
-    assert_eq!(stats.geometry_impact_records_merged, 10_000);
-    assert_eq!(stats.geometry_impact_global_fallbacks, 0);
+    let receipts = patch_receipts.borrow();
+    assert_eq!(receipts.len(), 10_000);
+    let merge_work = receipts
+        .iter()
+        .map(|receipt| {
+            receipt
+                .pending_frame_impact()
+                .expect("the frame remains outstanding for every patch")
+        })
+        .fold((0_u64, 0_u64, 0_u64), |totals, work| {
+            (
+                totals.0.saturating_add(work.patches_merged()),
+                totals.1.saturating_add(work.records_merged()),
+                totals.2.saturating_add(work.global_fallbacks()),
+            )
+        });
+    assert_eq!(merge_work, (10_000, 10_000, 0));
 }
 
 #[test]

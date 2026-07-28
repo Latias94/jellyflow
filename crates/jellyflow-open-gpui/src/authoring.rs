@@ -205,7 +205,8 @@ impl OpenGpuiNodeAuthoring {
             let summaries = context
                 .view()
                 .port_connection_summaries(&node.ports)
-                .map_err(map_session_error)?;
+                .map_err(map_session_error)?
+                .into_outcome();
             if summaries.version() != snapshot.version() {
                 return Err(OpenGpuiNodeAuthoringError::IncoherentPortBatch {
                     authoring_version: snapshot.version(),

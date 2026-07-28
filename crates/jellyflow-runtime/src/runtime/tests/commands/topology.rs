@@ -615,12 +615,20 @@ fn duplicate_ports_reject_without_revision_or_history_changes() {
     let runtime = GraphRuntime::builder(Default::default())
         .build(graph)
         .unwrap();
+    let before = runtime.snapshot().unwrap();
+    let history_before = runtime.history_state().unwrap();
+    let installed_impact_before = runtime.installed_impact_state_for_test();
+    let event_count = Rc::new(Cell::new(0));
+    let callback_count = event_count.clone();
+    runtime
+        .subscribe(move |_| callback_count.set(callback_count.get() + 1))
+        .unwrap();
     let duplicate = PortId::from_u128(121);
     let port = port(nodes[0], "duplicate", PortDirection::Out);
 
     let outcome = runtime
         .execute(GraphCommand::topology(
-            runtime.snapshot().unwrap().version(),
+            before.version(),
             TopologyEdit::new().replace_node_ports(
                 nodes[0],
                 [
@@ -634,9 +642,14 @@ fn duplicate_ports_reject_without_revision_or_history_changes() {
         .unwrap();
 
     assert!(matches!(outcome, GraphCommandOutcome::Rejected(_)));
-    assert_eq!(runtime.snapshot().unwrap().revision(), 0);
-    assert_eq!(runtime.history_state().unwrap().undo_len(), 0);
-    assert_eq!(runtime.stats().unwrap().patch_builds, 0);
+    assert!(before.ptr_eq(&runtime.snapshot().unwrap()));
+    assert_eq!(runtime.history_state().unwrap(), history_before);
+    assert_eq!(
+        runtime.installed_impact_state_for_test(),
+        installed_impact_before,
+        "rejected topology edits must not update indexes or node identities"
+    );
+    assert_eq!(event_count.get(), 0);
 }
 
 #[test]

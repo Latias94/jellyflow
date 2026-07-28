@@ -237,7 +237,7 @@ fn mutation_from_a_notification_is_rejected_structurally_and_later_commits_still
     let callback_rejection = rejection.clone();
     view_a
         .subscribe(move |event| {
-            let ViewSessionEvent::RuntimePatched { patch } = event else {
+            let ViewSessionEvent::RuntimePatched { patch, .. } = event else {
                 return;
             };
             if patch.to_revision() != 1 {
@@ -257,7 +257,7 @@ fn mutation_from_a_notification_is_rejected_structurally_and_later_commits_still
     let callback_revisions = b_revisions.clone();
     view_b
         .subscribe(move |event| {
-            if let ViewSessionEvent::RuntimePatched { patch } = event {
+            if let ViewSessionEvent::RuntimePatched { patch, .. } = event {
                 callback_revisions.borrow_mut().push(patch.to_revision());
             }
         })

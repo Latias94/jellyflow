@@ -128,7 +128,14 @@ fn foreign_and_replayed_feedback_have_zero_side_effects() {
     assert_eq!(receipt.command_completions().count(), 1);
     assert_eq!(receipt.layout_receipts().count(), 1);
     assert_eq!(runtime.snapshot().unwrap().revision(), 1);
-    let after_first = first.stats().unwrap();
+    let after_first_graph = runtime.snapshot().unwrap();
+    let after_first_history = runtime.history_state().unwrap();
+    let after_first_geometry = first.geometry_snapshot().unwrap();
+    let replay_events = Rc::new(Cell::new(0));
+    let callback_events = replay_events.clone();
+    first
+        .subscribe(move |_| callback_events.set(callback_events.get() + 1))
+        .unwrap();
 
     let error = first.submit_feedback(feedback).unwrap_err();
     assert!(matches!(
@@ -136,7 +143,22 @@ fn foreign_and_replayed_feedback_have_zero_side_effects() {
         FeedbackSubmissionError::ReplayedFrame { .. }
     ));
     assert_eq!(runtime.snapshot().unwrap().revision(), 1);
-    assert_eq!(first.stats().unwrap(), after_first);
+    assert!(runtime.snapshot().unwrap().ptr_eq(&after_first_graph));
+    assert_eq!(runtime.history_state().unwrap(), after_first_history);
+    let replay_geometry = first.geometry_snapshot().unwrap();
+    assert_eq!(
+        replay_geometry.layout_revision(),
+        after_first_geometry.layout_revision()
+    );
+    match (
+        after_first_geometry.node(nodes[0]),
+        replay_geometry.node(nodes[0]),
+    ) {
+        (Some(before), Some(after)) => assert!(std::ptr::eq(before, after)),
+        (None, None) => {}
+        _ => panic!("replayed feedback changed published node geometry"),
+    }
+    assert_eq!(replay_events.get(), 0);
 }
 
 #[test]
@@ -181,7 +203,13 @@ fn cross_runtime_feedback_is_rejected_before_consuming_the_local_frame() {
         .unwrap();
     let second_collector = second_frame.collector();
     second_collector.layout(layout_for(&second_frame)).unwrap();
-    let second_before_foreign = second.stats().unwrap();
+    let second_before_foreign = second_runtime.snapshot().unwrap();
+    let history_before_foreign = second_runtime.history_state().unwrap();
+    let second_events = Rc::new(Cell::new(0));
+    let callback_events = second_events.clone();
+    second
+        .subscribe(move |_| callback_events.set(callback_events.get() + 1))
+        .unwrap();
 
     let error = second
         .submit_feedback(first_collector.finish().unwrap())
@@ -190,7 +218,17 @@ fn cross_runtime_feedback_is_rejected_before_consuming_the_local_frame() {
         error,
         FeedbackSubmissionError::ForeignFrame { .. }
     ));
-    assert_eq!(second.stats().unwrap(), second_before_foreign);
+    assert!(
+        second_runtime
+            .snapshot()
+            .unwrap()
+            .ptr_eq(&second_before_foreign)
+    );
+    assert_eq!(
+        second_runtime.history_state().unwrap(),
+        history_before_foreign
+    );
+    assert_eq!(second_events.get(), 0);
     assert_eq!(second_runtime.snapshot().unwrap().revision(), 0);
     assert_eq!(
         second_runtime
@@ -960,7 +998,6 @@ fn selection_is_a_frame_local_fact_that_does_not_wake_node_bindings() {
     assert!(!initial_unselected.selected());
     let selected_binding_revision = initial_selected.binding_revision();
     let unselected_binding_revision = initial_unselected.binding_revision();
-    let before_selection = session.stats().unwrap();
 
     set_selection_by_id(&session, [selected], [], Vec::new()).unwrap();
     let selected_frame = session.frame(request()).unwrap();
@@ -987,10 +1024,6 @@ fn selection_is_a_frame_local_fact_that_does_not_wake_node_bindings() {
     );
     assert_eq!(selected_frame.graph_revision(), initial.graph_revision());
     assert_eq!(binding_calls.get(), 0);
-    assert_eq!(
-        session.stats().unwrap().node_binding_notifications,
-        before_selection.node_binding_notifications,
-    );
 
     set_selection_by_id(&session, [], [], Vec::new()).unwrap();
     let cleared_frame = session.frame(request()).unwrap();

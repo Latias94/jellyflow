@@ -148,11 +148,11 @@ fn dynamic_topology_on_large_graph_never_uses_full_graph_diff() {
         .unwrap();
     let receipt = outcome.applied().expect("topology applies");
 
-    let stats = runtime.stats().unwrap();
-    assert_eq!(stats.command_planning_fact_reads, 3);
-    assert_eq!(stats.command_planning_index_bucket_reads, 0);
-    assert_eq!(stats.command_planning_index_entries_read, 0);
-    assert_eq!(stats.command_planning_operations_emitted, 2);
+    let planning_work = receipt.planning_work();
+    assert_eq!(planning_work.fact_reads(), 3);
+    assert_eq!(planning_work.index_bucket_reads(), 0);
+    assert_eq!(planning_work.index_entries_read(), 0);
+    assert_eq!(planning_work.operations_emitted(), 2);
     assert_eq!(receipt.patch().facts().len(), 2);
     assert_eq!(receipt.footprint().nodes.len(), 1);
     assert_eq!(receipt.footprint().ports.len(), 1);
@@ -232,7 +232,7 @@ fn single_input_replacement_reads_only_incident_edges_and_bindings_at_scale() {
         .build(builder.build().expect("valid scale graph"))
         .unwrap();
 
-    runtime
+    let outcome = runtime
         .execute(GraphCommand::connect(
             runtime.snapshot().unwrap().version(),
             replacement_edge,
@@ -241,14 +241,15 @@ fn single_input_replacement_reads_only_incident_edges_and_bindings_at_scale() {
             NodeGraphConnectionMode::Strict,
         ))
         .into_result()
-        .unwrap()
+        .unwrap();
+    let planning_work = outcome
         .applied()
-        .expect("single-input replacement applies");
+        .expect("single-input replacement applies")
+        .planning_work();
 
-    let stats = runtime.stats().unwrap();
-    assert_eq!(stats.command_planning_index_bucket_reads, 3);
-    assert_eq!(stats.command_planning_index_entries_read, 2);
-    assert!(stats.command_planning_fact_reads < 32);
+    assert_eq!(planning_work.index_bucket_reads(), 3);
+    assert_eq!(planning_work.index_entries_read(), 2);
+    assert!(planning_work.fact_reads() < 32);
     let snapshot = runtime.snapshot().unwrap();
     assert!(snapshot.graph().edge(&existing_edge).is_none());
     assert!(snapshot.graph().binding(&existing_binding).is_none());
@@ -303,26 +304,21 @@ fn batched_connections_query_only_port_local_staged_edges() {
     let runtime = GraphRuntime::builder(Default::default())
         .build(builder.build().expect("valid batched graph"))
         .unwrap();
-    runtime
+    let outcome = runtime
         .execute(GraphCommand::topology(
             runtime.snapshot().unwrap().version(),
             edit,
         ))
         .into_result()
-        .unwrap()
+        .unwrap();
+    let planning_work = outcome
         .applied()
-        .expect("batched connections apply");
+        .expect("batched connections apply")
+        .planning_work();
 
-    let stats = runtime.stats().unwrap();
-    assert_eq!(
-        stats.command_planning_index_bucket_reads,
-        CONNECTIONS as u64
-    );
-    assert_eq!(stats.command_planning_index_entries_read, 0);
-    assert_eq!(
-        stats.command_planning_operations_emitted,
-        CONNECTIONS as u64
-    );
+    assert_eq!(planning_work.index_bucket_reads(), CONNECTIONS as u64);
+    assert_eq!(planning_work.index_entries_read(), 0);
+    assert_eq!(planning_work.operations_emitted(), CONNECTIONS as u64);
     assert_eq!(
         runtime.snapshot().unwrap().graph().edges().len(),
         CONNECTIONS
@@ -346,7 +342,7 @@ fn add_node_preserves_declared_port_order_and_plans_from_affected_facts() {
         .clone();
     node.ports = vec![second];
 
-    runtime
+    let outcome = runtime
         .execute(GraphCommand::topology(
             runtime.snapshot().unwrap().version(),
             TopologyEdit::new().add_node(
@@ -360,20 +356,21 @@ fn add_node_preserves_declared_port_order_and_plans_from_affected_facts() {
             ),
         ))
         .into_result()
-        .unwrap()
+        .unwrap();
+    let planning_work = outcome
         .applied()
-        .expect("node topology applies");
+        .expect("node topology applies")
+        .planning_work();
 
     let snapshot = runtime.snapshot().unwrap();
     assert_eq!(
         snapshot.graph().node(&node_id).expect("added node").ports,
         [first, second, third]
     );
-    let stats = runtime.stats().unwrap();
-    assert_eq!(stats.command_planning_fact_reads, 4);
-    assert_eq!(stats.command_planning_index_bucket_reads, 0);
-    assert_eq!(stats.command_planning_index_entries_read, 0);
-    assert_eq!(stats.command_planning_operations_emitted, 5);
+    assert_eq!(planning_work.fact_reads(), 4);
+    assert_eq!(planning_work.index_bucket_reads(), 0);
+    assert_eq!(planning_work.index_entries_read(), 0);
+    assert_eq!(planning_work.operations_emitted(), 5);
     assert_eq!(runtime.history_state().unwrap().undo_len(), 1);
 
     undo(&runtime);
@@ -455,38 +452,40 @@ fn profiled_commands_keep_type_propagation_local_on_a_ten_thousand_edge_graph() 
     let graph = builder.build().expect("valid profiled scale graph");
     let runtime = profiled_runtime(graph, Box::new(PassThroughProfile)).unwrap();
 
-    runtime
+    let position_outcome = runtime
         .execute(GraphCommand::set_node_position(
             runtime.snapshot().unwrap().version(),
             affected_source,
             CanvasPoint { x: 50.0, y: 25.0 },
         ))
         .into_result()
-        .unwrap()
+        .unwrap();
+    let position_work = position_outcome
         .applied()
-        .expect("profiled position command applies");
+        .expect("profiled position command applies")
+        .planning_work();
 
-    let after_position = runtime.stats().unwrap();
-    assert_eq!(after_position.command_planning_fact_reads, 1);
-    assert_eq!(after_position.command_planning_index_bucket_reads, 0);
-    assert_eq!(after_position.command_planning_index_entries_read, 0);
-    assert_eq!(after_position.command_planning_full_type_revalidations, 0);
+    assert_eq!(position_work.fact_reads(), 1);
+    assert_eq!(position_work.index_bucket_reads(), 0);
+    assert_eq!(position_work.index_entries_read(), 0);
+    assert_eq!(position_work.full_type_revalidations(), 0);
 
-    runtime
+    let data_outcome = runtime
         .execute(GraphCommand::set_node_data(
             runtime.snapshot().unwrap().version(),
             affected_source,
             serde_json::json!({ "value": 1 }),
         ))
         .into_result()
-        .unwrap()
+        .unwrap();
+    let data_work = data_outcome
         .applied()
-        .expect("profiled payload command applies");
+        .expect("profiled payload command applies")
+        .planning_work();
 
-    let stats = runtime.stats().unwrap();
-    assert_eq!(stats.command_planning_fact_reads, 7);
-    assert_eq!(stats.command_planning_index_bucket_reads, 1);
-    assert_eq!(stats.command_planning_index_entries_read, 1);
-    assert_eq!(stats.command_planning_operations_emitted, 2);
-    assert_eq!(stats.command_planning_full_type_revalidations, 0);
+    assert_eq!(data_work.fact_reads(), 6);
+    assert_eq!(data_work.index_bucket_reads(), 1);
+    assert_eq!(data_work.index_entries_read(), 1);
+    assert_eq!(data_work.operations_emitted(), 1);
+    assert_eq!(data_work.full_type_revalidations(), 0);
 }

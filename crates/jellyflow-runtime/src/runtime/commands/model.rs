@@ -824,12 +824,75 @@ fn append_binding_dependencies(
     }
 }
 
+/// Operation-local work performed while planning one graph command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GraphCommandPlanningWork {
+    fact_reads: u64,
+    index_bucket_reads: u64,
+    index_entries_read: u64,
+    operations_emitted: u64,
+    full_type_revalidations: u64,
+}
+
+impl GraphCommandPlanningWork {
+    pub(crate) const fn new(
+        fact_reads: u64,
+        index_bucket_reads: u64,
+        index_entries_read: u64,
+        operations_emitted: u64,
+        full_type_revalidations: u64,
+    ) -> Self {
+        Self {
+            fact_reads,
+            index_bucket_reads,
+            index_entries_read,
+            operations_emitted,
+            full_type_revalidations,
+        }
+    }
+
+    pub(crate) const fn empty() -> Self {
+        Self::new(0, 0, 0, 0, 0)
+    }
+
+    /// Returns the number of authoritative graph facts read while planning.
+    #[must_use]
+    pub const fn fact_reads(self) -> u64 {
+        self.fact_reads
+    }
+
+    /// Returns the number of graph-index buckets opened while planning.
+    #[must_use]
+    pub const fn index_bucket_reads(self) -> u64 {
+        self.index_bucket_reads
+    }
+
+    /// Returns the number of entries examined inside graph-index buckets.
+    #[must_use]
+    pub const fn index_entries_read(self) -> u64 {
+        self.index_entries_read
+    }
+
+    /// Returns the number of transaction operations emitted by the planner.
+    #[must_use]
+    pub const fn operations_emitted(self) -> u64 {
+        self.operations_emitted
+    }
+
+    /// Returns the number of whole-graph type revalidations requested by planning.
+    #[must_use]
+    pub const fn full_type_revalidations(self) -> u64 {
+        self.full_type_revalidations
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct GraphCommandReceipt {
     identity: GraphCommandIdentity,
     version: GraphVersion,
     patch: RuntimePatch,
     footprint: GraphMutationFootprint,
+    planning_work: GraphCommandPlanningWork,
 }
 
 impl GraphCommandReceipt {
@@ -838,12 +901,14 @@ impl GraphCommandReceipt {
         version: GraphVersion,
         patch: RuntimePatch,
         footprint: GraphMutationFootprint,
+        planning_work: GraphCommandPlanningWork,
     ) -> Self {
         Self {
             identity,
             version,
             patch,
             footprint,
+            planning_work,
         }
     }
 
@@ -866,6 +931,12 @@ impl GraphCommandReceipt {
     pub fn footprint(&self) -> &GraphMutationFootprint {
         &self.footprint
     }
+
+    /// Returns work performed while planning this applied command.
+    #[must_use]
+    pub const fn planning_work(&self) -> GraphCommandPlanningWork {
+        self.planning_work
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -873,6 +944,7 @@ pub struct GraphCommandNoop {
     identity: GraphCommandIdentity,
     version: GraphVersion,
     footprint: GraphMutationFootprint,
+    planning_work: GraphCommandPlanningWork,
 }
 
 impl GraphCommandNoop {
@@ -880,11 +952,13 @@ impl GraphCommandNoop {
         identity: GraphCommandIdentity,
         version: GraphVersion,
         footprint: GraphMutationFootprint,
+        planning_work: GraphCommandPlanningWork,
     ) -> Self {
         Self {
             identity,
             version,
             footprint,
+            planning_work,
         }
     }
 
@@ -902,6 +976,12 @@ impl GraphCommandNoop {
 
     pub fn footprint(&self) -> &GraphMutationFootprint {
         &self.footprint
+    }
+
+    /// Returns work performed while proving this command was a semantic no-op.
+    #[must_use]
+    pub const fn planning_work(&self) -> GraphCommandPlanningWork {
+        self.planning_work
     }
 }
 

@@ -8,6 +8,87 @@ use super::{
     PortInstanceKey, RuntimeProvenance, RuntimeShared, port_instance_key_from_state,
 };
 
+/// Exact authoritative work performed by one port-connection query.
+///
+/// The receipt is operation-scoped: its counters describe only the query that returned it, so
+/// callers never need to sample mutable runtime-wide diagnostics before and after a request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PortConnectionQueryWork {
+    fact_reads: u64,
+    incident_bucket_reads: u64,
+    incident_entries_read: u64,
+}
+
+impl PortConnectionQueryWork {
+    const fn new(fact_reads: u64, incident_bucket_reads: u64, incident_entries_read: u64) -> Self {
+        Self {
+            fact_reads,
+            incident_bucket_reads,
+            incident_entries_read,
+        }
+    }
+
+    /// Returns the number of authoritative connection-fact lookups performed by this query.
+    #[must_use]
+    pub const fn fact_reads(self) -> u64 {
+        self.fact_reads
+    }
+
+    /// Returns the number of incident-edge index buckets opened by this query.
+    #[must_use]
+    pub const fn incident_bucket_reads(self) -> u64 {
+        self.incident_bucket_reads
+    }
+
+    /// Returns the number of entries examined within incident-edge index buckets.
+    #[must_use]
+    pub const fn incident_entries_read(self) -> u64 {
+        self.incident_entries_read
+    }
+}
+
+/// Semantic outcome and bounded work evidence for one port-connection query.
+///
+/// Missing ports remain an explicit `None` outcome inside this value, preserving the work receipt
+/// on negative queries. Likewise, drag decisions such as
+/// [`PortConnectionDragIntent::BlockedOccupied`] retain the exact scan that produced them.
+#[must_use = "port-connection query outcomes and their work receipts must be handled"]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PortConnectionQueryResult<T> {
+    outcome: T,
+    work: PortConnectionQueryWork,
+}
+
+impl<T> PortConnectionQueryResult<T> {
+    const fn new(outcome: T, work: PortConnectionQueryWork) -> Self {
+        Self { outcome, work }
+    }
+
+    /// Borrows the semantic outcome produced by this query.
+    #[must_use]
+    pub const fn outcome(&self) -> &T {
+        &self.outcome
+    }
+
+    /// Consumes the query and returns its semantic outcome.
+    #[must_use]
+    pub fn into_outcome(self) -> T {
+        self.outcome
+    }
+
+    /// Returns exact bounded work for this query.
+    #[must_use]
+    pub const fn work(&self) -> PortConnectionQueryWork {
+        self.work
+    }
+
+    /// Consumes the query into its semantic outcome and work receipt.
+    #[must_use]
+    pub fn into_parts(self) -> (T, PortConnectionQueryWork) {
+        (self.outcome, self.work)
+    }
+}
+
 /// Revision-bound connection facts for one port.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PortConnectionFacts {
@@ -376,22 +457,24 @@ impl RuntimeShared {
     pub(crate) fn port_connection_summary(
         &self,
         port: PortId,
-    ) -> Result<Option<PortConnectionSummary>, GraphRuntimeError> {
-        Ok(self
-            .port_connection_summaries(&[port])?
+    ) -> Result<PortConnectionQueryResult<Option<PortConnectionSummary>>, GraphRuntimeError> {
+        let query = self.port_connection_summaries(&[port])?;
+        let (batch, work) = query.into_parts();
+        let summary = batch
             .into_entries()
             .into_iter()
             .next()
-            .and_then(|(_, summary)| summary))
+            .and_then(|(_, summary)| summary);
+        Ok(PortConnectionQueryResult::new(summary, work))
     }
 
     pub(crate) fn port_connection_summaries(
         &self,
         ports: &[PortId],
-    ) -> Result<PortConnectionSummaryBatch, GraphRuntimeError> {
-        let mut state = self
+    ) -> Result<PortConnectionQueryResult<PortConnectionSummaryBatch>, GraphRuntimeError> {
+        let state = self
             .state
-            .try_borrow_mut()
+            .try_borrow()
             .map_err(|_| GraphRuntimeError::Busy)?;
         let version = GraphVersion::new(state.provenance, state.revision);
         let mut fact_reads = 0_u64;
@@ -428,58 +511,48 @@ impl RuntimeShared {
                 )
             })
             .collect();
-        state.stats.connection_query_fact_reads = state
-            .stats
-            .connection_query_fact_reads
-            .saturating_add(fact_reads);
-        Ok(PortConnectionSummaryBatch { version, entries })
+        Ok(PortConnectionQueryResult::new(
+            PortConnectionSummaryBatch { version, entries },
+            PortConnectionQueryWork::new(fact_reads, 0, 0),
+        ))
     }
 
     pub(crate) fn port_connection_facts(
         &self,
         port: PortId,
-    ) -> Result<Option<PortConnectionFacts>, GraphRuntimeError> {
-        let mut state = self
+    ) -> Result<PortConnectionQueryResult<Option<PortConnectionFacts>>, GraphRuntimeError> {
+        let state = self
             .state
-            .try_borrow_mut()
+            .try_borrow()
             .map_err(|_| GraphRuntimeError::Busy)?;
         let Some(current_port) = state.graph.port(&port) else {
-            state.stats.connection_query_fact_reads =
-                state.stats.connection_query_fact_reads.saturating_add(1);
-            return Ok(None);
+            return Ok(PortConnectionQueryResult::new(
+                None,
+                PortConnectionQueryWork::new(1, 0, 0),
+            ));
         };
         let node = current_port.node;
         let direction = current_port.dir;
         let capacity = current_port.capacity;
         let Some(owner) = state.graph.node(&node) else {
-            state.stats.connection_query_fact_reads =
-                state.stats.connection_query_fact_reads.saturating_add(2);
-            return Ok(None);
+            return Ok(PortConnectionQueryResult::new(
+                None,
+                PortConnectionQueryWork::new(2, 0, 0),
+            ));
         };
         let port_policy = resolve_port_policy(owner, current_port, &state.policy);
         let Some(instance) = port_instance_key_from_state(self.id, &state, port) else {
-            state.stats.connection_query_fact_reads =
-                state.stats.connection_query_fact_reads.saturating_add(2);
-            return Ok(None);
+            return Ok(PortConnectionQueryResult::new(
+                None,
+                PortConnectionQueryWork::new(2, 0, 0),
+            ));
         };
         let can_start_connection = port_policy.can_start_connection();
         let can_accept_connection = port_policy.can_accept_connection();
 
         let incident_edges = state.index.incident_edges(port).collect::<Vec<_>>();
-        state.stats.connection_query_index_bucket_reads = state
-            .stats
-            .connection_query_index_bucket_reads
-            .saturating_add(1);
-        state.stats.connection_query_index_entries_read = state
-            .stats
-            .connection_query_index_entries_read
-            .saturating_add(incident_edges.len() as u64);
-        state.stats.connection_query_fact_reads =
-            state.stats.connection_query_fact_reads.saturating_add(2);
         let mut incident = Vec::with_capacity(incident_edges.len());
-        for edge_id in incident_edges {
-            state.stats.connection_query_fact_reads =
-                state.stats.connection_query_fact_reads.saturating_add(1);
+        for edge_id in incident_edges.iter().copied() {
             let Some(current) = state.graph.edge(&edge_id) else {
                 continue;
             };
@@ -513,49 +586,62 @@ impl RuntimeShared {
             incident.push(facts);
         }
 
-        Ok(Some(PortConnectionFacts {
-            version: GraphVersion::new(state.provenance, state.revision),
-            instance,
-            direction,
-            capacity,
-            can_start_connection,
-            can_accept_connection,
-            incident,
-        }))
+        let incident_entries_read = incident_edges.len() as u64;
+        Ok(PortConnectionQueryResult::new(
+            Some(PortConnectionFacts {
+                version: GraphVersion::new(state.provenance, state.revision),
+                instance,
+                direction,
+                capacity,
+                can_start_connection,
+                can_accept_connection,
+                incident,
+            }),
+            PortConnectionQueryWork::new(
+                2_u64.saturating_add(incident_entries_read),
+                1,
+                incident_entries_read,
+            ),
+        ))
     }
 
     pub(crate) fn port_connection_drag_intent(
         &self,
         instance: PortInstanceKey,
-    ) -> Result<Option<PortConnectionDragIntent>, GraphRuntimeError> {
-        let mut state = self
+    ) -> Result<PortConnectionQueryResult<Option<PortConnectionDragIntent>>, GraphRuntimeError>
+    {
+        let state = self
             .state
-            .try_borrow_mut()
+            .try_borrow()
             .map_err(|_| GraphRuntimeError::Busy)?;
         let port = instance.port();
         if instance.provenance() != state.provenance
             || port_instance_key_from_state(self.id, &state, port) != Some(instance)
         {
-            state.stats.connection_query_fact_reads =
-                state.stats.connection_query_fact_reads.saturating_add(1);
-            return Ok(None);
+            return Ok(PortConnectionQueryResult::new(
+                None,
+                PortConnectionQueryWork::new(1, 0, 0),
+            ));
         }
         let Some(current_port) = state.graph.port(&port) else {
-            state.stats.connection_query_fact_reads =
-                state.stats.connection_query_fact_reads.saturating_add(1);
-            return Ok(None);
+            return Ok(PortConnectionQueryResult::new(
+                None,
+                PortConnectionQueryWork::new(1, 0, 0),
+            ));
         };
         let node = current_port.node;
         let Some(owner) = state.graph.node(&node) else {
-            state.stats.connection_query_fact_reads =
-                state.stats.connection_query_fact_reads.saturating_add(2);
-            return Ok(None);
+            return Ok(PortConnectionQueryResult::new(
+                None,
+                PortConnectionQueryWork::new(2, 0, 0),
+            ));
         };
         let port_policy = resolve_port_policy(owner, current_port, &state.policy);
         let Some(instance) = port_instance_key_from_state(self.id, &state, port) else {
-            state.stats.connection_query_fact_reads =
-                state.stats.connection_query_fact_reads.saturating_add(2);
-            return Ok(None);
+            return Ok(PortConnectionQueryResult::new(
+                None,
+                PortConnectionQueryWork::new(2, 0, 0),
+            ));
         };
         let facts = PortConnectionDragFacts {
             version: GraphVersion::new(state.provenance, state.revision),
@@ -565,11 +651,12 @@ impl RuntimeShared {
             can_start_connection: port_policy.can_start_connection(),
             can_accept_connection: port_policy.can_accept_connection(),
         };
-        state.stats.connection_query_fact_reads =
-            state.stats.connection_query_fact_reads.saturating_add(2);
 
         if facts.direction == PortDirection::Out {
-            return Ok(Some(PortConnectionDragIntent::Connect { facts }));
+            return Ok(PortConnectionQueryResult::new(
+                Some(PortConnectionDragIntent::Connect { facts }),
+                PortConnectionQueryWork::new(2, 0, 0),
+            ));
         }
 
         let (candidate, occupied, entries_read) = {
@@ -621,23 +708,13 @@ impl RuntimeShared {
             }
             (candidate, occupied, entries_read)
         };
-        state.stats.connection_query_index_bucket_reads = state
-            .stats
-            .connection_query_index_bucket_reads
-            .saturating_add(1);
-        state.stats.connection_query_index_entries_read = state
-            .stats
-            .connection_query_index_entries_read
-            .saturating_add(entries_read);
-        state.stats.connection_query_fact_reads = state
-            .stats
-            .connection_query_fact_reads
-            .saturating_add(entries_read);
-
-        Ok(Some(match candidate {
-            Some(candidate) => PortConnectionDragIntent::Reconnect { facts, candidate },
-            None if occupied => PortConnectionDragIntent::BlockedOccupied { facts },
-            None => PortConnectionDragIntent::Connect { facts },
-        }))
+        Ok(PortConnectionQueryResult::new(
+            Some(match candidate {
+                Some(candidate) => PortConnectionDragIntent::Reconnect { facts, candidate },
+                None if occupied => PortConnectionDragIntent::BlockedOccupied { facts },
+                None => PortConnectionDragIntent::Connect { facts },
+            }),
+            PortConnectionQueryWork::new(2_u64.saturating_add(entries_read), 1, entries_read),
+        ))
     }
 }

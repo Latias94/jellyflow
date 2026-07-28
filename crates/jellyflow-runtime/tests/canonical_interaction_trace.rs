@@ -350,7 +350,9 @@ fn one_native_grant_advances_multiple_runtime_owned_query_pages() {
     let drag_intent = harness
         .view
         .port_connection_drag_intent(port_instance(&harness.view, harness.ids.source_port))
-        .expect("source port drag facts");
+        .expect("source port drag facts")
+        .into_outcome()
+        .expect("source port remains current");
     let start = harness
         .view
         .connection_start_from_port_drag_intent(
@@ -410,7 +412,9 @@ fn connection_commit_revalidation_resumes_real_view_query_before_resubmission() 
     let drag_intent = harness
         .view
         .port_connection_drag_intent(port_instance(&harness.view, harness.ids.source_port))
-        .expect("source port drag facts");
+        .expect("source port drag facts")
+        .into_outcome()
+        .expect("source port remains current");
     let start = harness
         .view
         .connection_start_from_port_drag_intent(
@@ -491,7 +495,9 @@ fn paged_connection_queries_restart_after_viewport_layout_and_graph_changes() {
     let drag_intent = harness
         .view
         .port_connection_drag_intent(port_instance(&harness.view, harness.ids.source_port))
-        .expect("source port drag facts");
+        .expect("source port drag facts")
+        .into_outcome()
+        .expect("source port remains current");
     let start = harness
         .view
         .connection_start_from_port_drag_intent(
@@ -1013,7 +1019,9 @@ impl TraceHarness {
                 let drag_intent = self
                     .view
                     .port_connection_drag_intent(port_instance(&self.view, self.ids.source_port))
-                    .expect("source port drag facts");
+                    .expect("source port drag facts")
+                    .into_outcome()
+                    .expect("source port remains current");
                 let start = self
                     .view
                     .connection_start_from_port_drag_intent(

@@ -21,7 +21,7 @@ use crate::runtime::interaction::ConnectionGestureBinding;
 use crate::runtime::policy::resolve_edge_policy;
 use crate::runtime::viewport::ViewportTransform;
 
-use super::edge_pick::{EdgePickCursor, InternalEdgePickOutcome, record_edge_pick_flatten_stats};
+use super::edge_pick::{EdgePickCursor, InternalEdgePickOutcome};
 use super::geometry::{
     AdmissionIndex, InternalNodeIntersectionOutcome, NodeIntersectionCursor, SpatialQuery,
     ViewSpatialIndex,
@@ -31,9 +31,8 @@ use super::port_geometry::{
 };
 use super::route_geometry::{
     InternalRouteQueryOutcome, RouteGeometryIndex, RouteGeometryRevision, VisibleRouteCursor,
-    record_route_query_stats,
 };
-use super::{DerivedGeometryStats, SelectedEdgeMembership, ViewProvenance, ViewQueryIdentity};
+use super::{SelectedEdgeMembership, ViewProvenance, ViewQueryIdentity};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct RouteRecomputation {
@@ -43,6 +42,24 @@ pub(super) struct RouteRecomputation {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct FrameGeometryReconciliationWork {
+    pub(super) node_invalidations: u64,
+    pub(super) spatial_updates: u64,
+    pub(super) route_invalidations: u64,
+    pub(super) route_recomputations: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct FeedbackLayoutPublicationWork {
+    pub(super) incident_snapshot: IncidentSnapshotWork,
+    pub(super) spatial_updates: u64,
+    pub(super) route_invalidations: u64,
+    pub(super) route_recomputations: u64,
+    pub(super) refresh_requested: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct RuntimePatchGeometryWork {
+    pub(super) admission_nodes_visited: u64,
     pub(super) node_invalidations: u64,
     pub(super) spatial_updates: u64,
     pub(super) route_invalidations: u64,
@@ -92,7 +109,6 @@ pub(super) struct DerivedGeometry {
     route_index: RouteGeometryIndex,
     unresolved_routes: BTreeSet<EdgeId>,
     snapshot_cache: Option<GeometrySnapshot>,
-    stats: DerivedGeometryStats,
 }
 
 impl DerivedGeometry {
@@ -115,7 +131,6 @@ impl DerivedGeometry {
             route_index: RouteGeometryIndex::default(),
             unresolved_routes: BTreeSet::new(),
             snapshot_cache: None,
-            stats: DerivedGeometryStats::default(),
         }
     }
 
@@ -210,9 +225,7 @@ impl DerivedGeometry {
         entry_budget: usize,
         zoom: f32,
     ) -> InternalRouteQueryOutcome {
-        let outcome = self.route_index.query_page(cursor, entry_budget, zoom);
-        record_route_query_stats(&mut self.stats, &outcome);
-        outcome
+        self.route_index.query_page(cursor, entry_budget, zoom)
     }
 
     pub(super) fn route_geometry_revision(&self, edge: EdgeId) -> Option<RouteGeometryRevision> {
@@ -251,14 +264,12 @@ impl DerivedGeometry {
         cursor: EdgePickCursor,
         entry_budget: usize,
     ) -> InternalEdgePickOutcome {
-        let outcome = self.route_index.query_pick_page(
+        self.route_index.query_pick_page(
             edge_draw_order_ranks,
             selected_edges,
             cursor,
             entry_budget,
-        );
-        record_edge_pick_flatten_stats(&mut self.stats, &outcome);
-        outcome
+        )
     }
 
     pub(super) fn node_ids(&self) -> BTreeSet<NodeId> {
@@ -390,44 +401,8 @@ impl DerivedGeometry {
             self.routes.clone(),
         );
         self.snapshot_cache = Some(snapshot.clone());
-        self.stats.geometry_snapshot_builds = self.stats.geometry_snapshot_builds.saturating_add(1);
         self.assert_consistent();
         snapshot
-    }
-
-    pub(super) fn stats(&self) -> DerivedGeometryStats {
-        self.stats
-    }
-
-    pub(super) fn record_geometry_impact_merge(
-        &mut self,
-        patches: u64,
-        records: u64,
-        fallbacks: u64,
-    ) {
-        self.stats.geometry_impact_patches_merged = self
-            .stats
-            .geometry_impact_patches_merged
-            .saturating_add(patches);
-        self.stats.geometry_impact_records_merged = self
-            .stats
-            .geometry_impact_records_merged
-            .saturating_add(records);
-        self.stats.geometry_impact_global_fallbacks = self
-            .stats
-            .geometry_impact_global_fallbacks
-            .saturating_add(fallbacks);
-    }
-
-    pub(super) fn record_layout_candidate_impact(&mut self, checked: u64, stale: u64) {
-        self.stats.layout_impact_candidates_checked = self
-            .stats
-            .layout_impact_candidates_checked
-            .saturating_add(checked);
-        self.stats.layout_impact_candidates_stale = self
-            .stats
-            .layout_impact_candidates_stale
-            .saturating_add(stale);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -440,7 +415,10 @@ impl DerivedGeometry {
         request_refresh: bool,
         policy: GraphRuntimePolicy,
         selected_edges: &SelectedEdgeMembership,
-    ) -> (Option<LayoutPublicationReceipt>, IncidentSnapshotWork) {
+    ) -> (
+        Option<LayoutPublicationReceipt>,
+        FeedbackLayoutPublicationWork,
+    ) {
         let mut published_nodes = Vec::new();
         let mut withdrawn_nodes = Vec::new();
         let mut route_edges = BTreeSet::new();
@@ -474,28 +452,22 @@ impl DerivedGeometry {
             incident_work.materialize(impact_incident_edges);
             route_edges.extend(impact_incident_edges.iter().copied());
         }
-        if request_refresh {
-            self.stats.refresh_requests = self.stats.refresh_requests.saturating_add(1);
-        }
         if published_nodes.is_empty() && withdrawn_nodes.is_empty() {
             self.assert_consistent();
-            return (None, incident_work);
+            return (
+                None,
+                FeedbackLayoutPublicationWork {
+                    incident_snapshot: incident_work,
+                    refresh_requested: request_refresh,
+                    ..FeedbackLayoutPublicationWork::default()
+                },
+            );
         }
 
         let route_recomputation =
             self.recompute_routes(snapshot, &route_edges, policy, selected_edges);
         let before_revision = self.layout_revision;
         self.advance_layout_revision();
-        self.stats.layout_publications = self.stats.layout_publications.saturating_add(1);
-        self.stats.spatial_updates = self.stats.spatial_updates.saturating_add(spatial_updates);
-        self.stats.route_invalidations = self
-            .stats
-            .route_invalidations
-            .saturating_add(route_edges.len() as u64);
-        self.stats.route_recomputations = self
-            .stats
-            .route_recomputations
-            .saturating_add(route_recomputation.attempts);
         self.assert_consistent();
         (
             Some(LayoutPublicationReceipt::new(
@@ -503,10 +475,14 @@ impl DerivedGeometry {
                 self.layout_revision,
                 published_nodes,
                 withdrawn_nodes,
-                spatial_updates,
-                route_recomputation.attempts,
             )),
-            incident_work,
+            FeedbackLayoutPublicationWork {
+                incident_snapshot: incident_work,
+                spatial_updates,
+                route_invalidations: route_edges.len() as u64,
+                route_recomputations: route_recomputation.attempts,
+                refresh_requested: request_refresh,
+            },
         )
     }
 
@@ -583,21 +559,7 @@ impl DerivedGeometry {
         let publication_changed = geometry_changed || route_recomputation.changed;
         if publication_changed {
             self.advance_layout_revision();
-            self.stats.layout_publications = self.stats.layout_publications.saturating_add(1);
         }
-        self.stats.node_invalidations = self
-            .stats
-            .node_invalidations
-            .saturating_add(invalidated_nodes.len() as u64);
-        self.stats.spatial_updates = self.stats.spatial_updates.saturating_add(spatial_updates);
-        self.stats.route_invalidations = self
-            .stats
-            .route_invalidations
-            .saturating_add(route_edges.len() as u64);
-        self.stats.route_recomputations = self
-            .stats
-            .route_recomputations
-            .saturating_add(route_recomputation.attempts);
         self.active_frame_nodes = active_nodes.clone();
         self.assert_consistent();
         let work = FrameGeometryReconciliationWork {
@@ -619,7 +581,7 @@ impl DerivedGeometry {
         patch: &RuntimePatch,
         policy: GraphRuntimePolicy,
         selected_edges: &SelectedEdgeMembership,
-    ) {
+    ) -> RuntimePatchGeometryWork {
         let document_reset = patch.kind() == RuntimePatchKind::DocumentReset;
         if document_reset {
             self.reset();
@@ -629,10 +591,6 @@ impl DerivedGeometry {
             patch.snapshot().graph(),
             patch.affected_nodes().iter().copied(),
         );
-        self.stats.admission_nodes_visited = self
-            .stats
-            .admission_nodes_visited
-            .saturating_add(admission_nodes_visited);
         let impact = patch.impact();
         let mut spatially_updated = BTreeSet::new();
         for node in &impact.retired_nodes {
@@ -679,22 +637,6 @@ impl DerivedGeometry {
         let route_edges = impact.route_edges.iter().copied().collect::<BTreeSet<_>>();
         let recomputation =
             self.recompute_routes(patch.snapshot(), &route_edges, policy, selected_edges);
-        self.stats.node_invalidations = self
-            .stats
-            .node_invalidations
-            .saturating_add(impact.layout_dirty_nodes.len() as u64);
-        self.stats.spatial_updates = self
-            .stats
-            .spatial_updates
-            .saturating_add(spatially_updated.len() as u64);
-        self.stats.route_invalidations = self
-            .stats
-            .route_invalidations
-            .saturating_add(impact.route_edges.len() as u64);
-        self.stats.route_recomputations = self
-            .stats
-            .route_recomputations
-            .saturating_add(recomputation.attempts);
         if document_reset
             || !spatially_updated.is_empty()
             || !impact.layout_dirty_nodes.is_empty()
@@ -703,13 +645,20 @@ impl DerivedGeometry {
             self.advance_layout_revision();
         }
         self.assert_consistent();
+        RuntimePatchGeometryWork {
+            admission_nodes_visited,
+            node_invalidations: impact.layout_dirty_nodes.len() as u64,
+            spatial_updates: spatially_updated.len() as u64,
+            route_invalidations: impact.route_edges.len() as u64,
+            route_recomputations: recomputation.attempts,
+        }
     }
 
     pub(super) fn update_route_selection(
         &mut self,
         edges: &BTreeSet<EdgeId>,
         selected_edges: &SelectedEdgeMembership,
-    ) {
+    ) -> u64 {
         for edge in edges {
             let Some(route) = self.routes.get(edge).map(|route| route.as_ref().clone()) else {
                 continue;
@@ -718,6 +667,7 @@ impl DerivedGeometry {
             self.upsert_route(*edge, route.with_selected(selected));
         }
         self.assert_consistent();
+        edges.len() as u64
     }
 
     pub(super) fn mark_all_stale(
@@ -739,20 +689,7 @@ impl DerivedGeometry {
         let changed = stale_nodes > 0 || recomputation.changed;
         if changed {
             self.advance_layout_revision();
-            self.stats.layout_publications = self.stats.layout_publications.saturating_add(1);
         }
-        self.stats.node_invalidations = self
-            .stats
-            .node_invalidations
-            .saturating_add(ports_by_node.len() as u64);
-        self.stats.route_invalidations = self
-            .stats
-            .route_invalidations
-            .saturating_add(route_edges.len() as u64);
-        self.stats.route_recomputations = self
-            .stats
-            .route_recomputations
-            .saturating_add(recomputation.attempts);
         self.assert_consistent();
         changed.then_some(self.layout_revision)
     }
@@ -772,17 +709,7 @@ impl DerivedGeometry {
         let changed = geometry_changed || recomputation.changed;
         if changed {
             self.advance_layout_revision();
-            self.stats.layout_publications = self.stats.layout_publications.saturating_add(1);
         }
-        self.stats.node_invalidations = self.stats.node_invalidations.saturating_add(1);
-        self.stats.route_invalidations = self
-            .stats
-            .route_invalidations
-            .saturating_add(route_edges.len() as u64);
-        self.stats.route_recomputations = self
-            .stats
-            .route_recomputations
-            .saturating_add(recomputation.attempts);
         self.assert_consistent();
         changed.then_some(self.layout_revision)
     }
@@ -812,12 +739,8 @@ impl DerivedGeometry {
         self.layout_revision = self.layout_revision.saturating_add(1);
     }
 
-    fn record_snapshot_updates(&mut self, count: usize) {
+    fn invalidate_snapshot(&mut self) {
         self.snapshot_cache = None;
-        self.stats.geometry_snapshot_fact_updates = self
-            .stats
-            .geometry_snapshot_fact_updates
-            .saturating_add(count as u64);
     }
 
     fn upsert_node(&mut self, node: NodeId, geometry: PublishedNodeGeometry) -> bool {
@@ -836,7 +759,6 @@ impl DerivedGeometry {
             .map(|current| current.ports().keys().copied().collect::<BTreeSet<_>>())
             .unwrap_or_default();
         let new_ports = geometry.ports().keys().copied().collect::<BTreeSet<_>>();
-        let touched_ports = old_ports.union(&new_ports).count();
         let old_outcomes = self
             .nodes
             .get(&node)
@@ -848,12 +770,6 @@ impl DerivedGeometry {
                     .collect::<BTreeSet<_>>()
             })
             .unwrap_or_default();
-        let new_outcomes = geometry
-            .port_outcomes()
-            .keys()
-            .copied()
-            .collect::<BTreeSet<_>>();
-        let touched_outcomes = old_outcomes.union(&new_outcomes).count();
 
         for port in &old_ports {
             self.ports.remove_mut(port);
@@ -862,22 +778,18 @@ impl DerivedGeometry {
             self.port_outcomes.remove_mut(&port);
         }
         for (port, published) in geometry.ports() {
-            if self.port_index.upsert(published) {
-                self.stats.port_index_updates = self.stats.port_index_updates.saturating_add(1);
-            }
+            self.port_index.upsert(published);
             self.ports.insert_mut(*port, Arc::new(published.clone()));
         }
         for port in old_ports.difference(&new_ports) {
-            if self.port_index.remove(*port) {
-                self.stats.port_index_updates = self.stats.port_index_updates.saturating_add(1);
-            }
+            self.port_index.remove(*port);
         }
         for (port, outcome) in geometry.port_outcomes() {
             self.port_outcomes
                 .insert_mut(*port, Arc::new(outcome.clone()));
         }
         self.nodes.insert_mut(node, Arc::new(geometry));
-        self.record_snapshot_updates(1 + touched_ports + touched_outcomes);
+        self.invalidate_snapshot();
         true
     }
 
@@ -888,15 +800,13 @@ impl DerivedGeometry {
         self.nodes.remove_mut(&node);
         for port in current.ports().keys() {
             self.ports.remove_mut(port);
-            if self.port_index.remove(*port) {
-                self.stats.port_index_updates = self.stats.port_index_updates.saturating_add(1);
-            }
+            self.port_index.remove(*port);
         }
         for port in current.port_outcomes().keys() {
             self.port_outcomes.remove_mut(port);
         }
         self.node_spatial.remove(node);
-        self.record_snapshot_updates(1 + current.ports().len() + current.port_outcomes().len());
+        self.invalidate_snapshot();
         true
     }
 
@@ -937,18 +847,11 @@ impl DerivedGeometry {
         if self.nodes.is_empty() && self.ports.is_empty() && self.port_outcomes.is_empty() {
             return;
         }
-        let removed = self
-            .nodes
-            .size()
-            .saturating_add(self.ports.size())
-            .saturating_add(self.port_outcomes.size());
         self.nodes = SharedGeometryMap::new_sync();
         self.ports = SharedGeometryMap::new_sync();
         self.port_outcomes = SharedGeometryMap::new_sync();
-        if self.port_index.clear() {
-            self.stats.port_index_updates = self.stats.port_index_updates.saturating_add(1);
-        }
-        self.record_snapshot_updates(removed);
+        self.port_index.clear();
+        self.invalidate_snapshot();
     }
 
     fn upsert_route(&mut self, edge: EdgeId, route: PublishedEdgeRoute) -> bool {
@@ -959,18 +862,10 @@ impl DerivedGeometry {
         {
             return false;
         }
-        let index = self.route_index.upsert(edge, &route);
-        self.stats.route_index_updates = self
-            .stats
-            .route_index_updates
-            .saturating_add(u64::from(index.index_changed));
-        self.stats.route_flatten_cache_invalidations = self
-            .stats
-            .route_flatten_cache_invalidations
-            .saturating_add(index.cache_invalidations);
+        self.route_index.upsert(edge, &route);
         self.routes.insert_mut(edge, Arc::new(route));
         self.route_facts_revision = self.route_facts_revision.saturating_add(1);
-        self.record_snapshot_updates(1);
+        self.invalidate_snapshot();
         true
     }
 
@@ -980,16 +875,8 @@ impl DerivedGeometry {
         if !route_removed && !index.index_changed {
             return false;
         }
-        self.stats.route_index_updates = self
-            .stats
-            .route_index_updates
-            .saturating_add(u64::from(index.index_changed));
-        self.stats.route_flatten_cache_invalidations = self
-            .stats
-            .route_flatten_cache_invalidations
-            .saturating_add(index.cache_invalidations);
         self.route_facts_revision = self.route_facts_revision.saturating_add(1);
-        self.record_snapshot_updates(1);
+        self.invalidate_snapshot();
         true
     }
 
@@ -998,18 +885,9 @@ impl DerivedGeometry {
         if self.routes.is_empty() && !index.index_changed {
             return;
         }
-        let removed = self.routes.size();
         self.routes = SharedGeometryMap::new_sync();
-        self.stats.route_index_updates = self
-            .stats
-            .route_index_updates
-            .saturating_add(u64::from(index.index_changed));
-        self.stats.route_flatten_cache_invalidations = self
-            .stats
-            .route_flatten_cache_invalidations
-            .saturating_add(index.cache_invalidations);
         self.route_facts_revision = self.route_facts_revision.saturating_add(1);
-        self.record_snapshot_updates(removed);
+        self.invalidate_snapshot();
     }
 
     pub(super) fn recompute_routes(

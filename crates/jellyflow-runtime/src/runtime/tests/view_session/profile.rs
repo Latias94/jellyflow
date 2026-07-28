@@ -1,3 +1,6 @@
+use std::cell::Cell;
+use std::rc::Rc;
+
 use jellyflow_core::core::{EdgeKind, Graph, GraphId, PortId};
 use jellyflow_core::types::TypeDesc;
 
@@ -52,6 +55,13 @@ fn profile_invalid_document_replacement_is_atomic() {
         .build(Graph::new(GraphId::from_u128(0x701)))
         .unwrap();
     let before = runtime.snapshot().unwrap();
+    let history_before = runtime.history_state().unwrap();
+    let installed_impact_before = runtime.installed_impact_state_for_test();
+    let event_count = Rc::new(Cell::new(0));
+    let callback_count = event_count.clone();
+    runtime
+        .subscribe(move |_| callback_count.set(callback_count.get() + 1))
+        .unwrap();
     let (replacement, _) = graph_with_nodes(1);
     let replacement = runtime.catalog().canonicalize_graph(&replacement).unwrap();
 
@@ -62,6 +72,11 @@ fn profile_invalid_document_replacement_is_atomic() {
         ))
     ));
     assert!(runtime.snapshot().unwrap().ptr_eq(&before));
-    assert_eq!(runtime.history_state().unwrap().undo_len(), 0);
-    assert_eq!(runtime.stats().unwrap().patch_builds, 0);
+    assert_eq!(runtime.history_state().unwrap(), history_before);
+    assert_eq!(
+        runtime.installed_impact_state_for_test(),
+        installed_impact_before,
+        "rejected document replacement must not update indexes or node identities"
+    );
+    assert_eq!(event_count.get(), 0);
 }

@@ -67,7 +67,7 @@ impl<T> RetainedFieldStoreState<T> {
 
     fn handle_view_event(&mut self, provenance: ViewProvenance, event: ViewSessionEvent) {
         match event {
-            ViewSessionEvent::RuntimePatched { patch } => {
+            ViewSessionEvent::RuntimePatched { patch, .. } => {
                 for node in patch.affected_nodes().iter().copied() {
                     if patch.node_lifetime_change(node).is_some() {
                         self.reconcile_node_lifetime(

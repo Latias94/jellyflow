@@ -195,20 +195,19 @@ fn symbol_type_changes_revalidate_profile_types_atomically() {
         .expect("symbol")
         .clone();
     compatible.name = "renamed source value".to_owned();
-    runtime
+    let outcome = runtime
         .execute(GraphCommand::symbols(
             runtime.snapshot().unwrap().version(),
             SymbolEdit::new().update(symbol_id, compatible),
         ))
         .into_result()
-        .unwrap()
+        .unwrap();
+    let planning_work = outcome
         .applied()
-        .expect("compatible symbol update applies");
+        .expect("compatible symbol update applies")
+        .planning_work();
     assert_eq!(
-        runtime
-            .stats()
-            .expect("runtime stats")
-            .command_planning_full_type_revalidations,
+        planning_work.full_type_revalidations(),
         1,
         "the conservative non-port fallback is observable",
     );
@@ -307,8 +306,8 @@ fn profile_can_narrow_symbol_dependencies_through_indexed_referrers() {
     )
     .expect("indexed exact dependency plans");
 
-    assert_eq!(planned.planning_stats.full_type_revalidations, 0);
-    assert!(planned.planning_stats.index_bucket_reads >= 3);
+    assert_eq!(planned.planning_work.full_type_revalidations(), 0);
+    assert!(planned.planning_work.index_bucket_reads() >= 3);
     assert!(matches!(
         planned.transaction.ops(),
         [GraphOp::SetSymbolName { id, .. }] if *id == symbol_id
@@ -621,7 +620,6 @@ fn type_invalid_document_replacement_is_atomic() {
     let runtime = profiled_runtime(graph, Box::new(StoredPortTypesProfile)).unwrap();
     let before = runtime.snapshot().unwrap();
     let history_before = runtime.history_state().unwrap();
-    let stats_before = runtime.stats().unwrap();
     let event_count = Rc::new(Cell::new(0));
     let callback_count = event_count.clone();
     runtime
@@ -644,7 +642,6 @@ fn type_invalid_document_replacement_is_atomic() {
     assert_profile_error_key(error, "connect.type_mismatch");
     assert!(before.ptr_eq(&runtime.snapshot().unwrap()));
     assert_eq!(runtime.history_state().unwrap(), history_before);
-    assert_eq!(runtime.stats().unwrap(), stats_before);
     assert_eq!(event_count.get(), 0);
 }
 
@@ -785,7 +782,6 @@ fn connection_evaluation_and_execution_observe_the_same_pure_profile_policy() {
     );
     let before = runtime.snapshot().unwrap();
     let history_before = runtime.history_state().unwrap();
-    let stats_before = runtime.stats().unwrap();
     let event_count = Rc::new(Cell::new(0));
     let callback_count = event_count.clone();
     runtime
@@ -798,7 +794,6 @@ fn connection_evaluation_and_execution_observe_the_same_pure_profile_policy() {
     assert_eq!(evaluation.diagnostics()[0].key, "connect.type_mismatch");
     assert!(before.ptr_eq(&runtime.snapshot().unwrap()));
     assert_eq!(runtime.history_state().unwrap(), history_before);
-    assert_eq!(runtime.stats().unwrap(), stats_before);
     assert_eq!(event_count.get(), 0);
 
     let outcome = runtime
@@ -820,7 +815,6 @@ fn connection_evaluation_and_execution_observe_the_same_pure_profile_policy() {
     );
     assert!(before.ptr_eq(&runtime.snapshot().unwrap()));
     assert_eq!(runtime.history_state().unwrap(), history_before);
-    assert_eq!(runtime.stats().unwrap(), stats_before);
     assert_eq!(event_count.get(), 0);
 }
 
@@ -949,7 +943,7 @@ fn history_replay_does_not_run_profile_concretization_again() {
 }
 
 #[test]
-fn profile_rejected_undo_preserves_graph_history_stats_and_notifications() {
+fn profile_rejected_undo_preserves_graph_history_and_notifications() {
     let (graph, nodes) = graph_with_nodes(1);
     let reject_null = Rc::new(Cell::new(false));
     let runtime = profiled_runtime(
@@ -973,7 +967,6 @@ fn profile_rejected_undo_preserves_graph_history_stats_and_notifications() {
     reject_null.set(true);
     let before = runtime.snapshot().unwrap();
     let history_before = runtime.history_state().unwrap();
-    let stats_before = runtime.stats().unwrap();
     let event_count = Rc::new(Cell::new(0));
     let callback_count = event_count.clone();
     runtime
@@ -992,7 +985,6 @@ fn profile_rejected_undo_preserves_graph_history_stats_and_notifications() {
     );
     assert!(before.ptr_eq(&runtime.snapshot().unwrap()));
     assert_eq!(runtime.history_state().unwrap(), history_before);
-    assert_eq!(runtime.stats().unwrap(), stats_before);
     assert_eq!(event_count.get(), 0);
 }
 
@@ -1035,7 +1027,6 @@ fn panicking_profile_validation_does_not_consume_prepared_history() {
 
     let before = runtime.snapshot().unwrap();
     let history_before = runtime.history_state().unwrap();
-    let stats_before = runtime.stats().unwrap();
     let event_count = Rc::new(Cell::new(0));
     let callback_count = event_count.clone();
     runtime
@@ -1051,7 +1042,6 @@ fn panicking_profile_validation_does_not_consume_prepared_history() {
     assert!(panic.is_err());
     assert!(before.ptr_eq(&runtime.snapshot().unwrap()));
     assert_eq!(runtime.history_state().unwrap(), history_before);
-    assert_eq!(runtime.stats().unwrap(), stats_before);
     assert_eq!(event_count.get(), 0);
 
     armed.set(false);
@@ -1177,8 +1167,8 @@ fn multi_round_profile_journal_preserves_label_and_operation_order() {
         GraphOp::SetNodePorts { id, from, to }
             if *id == nodes[0] && from.is_empty() && to == &[derived_port]
     ));
-    assert_eq!(planned.planning_stats.fact_reads, 8);
-    assert_eq!(planned.planning_stats.operations_emitted, 4);
+    assert_eq!(planned.planning_work.fact_reads(), 8);
+    assert_eq!(planned.planning_work.operations_emitted(), 4);
 }
 
 #[test]
@@ -1195,7 +1185,6 @@ fn profile_validation_rejection_after_derivation_has_zero_runtime_side_effects()
     .unwrap();
     let before = runtime.snapshot().unwrap();
     let history_before = runtime.history_state().unwrap();
-    let stats_before = runtime.stats().unwrap();
     let event_count = Rc::new(Cell::new(0));
     let callback_count = event_count.clone();
     runtime
@@ -1218,7 +1207,6 @@ fn profile_validation_rejection_after_derivation_has_zero_runtime_side_effects()
     );
     assert!(before.ptr_eq(&runtime.snapshot().unwrap()));
     assert_eq!(runtime.history_state().unwrap(), history_before);
-    assert_eq!(runtime.stats().unwrap(), stats_before);
     assert_eq!(event_count.get(), 0);
 }
 
@@ -1236,7 +1224,6 @@ fn non_convergent_profile_has_zero_runtime_side_effects() {
     .unwrap();
     let before = runtime.snapshot().unwrap();
     let history_before = runtime.history_state().unwrap();
-    let stats_before = runtime.stats().unwrap();
     let event_count = Rc::new(Cell::new(0));
     let callback_count = event_count.clone();
     runtime
@@ -1256,6 +1243,5 @@ fn non_convergent_profile_has_zero_runtime_side_effects() {
     assert_eq!(concretize_calls.get(), 3);
     assert!(before.ptr_eq(&runtime.snapshot().unwrap()));
     assert_eq!(runtime.history_state().unwrap(), history_before);
-    assert_eq!(runtime.stats().unwrap(), stats_before);
     assert_eq!(event_count.get(), 0);
 }

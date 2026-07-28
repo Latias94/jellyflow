@@ -16,8 +16,9 @@ use crate::profile::{
 };
 use crate::rules::{Diagnostic, DiagnosticTarget, EdgeEndpoint};
 use crate::runtime::commands::{
-    ConnectionEdit, GraphCommand, GraphCommandOutcome, IncidentEdgePolicy, NodeGeometryEdit,
-    SymbolEdit, TopologyEdit, TopologyPort, plan_graph_command,
+    ConnectionEdit, GraphCommand, GraphCommandOutcome, GraphCommandPlanningWork,
+    IncidentEdgePolicy, NodeGeometryEdit, SymbolEdit, TopologyEdit, TopologyPort,
+    plan_graph_command,
 };
 use crate::runtime::graph_runtime::{
     GraphIndex, GraphRuntime, GraphRuntimeError, GraphRuntimePolicy,
@@ -86,7 +87,6 @@ fn assert_rejected_without_side_effects(
 ) -> GraphCommandOutcome {
     let before = runtime.snapshot().unwrap();
     let history_before = runtime.history_state().unwrap();
-    let stats_before = runtime.stats().unwrap();
     let installed_impact_before = runtime.installed_impact_state_for_test();
     let event_count = Rc::new(Cell::new(0));
     let callback_count = event_count.clone();
@@ -100,7 +100,6 @@ fn assert_rejected_without_side_effects(
     assert_eq!(rejection.diagnostics()[0].key, expected_key);
     assert!(before.ptr_eq(&runtime.snapshot().unwrap()));
     assert_eq!(runtime.history_state().unwrap(), history_before);
-    assert_eq!(runtime.stats().unwrap(), stats_before);
     assert_eq!(
         runtime.installed_impact_state_for_test(),
         installed_impact_before,
@@ -168,22 +167,30 @@ fn topology_ports_with_type(
 
 fn undo(runtime: &GraphRuntime) {
     let version = runtime.snapshot().unwrap().version();
-    runtime
+    let outcome = runtime
         .execute(GraphCommand::undo(version))
         .into_result()
-        .unwrap()
-        .applied()
-        .expect("undo applies");
+        .unwrap();
+    let receipt = outcome.applied().expect("undo applies");
+    assert_planning_work_is_empty(receipt.planning_work());
 }
 
 fn redo(runtime: &GraphRuntime) {
     let version = runtime.snapshot().unwrap().version();
-    runtime
+    let outcome = runtime
         .execute(GraphCommand::redo(version))
         .into_result()
-        .unwrap()
-        .applied()
-        .expect("redo applies");
+        .unwrap();
+    let receipt = outcome.applied().expect("redo applies");
+    assert_planning_work_is_empty(receipt.planning_work());
+}
+
+fn assert_planning_work_is_empty(work: GraphCommandPlanningWork) {
+    assert_eq!(work.fact_reads(), 0);
+    assert_eq!(work.index_bucket_reads(), 0);
+    assert_eq!(work.index_entries_read(), 0);
+    assert_eq!(work.operations_emitted(), 0);
+    assert_eq!(work.full_type_revalidations(), 0);
 }
 
 struct PassThroughProfile;

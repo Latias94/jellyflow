@@ -22,7 +22,7 @@ use jellyflow_core::core::{EdgeId, Graph, GroupId, NodeId, PortId};
 use crate::io::{
     ViewSelectionSeed, ViewSessionSeed, ViewSessionSeedGraphMismatch, edge_is_visible,
 };
-use crate::runtime::adapter_protocol::{AdapterEnvironment, ViewPoint};
+use crate::runtime::adapter_protocol::{AdapterEnvironment, GeometryImpactMergeWork, ViewPoint};
 use crate::runtime::commands::{
     CommandCompletionCorrelationError, CommandExecutionCompletion, CommandExecutionCompletions,
     ConnectionEdit, ConnectionEvaluation, GraphCommand, GraphCommandIdentity,
@@ -30,8 +30,9 @@ use crate::runtime::commands::{
 use crate::runtime::graph_runtime::{
     CreateFromWireCandidates, CreateFromWireQueryError, EdgeInstanceKey, FactChangeMask,
     GraphRevision, GraphRuntimeError, GraphRuntimePolicy, GraphSnapshot, NodeLifetimeKey,
-    PortConnectionDragIntent, PortConnectionFacts, PortConnectionSummary, PortInstanceKey,
-    RuntimeFactKey, RuntimeId, RuntimePatch, RuntimePatchKind, RuntimeProvenance, RuntimeShared,
+    PortConnectionDragIntent, PortConnectionFacts, PortConnectionQueryResult,
+    PortConnectionSummary, PortInstanceKey, RuntimeFactKey, RuntimeId, RuntimePatch,
+    RuntimePatchKind, RuntimeProvenance, RuntimeShared,
 };
 use crate::runtime::interaction::{
     AlignmentSnapWork, ConnectionGestureBinding, InteractionQueryId, NodeDragStart,
@@ -455,6 +456,7 @@ pub enum ViewSessionEvent {
     },
     RuntimePatched {
         patch: RuntimePatch,
+        reconciliation: RuntimePatchReconciliationReceipt,
     },
     LayoutPublished {
         layout_revision: u64,
@@ -463,6 +465,226 @@ pub enum ViewSessionEvent {
     Closed {
         reason: ViewCloseReason,
     },
+}
+
+/// Operation-scoped work evidence for reconciling one runtime patch into one view.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimePatchReconciliationReceipt {
+    pending_frame_impact: Option<GeometryImpactMergeWork>,
+    facts: RuntimePatchFactReceipt,
+    geometry: RuntimePatchGeometryReceipt,
+    selection: RuntimePatchSelectionReceipt,
+}
+
+/// Runtime-fact classification work performed for one view patch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RuntimePatchFactReceipt {
+    fact_records_visited: u64,
+    route_impact_entries_visited: u64,
+}
+
+/// Incremental derived-geometry work performed for one view patch.
+///
+/// A document reset releases owned geometry and indexes in bulk. That bulk release is identified
+/// by the accompanying [`RuntimePatch`] kind and is intentionally not expanded into per-entry
+/// counters here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RuntimePatchGeometryReceipt {
+    admission_nodes_visited: u64,
+    node_invalidations: u64,
+    spatial_updates: u64,
+    route_invalidations: u64,
+    route_recomputations: u64,
+}
+
+/// Selection work performed while reconciling one view patch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RuntimePatchSelectionReceipt {
+    reconciled: bool,
+    membership_rebuilt: bool,
+    node_membership_entries_rebuilt: u64,
+    edge_membership_entries_rebuilt: u64,
+    group_membership_entries_rebuilt: u64,
+    route_edges_examined: u64,
+}
+
+impl RuntimePatchReconciliationReceipt {
+    const fn new(
+        pending_frame_impact: Option<GeometryImpactMergeWork>,
+        facts: RuntimePatchFactReceipt,
+        geometry: RuntimePatchGeometryReceipt,
+        selection: RuntimePatchSelectionReceipt,
+    ) -> Self {
+        Self {
+            pending_frame_impact,
+            facts,
+            geometry,
+            selection,
+        }
+    }
+
+    /// Work performed while merging this patch into an outstanding frame, when one existed.
+    ///
+    /// `None` means the view had no pending frame. `Some` is retained even when every counter is
+    /// zero so callers can distinguish an observed patch from a skipped merge.
+    #[must_use]
+    pub const fn pending_frame_impact(&self) -> Option<GeometryImpactMergeWork> {
+        self.pending_frame_impact
+    }
+
+    #[must_use]
+    pub const fn facts(&self) -> &RuntimePatchFactReceipt {
+        &self.facts
+    }
+
+    #[must_use]
+    pub const fn geometry(&self) -> &RuntimePatchGeometryReceipt {
+        &self.geometry
+    }
+
+    #[must_use]
+    pub const fn selection(&self) -> &RuntimePatchSelectionReceipt {
+        &self.selection
+    }
+}
+
+impl RuntimePatchFactReceipt {
+    const fn new(fact_records_visited: u64, route_impact_entries_visited: u64) -> Self {
+        Self {
+            fact_records_visited,
+            route_impact_entries_visited,
+        }
+    }
+
+    /// Returns the number of patch fact records classified for this view.
+    #[must_use]
+    pub const fn fact_records_visited(self) -> u64 {
+        self.fact_records_visited
+    }
+
+    /// Returns the number of route-impact entries classified outside the fact record stream.
+    #[must_use]
+    pub const fn route_impact_entries_visited(self) -> u64 {
+        self.route_impact_entries_visited
+    }
+}
+
+impl RuntimePatchGeometryReceipt {
+    const fn new(
+        admission_nodes_visited: u64,
+        node_invalidations: u64,
+        spatial_updates: u64,
+        route_invalidations: u64,
+        route_recomputations: u64,
+    ) -> Self {
+        Self {
+            admission_nodes_visited,
+            node_invalidations,
+            spatial_updates,
+            route_invalidations,
+            route_recomputations,
+        }
+    }
+
+    /// Returns the nodes examined by the admission index's incremental patch update.
+    #[must_use]
+    pub const fn admission_nodes_visited(self) -> u64 {
+        self.admission_nodes_visited
+    }
+
+    /// Returns layout-dirty node invalidation requests carried by the patch.
+    #[must_use]
+    pub const fn node_invalidations(self) -> u64 {
+        self.node_invalidations
+    }
+
+    /// Returns unique node geometry entries actually removed or translated.
+    #[must_use]
+    pub const fn spatial_updates(self) -> u64 {
+        self.spatial_updates
+    }
+
+    /// Returns route identities submitted for invalidation.
+    #[must_use]
+    pub const fn route_invalidations(self) -> u64 {
+        self.route_invalidations
+    }
+
+    /// Returns route recomputation attempts, including unresolved routes.
+    #[must_use]
+    pub const fn route_recomputations(self) -> u64 {
+        self.route_recomputations
+    }
+}
+
+impl RuntimePatchSelectionReceipt {
+    #[allow(clippy::too_many_arguments)]
+    const fn new(
+        reconciled: bool,
+        membership_rebuilt: bool,
+        node_membership_entries_rebuilt: u64,
+        edge_membership_entries_rebuilt: u64,
+        group_membership_entries_rebuilt: u64,
+        route_edges_examined: u64,
+    ) -> Self {
+        Self {
+            reconciled,
+            membership_rebuilt,
+            node_membership_entries_rebuilt,
+            edge_membership_entries_rebuilt,
+            group_membership_entries_rebuilt,
+            route_edges_examined,
+        }
+    }
+
+    /// Returns whether selection facts required authoritative reconciliation.
+    #[must_use]
+    pub const fn reconciled(self) -> bool {
+        self.reconciled
+    }
+
+    /// Returns whether changed selection rebuilt the view's membership indexes.
+    #[must_use]
+    pub const fn membership_rebuilt(self) -> bool {
+        self.membership_rebuilt
+    }
+
+    /// Returns new selected-node entries consumed by a membership rebuild.
+    #[must_use]
+    pub const fn node_membership_entries_rebuilt(self) -> u64 {
+        self.node_membership_entries_rebuilt
+    }
+
+    /// Returns new selected-edge entries consumed by a membership rebuild.
+    #[must_use]
+    pub const fn edge_membership_entries_rebuilt(self) -> u64 {
+        self.edge_membership_entries_rebuilt
+    }
+
+    /// Returns new selected-group entries consumed by a membership rebuild.
+    #[must_use]
+    pub const fn group_membership_entries_rebuilt(self) -> u64 {
+        self.group_membership_entries_rebuilt
+    }
+
+    /// Returns unique route identities examined while updating selection paint facts.
+    #[must_use]
+    pub const fn route_edges_examined(self) -> u64 {
+        self.route_edges_examined
+    }
+}
+
+pub(crate) struct RuntimePatchApplication {
+    selection_changed: Option<ViewSelectionSeed>,
+    reconciliation: RuntimePatchReconciliationReceipt,
+}
+
+impl RuntimePatchApplication {
+    pub(crate) fn into_parts(
+        self,
+    ) -> (Option<ViewSelectionSeed>, RuntimePatchReconciliationReceipt) {
+        (self.selection_changed, self.reconciliation)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -504,87 +726,6 @@ impl NodeBindingKey {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct ViewSessionStats {
-    pub runtime_patches: u64,
-    pub fact_records_visited: u64,
-    pub node_invalidations: u64,
-    pub node_binding_notifications: u64,
-    pub spatial_updates: u64,
-    pub geometry_impact_patches_merged: u64,
-    pub geometry_impact_records_merged: u64,
-    pub geometry_impact_global_fallbacks: u64,
-    pub layout_impact_candidates_checked: u64,
-    pub layout_impact_candidates_stale: u64,
-    pub port_index_updates: u64,
-    pub route_invalidations: u64,
-    pub route_recomputations: u64,
-    pub route_index_updates: u64,
-    pub route_query_cells_examined: u64,
-    pub route_query_entries_examined: u64,
-    pub route_query_candidates_matched: u64,
-    pub route_query_incomplete: u64,
-    pub route_query_budget_exhausted: u64,
-    pub route_flatten_cache_hits: u64,
-    pub route_flatten_cache_misses: u64,
-    pub route_flatten_cache_evictions: u64,
-    pub route_flatten_cache_invalidations: u64,
-    pub route_flatten_segments_built: u64,
-    pub route_flatten_overflows: u64,
-    pub view_state_sanitizations: u64,
-    /// Authoritative selected-edge membership rebuilds caused by selection reconciliation.
-    pub edge_selection_membership_rebuilds: u64,
-    /// Selected edges inserted across authoritative membership rebuilds.
-    pub edge_selection_membership_entries_rebuilt: u64,
-    /// Nodes visited while incrementally patching the provisional admission index.
-    pub admission_nodes_visited: u64,
-    pub geometry_snapshot_builds: u64,
-    pub geometry_snapshot_fact_updates: u64,
-    pub layout_publications: u64,
-    pub refresh_requests: u64,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct ViewControlStats {
-    runtime_patches: u64,
-    fact_records_visited: u64,
-    node_binding_notifications: u64,
-    view_state_sanitizations: u64,
-    edge_selection_membership_rebuilds: u64,
-    edge_selection_membership_entries_rebuilt: u64,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct DerivedGeometryStats {
-    node_invalidations: u64,
-    spatial_updates: u64,
-    geometry_impact_patches_merged: u64,
-    geometry_impact_records_merged: u64,
-    geometry_impact_global_fallbacks: u64,
-    layout_impact_candidates_checked: u64,
-    layout_impact_candidates_stale: u64,
-    port_index_updates: u64,
-    route_invalidations: u64,
-    route_recomputations: u64,
-    route_index_updates: u64,
-    route_query_cells_examined: u64,
-    route_query_entries_examined: u64,
-    route_query_candidates_matched: u64,
-    route_query_incomplete: u64,
-    route_query_budget_exhausted: u64,
-    route_flatten_cache_hits: u64,
-    route_flatten_cache_misses: u64,
-    route_flatten_cache_evictions: u64,
-    route_flatten_cache_invalidations: u64,
-    route_flatten_segments_built: u64,
-    route_flatten_overflows: u64,
-    admission_nodes_visited: u64,
-    geometry_snapshot_builds: u64,
-    geometry_snapshot_fact_updates: u64,
-    layout_publications: u64,
-    refresh_requests: u64,
-}
-
 #[derive(Debug, Clone, Copy)]
 enum ViewStatus {
     Open,
@@ -619,53 +760,18 @@ struct ViewState {
     pending_frame: Option<PendingFrame>,
     last_issued_frame: u64,
     last_superseded_frame: u64,
-    control_stats: ViewControlStats,
+}
+
+struct RuntimePatchFactClassification {
+    fact_records_visited: u64,
+    route_impact_entries_visited: u64,
+    retired_groups: BTreeSet<GroupId>,
+    selection_may_change: bool,
 }
 
 impl ViewState {
     fn query_identity(&self) -> ViewQueryIdentity {
         ViewQueryIdentity::new(self.id, self.generation, self.viewport_revision)
-    }
-
-    fn stats_snapshot(&self) -> ViewSessionStats {
-        let derived = self.derived.stats();
-        let control = self.control_stats;
-        ViewSessionStats {
-            runtime_patches: control.runtime_patches,
-            fact_records_visited: control.fact_records_visited,
-            node_invalidations: derived.node_invalidations,
-            node_binding_notifications: control.node_binding_notifications,
-            spatial_updates: derived.spatial_updates,
-            geometry_impact_patches_merged: derived.geometry_impact_patches_merged,
-            geometry_impact_records_merged: derived.geometry_impact_records_merged,
-            geometry_impact_global_fallbacks: derived.geometry_impact_global_fallbacks,
-            layout_impact_candidates_checked: derived.layout_impact_candidates_checked,
-            layout_impact_candidates_stale: derived.layout_impact_candidates_stale,
-            port_index_updates: derived.port_index_updates,
-            route_invalidations: derived.route_invalidations,
-            route_recomputations: derived.route_recomputations,
-            route_index_updates: derived.route_index_updates,
-            route_query_cells_examined: derived.route_query_cells_examined,
-            route_query_entries_examined: derived.route_query_entries_examined,
-            route_query_candidates_matched: derived.route_query_candidates_matched,
-            route_query_incomplete: derived.route_query_incomplete,
-            route_query_budget_exhausted: derived.route_query_budget_exhausted,
-            route_flatten_cache_hits: derived.route_flatten_cache_hits,
-            route_flatten_cache_misses: derived.route_flatten_cache_misses,
-            route_flatten_cache_evictions: derived.route_flatten_cache_evictions,
-            route_flatten_cache_invalidations: derived.route_flatten_cache_invalidations,
-            route_flatten_segments_built: derived.route_flatten_segments_built,
-            route_flatten_overflows: derived.route_flatten_overflows,
-            view_state_sanitizations: control.view_state_sanitizations,
-            edge_selection_membership_rebuilds: control.edge_selection_membership_rebuilds,
-            edge_selection_membership_entries_rebuilt: control
-                .edge_selection_membership_entries_rebuilt,
-            admission_nodes_visited: derived.admission_nodes_visited,
-            geometry_snapshot_builds: derived.geometry_snapshot_builds,
-            geometry_snapshot_fact_updates: derived.geometry_snapshot_fact_updates,
-            layout_publications: derived.layout_publications,
-            refresh_requests: derived.refresh_requests,
-        }
     }
 
     fn recent_interaction_node_id(&self) -> Option<NodeId> {
@@ -685,44 +791,83 @@ impl ViewState {
         true
     }
 
-    fn record_draw_order_retirements(&mut self, patch: &RuntimePatch) {
+    fn classify_runtime_patch_facts(
+        &mut self,
+        patch: &RuntimePatch,
+        document_reset: bool,
+    ) -> RuntimePatchFactClassification {
         let graph = patch.snapshot().graph();
+        let sanitize_view_state = patch.impact().sanitize_view_state;
+        let mut retired_groups = BTreeSet::new();
+        let mut selection_may_change = false;
         for fact in patch.facts() {
             match fact.key() {
                 RuntimeFactKey::Node(node) => {
-                    update_draw_order_retirement(
-                        &mut self.explicit_draw_order_nodes,
-                        &mut self.retired_draw_order_nodes,
-                        node,
-                        graph.node(&node).is_some_and(|node| !node.hidden),
-                    );
+                    selection_may_change |= self.selected_node_membership.contains(&node)
+                        && (patch.node_lifetime_change(node).is_some()
+                            || (sanitize_view_state
+                                && fact.change_mask().contains(FactChangeMask::VISIBILITY)));
+                    if !document_reset {
+                        update_draw_order_retirement(
+                            &mut self.explicit_draw_order_nodes,
+                            &mut self.retired_draw_order_nodes,
+                            node,
+                            graph.node(&node).is_some_and(|node| !node.hidden),
+                        );
+                    }
                 }
                 RuntimeFactKey::Edge(edge) => {
-                    update_draw_order_retirement(
-                        &mut self.explicit_draw_order_edges,
-                        &mut self.retired_draw_order_edges,
-                        edge,
-                        edge_is_visible(graph, edge),
-                    );
+                    selection_may_change |= self.selected_edge_membership.contains_id(edge)
+                        && sanitize_view_state
+                        && (fact.change_mask().contains(FactChangeMask::IDENTITY)
+                            || fact.change_mask().contains(FactChangeMask::VISIBILITY));
+                    if !document_reset {
+                        update_draw_order_retirement(
+                            &mut self.explicit_draw_order_edges,
+                            &mut self.retired_draw_order_edges,
+                            edge,
+                            edge_is_visible(graph, edge),
+                        );
+                    }
                 }
                 RuntimeFactKey::Group(group) => {
-                    update_draw_order_retirement(
-                        &mut self.explicit_draw_order_groups,
-                        &mut self.retired_draw_order_groups,
-                        group,
-                        graph.group(&group).is_some(),
-                    );
+                    let identity_changed = fact.change_mask().contains(FactChangeMask::IDENTITY);
+                    selection_may_change |= self.selected_group_membership.contains(&group)
+                        && sanitize_view_state
+                        && identity_changed;
+                    if identity_changed {
+                        retired_groups.insert(group);
+                    }
+                    if !document_reset {
+                        update_draw_order_retirement(
+                            &mut self.explicit_draw_order_groups,
+                            &mut self.retired_draw_order_groups,
+                            group,
+                            graph.group(&group).is_some(),
+                        );
+                    }
                 }
                 _ => {}
             }
         }
         for edge in &patch.impact().route_edges {
-            update_draw_order_retirement(
-                &mut self.explicit_draw_order_edges,
-                &mut self.retired_draw_order_edges,
-                *edge,
-                edge_is_visible(graph, *edge),
-            );
+            let visible = edge_is_visible(graph, *edge);
+            selection_may_change |=
+                sanitize_view_state && self.selected_edge_membership.contains_id(*edge) && !visible;
+            if !document_reset {
+                update_draw_order_retirement(
+                    &mut self.explicit_draw_order_edges,
+                    &mut self.retired_draw_order_edges,
+                    *edge,
+                    visible,
+                );
+            }
+        }
+        RuntimePatchFactClassification {
+            fact_records_visited: patch.facts().len() as u64,
+            route_impact_entries_visited: patch.impact().route_edges.len() as u64,
+            retired_groups,
+            selection_may_change,
         }
     }
 
@@ -741,51 +886,11 @@ impl ViewState {
             .iter()
             .map(|node| node.node())
             .collect();
-        self.control_stats.edge_selection_membership_rebuilds = self
-            .control_stats
-            .edge_selection_membership_rebuilds
-            .saturating_add(1);
-        self.control_stats.edge_selection_membership_entries_rebuilt = self
-            .control_stats
-            .edge_selection_membership_entries_rebuilt
-            .saturating_add(self.facts.selected_edges.len() as u64);
         let previous_edges = self
             .selected_edge_membership
             .replace(self.facts.selected_edges.iter().copied());
         self.selected_group_membership = self.facts.selected_groups.iter().copied().collect();
         previous_edges
-    }
-
-    fn patch_may_change_selection(&self, patch: &RuntimePatch) -> bool {
-        let sanitize_view_state = patch.impact().sanitize_view_state;
-        patch.facts().iter().any(|fact| match fact.key() {
-            RuntimeFactKey::Node(node) => {
-                self.selected_node_membership.contains(&node)
-                    && (patch.node_lifetime_change(node).is_some()
-                        || (sanitize_view_state
-                            && fact.change_mask().contains(FactChangeMask::VISIBILITY)))
-            }
-            RuntimeFactKey::Edge(edge) => {
-                self.selected_edge_membership.contains_id(edge)
-                    && sanitize_view_state
-                    && (fact.change_mask().contains(FactChangeMask::IDENTITY)
-                        || fact.change_mask().contains(FactChangeMask::VISIBILITY))
-            }
-            RuntimeFactKey::Group(group) => {
-                self.selected_group_membership.contains(&group)
-                    && sanitize_view_state
-                    && fact.change_mask().contains(FactChangeMask::IDENTITY)
-            }
-            RuntimeFactKey::Import(_)
-            | RuntimeFactKey::Symbol(_)
-            | RuntimeFactKey::Port(_)
-            | RuntimeFactKey::StickyNote(_)
-            | RuntimeFactKey::Binding(_) => false,
-        }) || sanitize_view_state
-            && patch.impact().route_edges.iter().any(|edge| {
-                self.selected_edge_membership.contains_id(*edge)
-                    && !edge_is_visible(patch.snapshot().graph(), *edge)
-            })
     }
 
     fn export_seed(&self, snapshot: &GraphSnapshot) -> ViewSessionSeed {
@@ -1103,25 +1208,30 @@ impl ViewSession {
             .create_from_wire_candidates(binding.fixed_port_instance(), binding.mode())?)
     }
 
+    /// Resolves full incident connection facts and exact work for one port query.
     pub fn port_connection_facts(
         &self,
         port: PortId,
-    ) -> Result<Option<PortConnectionFacts>, ViewSessionError> {
+    ) -> Result<PortConnectionQueryResult<Option<PortConnectionFacts>>, ViewSessionError> {
         self.runtime()?
             .port_connection_facts(port)
             .map_err(Into::into)
     }
 
+    /// Resolves a constant-work connection summary and exact work for one port query.
     pub fn port_connection_summary(
         &self,
         port: PortId,
-    ) -> Result<Option<PortConnectionSummary>, ViewSessionError> {
+    ) -> Result<PortConnectionQueryResult<Option<PortConnectionSummary>>, ViewSessionError> {
         self.runtime()?
             .port_connection_summary(port)
             .map_err(Into::into)
     }
 
-    /// Resolves pointer-connection facts for one exact port instance.
+    /// Resolves pointer-connection facts and exact work for one port instance.
+    ///
+    /// A retired or foreign instance produces a successful query with a `None` outcome, preserving
+    /// the negative lookup's work receipt for diagnostics and bounded-work assertions.
     ///
     /// ```compile_fail
     /// use jellyflow_core::core::PortId;
@@ -1134,13 +1244,10 @@ impl ViewSession {
     pub fn port_connection_drag_intent(
         &self,
         port: PortInstanceKey,
-    ) -> Result<PortConnectionDragIntent, ViewSessionError> {
-        let runtime = self.runtime()?;
-        let snapshot = runtime.snapshot().map_err(ViewSessionError::from)?;
-        ensure_port_instance_is_current(&snapshot, port)?;
-        runtime
-            .port_connection_drag_intent(port)?
-            .ok_or(ViewSessionError::StaleInteractionFacts)
+    ) -> Result<PortConnectionQueryResult<Option<PortConnectionDragIntent>>, ViewSessionError> {
+        self.runtime()?
+            .port_connection_drag_intent(port)
+            .map_err(Into::into)
     }
 
     pub fn subscribe(
@@ -1224,16 +1331,6 @@ impl ViewSession {
                 ViewStatus::Closing => None,
                 ViewStatus::Closed(reason) => Some(reason),
             })
-    }
-
-    pub fn stats(&self) -> Result<ViewSessionStats, ViewSessionError> {
-        let state = self
-            .shared
-            .state
-            .try_borrow()
-            .map_err(|_| ViewSessionError::Busy)?;
-        ensure_open(state.status)?;
-        Ok(state.stats_snapshot())
     }
 
     #[cfg(test)]
@@ -1648,33 +1745,33 @@ impl WeakViewSession {
         Ok(runtime.create_from_wire_candidates(binding.fixed_port_instance(), binding.mode())?)
     }
 
+    /// Resolves full incident connection facts without reviving either capability.
     pub fn port_connection_facts(
         &self,
         port: PortId,
-    ) -> Result<Option<PortConnectionFacts>, ViewSessionError> {
+    ) -> Result<PortConnectionQueryResult<Option<PortConnectionFacts>>, ViewSessionError> {
         let (_, runtime) = self.open_capability()?;
         runtime.port_connection_facts(port).map_err(Into::into)
     }
 
+    /// Resolves a constant-work connection summary without reviving either capability.
     pub fn port_connection_summary(
         &self,
         port: PortId,
-    ) -> Result<Option<PortConnectionSummary>, ViewSessionError> {
+    ) -> Result<PortConnectionQueryResult<Option<PortConnectionSummary>>, ViewSessionError> {
         let (_, runtime) = self.open_capability()?;
         runtime.port_connection_summary(port).map_err(Into::into)
     }
 
+    /// Resolves a drag decision without reviving either capability.
     pub fn port_connection_drag_intent(
         &self,
         port: PortInstanceKey,
-    ) -> Result<PortConnectionDragIntent, ViewSessionError> {
+    ) -> Result<PortConnectionQueryResult<Option<PortConnectionDragIntent>>, ViewSessionError> {
         let (_, runtime) = self.open_capability()?;
-        let snapshot = runtime.snapshot().map_err(ViewSessionError::from)?;
-        ensure_port_instance_is_current(&snapshot, port)?;
         runtime
             .port_connection_drag_intent(port)
-            .map_err(ViewSessionError::from)?
-            .ok_or(ViewSessionError::StaleInteractionFacts)
+            .map_err(Into::into)
     }
 
     pub fn subscribe(
@@ -1788,7 +1885,6 @@ impl ViewShared {
                 pending_frame: None,
                 last_issued_frame: 0,
                 last_superseded_frame: 0,
-                control_stats: ViewControlStats::default(),
             }),
             subscriptions: subscriptions::ViewEventHub::new(id),
         })
@@ -2149,7 +2245,10 @@ impl ViewShared {
         }
     }
 
-    pub(crate) fn apply_runtime_patch(&self, patch: &RuntimePatch) -> Option<ViewSelectionSeed> {
+    pub(crate) fn apply_runtime_patch(
+        &self,
+        patch: &RuntimePatch,
+    ) -> Option<RuntimePatchApplication> {
         for node in patch.affected_nodes() {
             if patch.node_lifetime_change(*node).is_some() {
                 self.subscriptions.retire_node(*node);
@@ -2159,50 +2258,36 @@ impl ViewShared {
         if !matches!(state.status, ViewStatus::Open) {
             return None;
         }
-        let reconcile_selection = patch.kind() == RuntimePatchKind::DocumentReset
-            || state.patch_may_change_selection(patch);
-        if let Some(pending) = state.pending_frame.as_mut() {
+        let document_reset = patch.kind() == RuntimePatchKind::DocumentReset;
+        let pending_frame_impact = state.pending_frame.as_mut().map(|pending| {
             let (fallback, records_merged) = pending.observe_patch(patch);
-            state
-                .derived
-                .record_geometry_impact_merge(1, records_merged, u64::from(fallback));
-        }
+            GeometryImpactMergeWork::new(1, records_merged, u64::from(fallback))
+        });
         state.seen_revision = patch.to_revision();
-        state.control_stats.runtime_patches = state.control_stats.runtime_patches.saturating_add(1);
-        state.control_stats.fact_records_visited = state
-            .control_stats
-            .fact_records_visited
-            .saturating_add(patch.facts().len() as u64);
 
-        if patch.kind() == RuntimePatchKind::DocumentReset {
+        if document_reset {
             state.retired_draw_order_nodes.clear();
             state.retired_draw_order_edges.clear();
             state.retired_draw_order_groups.clear();
         }
+        let fact_classification = state.classify_runtime_patch_facts(patch, document_reset);
+        let reconcile_selection = document_reset || fact_classification.selection_may_change;
         let mut changed_edges = BTreeSet::new();
         let selection_changed = reconcile_selection.then(|| {
             let before = state.facts.selection();
-            let retired_groups = patch
-                .facts()
-                .iter()
-                .filter_map(|fact| match fact.key() {
-                    RuntimeFactKey::Group(group)
-                        if fact.change_mask().contains(FactChangeMask::IDENTITY) =>
-                    {
-                        Some(group)
-                    }
-                    _ => None,
-                })
-                .collect::<BTreeSet<_>>();
-            if patch.kind() == RuntimePatchKind::DocumentReset {
-                state
-                    .facts
-                    .reconcile_for_snapshot(patch.snapshot(), &retired_groups, true);
+            if document_reset {
+                state.facts.reconcile_for_snapshot(
+                    patch.snapshot(),
+                    &fact_classification.retired_groups,
+                    true,
+                );
                 state.rebuild_explicit_draw_order_membership();
             } else {
-                state
-                    .facts
-                    .reconcile_selection(patch.snapshot(), &retired_groups, false);
+                state.facts.reconcile_selection(
+                    patch.snapshot(),
+                    &fact_classification.retired_groups,
+                    false,
+                );
             }
             let after = state.facts.selection();
             if after != before {
@@ -2222,14 +2307,21 @@ impl ViewShared {
         let selection_order_changed = selection_changed
             .as_ref()
             .is_some_and(|selection| selection.is_some());
+        let (
+            node_membership_entries_rebuilt,
+            edge_membership_entries_rebuilt,
+            group_membership_entries_rebuilt,
+        ) = if selection_order_changed {
+            (
+                state.facts.selected_nodes.len() as u64,
+                state.facts.selected_edges.len() as u64,
+                state.facts.selected_groups.len() as u64,
+            )
+        } else {
+            (0, 0, 0)
+        };
         if state.reconcile_recent_interaction(patch.snapshot()) && !selection_order_changed {
             state.interaction_order_revision = state.interaction_order_revision.saturating_add(1);
-        }
-        if reconcile_selection {
-            state.control_stats.view_state_sanitizations = state
-                .control_stats
-                .view_state_sanitizations
-                .saturating_add(1);
         }
         let policy = state.policy;
         let ViewState {
@@ -2237,14 +2329,34 @@ impl ViewShared {
             selected_edge_membership,
             ..
         } = &mut *state;
-        derived.apply_runtime_patch(patch, policy, selected_edge_membership);
-        if !changed_edges.is_empty() {
+        let geometry_work = derived.apply_runtime_patch(patch, policy, selected_edge_membership);
+        let route_edges_examined =
             derived.update_route_selection(&changed_edges, selected_edge_membership);
-        }
-        if patch.kind() != RuntimePatchKind::DocumentReset {
-            state.record_draw_order_retirements(patch);
-        }
-        selection_changed.flatten()
+        Some(RuntimePatchApplication {
+            selection_changed: selection_changed.flatten(),
+            reconciliation: RuntimePatchReconciliationReceipt::new(
+                pending_frame_impact,
+                RuntimePatchFactReceipt::new(
+                    fact_classification.fact_records_visited,
+                    fact_classification.route_impact_entries_visited,
+                ),
+                RuntimePatchGeometryReceipt::new(
+                    geometry_work.admission_nodes_visited,
+                    geometry_work.node_invalidations,
+                    geometry_work.spatial_updates,
+                    geometry_work.route_invalidations,
+                    geometry_work.route_recomputations,
+                ),
+                RuntimePatchSelectionReceipt::new(
+                    reconcile_selection,
+                    selection_order_changed,
+                    node_membership_entries_rebuilt,
+                    edge_membership_entries_rebuilt,
+                    group_membership_entries_rebuilt,
+                    route_edges_examined,
+                ),
+            ),
+        })
     }
 
     pub(crate) fn publish_runtime_patch(
@@ -2252,6 +2364,7 @@ impl ViewShared {
         generation: ViewGeneration,
         patch: RuntimePatch,
         selection_changed: Option<ViewSelectionSeed>,
+        reconciliation: RuntimePatchReconciliationReceipt,
     ) -> Option<PanicPayload> {
         if self.open_generation() != Some(generation) {
             return None;
@@ -2261,6 +2374,7 @@ impl ViewShared {
             self.subscriptions
                 .publish_event(ViewSessionEvent::RuntimePatched {
                     patch: patch.clone(),
+                    reconciliation,
                 }),
         );
         if self.open_generation() != Some(generation) {
@@ -2276,16 +2390,8 @@ impl ViewShared {
             if self.open_generation() != Some(generation) {
                 return panics.into_payload();
             }
-            let (notified, callback_panic) = self.subscriptions.publish_node(*node, &patch);
+            let (_, callback_panic) = self.subscriptions.publish_node(*node, &patch);
             panics.record(callback_panic);
-            if notified > 0
-                && let Ok(mut state) = self.state.try_borrow_mut()
-            {
-                state.control_stats.node_binding_notifications = state
-                    .control_stats
-                    .node_binding_notifications
-                    .saturating_add(notified as u64);
-            }
         }
         panics.into_payload()
     }
@@ -2558,19 +2664,6 @@ fn ensure_selection_keys_are_current(
             .iter()
             .any(|edge| !snapshot.edge_instance_is_current(*edge))
     {
-        return Err(ViewSessionError::StaleInteractionFacts);
-    }
-    Ok(())
-}
-
-fn ensure_port_instance_is_current(
-    snapshot: &GraphSnapshot,
-    port: PortInstanceKey,
-) -> Result<(), ViewSessionError> {
-    if port.provenance() != snapshot.provenance() {
-        return Err(ViewSessionError::ForeignInteractionFacts);
-    }
-    if !snapshot.port_instance_is_current(port) {
         return Err(ViewSessionError::StaleInteractionFacts);
     }
     Ok(())

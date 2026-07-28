@@ -2388,10 +2388,6 @@ fn dynamic_port_reconciliation_preserves_order_index_and_retained_capabilities(
     });
 
     let host_stats = cx.read_entity(&host, |host, _| host.stats());
-    let fact_reads = runtime
-        .stats()
-        .expect("runtime stats before quiescence")
-        .connection_query_fact_reads;
     for _ in 0..QUIESCENT_FRAMES {
         cx.update_entity(&host, |_, cx| cx.notify());
         draw(cx);
@@ -2413,14 +2409,6 @@ fn dynamic_port_reconciliation_preserves_order_index_and_retained_capabilities(
     assert_eq!(
         settled_stats.binding_notifications(),
         host_stats.binding_notifications()
-    );
-    assert_eq!(
-        runtime
-            .stats()
-            .expect("runtime stats after quiescence")
-            .connection_query_fact_reads,
-        fact_reads,
-        "cached presentation facts must serve authoring without per-frame runtime queries"
     );
 }
 
@@ -5795,7 +5783,7 @@ fn coalesced_remove_undo_and_payload_patch_revoke_the_retired_incarnation_withou
         .expect("remove applies")
         .patch()
         .clone();
-    signal.publish(ViewSessionEvent::RuntimePatched { patch: removed });
+    signal.publish_runtime_patch_for_test(removed);
     let restored = runtime
         .execute(GraphCommand::undo(
             runtime
@@ -5809,7 +5797,7 @@ fn coalesced_remove_undo_and_payload_patch_revoke_the_retired_incarnation_withou
         .expect("undo applies")
         .patch()
         .clone();
-    signal.publish(ViewSessionEvent::RuntimePatched { patch: restored });
+    signal.publish_runtime_patch_for_test(restored);
     let patched = runtime
         .execute(GraphCommand::set_node_data(
             runtime
@@ -5825,7 +5813,7 @@ fn coalesced_remove_undo_and_payload_patch_revoke_the_retired_incarnation_withou
         .expect("payload patch applies")
         .patch()
         .clone();
-    signal.publish(ViewSessionEvent::RuntimePatched { patch: patched });
+    signal.publish_runtime_patch_for_test(patched);
 
     let changes = signal
         .take_node_changes()
@@ -7972,19 +7960,7 @@ fn high_fanout_output_pointer_and_keyboard_drag_skip_incident_edges(
     let output = cx
         .debug_bounds("jellyflow-test-output-port")
         .expect("output bounds");
-    let pointer_before = runtime.stats().expect("stats before pointer drag");
     cx.simulate_mouse_down(output.center(), MouseButton::Left, Default::default());
-    let pointer_after = runtime.stats().expect("stats after pointer drag");
-    assert_eq!(
-        pointer_after.connection_query_index_bucket_reads
-            - pointer_before.connection_query_index_bucket_reads,
-        0
-    );
-    assert_eq!(
-        pointer_after.connection_query_index_entries_read
-            - pointer_before.connection_query_index_entries_read,
-        0
-    );
     cx.read_entity(&host, |host, _| {
         assert_eq!(
             host.interaction_presentation().phase(),
@@ -8009,7 +7985,6 @@ fn high_fanout_output_pointer_and_keyboard_drag_skip_incident_edges(
     let owner = cx.read_entity(&host, |host, _| {
         current_port_drag_owner(host, NodeId::from_u128(10), PortId::from_u128(20))
     });
-    let keyboard_before = runtime.stats().expect("stats before keyboard activation");
     let event = OpenGpuiPortEvent::Activation(OpenGpuiPortActivationEvent::new(
         owner,
         OpenGpuiPortActivationSource::Keyboard,
@@ -8017,17 +7992,6 @@ fn high_fanout_output_pointer_and_keyboard_drag_skip_incident_edges(
     cx.update(|window, cx| {
         host.update(cx, |host, cx| host.handle_port_event(event, window, cx));
     });
-    let keyboard_after = runtime.stats().expect("stats after keyboard activation");
-    assert_eq!(
-        keyboard_after.connection_query_index_bucket_reads
-            - keyboard_before.connection_query_index_bucket_reads,
-        0
-    );
-    assert_eq!(
-        keyboard_after.connection_query_index_entries_read
-            - keyboard_before.connection_query_index_entries_read,
-        0
-    );
     cx.read_entity(&host, |host, _| {
         assert!(host.connection_search_request().is_none());
         assert_connect_search_binding(host, PortId::from_u128(20));

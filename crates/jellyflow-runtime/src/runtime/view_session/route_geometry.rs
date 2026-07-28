@@ -343,7 +343,6 @@ fn interaction_half_width(interaction_width: f32) -> f32 {
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct RouteIndexMutation {
     pub index_changed: bool,
-    pub cache_invalidations: u64,
 }
 
 #[derive(Debug, Default)]
@@ -471,7 +470,7 @@ impl RouteGeometryIndex {
         else {
             return self.remove(edge);
         };
-        let cache_invalidations = u64::from(self.remove_cached_flatten(edge));
+        self.remove_cached_flatten(edge);
         self.next_path_revision = self.next_path_revision.saturating_add(1);
         let path_revision = self.next_path_revision;
         if let Some(indexed) = self.indexed.get(&edge) {
@@ -501,7 +500,6 @@ impl RouteGeometryIndex {
         self.pick_epoch = self.pick_epoch.saturating_add(1);
         RouteIndexMutation {
             index_changed: true,
-            cache_invalidations,
         }
     }
 
@@ -515,20 +513,18 @@ impl RouteGeometryIndex {
             self.remove_interaction_half_width(indexed.pick.interaction_width);
         }
         let spatial = self.spatial.remove(edge);
-        let cache_invalidations = u64::from(self.remove_cached_flatten(edge));
+        self.remove_cached_flatten(edge);
         if indexed.is_some() || spatial {
             self.index_epoch = self.index_epoch.saturating_add(1);
             self.pick_epoch = self.pick_epoch.saturating_add(1);
         }
         RouteIndexMutation {
             index_changed: indexed.is_some() || spatial,
-            cache_invalidations,
         }
     }
 
     pub(super) fn clear(&mut self) -> RouteIndexMutation {
         let index_changed = !self.indexed.is_empty();
-        let cache_invalidations = self.flatten_cache.len() as u64;
         self.spatial.clear();
         self.indexed.clear();
         self.flatten_cache.clear();
@@ -539,10 +535,7 @@ impl RouteGeometryIndex {
             self.index_epoch = self.index_epoch.saturating_add(1);
             self.pick_epoch = self.pick_epoch.saturating_add(1);
         }
-        RouteIndexMutation {
-            index_changed,
-            cache_invalidations,
-        }
+        RouteIndexMutation { index_changed }
     }
 
     pub(super) fn index_epoch(&self) -> u128 {
@@ -892,51 +885,6 @@ pub(super) enum InternalRouteQueryOutcome {
     BudgetExhausted {
         work: VisibleRouteQueryWork,
     },
-}
-
-pub(super) fn record_route_query_stats(
-    stats: &mut super::DerivedGeometryStats,
-    outcome: &InternalRouteQueryOutcome,
-) {
-    let work = match outcome {
-        InternalRouteQueryOutcome::Complete { work, .. }
-        | InternalRouteQueryOutcome::Incomplete { work, .. }
-        | InternalRouteQueryOutcome::BudgetExhausted { work } => *work,
-    };
-    stats.route_query_entries_examined = stats
-        .route_query_entries_examined
-        .saturating_add(work.entries_examined);
-    stats.route_query_cells_examined = stats
-        .route_query_cells_examined
-        .saturating_add(work.cells_examined);
-    stats.route_query_candidates_matched = stats
-        .route_query_candidates_matched
-        .saturating_add(work.candidates_matched);
-    stats.route_flatten_cache_hits = stats
-        .route_flatten_cache_hits
-        .saturating_add(work.flatten_cache_hits);
-    stats.route_flatten_cache_misses = stats
-        .route_flatten_cache_misses
-        .saturating_add(work.flatten_cache_misses);
-    stats.route_flatten_cache_evictions = stats
-        .route_flatten_cache_evictions
-        .saturating_add(work.flatten_cache_evictions);
-    stats.route_flatten_segments_built = stats
-        .route_flatten_segments_built
-        .saturating_add(work.flatten_segments_built);
-    stats.route_flatten_overflows = stats
-        .route_flatten_overflows
-        .saturating_add(work.flatten_overflows);
-    match outcome {
-        InternalRouteQueryOutcome::Incomplete { .. } => {
-            stats.route_query_incomplete = stats.route_query_incomplete.saturating_add(1);
-        }
-        InternalRouteQueryOutcome::BudgetExhausted { .. } => {
-            stats.route_query_budget_exhausted =
-                stats.route_query_budget_exhausted.saturating_add(1);
-        }
-        InternalRouteQueryOutcome::Complete { .. } => {}
-    }
 }
 
 impl ViewSession {

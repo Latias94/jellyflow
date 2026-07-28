@@ -318,7 +318,12 @@ fn close_rejects_duplicate_command_identity_before_entering_closing_state() {
     let view = runtime.attach_view(Default::default()).expect("view");
     let before = runtime.snapshot().unwrap();
     let history_before = runtime.history_state().unwrap();
-    let stats_before = runtime.stats().unwrap();
+    let installed_impact_before = runtime.installed_impact_state_for_test();
+    let event_count = Rc::new(Cell::new(0));
+    let callback_count = event_count.clone();
+    runtime
+        .subscribe(move |_| callback_count.set(callback_count.get() + 1))
+        .unwrap();
     let command = GraphCommand::set_node_data(
         before.version(),
         ids[0],
@@ -342,7 +347,12 @@ fn close_rejects_duplicate_command_identity_before_entering_closing_state() {
     assert_eq!(view.close_reason(), None);
     assert!(before.ptr_eq(&runtime.snapshot().unwrap()));
     assert_eq!(runtime.history_state().unwrap(), history_before);
-    assert_eq!(runtime.stats().unwrap(), stats_before);
+    assert_eq!(
+        runtime.installed_impact_state_for_test(),
+        installed_impact_before,
+        "invalid close requests must not update indexes or node identities"
+    );
+    assert_eq!(event_count.get(), 0);
 
     let outcome = view
         .close_with_request(ViewCloseRequest::new().with_command(command))

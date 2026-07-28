@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize};
@@ -37,23 +37,21 @@ fn graph_commit_fans_out_one_shared_patch_while_view_facts_stay_isolated() {
         )],
     );
     assert!(view_b.geometry_snapshot().unwrap().node(ids[0]).is_none());
-    let stats_before = view_a.stats().unwrap();
-
-    let a_events = Rc::new(Cell::new(0));
+    let a_events = Rc::new(RefCell::new(Vec::new()));
     let a_events_observer = a_events.clone();
     view_a
         .subscribe(move |event| {
-            if matches!(event, ViewSessionEvent::RuntimePatched { .. }) {
-                a_events_observer.set(a_events_observer.get() + 1);
+            if let ViewSessionEvent::RuntimePatched { reconciliation, .. } = event {
+                a_events_observer.borrow_mut().push(reconciliation);
             }
         })
         .unwrap();
-    let b_events = Rc::new(Cell::new(0));
+    let b_events = Rc::new(RefCell::new(Vec::new()));
     let b_events_observer = b_events.clone();
     view_b
         .subscribe(move |event| {
-            if matches!(event, ViewSessionEvent::RuntimePatched { .. }) {
-                b_events_observer.set(b_events_observer.get() + 1);
+            if let ViewSessionEvent::RuntimePatched { reconciliation, .. } = event {
+                b_events_observer.borrow_mut().push(reconciliation);
             }
         })
         .unwrap();
@@ -72,8 +70,8 @@ fn graph_commit_fans_out_one_shared_patch_while_view_facts_stay_isolated() {
     assert_eq!(view_a.graph_snapshot().unwrap().revision(), 1);
     assert_eq!(view_b.graph_snapshot().unwrap().revision(), 1);
     assert_eq!(runtime.history_state().unwrap().undo_len(), 1);
-    assert_eq!(a_events.get(), 1);
-    assert_eq!(b_events.get(), 1);
+    assert_eq!(a_events.borrow().len(), 1);
+    assert_eq!(b_events.borrow().len(), 1);
     assert_eq!(
         view_a
             .geometry_snapshot()
@@ -85,13 +83,12 @@ fn graph_commit_fans_out_one_shared_patch_while_view_facts_stay_isolated() {
         CanvasPoint { x: 33.0, y: 50.0 }
     );
     assert!(view_b.geometry_snapshot().unwrap().node(ids[0]).is_none());
-    let stats_after = view_a.stats().unwrap();
-    assert_eq!(
-        stats_after.spatial_updates - stats_before.spatial_updates,
-        1
-    );
-    assert_eq!(
-        stats_after.route_invalidations - stats_before.route_invalidations,
-        0
-    );
+    let a_events = a_events.borrow();
+    let a_geometry_work = a_events[0].geometry();
+    assert_eq!(a_geometry_work.spatial_updates(), 1);
+    assert_eq!(a_geometry_work.route_invalidations(), 0);
+    let b_events = b_events.borrow();
+    let b_geometry_work = b_events[0].geometry();
+    assert_eq!(b_geometry_work.spatial_updates(), 0);
+    assert_eq!(b_geometry_work.route_invalidations(), 0);
 }

@@ -32,13 +32,29 @@ use crate::runtime::interaction::{
 };
 use crate::runtime::view_session::{
     NodeIntersectionCursorStaleReason, NodeIntersectionQuery, NodeIntersectionQueryError,
-    NodeIntersectionQueryOutcome, ViewSessionEvent, ViewSessionOptions,
+    NodeIntersectionQueryOutcome, RuntimePatchReconciliationReceipt, ViewSession, ViewSessionEvent,
+    ViewSessionOptions,
 };
 
 use super::fixtures::{
     complete_nodes_intersecting, graph_with_nodes, graph_with_routed_edge, node,
     publish_graph_layouts, publish_node_layouts, view_options,
 };
+
+fn collect_patch_receipts(
+    session: &ViewSession,
+) -> Rc<RefCell<Vec<RuntimePatchReconciliationReceipt>>> {
+    let receipts = Rc::new(RefCell::new(Vec::new()));
+    let callback_receipts = receipts.clone();
+    session
+        .subscribe(move |event| {
+            if let ViewSessionEvent::RuntimePatched { reconciliation, .. } = event {
+                callback_receipts.borrow_mut().push(reconciliation);
+            }
+        })
+        .expect("patch receipt subscription");
+    receipts
+}
 
 #[test]
 fn node_intersection_query_never_publishes_a_partial_result() {
@@ -413,7 +429,6 @@ fn high_fanout_equal_frame_feedback_reuses_incident_snapshot_handles() {
         )
     };
 
-    let before_initial = runtime.stats().unwrap();
     let initial = session.frame(request()).unwrap();
     let initial_materialization = initial.materialization_receipt();
     let initial_hub = initial
@@ -423,10 +438,9 @@ fn high_fanout_equal_frame_feedback_reuses_incident_snapshot_handles() {
         .unwrap();
     let collector = initial.collector();
     collector.layout(chain_layout(initial_hub, 0.0)).unwrap();
-    session
+    let initial_feedback = session
         .submit_feedback(collector.finish().unwrap())
         .unwrap();
-    let after_initial = runtime.stats().unwrap();
     assert_eq!(
         initial_materialization.incident_snapshot().entries_read(),
         0
@@ -438,19 +452,22 @@ fn high_fanout_equal_frame_feedback_reuses_incident_snapshot_handles() {
         0
     );
     assert_eq!(
-        after_initial.feedback_incident_snapshot_entries_read
-            - before_initial.feedback_incident_snapshot_entries_read,
+        initial_feedback
+            .work()
+            .layout()
+            .incident_snapshot_entries_read(),
         EDGE_COUNT
     );
     assert_eq!(
-        after_initial.feedback_incident_snapshot_materializations
-            - before_initial.feedback_incident_snapshot_materializations,
+        initial_feedback
+            .work()
+            .layout()
+            .incident_snapshot_materializations(),
         1
     );
 
     for _ in 0..3 {
         let frame = session.frame(request()).unwrap();
-        let after_frame = runtime.stats().unwrap();
         let materialization = frame.materialization_receipt();
         assert_eq!(materialization.incident_snapshot().entries_read(), 0);
         assert_eq!(materialization.incident_snapshot().materializations(), 0);
@@ -462,15 +479,9 @@ fn high_fanout_equal_frame_feedback_reuses_incident_snapshot_handles() {
             .submit_feedback(collector.finish().unwrap())
             .unwrap();
         assert!(receipt.publication().is_none());
-        let after_feedback = runtime.stats().unwrap();
+        assert_eq!(receipt.work().layout().incident_snapshot_entries_read(), 0);
         assert_eq!(
-            after_feedback.feedback_incident_snapshot_entries_read
-                - after_frame.feedback_incident_snapshot_entries_read,
-            0
-        );
-        assert_eq!(
-            after_feedback.feedback_incident_snapshot_materializations
-                - after_frame.feedback_incident_snapshot_materializations,
+            receipt.work().layout().incident_snapshot_materializations(),
             0
         );
     }
@@ -968,7 +979,7 @@ fn symbol_changes_advance_only_referrer_bindings_and_notifications() {
     let callback_affected_nodes = affected_nodes.clone();
     session
         .subscribe(move |event| {
-            if let ViewSessionEvent::RuntimePatched { patch } = event {
+            if let ViewSessionEvent::RuntimePatched { patch, .. } = event {
                 callback_affected_nodes
                     .borrow_mut()
                     .extend_from_slice(patch.affected_nodes());
@@ -1255,7 +1266,7 @@ fn equal_layout_feedback_does_not_churn_layout_revision_or_spatial_work() {
         .submit_feedback(collector.finish().unwrap())
         .unwrap();
     assert_eq!(first.publication().unwrap().layout_revision(), 1);
-    assert_eq!(first.publication().unwrap().spatial_updates(), 1);
+    assert_eq!(first.work().layout().spatial_updates(), 1);
     assert_eq!(
         complete_nodes_intersecting(
             &session,
@@ -1269,15 +1280,19 @@ fn equal_layout_feedback_does_not_churn_layout_revision_or_spatial_work() {
         ),
         vec![nodes[0]]
     );
+    let stable_geometry = session.geometry_snapshot().unwrap();
     for _ in 0..120 {
-        assert_eq!(session.geometry_snapshot().unwrap().layout_revision(), 1);
+        let geometry = session.geometry_snapshot().unwrap();
+        assert_eq!(geometry.layout_revision(), 1);
+        assert!(std::ptr::eq(
+            geometry.node(nodes[0]).unwrap(),
+            stable_geometry.node(nodes[0]).unwrap()
+        ));
     }
-    let after_first = session.stats().unwrap();
     assert_eq!(
         initial_materialization.admission().nodes_materialized(),
         materialized as u64
     );
-    assert_eq!(after_first.geometry_snapshot_builds, 1);
 
     for index in 0..120 {
         let frame = session
@@ -1301,30 +1316,18 @@ fn equal_layout_feedback_does_not_churn_layout_revision_or_spatial_work() {
             .submit_feedback(collector.finish().unwrap())
             .unwrap();
         assert!(receipt.publication().is_none());
-        assert_eq!(session.geometry_snapshot().unwrap().layout_revision(), 1);
+        let layout_work = receipt.work().layout();
+        assert_eq!(layout_work.spatial_updates(), 0);
+        assert_eq!(layout_work.route_invalidations(), 0);
+        assert_eq!(layout_work.route_recomputations(), 0);
+        assert!(!layout_work.refresh_requested());
+        let geometry = session.geometry_snapshot().unwrap();
+        assert_eq!(geometry.layout_revision(), 1);
+        assert!(std::ptr::eq(
+            geometry.node(nodes[0]).unwrap(),
+            stable_geometry.node(nodes[0]).unwrap()
+        ));
     }
-
-    let after_equal_samples = session.stats().unwrap();
-    assert_eq!(
-        after_equal_samples.spatial_updates,
-        after_first.spatial_updates
-    );
-    assert_eq!(
-        after_equal_samples.route_invalidations,
-        after_first.route_invalidations
-    );
-    assert_eq!(
-        after_equal_samples.layout_publications,
-        after_first.layout_publications
-    );
-    assert_eq!(
-        after_equal_samples.refresh_requests,
-        after_first.refresh_requests
-    );
-    assert_eq!(
-        after_equal_samples.geometry_snapshot_builds,
-        after_first.geometry_snapshot_builds
-    );
 }
 
 #[test]
@@ -1472,7 +1475,7 @@ fn frame_order_ranks_only_admitted_candidates_with_a_large_selection() {
 }
 
 #[test]
-fn ten_thousand_selected_edges_do_not_rebuild_membership_on_geometry_hot_paths() {
+fn unrelated_runtime_patch_preserves_ten_thousand_edge_selection_without_rebuilding_membership() {
     const EDGE_COUNT: usize = 10_000;
     let (graph, hub) = graph_with_star(EDGE_COUNT + 1);
     let graph_id = graph.graph_id();
@@ -1498,7 +1501,7 @@ fn ten_thousand_selected_edges_do_not_rebuild_membership_on_geometry_hot_paths()
             RendererStamp::new("star.node", 1),
         )
     };
-    let before = session.stats().unwrap();
+    let patch_receipts = collect_patch_receipts(&session);
 
     let frame = session.frame(request()).unwrap();
     let hub_frame = frame
@@ -1527,22 +1530,20 @@ fn ten_thousand_selected_edges_do_not_rebuild_membership_on_geometry_hot_paths()
     assert!(session.invalidate_node_layout(&hub_instance).unwrap());
     let _ = session.frame(request()).unwrap();
 
-    let after = session.stats().unwrap();
+    let patch_receipts = patch_receipts.borrow();
+    assert_eq!(patch_receipts.len(), 1);
+    assert!(!patch_receipts[0].selection().membership_rebuilt());
     assert_eq!(
-        after.edge_selection_membership_rebuilds - before.edge_selection_membership_rebuilds,
+        patch_receipts[0]
+            .selection()
+            .edge_membership_entries_rebuilt(),
         0,
-        "frame, layout publication, patch, and invalidation must borrow the authoritative non-Clone membership",
-    );
-    assert_eq!(
-        after.edge_selection_membership_entries_rebuilt
-            - before.edge_selection_membership_entries_rebuilt,
-        0,
-        "geometry hot paths must not copy work proportional to the complete edge selection",
+        "an unrelated payload patch must not copy work proportional to the complete edge selection",
     );
     assert_eq!(
         session.export_seed().unwrap().selection().edges(),
         selected_edges,
-        "geometry work must preserve authoritative selection order",
+        "patch reconciliation and geometry work must preserve authoritative selection order",
     );
 }
 
@@ -1865,7 +1866,7 @@ fn admission_index_applies_graph_patches_without_a_full_rebuild() {
             .index_rebuilt()
     );
 
-    let before_patch = session.stats().unwrap();
+    let patch_receipts = collect_patch_receipts(&session);
     session
         .execute(GraphCommand::set_node_position(
             session.graph_snapshot().unwrap().version(),
@@ -1878,9 +1879,10 @@ fn admission_index_applies_graph_patches_without_a_full_rebuild() {
         .unwrap()
         .into_result()
         .unwrap();
-    let after_patch = session.stats().unwrap();
+    let patch_receipts = patch_receipts.borrow();
+    assert_eq!(patch_receipts.len(), 1);
     assert_eq!(
-        after_patch.admission_nodes_visited - before_patch.admission_nodes_visited,
+        patch_receipts[0].geometry().admission_nodes_visited(),
         1,
         "incremental patch reconciliation must visit only the changed admission node",
     );
@@ -1905,7 +1907,7 @@ fn one_node_change_structurally_shares_ten_thousand_node_geometry_snapshots() {
     let changed = nodes[4_321];
     let unchanged = nodes[8_765];
     let before = session.geometry_snapshot().unwrap();
-    let before_stats = session.stats().unwrap();
+    let patch_receipts = collect_patch_receipts(&session);
     let previous_position = before.node(changed).unwrap().bounds().origin;
     assert_eq!(before.nodes().len(), 10_000);
 
@@ -1922,17 +1924,12 @@ fn one_node_change_structurally_shares_ten_thousand_node_geometry_snapshots() {
         .into_result()
         .unwrap();
 
-    let after_patch = session.stats().unwrap();
-    assert_eq!(
-        after_patch.geometry_snapshot_fact_updates - before_stats.geometry_snapshot_fact_updates,
-        1
-    );
+    let patch_receipts = patch_receipts.borrow();
+    assert_eq!(patch_receipts.len(), 1);
+    assert_eq!(patch_receipts[0].geometry().spatial_updates(), 1);
+    assert_eq!(patch_receipts[0].geometry().route_invalidations(), 0);
     let after = session.geometry_snapshot().unwrap();
-    let after_snapshot = session.stats().unwrap();
-    assert_eq!(
-        after_snapshot.geometry_snapshot_builds - before_stats.geometry_snapshot_builds,
-        1
-    );
+    assert_eq!(after.layout_revision(), before.layout_revision() + 1);
     assert_eq!(after.nodes().len(), 10_000);
     assert!(!std::ptr::eq(
         before.node(changed).unwrap(),
@@ -1953,6 +1950,16 @@ fn one_node_change_structurally_shares_ten_thousand_node_geometry_snapshots() {
             y: previous_position.y + 11.0,
         }
     );
+    let cached_after = session.geometry_snapshot().unwrap();
+    assert_eq!(cached_after.layout_revision(), after.layout_revision());
+    assert!(std::ptr::eq(
+        cached_after.node(changed).unwrap(),
+        after.node(changed).unwrap()
+    ));
+    assert!(std::ptr::eq(
+        cached_after.node(unchanged).unwrap(),
+        after.node(unchanged).unwrap()
+    ));
 }
 
 #[test]
@@ -2026,7 +2033,12 @@ fn one_measurement_in_a_ten_thousand_node_chain_updates_only_incident_facts() {
         collector.layout(chain_layout(record, 0.0)).unwrap();
     }
     first.submit_feedback(collector.finish().unwrap()).unwrap();
-    let second_before = second.stats().unwrap();
+    let second_before = second.geometry_snapshot().unwrap();
+    let second_events = Rc::new(Cell::new(0));
+    let callback_events = second_events.clone();
+    second
+        .subscribe(move |_| callback_events.set(callback_events.get() + 1))
+        .unwrap();
 
     let frame = first.frame(request()).unwrap();
     let middle = frame
@@ -2037,11 +2049,20 @@ fn one_measurement_in_a_ten_thousand_node_chain_updates_only_incident_facts() {
     let collector = frame.collector();
     collector.layout(chain_layout(middle, 10.0)).unwrap();
     let receipt = first.submit_feedback(collector.finish().unwrap()).unwrap();
-    let publication = receipt.publication().unwrap();
-    assert_eq!(publication.spatial_updates(), 1);
-    assert_eq!(publication.route_recomputations(), 2);
-    assert_eq!(second.stats().unwrap(), second_before);
-    let stable = first.stats().unwrap();
+    assert!(receipt.publication().is_some());
+    assert_eq!(receipt.work().layout().spatial_updates(), 1);
+    assert_eq!(receipt.work().layout().route_recomputations(), 2);
+    assert_eq!(second_events.get(), 0);
+    let second_after_publication = second.geometry_snapshot().unwrap();
+    assert_eq!(
+        second_after_publication.layout_revision(),
+        second_before.layout_revision()
+    );
+    assert_eq!(
+        second_after_publication.nodes().len(),
+        second_before.nodes().len()
+    );
+    let stable = first.geometry_snapshot().unwrap();
 
     for index in 0..120 {
         let frame = first.frame(request()).unwrap();
@@ -2054,29 +2075,29 @@ fn one_measurement_in_a_ten_thousand_node_chain_updates_only_incident_facts() {
         let offset = if index % 2 == 0 { 0.005 } else { -0.005 };
         let collector = frame.collector();
         collector.layout(chain_layout(middle, offset)).unwrap();
-        assert!(
-            first
-                .submit_feedback(collector.finish().unwrap())
-                .unwrap()
-                .publication()
-                .is_none()
-        );
+        let receipt = first.submit_feedback(collector.finish().unwrap()).unwrap();
+        assert!(receipt.publication().is_none());
+        let layout_work = receipt.work().layout();
+        assert_eq!(layout_work.spatial_updates(), 0);
+        assert_eq!(layout_work.route_invalidations(), 0);
+        assert_eq!(layout_work.route_recomputations(), 0);
+        assert!(!layout_work.refresh_requested());
+        let geometry = first.geometry_snapshot().unwrap();
+        assert_eq!(geometry.layout_revision(), stable.layout_revision());
+        assert!(std::ptr::eq(
+            geometry.node(chain_node(MIDDLE)).unwrap(),
+            stable.node(chain_node(MIDDLE)).unwrap()
+        ));
     }
 
-    let after_epsilon = first.stats().unwrap();
-    assert_eq!(after_epsilon.spatial_updates, stable.spatial_updates);
+    assert_eq!(second_events.get(), 0);
+    let second_after_epsilon = second.geometry_snapshot().unwrap();
     assert_eq!(
-        after_epsilon.route_invalidations,
-        stable.route_invalidations
+        second_after_epsilon.layout_revision(),
+        second_before.layout_revision()
     );
     assert_eq!(
-        after_epsilon.route_recomputations,
-        stable.route_recomputations
+        second_after_epsilon.nodes().len(),
+        second_before.nodes().len()
     );
-    assert_eq!(
-        after_epsilon.layout_publications,
-        stable.layout_publications
-    );
-    assert_eq!(after_epsilon.refresh_requests, stable.refresh_requests);
-    assert_eq!(second.stats().unwrap(), second_before);
 }

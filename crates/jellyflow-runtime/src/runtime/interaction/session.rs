@@ -786,7 +786,10 @@ impl WeakViewSession {
         let provenance = self.provenance()?;
         let snapshot = self.graph_snapshot()?;
         let policy = self.graph_policy()?;
-        let drag_intent = self.port_connection_drag_intent(source.instance())?;
+        let drag_intent = self
+            .port_connection_drag_intent(source.instance())?
+            .into_outcome()
+            .ok_or(ViewSessionError::StaleInteractionFacts)?;
         keyboard_connection_start_from_facts(
             provenance,
             &snapshot,

@@ -12,8 +12,8 @@ use crate::profile::{ApplyPipelineError, validate_profile_graph};
 use crate::rules::{Diagnostic, DiagnosticTarget};
 use crate::runtime::commands::{
     GraphCommand, GraphCommandConflict, GraphCommandExecutionKind, GraphCommandIdentity,
-    GraphCommandNoop, GraphCommandOutcome, GraphCommandPlanningError, GraphCommandRejection,
-    PlannedGraphCommand, plan_graph_command,
+    GraphCommandNoop, GraphCommandOutcome, GraphCommandPlanningError, GraphCommandPlanningWork,
+    GraphCommandRejection, PlannedGraphCommand, plan_graph_command,
 };
 use crate::runtime::middleware::GraphRuntimeMiddlewareSnapshot;
 use crate::runtime::transaction_gate::GraphTransactionGate;
@@ -81,6 +81,7 @@ pub(super) enum CommandExecution {
         patch: RuntimePatch,
         sessions: Vec<(Rc<ViewShared>, ViewGeneration)>,
         footprint: GraphMutationFootprint,
+        planning_work: GraphCommandPlanningWork,
     },
 }
 
@@ -141,7 +142,7 @@ pub(super) fn execute_command_locked(
         transaction,
         footprint,
         graph,
-        planning_stats,
+        planning_work,
     } = match planned {
         Ok(planned) => planned,
         Err(error) => {
@@ -155,30 +156,14 @@ pub(super) fn execute_command_locked(
             command_rejection_from_apply(command.identity().clone(), current_version, error),
         )));
     }
-    state.stats.command_planning_fact_reads = state
-        .stats
-        .command_planning_fact_reads
-        .saturating_add(planning_stats.fact_reads);
-    state.stats.command_planning_index_bucket_reads = state
-        .stats
-        .command_planning_index_bucket_reads
-        .saturating_add(planning_stats.index_bucket_reads);
-    state.stats.command_planning_index_entries_read = state
-        .stats
-        .command_planning_index_entries_read
-        .saturating_add(planning_stats.index_entries_read);
-    state.stats.command_planning_operations_emitted = state
-        .stats
-        .command_planning_operations_emitted
-        .saturating_add(planning_stats.operations_emitted);
-    state.stats.command_planning_full_type_revalidations = state
-        .stats
-        .command_planning_full_type_revalidations
-        .saturating_add(planning_stats.full_type_revalidations);
-
     if transaction.is_empty() {
         return Ok(CommandExecution::Outcome(GraphCommandOutcome::Noop(
-            GraphCommandNoop::new(command.identity().clone(), current_version, footprint),
+            GraphCommandNoop::new(
+                command.identity().clone(),
+                current_version,
+                footprint,
+                planning_work,
+            ),
         )));
     }
 
@@ -190,6 +175,7 @@ pub(super) fn execute_command_locked(
         patch,
         sessions,
         footprint,
+        planning_work,
     })
 }
 
@@ -214,6 +200,7 @@ fn execute_history_command_locked(
                 command.identity().clone(),
                 current_version,
                 GraphMutationFootprint::new(),
+                GraphCommandPlanningWork::empty(),
             ),
         )));
     };
@@ -231,6 +218,7 @@ fn execute_history_command_locked(
                 command.identity().clone(),
                 current_version,
                 GraphMutationFootprint::new(),
+                GraphCommandPlanningWork::empty(),
             ),
         )));
     }
@@ -257,6 +245,7 @@ fn execute_history_command_locked(
         patch,
         sessions,
         footprint,
+        planning_work: GraphCommandPlanningWork::empty(),
     })
 }
 
@@ -531,12 +520,7 @@ pub(super) fn install_incremental(
     if record_history {
         state.history.record(committed);
     }
-    state.stats.patch_builds = state.stats.patch_builds.saturating_add(1);
     let sessions = collect_live_sessions(state);
-    state.stats.patch_deliveries = state
-        .stats
-        .patch_deliveries
-        .saturating_add(sessions.len() as u64);
     Ok((patch, sessions))
 }
 

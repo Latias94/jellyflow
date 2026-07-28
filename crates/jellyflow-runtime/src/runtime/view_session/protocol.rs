@@ -6,18 +6,19 @@ use std::sync::Arc;
 use jellyflow_core::core::{CanvasRect, NodeId, PortId};
 
 use crate::runtime::adapter_protocol::{
-    AdapterEnvironment, AdapterFrame, FeedbackOperation, FeedbackReceipt, FeedbackSubmissionError,
-    FrameAdmissionReceipt, FrameBoundsSource, FrameFeedback, FrameGeometryReceipt,
-    FrameIncidentRoutingReceipt, FrameIncidentSnapshotReceipt, FrameMaterializationError,
-    FrameMaterializationOverflow, FrameMaterializationReceipt, FrameNode, FramePort, FrameRequest,
-    FrameToken, LayoutOperationReceipt, NodeInstanceKey, NodeLayout, NodeLayoutTarget,
-    RendererStamp, StaleFrameReason,
+    AdapterEnvironment, AdapterFrame, FeedbackLayoutWork, FeedbackOperation, FeedbackReceipt,
+    FeedbackSubmissionError, FeedbackWorkReceipt, FrameAdmissionReceipt, FrameBoundsSource,
+    FrameFeedback, FrameGeometryReceipt, FrameIncidentRoutingReceipt, FrameIncidentSnapshotReceipt,
+    FrameMaterializationError, FrameMaterializationOverflow, FrameMaterializationReceipt,
+    FrameNode, FramePort, FrameRequest, FrameToken, GeometryImpactMergeWork,
+    LayoutOperationReceipt, NodeInstanceKey, NodeLayout, NodeLayoutTarget, RendererStamp,
+    StaleFrameReason,
 };
 use crate::runtime::commands::CommandExecutionCompletion;
 use crate::runtime::geometry::CanvasBounds;
 use crate::runtime::graph_runtime::{
     DocumentEpoch, GeometryImpact, GraphRevision, GraphSnapshot, IncidentEdgeSnapshot,
-    IncidentSnapshotWork, NodeLifetimeKey, RuntimePatch,
+    NodeLifetimeKey, RuntimePatch,
 };
 use crate::runtime::unwind::{PanicCollector, PanicPayload, resume};
 use crate::runtime::viewport::{ViewportRevision, ViewportSnapshot, ViewportTransform};
@@ -714,7 +715,7 @@ impl ViewSession {
 
             let layout_result = (|| -> Result<_, ViewSessionError> {
                 if layouts.is_empty() {
-                    return Ok((None, IncidentSnapshotWork::default()));
+                    return Ok((None, FeedbackLayoutWork::empty()));
                 }
                 let current = runtime.snapshot().map_err(ViewSessionError::from)?;
                 let layout_nodes = layouts
@@ -734,11 +735,6 @@ impl ViewSession {
                     geometry_impact.make_global();
                     impact_global_fallbacks = impact_global_fallbacks.saturating_add(1);
                 }
-                state.derived.record_geometry_impact_merge(
-                    impact_patches_merged,
-                    impact_records_merged,
-                    impact_global_fallbacks,
-                );
                 let global_stale = current.document_epoch() != pending.document_epoch
                     || state.viewport_revision != pending.viewport_revision
                     || state.environment != pending.environment
@@ -754,19 +750,23 @@ impl ViewSession {
                     global_stale,
                 ))
             })();
-            let (publication, incident_work, mut post_admission_error) = match layout_result {
+            let (publication, layout_work, post_admission_error) = match layout_result {
                 Ok((publication, work)) => (publication, work, None),
-                Err(error) => (None, IncidentSnapshotWork::default(), Some(error)),
+                Err(error) => (None, FeedbackLayoutWork::empty(), Some(error)),
             };
-            if post_admission_error.is_none()
-                && let Err(error) = runtime.record_feedback_incident_snapshot_work(incident_work)
-            {
-                post_admission_error = Some(error.into());
-            }
+            let work = FeedbackWorkReceipt::new(
+                GeometryImpactMergeWork::new(
+                    impact_patches_merged,
+                    impact_records_merged,
+                    impact_global_fallbacks,
+                ),
+                layout_work,
+            );
             let receipt = FeedbackReceipt::from_prevalidated_parts(
                 command_completions,
                 layout_receipts,
                 publication,
+                work,
             );
             Ok::<_, FeedbackSubmissionError>((receipt, post_admission_error))
         }));

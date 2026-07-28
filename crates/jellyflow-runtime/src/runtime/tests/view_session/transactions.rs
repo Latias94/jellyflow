@@ -438,8 +438,7 @@ fn non_finite_command_is_rejected_without_runtime_session_or_history_side_effect
         .unwrap();
     let before = runtime.snapshot().unwrap();
     let history = runtime.history_state().unwrap();
-    let runtime_stats = runtime.stats().unwrap();
-    let view_stats = view.stats().unwrap();
+    let installed_impact_before = runtime.installed_impact_state_for_test();
 
     let outcome = runtime
         .execute(GraphCommand::set_node_position(
@@ -456,8 +455,11 @@ fn non_finite_command_is_rejected_without_runtime_session_or_history_side_effect
     assert!(outcome.rejection().is_some());
     assert!(runtime.snapshot().unwrap().ptr_eq(&before));
     assert_eq!(runtime.history_state().unwrap(), history);
-    assert_eq!(runtime.stats().unwrap(), runtime_stats);
-    assert_eq!(view.stats().unwrap(), view_stats);
+    assert_eq!(
+        runtime.installed_impact_state_for_test(),
+        installed_impact_before,
+        "rejected commands must not update indexes or node identities"
+    );
     assert_eq!(events.get(), 0);
 }
 
@@ -494,6 +496,11 @@ fn net_noop_does_not_build_or_deliver_a_patch() {
         .expect("runtime");
     let before = runtime.snapshot().unwrap();
     let installed_impact_before = runtime.installed_impact_state_for_test();
+    let event_count = Rc::new(Cell::new(0));
+    let callback_count = event_count.clone();
+    runtime
+        .subscribe(move |_| callback_count.set(callback_count.get() + 1))
+        .unwrap();
     let outcome = runtime
         .execute(GraphCommand::set_node_position(
             before.version(),
@@ -503,15 +510,19 @@ fn net_noop_does_not_build_or_deliver_a_patch() {
         .into_result()
         .unwrap();
 
-    assert!(matches!(outcome, GraphCommandOutcome::Noop(_)));
+    let GraphCommandOutcome::Noop(noop) = outcome else {
+        panic!("net no-op command must return a no-op receipt");
+    };
+    assert_eq!(noop.revision(), before.revision());
+    assert!(noop.footprint().is_empty());
     assert!(runtime.snapshot().unwrap().ptr_eq(&before));
-    assert_eq!(runtime.stats().unwrap().patch_builds, 0);
     assert_eq!(runtime.history_state().unwrap().undo_len(), 0);
     assert_eq!(
         runtime.installed_impact_state_for_test(),
         installed_impact_before,
         "normalized no-op commands must not update indexes or node identities"
     );
+    assert_eq!(event_count.get(), 0);
 }
 
 #[test]

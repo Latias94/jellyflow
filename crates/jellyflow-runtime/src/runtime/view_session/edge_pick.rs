@@ -589,33 +589,6 @@ fn edge_pick_cursor_stale_reason(
     }
 }
 
-pub(super) fn record_edge_pick_flatten_stats(
-    stats: &mut super::DerivedGeometryStats,
-    outcome: &InternalEdgePickOutcome,
-) {
-    let work = match outcome {
-        InternalEdgePickOutcome::Complete { work, .. }
-        | InternalEdgePickOutcome::Incomplete { work, .. }
-        | InternalEdgePickOutcome::BudgetExhausted { work }
-        | InternalEdgePickOutcome::GeometryIndeterminate { work, .. } => *work,
-    };
-    stats.route_flatten_cache_hits = stats
-        .route_flatten_cache_hits
-        .saturating_add(work.flatten_cache_hits);
-    stats.route_flatten_cache_misses = stats
-        .route_flatten_cache_misses
-        .saturating_add(work.flatten_cache_misses);
-    stats.route_flatten_cache_evictions = stats
-        .route_flatten_cache_evictions
-        .saturating_add(work.flatten_cache_evictions);
-    stats.route_flatten_segments_built = stats
-        .route_flatten_segments_built
-        .saturating_add(work.flatten_segments_built);
-    stats.route_flatten_overflows = stats
-        .route_flatten_overflows
-        .saturating_add(work.flatten_overflows);
-}
-
 fn edge_candidate_is_better(candidate: EdgePickCandidate, current: EdgePickCandidate) -> bool {
     candidate
         .pick

@@ -1577,8 +1577,9 @@ fn valid_subset_is_published_atomically_with_complete_port_coverage() {
         ]
     );
     assert_eq!(receipt.publication().unwrap().layout_revision(), 1);
-    assert_eq!(receipt.publication().unwrap().spatial_updates(), 1);
-    assert_eq!(receipt.publication().unwrap().route_recomputations(), 1);
+    assert_eq!(receipt.work().layout().spatial_updates(), 1);
+    assert_eq!(receipt.work().layout().route_invalidations(), 1);
+    assert_eq!(receipt.work().layout().route_recomputations(), 1);
     assert!(receipt.request_next_frame());
     assert_eq!(
         receipt.publication().unwrap().published_nodes(),
@@ -1625,8 +1626,9 @@ fn valid_subset_is_published_atomically_with_complete_port_coverage() {
         .submit_feedback(collector.finish().unwrap())
         .unwrap();
     assert_eq!(receipt.publication().unwrap().layout_revision(), 2);
-    assert_eq!(receipt.publication().unwrap().spatial_updates(), 1);
-    assert_eq!(receipt.publication().unwrap().route_recomputations(), 1);
+    assert_eq!(receipt.work().layout().spatial_updates(), 1);
+    assert_eq!(receipt.work().layout().route_invalidations(), 1);
+    assert_eq!(receipt.work().layout().route_recomputations(), 1);
     assert!(receipt.request_next_frame());
     assert!(
         session
@@ -1660,8 +1662,9 @@ fn valid_subset_is_published_atomically_with_complete_port_coverage() {
         .submit_feedback(collector.finish().unwrap())
         .unwrap();
     assert_eq!(receipt.publication().unwrap().layout_revision(), 3);
-    assert_eq!(receipt.publication().unwrap().spatial_updates(), 0);
-    assert_eq!(receipt.publication().unwrap().route_recomputations(), 1);
+    assert_eq!(receipt.work().layout().spatial_updates(), 0);
+    assert_eq!(receipt.work().layout().route_invalidations(), 1);
+    assert_eq!(receipt.work().layout().route_recomputations(), 1);
     assert!(receipt.request_next_frame());
     let geometry = session.geometry_snapshot().unwrap();
     assert!(!geometry.node(ids.target).unwrap().is_fresh());
@@ -1671,8 +1674,6 @@ fn valid_subset_is_published_atomically_with_complete_port_coverage() {
         Some(PublishedPortOutcome::Unavailable)
     ));
     assert!(geometry.route(ids.edge).is_none());
-    assert_eq!(session.stats().unwrap().spatial_updates, 2);
-    assert_eq!(session.stats().unwrap().route_recomputations, 3);
     assert_eq!(
         observations.borrow().as_slice(),
         &[
@@ -2214,43 +2215,74 @@ fn adapter_environment_invalidation_is_exact_and_view_local() {
             .unwrap();
         view.submit_feedback(collector.finish().unwrap()).unwrap();
     }
-    let first_events = Rc::new(Cell::new(0));
+    let first_events = Rc::new(RefCell::new(Vec::new()));
     let callback_events = first_events.clone();
     first
         .subscribe(move |event| {
-            if matches!(event, ViewSessionEvent::LayoutPublished { .. }) {
-                callback_events.set(callback_events.get() + 1);
+            if let ViewSessionEvent::LayoutPublished {
+                layout_revision,
+                nodes,
+            } = event
+            {
+                callback_events.borrow_mut().push((layout_revision, nodes));
             }
         })
         .unwrap();
-    let first_before = first.stats().unwrap();
-    let second_geometry = second.geometry_snapshot().unwrap();
-    assert_eq!(second_geometry.layout_revision(), 1);
-    assert!(second_geometry.node(nodes[0]).unwrap().is_fresh());
-    let second_before = second.stats().unwrap();
+    let second_events = Rc::new(Cell::new(0));
+    let callback_events = second_events.clone();
+    second
+        .subscribe(move |_| callback_events.set(callback_events.get() + 1))
+        .unwrap();
+    let first_before = first.geometry_snapshot().unwrap();
+    assert_eq!(first_before.layout_revision(), 1);
+    assert!(first_before.node(nodes[0]).unwrap().is_fresh());
+    let second_before = second.geometry_snapshot().unwrap();
+    assert_eq!(second_before.layout_revision(), 1);
+    assert!(second_before.node(nodes[0]).unwrap().is_fresh());
     let environment = AdapterEnvironment::new(2, 3, 5, 7);
 
     assert!(first.set_adapter_environment(environment).unwrap());
 
-    assert_eq!(first_events.get(), 1);
+    assert_eq!(first_events.borrow().as_slice(), &[(2, vec![nodes[0]])]);
+    assert_eq!(second_events.get(), 0);
     let first_geometry = first.geometry_snapshot().unwrap();
     assert_eq!(first_geometry.layout_revision(), 2);
     assert!(!first_geometry.node(nodes[0]).unwrap().is_fresh());
-    let first_after = first.stats().unwrap();
+    assert!(!std::ptr::eq(
+        first_before.node(nodes[0]).unwrap(),
+        first_geometry.node(nodes[0]).unwrap()
+    ));
+    let second_geometry = second.geometry_snapshot().unwrap();
     assert_eq!(
-        first_after.layout_publications,
-        first_before.layout_publications + 1
+        second_geometry.layout_revision(),
+        second_before.layout_revision()
     );
-    assert_eq!(
-        first_after.node_invalidations,
-        first_before.node_invalidations + 1
-    );
-    assert_eq!(second.stats().unwrap(), second_before);
+    assert!(std::ptr::eq(
+        second_geometry.node(nodes[0]).unwrap(),
+        second_before.node(nodes[0]).unwrap()
+    ));
 
     assert!(!first.set_adapter_environment(environment).unwrap());
-    assert_eq!(first_events.get(), 1);
-    assert_eq!(first.stats().unwrap(), first_after);
-    assert_eq!(second.stats().unwrap(), second_before);
+    assert_eq!(first_events.borrow().len(), 1);
+    assert_eq!(second_events.get(), 0);
+    let idempotent_geometry = first.geometry_snapshot().unwrap();
+    assert_eq!(
+        idempotent_geometry.layout_revision(),
+        first_geometry.layout_revision()
+    );
+    assert!(std::ptr::eq(
+        idempotent_geometry.node(nodes[0]).unwrap(),
+        first_geometry.node(nodes[0]).unwrap()
+    ));
+    let second_geometry = second.geometry_snapshot().unwrap();
+    assert_eq!(
+        second_geometry.layout_revision(),
+        second_before.layout_revision()
+    );
+    assert!(std::ptr::eq(
+        second_geometry.node(nodes[0]).unwrap(),
+        second_before.node(nodes[0]).unwrap()
+    ));
 }
 
 #[test]

@@ -2346,7 +2346,7 @@ fn append_dragged_incident_routes(
             continue;
         };
         for port in &node.ports {
-            let Some(facts) = view.port_connection_facts(*port)? else {
+            let Some(facts) = view.port_connection_facts(*port)?.into_outcome() else {
                 continue;
             };
             for incident in facts.incident() {

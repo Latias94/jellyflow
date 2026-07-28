@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use jellyflow_core::core::{Binding, BindingId, CanvasSize, NodeKindKey};
@@ -8,10 +8,27 @@ use crate::io::{ViewSelectionSeed, ViewSessionSeed};
 use crate::rules::EdgeEndpoint;
 use crate::runtime::commands::{GraphCommand, IncidentEdgePolicy, TopologyEdit};
 use crate::runtime::graph_runtime::GraphRuntime;
+use crate::runtime::view_session::{
+    RuntimePatchReconciliationReceipt, ViewSession, ViewSessionEvent,
+};
 
 use super::fixtures::{
     graph_with_nodes, graph_with_routed_edge, publish_graph_layouts, view_options,
 };
+
+fn collect_patch_receipts(
+    view: &ViewSession,
+) -> Rc<RefCell<Vec<RuntimePatchReconciliationReceipt>>> {
+    let receipts = Rc::new(RefCell::new(Vec::new()));
+    let callback_receipts = receipts.clone();
+    view.subscribe(move |event| {
+        if let ViewSessionEvent::RuntimePatched { reconciliation, .. } = event {
+            callback_receipts.borrow_mut().push(reconciliation);
+        }
+    })
+    .expect("patch receipt subscription");
+    receipts
+}
 
 #[test]
 fn removing_a_selected_measured_node_retires_only_affected_view_facts() {
@@ -32,7 +49,7 @@ fn removing_a_selected_measured_node_retires_only_affected_view_facts() {
         .expect("view B");
     publish_graph_layouts(&view_a);
     publish_graph_layouts(&view_b);
-    let stats_before = [view_a.stats().unwrap(), view_b.stats().unwrap()];
+    let patch_receipts = [&view_a, &view_b].map(collect_patch_receipts);
 
     let version = runtime.snapshot().unwrap().version();
     runtime
@@ -45,15 +62,14 @@ fn removing_a_selected_measured_node_retires_only_affected_view_facts() {
         .applied()
         .expect("remove applies");
 
-    for (view, before) in [&view_a, &view_b].into_iter().zip(stats_before) {
+    for (view, patch_receipts) in [&view_a, &view_b].into_iter().zip(&patch_receipts) {
         let geometry = view.geometry_snapshot().unwrap();
         assert!(geometry.node(ids[0]).is_none());
         assert!(geometry.node(ids[1]).is_some());
         assert_eq!(geometry.nodes().len(), 1);
-        assert_eq!(
-            view.stats().unwrap().spatial_updates - before.spatial_updates,
-            1
-        );
+        let patch_receipts = patch_receipts.borrow();
+        assert_eq!(patch_receipts.len(), 1);
+        assert_eq!(patch_receipts[0].geometry().spatial_updates(), 1);
     }
     assert!(view_a.export_seed().unwrap().selection().nodes().is_empty());
     assert_eq!(view_b.export_seed().unwrap().selection().nodes(), [ids[1]]);
@@ -125,7 +141,7 @@ fn removing_a_node_withdraws_its_geometry_and_invalidates_only_its_incident_rout
         .attach_view(view_options(ViewSessionSeed::new(graph_id)))
         .expect("view");
     publish_graph_layouts(&view);
-    let stats_before = view.stats().expect("view stats before removal");
+    let patch_receipts = collect_patch_receipts(&view);
 
     let version = runtime.snapshot().unwrap().version();
     runtime
@@ -143,12 +159,10 @@ fn removing_a_node_withdraws_its_geometry_and_invalidates_only_its_incident_rout
     assert!(geometry.node(ids.target).is_some());
     assert!(geometry.node(ids.alternate_source).is_some());
     assert!(geometry.route(ids.edge).is_none());
-    let stats = view.stats().expect("view stats");
-    assert_eq!(stats.spatial_updates - stats_before.spatial_updates, 1);
-    assert_eq!(
-        stats.route_invalidations - stats_before.route_invalidations,
-        1
-    );
+    let patch_receipts = patch_receipts.borrow();
+    assert_eq!(patch_receipts.len(), 1);
+    assert_eq!(patch_receipts[0].geometry().spatial_updates(), 1);
+    assert_eq!(patch_receipts[0].geometry().route_invalidations(), 1);
 }
 
 #[test]
@@ -162,7 +176,7 @@ fn changing_node_size_withdraws_old_geometry_and_invalidates_only_incident_route
         .attach_view(view_options(ViewSessionSeed::new(graph_id)))
         .expect("view");
     publish_graph_layouts(&view);
-    let stats_before = view.stats().expect("view stats before resize");
+    let patch_receipts = collect_patch_receipts(&view);
 
     let version = runtime.snapshot().unwrap().version();
     runtime
@@ -184,12 +198,10 @@ fn changing_node_size_withdraws_old_geometry_and_invalidates_only_incident_route
     assert!(geometry.node(ids.target).is_some());
     assert!(geometry.node(ids.alternate_source).is_some());
     assert!(geometry.route(ids.edge).is_none());
-    let stats = view.stats().expect("view stats");
-    assert_eq!(stats.spatial_updates - stats_before.spatial_updates, 1);
-    assert_eq!(
-        stats.route_invalidations - stats_before.route_invalidations,
-        1
-    );
+    let patch_receipts = patch_receipts.borrow();
+    assert_eq!(patch_receipts.len(), 1);
+    assert_eq!(patch_receipts[0].geometry().spatial_updates(), 1);
+    assert_eq!(patch_receipts[0].geometry().route_invalidations(), 1);
 }
 
 #[test]

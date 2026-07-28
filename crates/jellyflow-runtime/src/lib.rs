@@ -21,6 +21,33 @@
 //! ```compile_fail
 //! use jellyflow_runtime::rules::ConnectPlan;
 //! ```
+//!
+//! Aggregate runtime and view work counters are intentionally absent. Operation-scoped receipts
+//! carry bounded-work evidence instead:
+//!
+//! ```compile_fail
+//! use jellyflow_runtime::graph::GraphRuntimeStats;
+//! ```
+//!
+//! ```compile_fail
+//! use jellyflow_runtime::view::ViewSessionStats;
+//! ```
+//!
+//! ```compile_fail
+//! use jellyflow_runtime::graph::GraphRuntime;
+//!
+//! fn aggregate_runtime_work(runtime: &GraphRuntime) {
+//!     let _ = runtime.stats();
+//! }
+//! ```
+//!
+//! ```compile_fail
+//! use jellyflow_runtime::view::ViewSession;
+//!
+//! fn aggregate_view_work(view: &ViewSession) {
+//!     let _ = view.stats();
+//! }
+//! ```
 
 #![deny(unsafe_code)]
 
