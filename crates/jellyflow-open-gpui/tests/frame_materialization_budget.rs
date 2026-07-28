@@ -57,26 +57,20 @@ fn high_fanout_host_bounds_active_instances_and_exposes_overflow(
 
     cx.read_entity(&host, |host, _| {
         let stats = host.stats();
-        let overflow = host.last_frame_materialization_overflow();
+        let overflow = host
+            .last_frame_materialization_overflow()
+            .expect("a rendered frame must publish overflow diagnostics");
         assert_eq!(
             stats.active_nodes(),
             DEFAULT_FRAME_ROUTING_DEPENDENCY_BUDGET + 1,
         );
         assert_eq!(stats.strong_instances(), stats.active_nodes());
         assert_eq!(stats.mounts(), stats.active_nodes() as u64);
-        assert!(stats.frame_materialization_overflows() >= 1);
         assert!(overflow.incident_scan_truncated());
         assert_eq!(overflow.visible_nodes(), 0);
         assert_eq!(overflow.required_nodes(), 0);
         assert_eq!(overflow.routing_dependency_nodes(), 0);
     });
-    assert!(
-        runtime
-            .stats()
-            .unwrap()
-            .frame_incident_routing_index_entries_read
-            >= DEFAULT_FRAME_ROUTING_DEPENDENCY_BUDGET as u64,
-    );
 }
 
 fn draw(cx: &mut open_gpui::VisualTestContext) {

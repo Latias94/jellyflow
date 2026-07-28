@@ -331,6 +331,231 @@ impl FrameMaterializationOverflow {
     }
 }
 
+/// Admission and render-order work performed for one frame materialization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameAdmissionReceipt {
+    nodes_materialized: u64,
+    nodes_visited: u64,
+    query_cells_examined: u64,
+    query_entries_examined: u64,
+    index_rebuilt: bool,
+    order_candidates_ranked: u64,
+    selection_membership_lookups: u64,
+}
+
+impl FrameAdmissionReceipt {
+    pub(crate) const fn new(
+        nodes_materialized: u64,
+        nodes_visited: u64,
+        query_cells_examined: u64,
+        query_entries_examined: u64,
+        index_rebuilt: bool,
+        order_candidates_ranked: u64,
+        selection_membership_lookups: u64,
+    ) -> Self {
+        Self {
+            nodes_materialized,
+            nodes_visited,
+            query_cells_examined,
+            query_entries_examined,
+            index_rebuilt,
+            order_candidates_ranked,
+            selection_membership_lookups,
+        }
+    }
+
+    #[must_use]
+    pub const fn nodes_materialized(self) -> u64 {
+        self.nodes_materialized
+    }
+
+    #[must_use]
+    pub const fn nodes_visited(self) -> u64 {
+        self.nodes_visited
+    }
+
+    #[must_use]
+    pub const fn query_cells_examined(self) -> u64 {
+        self.query_cells_examined
+    }
+
+    #[must_use]
+    pub const fn query_entries_examined(self) -> u64 {
+        self.query_entries_examined
+    }
+
+    #[must_use]
+    pub const fn index_rebuilt(self) -> bool {
+        self.index_rebuilt
+    }
+
+    /// Returns the sum of candidate counts passed to every render-order sort in this frame.
+    #[must_use]
+    pub const fn order_candidates_ranked(self) -> u64 {
+        self.order_candidates_ranked
+    }
+
+    #[must_use]
+    pub const fn selection_membership_lookups(self) -> u64 {
+        self.selection_membership_lookups
+    }
+}
+
+/// Incident-edge index work used to discover implicit routing dependencies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameIncidentRoutingReceipt {
+    incident_routing_index_bucket_reads: u64,
+    incident_routing_index_entries_read: u64,
+}
+
+impl FrameIncidentRoutingReceipt {
+    pub(crate) const fn new(index_bucket_reads: u64, index_entries_read: u64) -> Self {
+        Self {
+            incident_routing_index_bucket_reads: index_bucket_reads,
+            incident_routing_index_entries_read: index_entries_read,
+        }
+    }
+
+    #[must_use]
+    pub const fn index_bucket_reads(self) -> u64 {
+        self.incident_routing_index_bucket_reads
+    }
+
+    #[must_use]
+    pub const fn index_entries_read(self) -> u64 {
+        self.incident_routing_index_entries_read
+    }
+}
+
+/// Incident-edge snapshot work caused by frame geometry reconciliation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameIncidentSnapshotReceipt {
+    incident_snapshot_entries_read: u64,
+    incident_snapshot_materializations: u64,
+}
+
+impl FrameIncidentSnapshotReceipt {
+    pub(crate) const fn new(entries_read: u64, materializations: u64) -> Self {
+        Self {
+            incident_snapshot_entries_read: entries_read,
+            incident_snapshot_materializations: materializations,
+        }
+    }
+
+    #[must_use]
+    pub const fn entries_read(self) -> u64 {
+        self.incident_snapshot_entries_read
+    }
+
+    #[must_use]
+    pub const fn materializations(self) -> u64 {
+        self.incident_snapshot_materializations
+    }
+}
+
+/// Derived-geometry work caused by reconciling one materialized frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameGeometryReceipt {
+    node_invalidations: u64,
+    spatial_updates: u64,
+    route_invalidations: u64,
+    route_recomputations: u64,
+}
+
+impl FrameGeometryReceipt {
+    pub(crate) const fn new(
+        node_invalidations: u64,
+        spatial_updates: u64,
+        route_invalidations: u64,
+        route_recomputations: u64,
+    ) -> Self {
+        Self {
+            node_invalidations,
+            spatial_updates,
+            route_invalidations,
+            route_recomputations,
+        }
+    }
+
+    #[must_use]
+    pub const fn node_invalidations(self) -> u64 {
+        self.node_invalidations
+    }
+
+    #[must_use]
+    pub const fn spatial_updates(self) -> u64 {
+        self.spatial_updates
+    }
+
+    #[must_use]
+    pub const fn route_invalidations(self) -> u64 {
+        self.route_invalidations
+    }
+
+    #[must_use]
+    pub const fn route_recomputations(self) -> u64 {
+        self.route_recomputations
+    }
+}
+
+/// Operation-scoped evidence for one successfully materialized native frame.
+///
+/// Unlike cumulative runtime diagnostics, this receipt describes only the work performed for the
+/// frame that owns it. Adapters and performance contracts can therefore attribute bounded work to
+/// an exact request without sampling mutable global counters before and after the operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrameMaterializationReceipt {
+    overflow: FrameMaterializationOverflow,
+    admission: FrameAdmissionReceipt,
+    incident_routing: FrameIncidentRoutingReceipt,
+    incident_snapshot: FrameIncidentSnapshotReceipt,
+    geometry: FrameGeometryReceipt,
+}
+
+impl FrameMaterializationReceipt {
+    pub(crate) const fn new(
+        overflow: FrameMaterializationOverflow,
+        admission: FrameAdmissionReceipt,
+        incident_routing: FrameIncidentRoutingReceipt,
+        incident_snapshot: FrameIncidentSnapshotReceipt,
+        geometry: FrameGeometryReceipt,
+    ) -> Self {
+        Self {
+            overflow,
+            admission,
+            incident_routing,
+            incident_snapshot,
+            geometry,
+        }
+    }
+
+    /// Candidate overflow and scan truncation observed by this frame.
+    #[must_use]
+    pub const fn overflow(&self) -> FrameMaterializationOverflow {
+        self.overflow
+    }
+
+    #[must_use]
+    pub const fn admission(&self) -> &FrameAdmissionReceipt {
+        &self.admission
+    }
+
+    #[must_use]
+    pub const fn incident_routing(&self) -> &FrameIncidentRoutingReceipt {
+        &self.incident_routing
+    }
+
+    #[must_use]
+    pub const fn incident_snapshot(&self) -> &FrameIncidentSnapshotReceipt {
+        &self.incident_snapshot
+    }
+
+    #[must_use]
+    pub const fn geometry(&self) -> &FrameGeometryReceipt {
+        &self.geometry
+    }
+}
+
 /// Inputs that determine which concrete nodes are materialized for a native frame.
 #[derive(Debug, Clone)]
 pub struct FrameRequest {
@@ -606,7 +831,7 @@ pub struct AdapterFrame {
     document_epoch: DocumentEpoch,
     viewport: ViewportSnapshot,
     nodes: Vec<FrameNode>,
-    materialization_overflow: FrameMaterializationOverflow,
+    materialization_receipt: FrameMaterializationReceipt,
 }
 
 impl AdapterFrame {
@@ -616,7 +841,7 @@ impl AdapterFrame {
         document_epoch: DocumentEpoch,
         viewport: ViewportSnapshot,
         nodes: Vec<FrameNode>,
-        materialization_overflow: FrameMaterializationOverflow,
+        materialization_receipt: FrameMaterializationReceipt,
     ) -> Self {
         Self {
             collector: FeedbackCollector::new(token),
@@ -624,7 +849,7 @@ impl AdapterFrame {
             document_epoch,
             viewport,
             nodes,
-            materialization_overflow,
+            materialization_receipt,
         }
     }
 
@@ -659,10 +884,10 @@ impl AdapterFrame {
         &self.nodes
     }
 
-    /// Returns structured counts for node candidates omitted by frame materialization budgets.
+    /// Returns exact work evidence for this frame materialization operation.
     #[must_use]
-    pub const fn materialization_overflow(&self) -> FrameMaterializationOverflow {
-        self.materialization_overflow
+    pub const fn materialization_receipt(&self) -> &FrameMaterializationReceipt {
+        &self.materialization_receipt
     }
 
     pub fn collector(&self) -> FeedbackCollector {

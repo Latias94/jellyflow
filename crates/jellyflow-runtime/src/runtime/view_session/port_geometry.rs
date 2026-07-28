@@ -16,7 +16,7 @@ use super::spatial_grid::{
     HierarchicalSpatialIndex, SpatialQuerySource, bounded_spatial_cells_for_rect,
 };
 use super::{
-    ConnectionProbeQueryReceipt, InteractionQueryBinding, ViewQueryIdentity,
+    ConnectionProbeQueryReceipt, InteractionQueryBinding, InteractionQueryProof, ViewQueryIdentity,
     ViewQueryIdentityStaleReason, ViewSession, ViewSessionError, ViewShared, WeakViewSession,
     ensure_open,
 };
@@ -142,41 +142,29 @@ pub struct ConnectionProbeWork {
     pub entries_examined: u64,
     pub exact_tests: u64,
     pub policy_evaluations: u64,
-    receipt: Option<ConnectionProbeQueryReceipt>,
-}
-
-impl ConnectionProbeWork {
-    pub fn receipt(self) -> Option<ConnectionProbeQueryReceipt> {
-        self.receipt
-    }
-
-    fn with_receipt(mut self, receipt: Option<ConnectionProbeQueryReceipt>) -> Self {
-        self.receipt = receipt;
-        self
-    }
 }
 
 #[derive(Debug)]
 pub enum ConnectionProbeQueryOutcome {
     Complete {
         probe: ConnectionProbe,
-        work: ConnectionProbeWork,
+        receipt: ConnectionProbeQueryReceipt,
     },
     Incomplete {
         cursor: Box<ConnectionProbeCursor>,
-        work: ConnectionProbeWork,
+        receipt: ConnectionProbeQueryReceipt,
     },
     BudgetExhausted {
-        work: ConnectionProbeWork,
+        receipt: ConnectionProbeQueryReceipt,
     },
 }
 
 impl ConnectionProbeQueryOutcome {
-    pub fn receipt(&self) -> Option<ConnectionProbeQueryReceipt> {
+    pub fn receipt(&self) -> ConnectionProbeQueryReceipt {
         match self {
-            Self::Complete { work, .. }
-            | Self::Incomplete { work, .. }
-            | Self::BudgetExhausted { work } => work.receipt(),
+            Self::Complete { receipt, .. }
+            | Self::Incomplete { receipt, .. }
+            | Self::BudgetExhausted { receipt } => *receipt,
         }
     }
 }
@@ -549,7 +537,7 @@ fn connection_probe_page(
             return Err(ViewSessionError::StaleInteractionFacts.into());
         }
     }
-    let (internal, receipt) = {
+    let (internal, proof) = {
         let mut state = view
             .state
             .try_borrow_mut()
@@ -579,7 +567,7 @@ fn connection_probe_page(
                 *cursor
             }
         };
-        let receipt = ConnectionProbeQueryReceipt::issue(
+        let proof = InteractionQueryProof::issue(
             query.interaction_binding,
             cursor.identity,
             [
@@ -603,7 +591,7 @@ fn connection_probe_page(
             cursor,
             query.entry_budget,
         );
-        (internal, receipt)
+        (internal, proof)
     };
 
     match internal {
@@ -618,17 +606,6 @@ fn connection_probe_page(
                     .evaluate_connection(intent.edit_for_target(candidate.target.port()))
                     .map_err(ViewSessionError::from)?;
                 work.policy_evaluations = 1;
-                {
-                    let mut state = view
-                        .state
-                        .try_borrow_mut()
-                        .map_err(|_| ViewSessionError::Busy)?;
-                    ensure_open(state.status)?;
-                    state.control_stats.connection_probe_policy_evaluations = state
-                        .control_stats
-                        .connection_probe_policy_evaluations
-                        .saturating_add(1);
-                }
                 if evaluation.revision() != graph_revision {
                     return Err(ConnectionProbeQueryError::StaleCursor(
                         ConnectionProbeCursorStaleReason::GraphRevision,
@@ -651,18 +628,18 @@ fn connection_probe_page(
             };
             Ok(ConnectionProbeQueryOutcome::Complete {
                 probe,
-                work: work.with_receipt(receipt),
+                receipt: ConnectionProbeQueryReceipt::new(work, proof),
             })
         }
         InternalProbeOutcome::Incomplete { cursor, work } => {
             Ok(ConnectionProbeQueryOutcome::Incomplete {
                 cursor,
-                work: work.with_receipt(receipt),
+                receipt: ConnectionProbeQueryReceipt::new(work, proof),
             })
         }
         InternalProbeOutcome::BudgetExhausted { work } => {
             Ok(ConnectionProbeQueryOutcome::BudgetExhausted {
-                work: work.with_receipt(receipt),
+                receipt: ConnectionProbeQueryReceipt::new(work, proof),
             })
         }
     }
@@ -710,35 +687,6 @@ fn probe_cursor_stale_reason(
             Some(ConnectionProbeCursorStaleReason::PaintOrder)
         }
         None => None,
-    }
-}
-
-pub(super) fn record_probe_query_stats(
-    stats: &mut super::DerivedGeometryStats,
-    outcome: &InternalProbeOutcome,
-) {
-    let work = match outcome {
-        InternalProbeOutcome::Complete { work, .. }
-        | InternalProbeOutcome::Incomplete { work, .. }
-        | InternalProbeOutcome::BudgetExhausted { work } => *work,
-    };
-    stats.port_query_cells_examined = stats
-        .port_query_cells_examined
-        .saturating_add(work.cells_examined);
-    stats.port_query_entries_examined = stats
-        .port_query_entries_examined
-        .saturating_add(work.entries_examined);
-    stats.port_query_exact_tests = stats
-        .port_query_exact_tests
-        .saturating_add(work.exact_tests);
-    match outcome {
-        InternalProbeOutcome::Incomplete { .. } => {
-            stats.port_query_incomplete = stats.port_query_incomplete.saturating_add(1);
-        }
-        InternalProbeOutcome::BudgetExhausted { .. } => {
-            stats.port_query_budget_exhausted = stats.port_query_budget_exhausted.saturating_add(1);
-        }
-        InternalProbeOutcome::Complete { .. } => {}
     }
 }
 

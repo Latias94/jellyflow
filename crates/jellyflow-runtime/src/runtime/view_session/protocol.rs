@@ -7,9 +7,11 @@ use jellyflow_core::core::{CanvasRect, NodeId, PortId};
 
 use crate::runtime::adapter_protocol::{
     AdapterEnvironment, AdapterFrame, FeedbackOperation, FeedbackReceipt, FeedbackSubmissionError,
-    FrameBoundsSource, FrameFeedback, FrameMaterializationError, FrameMaterializationOverflow,
-    FrameNode, FramePort, FrameRequest, FrameToken, LayoutOperationReceipt, NodeInstanceKey,
-    NodeLayout, NodeLayoutTarget, RendererStamp, StaleFrameReason,
+    FrameAdmissionReceipt, FrameBoundsSource, FrameFeedback, FrameGeometryReceipt,
+    FrameIncidentRoutingReceipt, FrameIncidentSnapshotReceipt, FrameMaterializationError,
+    FrameMaterializationOverflow, FrameMaterializationReceipt, FrameNode, FramePort, FrameRequest,
+    FrameToken, LayoutOperationReceipt, NodeInstanceKey, NodeLayout, NodeLayoutTarget,
+    RendererStamp, StaleFrameReason,
 };
 use crate::runtime::commands::CommandExecutionCompletion;
 use crate::runtime::geometry::CanvasBounds;
@@ -96,15 +98,28 @@ struct FrameCandidate {
     bounds_source: FrameBoundsSource,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct FrameAdmissionWork {
+    nodes_visited: u64,
+    query_cells_examined: u64,
+    query_entries_examined: u64,
+    index_rebuilt: bool,
+    candidates_ranked: u64,
+    selection_lookups: u64,
+    incident_routing_index_bucket_reads: u64,
+    incident_routing_index_entries_read: u64,
+}
+
 fn take_candidate_budget(
     mut candidates: Vec<FrameCandidate>,
     limit: usize,
     explicit_ranks: &BTreeMap<NodeId, usize>,
     recent_interaction: Option<NodeId>,
-) -> (Vec<FrameCandidate>, usize) {
+) -> (Vec<FrameCandidate>, usize, u64) {
     if candidates.len() <= limit {
-        return (candidates, 0);
+        return (candidates, 0, 0);
     }
+    let candidates_ranked = candidates.len() as u64;
     sort_render_order(
         &mut candidates,
         |candidate| candidate.node,
@@ -114,7 +129,7 @@ fn take_candidate_budget(
     );
     let overflow = candidates.len() - limit;
     candidates.drain(..overflow);
-    (candidates, overflow)
+    (candidates, overflow, candidates_ranked)
 }
 
 impl ViewSession {
@@ -134,11 +149,7 @@ impl ViewSession {
             candidate_ids,
             inactive_nodes,
             materialization_overflow,
-            rebuild_visits,
-            query_cells_examined,
-            query_entries_examined,
-            rebuilt,
-            selection_membership_lookups,
+            admission_work,
         ) = {
             let mut state = self
                 .shared
@@ -167,7 +178,15 @@ impl ViewSession {
                 .saturating_add(measured_query.entries_examined);
             let mut admission_candidates = admission_query.nodes;
             admission_candidates.extend(measured_query.nodes);
-            let (candidates, candidate_ids, materialization_overflow, selection_membership_lookups) = {
+            let (
+                candidates,
+                candidate_ids,
+                materialization_overflow,
+                selection_membership_lookups,
+                order_candidates_ranked,
+                incident_routing_index_bucket_reads,
+                incident_routing_index_entries_read,
+            ) = {
                 let recent_interaction = state.recent_interaction_node_id();
                 let candidate_for = |node_id, forced| {
                     let node = snapshot.graph().node(&node_id)?;
@@ -200,12 +219,13 @@ impl ViewSession {
                     .filter_map(|node| candidate_for(node, false))
                     .collect::<Vec<_>>();
                 let mut selection_membership_lookups = visible_candidates.len() as u64;
-                let (mut candidates, visible_overflow) = take_candidate_budget(
-                    visible_candidates,
-                    request.materialization_budget.visible_nodes(),
-                    &state.node_draw_order_ranks,
-                    recent_interaction,
-                );
+                let (mut candidates, visible_overflow, mut order_candidates_ranked) =
+                    take_candidate_budget(
+                        visible_candidates,
+                        request.materialization_budget.visible_nodes(),
+                        &state.node_draw_order_ranks,
+                        recent_interaction,
+                    );
                 let visible_ids = candidates
                     .iter()
                     .map(|candidate| candidate.node)
@@ -220,12 +240,15 @@ impl ViewSession {
                     .collect::<Vec<_>>();
                 selection_membership_lookups =
                     selection_membership_lookups.saturating_add(required_candidates.len() as u64);
-                let (required_candidates, required_overflow) = take_candidate_budget(
-                    required_candidates,
-                    request.materialization_budget.required_nodes(),
-                    &state.node_draw_order_ranks,
-                    recent_interaction,
-                );
+                let (required_candidates, required_overflow, required_candidates_ranked) =
+                    take_candidate_budget(
+                        required_candidates,
+                        request.materialization_budget.required_nodes(),
+                        &state.node_draw_order_ranks,
+                        recent_interaction,
+                    );
+                order_candidates_ranked =
+                    order_candidates_ranked.saturating_add(required_candidates_ranked);
                 candidate_ids.extend(required_candidates.iter().map(|candidate| candidate.node));
                 candidates.extend(required_candidates);
 
@@ -238,12 +261,18 @@ impl ViewSession {
                     .collect::<Vec<_>>();
                 selection_membership_lookups = selection_membership_lookups
                     .saturating_add(explicit_routing_candidates.len() as u64);
-                let (explicit_routing_candidates, mut routing_overflow) = take_candidate_budget(
+                let (
+                    explicit_routing_candidates,
+                    mut routing_overflow,
+                    explicit_routing_candidates_ranked,
+                ) = take_candidate_budget(
                     explicit_routing_candidates,
                     routing_budget,
                     &state.node_draw_order_ranks,
                     recent_interaction,
                 );
+                order_candidates_ranked =
+                    order_candidates_ranked.saturating_add(explicit_routing_candidates_ranked);
                 let explicit_routing_count = explicit_routing_candidates.len();
                 candidate_ids.extend(
                     explicit_routing_candidates
@@ -270,6 +299,12 @@ impl ViewSession {
                 };
                 let incident_scan_truncated =
                     incident_query.as_ref().is_some_and(|query| query.truncated);
+                let incident_routing_index_bucket_reads = incident_query
+                    .as_ref()
+                    .map_or(0, |query| query.index_bucket_reads);
+                let incident_routing_index_entries_read = incident_query
+                    .as_ref()
+                    .map_or(0, |query| query.index_entries_read);
                 let incident_candidates = incident_query
                     .into_iter()
                     .flat_map(|query| query.nodes)
@@ -278,12 +313,15 @@ impl ViewSession {
                     .collect::<Vec<_>>();
                 selection_membership_lookups =
                     selection_membership_lookups.saturating_add(incident_candidates.len() as u64);
-                let (incident_candidates, incident_overflow) = take_candidate_budget(
-                    incident_candidates,
-                    remaining_routing_budget,
-                    &state.node_draw_order_ranks,
-                    recent_interaction,
-                );
+                let (incident_candidates, incident_overflow, incident_candidates_ranked) =
+                    take_candidate_budget(
+                        incident_candidates,
+                        remaining_routing_budget,
+                        &state.node_draw_order_ranks,
+                        recent_interaction,
+                    );
+                order_candidates_ranked =
+                    order_candidates_ranked.saturating_add(incident_candidates_ranked);
                 routing_overflow = routing_overflow.saturating_add(incident_overflow);
                 candidate_ids.extend(incident_candidates.iter().map(|candidate| candidate.node));
                 candidates.extend(incident_candidates);
@@ -295,6 +333,8 @@ impl ViewSession {
                     visible_scan_truncated,
                     incident_scan_truncated,
                 );
+                order_candidates_ranked =
+                    order_candidates_ranked.saturating_add(candidates.len() as u64);
                 sort_render_order(
                     &mut candidates,
                     |candidate| candidate.node,
@@ -307,20 +347,29 @@ impl ViewSession {
                     candidate_ids,
                     materialization_overflow,
                     selection_membership_lookups,
+                    order_candidates_ranked,
+                    incident_routing_index_bucket_reads,
+                    incident_routing_index_entries_read,
                 )
             };
             let inactive_nodes = state.derived.inactive_frame_nodes(&candidate_ids);
+            let admission_work = FrameAdmissionWork {
+                nodes_visited: rebuild_visits,
+                query_cells_examined,
+                query_entries_examined,
+                index_rebuilt: rebuilt,
+                candidates_ranked: order_candidates_ranked,
+                selection_lookups: selection_membership_lookups,
+                incident_routing_index_bucket_reads,
+                incident_routing_index_entries_read,
+            };
             (
                 state.id,
                 candidates,
                 candidate_ids,
                 inactive_nodes,
                 materialization_overflow,
-                rebuild_visits,
-                query_cells_examined,
-                query_entries_examined,
-                rebuilt,
-                selection_membership_lookups,
+                admission_work,
             )
         };
         let fact_nodes = candidate_ids
@@ -331,7 +380,7 @@ impl ViewSession {
             .adapter_frame_node_facts(&fact_nodes)
             .map_err(ViewSessionError::from)?;
 
-        let (renderer_publication, frame_incident_work) = {
+        let (renderer_publication, frame_incident_work, frame_geometry_work) = {
             let mut state = self
                 .shared
                 .state
@@ -348,33 +397,22 @@ impl ViewSession {
                 selected_edge_membership,
                 ..
             } = &mut *state;
-            let (publication, incident_work, generations) = derived.reconcile_frame_geometry(
-                &snapshot,
-                &renderers,
-                &candidate_ids,
-                &facts,
-                policy,
-                selected_edge_membership,
-            );
-            state.derived.record_frame_admission(
-                rebuild_visits,
-                query_cells_examined,
-                query_entries_examined,
-                rebuilt,
-                candidates.len() as u64,
-                selection_membership_lookups,
-            );
+            let (publication, incident_work, generations, geometry_work) = derived
+                .reconcile_frame_geometry(
+                    &snapshot,
+                    &renderers,
+                    &candidate_ids,
+                    &facts,
+                    policy,
+                    selected_edge_membership,
+                );
             for candidate in &mut candidates {
                 if let Some(generation) = generations.get(&candidate.node) {
                     candidate.layout_generation = *generation;
                 }
             }
-            (publication, incident_work)
+            (publication, incident_work, geometry_work)
         };
-        runtime
-            .record_frame_incident_snapshot_work(frame_incident_work)
-            .map_err(ViewSessionError::from)?;
-
         let sequence = {
             let state = self
                 .shared
@@ -450,6 +488,32 @@ impl ViewSession {
         }
 
         let materialized_count = frame_nodes.len() as u64;
+        let materialization_receipt = FrameMaterializationReceipt::new(
+            materialization_overflow,
+            FrameAdmissionReceipt::new(
+                materialized_count,
+                admission_work.nodes_visited,
+                admission_work.query_cells_examined,
+                admission_work.query_entries_examined,
+                admission_work.index_rebuilt,
+                admission_work.candidates_ranked,
+                admission_work.selection_lookups,
+            ),
+            FrameIncidentRoutingReceipt::new(
+                admission_work.incident_routing_index_bucket_reads,
+                admission_work.incident_routing_index_entries_read,
+            ),
+            FrameIncidentSnapshotReceipt::new(
+                frame_incident_work.entries_read(),
+                frame_incident_work.materializations(),
+            ),
+            FrameGeometryReceipt::new(
+                frame_geometry_work.node_invalidations,
+                frame_geometry_work.spatial_updates,
+                frame_geometry_work.route_invalidations,
+                frame_geometry_work.route_recomputations,
+            ),
+        );
         let (token, viewport) = {
             let mut state = self
                 .shared
@@ -477,9 +541,6 @@ impl ViewSession {
                 state.last_superseded_frame = state.last_issued_frame;
             }
             state.last_issued_frame = sequence;
-            state
-                .derived
-                .record_frame_nodes_materialized(materialized_count);
             let token = FrameToken {
                 view: state.id,
                 generation: state.generation,
@@ -514,7 +575,7 @@ impl ViewSession {
             snapshot.document_epoch(),
             viewport,
             frame_nodes,
-            materialization_overflow,
+            materialization_receipt,
         );
         let callback_panic = renderer_publication
             .and_then(|(layout_revision, nodes)| self.publish_layout_event(layout_revision, nodes));
@@ -991,9 +1052,11 @@ mod candidate_budget_tests {
         ];
         let ranks = BTreeMap::from([(back, 0), (front, 1), (selected, 2)]);
 
-        let (retained, overflow) = take_candidate_budget(candidates.into(), 2, &ranks, None);
+        let (retained, overflow, candidates_ranked) =
+            take_candidate_budget(candidates.into(), 2, &ranks, None);
 
         assert_eq!(overflow, 1);
+        assert_eq!(candidates_ranked, 3);
         assert_eq!(
             retained
                 .into_iter()

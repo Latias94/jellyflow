@@ -105,61 +105,71 @@ impl AlignmentSnapQuery {
     }
 }
 
-/// Bounded work evidence for a node-alignment query that could not produce a snap.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Work performed by one bounded node-alignment query page.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct AlignmentSnapWork {
-    generation: InteractionGeneration,
+    cells_examined: u64,
     entries_examined: u64,
-    receipt: Option<AlignmentSnapQueryReceipt>,
+    candidates_examined: u64,
 }
 
 impl AlignmentSnapWork {
-    pub(crate) fn new(generation: InteractionGeneration, entries_examined: u64) -> Self {
+    pub(crate) fn new(
+        cells_examined: u64,
+        entries_examined: u64,
+        candidates_examined: u64,
+    ) -> Self {
         Self {
-            generation,
+            cells_examined,
             entries_examined,
-            receipt: None,
+            candidates_examined,
         }
     }
 
-    pub fn generation(self) -> InteractionGeneration {
-        self.generation
+    pub fn cells_examined(self) -> u64 {
+        self.cells_examined
     }
 
     pub fn entries_examined(self) -> u64 {
         self.entries_examined
     }
 
-    pub fn receipt(self) -> Option<AlignmentSnapQueryReceipt> {
-        self.receipt
-    }
-
-    pub(crate) fn with_receipt(mut self, receipt: Option<AlignmentSnapQueryReceipt>) -> Self {
-        self.receipt = receipt;
-        self
+    pub fn candidates_examined(self) -> u64 {
+        self.candidates_examined
     }
 }
 
 /// Terminal result of one bounded node-alignment query.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AlignmentSnapQueryOutcome {
-    Complete(AlignmentSnapResult),
-    BudgetExhausted(AlignmentSnapWork),
-    GeometryIndeterminate(AlignmentSnapWork),
+    Complete {
+        result: AlignmentSnapResult,
+        receipt: AlignmentSnapQueryReceipt,
+    },
+    BudgetExhausted {
+        generation: InteractionGeneration,
+        receipt: AlignmentSnapQueryReceipt,
+    },
+    GeometryIndeterminate {
+        generation: InteractionGeneration,
+        receipt: AlignmentSnapQueryReceipt,
+    },
 }
 
 impl AlignmentSnapQueryOutcome {
     pub fn generation(&self) -> InteractionGeneration {
         match self {
-            Self::Complete(result) => result.generation(),
-            Self::BudgetExhausted(work) | Self::GeometryIndeterminate(work) => work.generation(),
+            Self::Complete { result, .. } => result.generation(),
+            Self::BudgetExhausted { generation, .. }
+            | Self::GeometryIndeterminate { generation, .. } => *generation,
         }
     }
 
-    pub fn receipt(&self) -> Option<AlignmentSnapQueryReceipt> {
+    pub fn receipt(&self) -> AlignmentSnapQueryReceipt {
         match self {
-            Self::Complete(result) => result.receipt(),
-            Self::BudgetExhausted(work) | Self::GeometryIndeterminate(work) => work.receipt(),
+            Self::Complete { receipt, .. }
+            | Self::BudgetExhausted { receipt, .. }
+            | Self::GeometryIndeterminate { receipt, .. } => *receipt,
         }
     }
 }
@@ -170,9 +180,7 @@ pub struct AlignmentSnapResult {
     generation: InteractionGeneration,
     delta: CanvasPoint,
     guides: Box<[AlignmentGuide]>,
-    candidates_examined: usize,
     locks: AlignmentSnapLocks,
-    receipt: Option<AlignmentSnapQueryReceipt>,
 }
 
 impl AlignmentSnapResult {
@@ -188,20 +196,6 @@ impl AlignmentSnapResult {
     /// Returns the deterministic alignment guides associated with the snapped axes.
     pub fn guides(&self) -> &[AlignmentGuide] {
         &self.guides
-    }
-
-    /// Returns the number of spatially admitted, non-moving nodes inspected.
-    pub fn candidates_examined(&self) -> usize {
-        self.candidates_examined
-    }
-
-    pub fn receipt(&self) -> Option<AlignmentSnapQueryReceipt> {
-        self.receipt
-    }
-
-    pub(crate) fn with_receipt(mut self, receipt: Option<AlignmentSnapQueryReceipt>) -> Self {
-        self.receipt = receipt;
-        self
     }
 
     pub(crate) fn into_parts(
@@ -256,7 +250,7 @@ pub(crate) fn resolve_alignment_snap(
     candidate_nodes: &BTreeSet<NodeId>,
     acquire_tolerance_in_canvas: f32,
     release_tolerance_in_canvas: f32,
-) -> AlignmentSnapResult {
+) -> (AlignmentSnapResult, u64) {
     let moving_membership = query.moving_nodes.iter().copied().collect::<BTreeSet<_>>();
     let moving = query
         .moving_nodes
@@ -271,7 +265,7 @@ pub(crate) fn resolve_alignment_snap(
     });
     let x_locked = x_snap.is_some();
     let y_locked = y_snap.is_some();
-    let mut candidates_examined = 0_usize;
+    let mut candidates_examined = 0_u64;
     for candidate in candidate_nodes.iter().copied() {
         if moving_membership.contains(&candidate) {
             continue;
@@ -323,17 +317,18 @@ pub(crate) fn resolve_alignment_snap(
             guides.push(guide);
         }
     }
-    AlignmentSnapResult {
-        generation: query.generation,
-        delta: snapped,
-        guides: guides.into_boxed_slice(),
-        candidates_examined,
-        locks: AlignmentSnapLocks {
-            x: x_snap.map(AxisSnap::lock),
-            y: y_snap.map(AxisSnap::lock),
+    (
+        AlignmentSnapResult {
+            generation: query.generation,
+            delta: snapped,
+            guides: guides.into_boxed_slice(),
+            locks: AlignmentSnapLocks {
+                x: x_snap.map(AxisSnap::lock),
+                y: y_snap.map(AxisSnap::lock),
+            },
         },
-        receipt: None,
-    }
+        candidates_examined,
+    )
 }
 
 #[derive(Debug, Clone, Copy)]

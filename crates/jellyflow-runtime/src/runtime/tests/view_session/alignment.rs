@@ -113,6 +113,40 @@ fn alignment_budget_exhaustion_is_terminal_and_falls_back_to_raw_delta() {
 }
 
 #[test]
+fn alignment_budget_counts_duplicate_axis_entries_before_node_deduplication() {
+    let (_runtime, view, ids) = alignment_view(2, 1.0, &[0.0, 206.0]);
+    let mut interaction = interaction_session(&view, 2);
+    let start = node_drag_start_by_id(&view, ids[0], SelectionMode::Replace)
+        .unwrap()
+        .unwrap();
+    interaction
+        .press(
+            CanvasPressTarget::NodeDrag(start),
+            canvas_pointer_sample(&view, 0.0, 1.0),
+        )
+        .unwrap();
+    interaction
+        .move_to(canvas_pointer_sample(&view, 100.0, 1.0))
+        .unwrap();
+
+    let (resolved, needs_tick, receipt, terminal_error) =
+        interaction.advance_query_work(1).into_parts();
+    assert!(terminal_error.is_none());
+    let [CanvasInteractionQueryPageReceipt::AlignmentSnap(page)] = receipt.page_receipts() else {
+        panic!("alignment advancement must receipt one alignment page");
+    };
+    assert_eq!(page.work().entries_examined(), 2);
+    assert_eq!(page.work().candidates_examined(), 0);
+    assert!(!needs_tick);
+    assert!(!resolved.query_work_pending());
+    assert_eq!(
+        interaction.presentation().node_drag().unwrap().delta(),
+        CanvasPoint { x: 100.0, y: 0.0 },
+        "raw index duplicates must exhaust the grant before snap resolution",
+    );
+}
+
+#[test]
 fn alignment_lock_holds_inside_release_band_after_leaving_acquire_band() {
     let (_runtime, view, ids) = alignment_view(2, 1.0, &[0.0, 205.0]);
     let mut interaction = interaction_session(&view, 64);
@@ -299,10 +333,10 @@ fn advance_alignment_query(
     assert!(terminal_error.is_none());
     assert_eq!(receipt.pages_granted(), 1);
     assert_eq!(receipt.pages_attempted(), 1);
-    assert!(matches!(
-        receipt.page_receipts(),
-        [CanvasInteractionQueryPageReceipt::AlignmentSnap(_)]
-    ));
+    let [CanvasInteractionQueryPageReceipt::AlignmentSnap(page)] = receipt.page_receipts() else {
+        panic!("alignment advancement must receipt one alignment page");
+    };
+    assert!(page.work().entries_examined() >= page.work().candidates_examined());
     assert!(!needs_tick);
     assert!(!interaction.query_work_pending());
     assert!(!resolved.query_work_pending());

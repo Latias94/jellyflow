@@ -7,6 +7,7 @@ mod presentation;
 mod query_work;
 mod session;
 
+pub use crate::runtime::view_session::AlignmentSnapQueryReceipt;
 pub use connection::{
     ConnectionGestureBinding, ConnectionProbe, ConnectionProbeTarget, ConnectionProbeTargetIdentity,
 };

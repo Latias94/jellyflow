@@ -17,9 +17,9 @@ use super::route_geometry::{
     RouteFlattenWork, RouteGeometryIndex, RouteQuerySource, RouteSegmentKey,
 };
 use super::{
-    EdgePickQueryReceipt, InteractionQueryBinding, SelectedEdgeMembership, ViewQueryIdentity,
-    ViewQueryIdentityStaleReason, ViewSession, ViewSessionError, ViewShared, WeakViewSession,
-    ensure_open,
+    EdgePickQueryReceipt, InteractionQueryBinding, InteractionQueryProof, SelectedEdgeMembership,
+    ViewQueryIdentity, ViewQueryIdentityStaleReason, ViewSession, ViewSessionError, ViewShared,
+    WeakViewSession, ensure_open,
 };
 #[cfg(test)]
 use super::{ViewGeneration, ViewId};
@@ -166,19 +166,9 @@ pub struct EdgePickWork {
     pub flatten_cache_evictions: u64,
     pub flatten_segments_built: u64,
     pub flatten_overflows: u64,
-    receipt: Option<EdgePickQueryReceipt>,
 }
 
 impl EdgePickWork {
-    pub fn receipt(self) -> Option<EdgePickQueryReceipt> {
-        self.receipt
-    }
-
-    fn with_receipt(mut self, receipt: Option<EdgePickQueryReceipt>) -> Self {
-        self.receipt = receipt;
-        self
-    }
-
     fn record_flatten(&mut self, work: RouteFlattenWork) {
         self.flatten_cache_hits = self.flatten_cache_hits.saturating_add(work.cache_hits);
         self.flatten_cache_misses = self.flatten_cache_misses.saturating_add(work.cache_misses);
@@ -197,28 +187,28 @@ impl EdgePickWork {
 pub enum EdgePickQueryOutcome {
     Complete {
         pick: Option<EdgePick>,
-        work: EdgePickWork,
+        receipt: EdgePickQueryReceipt,
     },
     Incomplete {
         cursor: Box<EdgePickCursor>,
-        work: EdgePickWork,
+        receipt: EdgePickQueryReceipt,
     },
     BudgetExhausted {
-        work: EdgePickWork,
+        receipt: EdgePickQueryReceipt,
     },
     GeometryIndeterminate {
         failures: Vec<EdgePickGeometryFailure>,
-        work: EdgePickWork,
+        receipt: EdgePickQueryReceipt,
     },
 }
 
 impl EdgePickQueryOutcome {
-    pub fn receipt(&self) -> Option<EdgePickQueryReceipt> {
+    pub fn receipt(&self) -> EdgePickQueryReceipt {
         match self {
-            Self::Complete { work, .. }
-            | Self::Incomplete { work, .. }
-            | Self::BudgetExhausted { work }
-            | Self::GeometryIndeterminate { work, .. } => work.receipt(),
+            Self::Complete { receipt, .. }
+            | Self::Incomplete { receipt, .. }
+            | Self::BudgetExhausted { receipt }
+            | Self::GeometryIndeterminate { receipt, .. } => *receipt,
         }
     }
 }
@@ -479,7 +469,7 @@ impl WeakViewSession {
 
 impl ViewShared {
     fn edge_pick(&self, query: EdgePickQuery) -> Result<EdgePickQueryOutcome, EdgePickQueryError> {
-        let (outcome, receipt) = {
+        let (outcome, proof) = {
             let mut state = self
                 .state
                 .try_borrow_mut()
@@ -506,7 +496,7 @@ impl ViewShared {
                     *cursor
                 }
             };
-            let receipt = EdgePickQueryReceipt::issue(
+            let proof = InteractionQueryProof::issue(
                 query.interaction_binding,
                 cursor.identity,
                 [
@@ -525,23 +515,23 @@ impl ViewShared {
                     query.entry_budget,
                 )
             };
-            (outcome, receipt)
+            (outcome, proof)
         };
 
         Ok(match outcome {
             InternalEdgePickOutcome::Complete { pick, work } => EdgePickQueryOutcome::Complete {
                 pick,
-                work: work.with_receipt(receipt),
+                receipt: EdgePickQueryReceipt::new(work, proof),
             },
             InternalEdgePickOutcome::Incomplete { cursor, work } => {
                 EdgePickQueryOutcome::Incomplete {
                     cursor,
-                    work: work.with_receipt(receipt),
+                    receipt: EdgePickQueryReceipt::new(work, proof),
                 }
             }
             InternalEdgePickOutcome::BudgetExhausted { work } => {
                 EdgePickQueryOutcome::BudgetExhausted {
-                    work: work.with_receipt(receipt),
+                    receipt: EdgePickQueryReceipt::new(work, proof),
                 }
             }
             InternalEdgePickOutcome::GeometryIndeterminate { failures, work } => {
@@ -550,7 +540,7 @@ impl ViewShared {
                         .into_iter()
                         .map(|(edge, error)| EdgePickGeometryFailure { edge, error })
                         .collect(),
-                    work: work.with_receipt(receipt),
+                    receipt: EdgePickQueryReceipt::new(work, proof),
                 }
             }
         })
@@ -599,7 +589,7 @@ fn edge_pick_cursor_stale_reason(
     }
 }
 
-pub(super) fn record_edge_pick_stats(
+pub(super) fn record_edge_pick_flatten_stats(
     stats: &mut super::DerivedGeometryStats,
     outcome: &InternalEdgePickOutcome,
 ) {
@@ -609,16 +599,6 @@ pub(super) fn record_edge_pick_stats(
         | InternalEdgePickOutcome::BudgetExhausted { work }
         | InternalEdgePickOutcome::GeometryIndeterminate { work, .. } => *work,
     };
-    stats.edge_pick_cells_examined = stats
-        .edge_pick_cells_examined
-        .saturating_add(work.cells_examined);
-    stats.edge_pick_entries_examined = stats
-        .edge_pick_entries_examined
-        .saturating_add(work.entries_examined);
-    stats.edge_pick_exact_tests = stats.edge_pick_exact_tests.saturating_add(work.exact_tests);
-    stats.edge_pick_candidates_matched = stats
-        .edge_pick_candidates_matched
-        .saturating_add(work.candidates_matched);
     stats.route_flatten_cache_hits = stats
         .route_flatten_cache_hits
         .saturating_add(work.flatten_cache_hits);
@@ -634,19 +614,6 @@ pub(super) fn record_edge_pick_stats(
     stats.route_flatten_overflows = stats
         .route_flatten_overflows
         .saturating_add(work.flatten_overflows);
-    match outcome {
-        InternalEdgePickOutcome::Incomplete { .. } => {
-            stats.edge_pick_incomplete = stats.edge_pick_incomplete.saturating_add(1);
-        }
-        InternalEdgePickOutcome::BudgetExhausted { .. } => {
-            stats.edge_pick_budget_exhausted = stats.edge_pick_budget_exhausted.saturating_add(1);
-        }
-        InternalEdgePickOutcome::GeometryIndeterminate { .. } => {
-            stats.edge_pick_geometry_indeterminate =
-                stats.edge_pick_geometry_indeterminate.saturating_add(1);
-        }
-        InternalEdgePickOutcome::Complete { .. } => {}
-    }
 }
 
 fn edge_candidate_is_better(candidate: EdgePickCandidate, current: EdgePickCandidate) -> bool {

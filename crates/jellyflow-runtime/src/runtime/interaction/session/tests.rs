@@ -279,7 +279,7 @@ fn selection_commit_failure_has_explicit_press_query_and_marquee_policies() {
             query,
             NodeIntersectionQueryOutcome::Complete {
                 nodes: vec![source_node()],
-                work: Default::default(),
+                receipt: unsigned_query_receipt(Default::default()),
             },
             Some(&snapshot),
         ),
@@ -298,7 +298,7 @@ fn selection_commit_failure_has_explicit_press_query_and_marquee_policies() {
             retry_query,
             NodeIntersectionQueryOutcome::Complete {
                 nodes: vec![source_node()],
-                work: Default::default(),
+                receipt: unsigned_query_receipt(Default::default()),
             },
             Some(&snapshot),
         )
@@ -1118,7 +1118,7 @@ fn stale_commit_revalidation_restart_reuses_ticket_and_keeps_budget_terminal() {
         .resolve_connection_probe_for_test(
             fresh_id,
             ConnectionProbeQueryOutcome::BudgetExhausted {
-                work: ConnectionProbeWork::default(),
+                receipt: unsigned_query_receipt(ConnectionProbeWork::default()),
             },
         )
         .unwrap();
@@ -1147,7 +1147,7 @@ fn stale_edge_pick_restart_replaces_identity_without_relaxing_budget_failure() {
             stale_id,
             EdgePickQueryOutcome::Complete {
                 pick: None,
-                work: EdgePickWork::default(),
+                receipt: unsigned_query_receipt(EdgePickWork::default()),
             },
         )
         .unwrap();
@@ -1156,7 +1156,7 @@ fn stale_edge_pick_restart_replaces_identity_without_relaxing_budget_failure() {
         .resolve_edge_pick_for_test(
             fresh_id,
             EdgePickQueryOutcome::BudgetExhausted {
-                work: EdgePickWork::default(),
+                receipt: unsigned_query_receipt(EdgePickWork::default()),
             },
         )
         .unwrap();
@@ -1504,7 +1504,7 @@ fn exact_press_supersedes_fast_hover_without_accepting_its_late_result() {
         .resolve_edge_pick_for_test(
             hover_query,
             EdgePickQueryOutcome::BudgetExhausted {
-                work: EdgePickWork::default(),
+                receipt: unsigned_query_receipt(EdgePickWork::default()),
             },
         )
         .unwrap();
@@ -2022,7 +2022,7 @@ fn connection_commit_revalidation_budget_exhaustion_is_terminal() {
         .resolve_connection_probe_for_test(
             connection_query_id(&session, &requested),
             ConnectionProbeQueryOutcome::BudgetExhausted {
-                work: ConnectionProbeWork::default(),
+                receipt: unsigned_query_receipt(ConnectionProbeWork::default()),
             },
         )
         .unwrap();
@@ -2053,7 +2053,7 @@ fn release_budget_exhaustion_is_terminal_without_graph_mutation() {
         .resolve_connection_probe_for_test(
             connection_query_id(&session, &released),
             ConnectionProbeQueryOutcome::BudgetExhausted {
-                work: ConnectionProbeWork::default(),
+                receipt: unsigned_query_receipt(ConnectionProbeWork::default()),
             },
         )
         .unwrap();
@@ -2509,7 +2509,7 @@ fn marquee_query_failure_retries_press_baseline_restore_exactly_once() {
             marquee_query_id(&session, &first_query),
             NodeIntersectionQueryOutcome::Complete {
                 nodes: Vec::new(),
-                work: Default::default(),
+                receipt: unsigned_query_receipt(Default::default()),
             },
             Some(&snapshot),
         )
@@ -2603,7 +2603,7 @@ fn close_waits_for_busy_marquee_baseline_restore_and_finishes_exactly_once() {
             marquee_query_id(&session, &queried),
             NodeIntersectionQueryOutcome::Complete {
                 nodes: Vec::new(),
-                work: Default::default(),
+                receipt: unsigned_query_receipt(Default::default()),
             },
             Some(&snapshot),
         )
@@ -2742,7 +2742,7 @@ fn edge_pick_identity_exhaustion_cannot_publish_superseded_hover_work() {
                 superseded,
                 EdgePickQueryOutcome::Complete {
                     pick: None,
-                    work: EdgePickWork::default(),
+                    receipt: unsigned_query_receipt(EdgePickWork::default()),
                 },
             )
             .is_ok()
@@ -2802,6 +2802,17 @@ fn mismatched_and_foreign_query_receipts_fail_without_settling_current_work() {
         .expect("current edge-pick query");
     let current = edge_query_id(&session, &requested);
 
+    let direct_outcome = view
+        .edge_pick(EdgePickQuery::new(ViewPoint::new(2.0, 3.0), 10.0, 1))
+        .expect("direct query receipt");
+    let before_missing_proof = session_fingerprint(&session);
+    assert!(matches!(
+        session.resolve_edge_pick_outcome(current, direct_outcome),
+        Err(CanvasInteractionError::MissingInteractionQueryProof { query })
+            if query == current
+    ));
+    assert_eq!(session_fingerprint(&session), before_missing_proof);
+
     let mismatched = session.allocate_query().expect("second query identity");
     let mismatched_outcome = view
         .edge_pick(
@@ -2812,7 +2823,7 @@ fn mismatched_and_foreign_query_receipts_fail_without_settling_current_work() {
     let before_mismatch = session_fingerprint(&session);
     assert!(matches!(
         session.resolve_edge_pick_outcome(current, mismatched_outcome),
-        Err(CanvasInteractionError::MismatchedInteractionQueryReceipt {
+        Err(CanvasInteractionError::MismatchedInteractionQueryProof {
             expected,
             actual,
         }) if expected == current && actual == mismatched
@@ -3461,7 +3472,7 @@ fn marquee_auto_pan_reprojects_before_requery_and_rejects_superseded_selection()
                 superseded,
                 NodeIntersectionQueryOutcome::Complete {
                     nodes: vec![NodeId::from_u128(91)],
-                    work: Default::default(),
+                    receipt: unsigned_query_receipt(Default::default()),
                 },
             )
             .unwrap();
@@ -3472,7 +3483,7 @@ fn marquee_auto_pan_reprojects_before_requery_and_rejects_superseded_selection()
                 replacement,
                 NodeIntersectionQueryOutcome::Complete {
                     nodes: vec![NodeId::from_u128(92)],
-                    work: Default::default(),
+                    receipt: unsigned_query_receipt(Default::default()),
                 },
             )
             .unwrap();
@@ -3676,7 +3687,7 @@ fn superseded_marquee_query_cannot_publish_selection() {
             stale,
             NodeIntersectionQueryOutcome::Complete {
                 nodes: vec![NodeId::from_u128(21)],
-                work: Default::default(),
+                receipt: unsigned_query_receipt(Default::default()),
             },
         )
         .unwrap();
@@ -3691,7 +3702,7 @@ fn superseded_marquee_query_cannot_publish_selection() {
             current,
             NodeIntersectionQueryOutcome::Complete {
                 nodes: vec![NodeId::from_u128(22)],
-                work: Default::default(),
+                receipt: unsigned_query_receipt(Default::default()),
             },
         )
         .unwrap();
@@ -3733,7 +3744,7 @@ fn released_marquee_waits_for_the_final_query_before_becoming_idle() {
             superseded,
             NodeIntersectionQueryOutcome::Complete {
                 nodes: vec![NodeId::from_u128(21)],
-                work: Default::default(),
+                receipt: unsigned_query_receipt(Default::default()),
             },
         )
         .unwrap();
@@ -3748,7 +3759,7 @@ fn released_marquee_waits_for_the_final_query_before_becoming_idle() {
             final_query,
             NodeIntersectionQueryOutcome::Complete {
                 nodes: vec![NodeId::from_u128(22)],
-                work: Default::default(),
+                receipt: unsigned_query_receipt(Default::default()),
             },
         )
         .unwrap();
@@ -3776,7 +3787,7 @@ fn marquee_budget_exhaustion_never_publishes_partial_selection() {
         .resolve_node_intersection_for_test(
             marquee_query_id(&session, &query),
             NodeIntersectionQueryOutcome::BudgetExhausted {
-                work: Default::default(),
+                receipt: unsigned_query_receipt(Default::default()),
             },
         )
         .unwrap();
@@ -3874,7 +3885,10 @@ fn node_release_waits_for_the_final_alignment_query_without_requesting_ticks() {
     let committed = session
         .resolve_alignment_snap_for_test(
             query_id,
-            AlignmentSnapQueryOutcome::GeometryIndeterminate(AlignmentSnapWork::new(generation, 0)),
+            AlignmentSnapQueryOutcome::GeometryIndeterminate {
+                generation,
+                receipt: unsigned_query_receipt(AlignmentSnapWork::default()),
+            },
         )
         .unwrap();
     assert!(matches!(
@@ -4395,7 +4409,7 @@ fn late_queries_preserve_active_tick_demand() {
             late_id,
             EdgePickQueryOutcome::Complete {
                 pick: None,
-                work: EdgePickWork::default(),
+                receipt: unsigned_query_receipt(EdgePickWork::default()),
             },
         )
         .unwrap();
@@ -4439,6 +4453,10 @@ fn active_node_drag_session() -> CanvasInteractionSession {
 fn overflowing_auto_pan_transform() -> ViewportTransform {
     ViewportTransform::new(CanvasPoint::default(), 2.0e-37)
         .expect("tiny positive finite zoom remains a valid viewport transform")
+}
+
+fn unsigned_query_receipt<W>(work: W) -> QueryPageReceipt<W> {
+    QueryPageReceipt::new(work, None)
 }
 
 fn test_session(config: CanvasInteractionConfig) -> CanvasInteractionSession {
@@ -5074,7 +5092,7 @@ fn graph_snapshot(graph: Graph) -> GraphSnapshot {
 fn complete(probe: ConnectionProbe) -> ConnectionProbeQueryOutcome {
     ConnectionProbeQueryOutcome::Complete {
         probe,
-        work: ConnectionProbeWork::default(),
+        receipt: unsigned_query_receipt(ConnectionProbeWork::default()),
     }
 }
 
@@ -5159,7 +5177,7 @@ fn resolve_marquee_query(
             marquee_query_id(session, update),
             NodeIntersectionQueryOutcome::Complete {
                 nodes: nodes.into_iter().collect(),
-                work: Default::default(),
+                receipt: unsigned_query_receipt(Default::default()),
             },
         )
         .unwrap()

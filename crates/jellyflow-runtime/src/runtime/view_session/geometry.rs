@@ -24,9 +24,9 @@ use crate::runtime::viewport::ViewportTransform;
 use super::derived_geometry::LayoutWithdrawal;
 use super::protocol::{ExpectedNodeLayout, PendingFrame, PendingLayout};
 use super::{
-    AlignmentSnapQueryReceipt, InteractionQueryBinding, NodeIntersectionQueryReceipt,
-    ViewQueryIdentity, ViewQueryIdentityStaleReason, ViewSession, ViewSessionError, ViewShared,
-    ViewState, WeakViewSession, ensure_open,
+    AlignmentSnapQueryReceipt, InteractionQueryBinding, InteractionQueryProof,
+    NodeIntersectionQueryReceipt, ViewQueryIdentity, ViewQueryIdentityStaleReason, ViewSession,
+    ViewSessionError, ViewShared, ViewState, WeakViewSession, ensure_open,
 };
 
 const HARD_NODE_INTERSECTION_ENTRY_LIMIT: u64 = 16_384;
@@ -86,41 +86,29 @@ pub struct NodeIntersectionWork {
     pub cells_examined: u64,
     pub entries_examined: u64,
     pub exact_tests: u64,
-    receipt: Option<NodeIntersectionQueryReceipt>,
-}
-
-impl NodeIntersectionWork {
-    pub fn receipt(self) -> Option<NodeIntersectionQueryReceipt> {
-        self.receipt
-    }
-
-    fn with_receipt(mut self, receipt: Option<NodeIntersectionQueryReceipt>) -> Self {
-        self.receipt = receipt;
-        self
-    }
 }
 
 #[derive(Debug)]
 pub enum NodeIntersectionQueryOutcome {
     Complete {
         nodes: Vec<NodeId>,
-        work: NodeIntersectionWork,
+        receipt: NodeIntersectionQueryReceipt,
     },
     Incomplete {
         cursor: Box<NodeIntersectionCursor>,
-        work: NodeIntersectionWork,
+        receipt: NodeIntersectionQueryReceipt,
     },
     BudgetExhausted {
-        work: NodeIntersectionWork,
+        receipt: NodeIntersectionQueryReceipt,
     },
 }
 
 impl NodeIntersectionQueryOutcome {
-    pub fn receipt(&self) -> Option<NodeIntersectionQueryReceipt> {
+    pub fn receipt(&self) -> NodeIntersectionQueryReceipt {
         match self {
-            Self::Complete { work, .. }
-            | Self::Incomplete { work, .. }
-            | Self::BudgetExhausted { work } => work.receipt(),
+            Self::Complete { receipt, .. }
+            | Self::Incomplete { receipt, .. }
+            | Self::BudgetExhausted { receipt } => *receipt,
         }
     }
 }
@@ -232,7 +220,7 @@ impl ViewShared {
         &self,
         query: NodeIntersectionQuery,
     ) -> Result<NodeIntersectionQueryOutcome, NodeIntersectionQueryError> {
-        let (outcome, receipt) = {
+        let (outcome, proof) = {
             let state = self
                 .state
                 .try_borrow()
@@ -240,7 +228,7 @@ impl ViewShared {
             ensure_open(state.status)?;
             let identity = state.query_identity();
             let index_epoch = state.derived.node_spatial_index_epoch();
-            let receipt = NodeIntersectionQueryReceipt::issue(
+            let proof = InteractionQueryProof::issue(
                 query.interaction_binding,
                 identity,
                 [index_epoch, 0, 0, 0],
@@ -253,7 +241,10 @@ impl ViewShared {
                     if bounds.size.width == 0.0 || bounds.size.height == 0.0 {
                         return Ok(NodeIntersectionQueryOutcome::Complete {
                             nodes: Vec::new(),
-                            work: NodeIntersectionWork::default().with_receipt(receipt),
+                            receipt: NodeIntersectionQueryReceipt::new(
+                                NodeIntersectionWork::default(),
+                                proof,
+                            ),
                         });
                     }
                     let Some(canvas_bounds) = CanvasBounds::from_rect(bounds) else {
@@ -273,24 +264,24 @@ impl ViewShared {
             let outcome = state
                 .derived
                 .query_node_intersection_page(cursor, query.entry_budget);
-            (outcome, receipt)
+            (outcome, proof)
         };
         Ok(match outcome {
             InternalNodeIntersectionOutcome::Complete { nodes, work } => {
                 NodeIntersectionQueryOutcome::Complete {
                     nodes: nodes.into_iter().collect(),
-                    work: work.with_receipt(receipt),
+                    receipt: NodeIntersectionQueryReceipt::new(work, proof),
                 }
             }
             InternalNodeIntersectionOutcome::Incomplete { cursor, work } => {
                 NodeIntersectionQueryOutcome::Incomplete {
                     cursor: Box::new(cursor),
-                    work: work.with_receipt(receipt),
+                    receipt: NodeIntersectionQueryReceipt::new(work, proof),
                 }
             }
             InternalNodeIntersectionOutcome::BudgetExhausted { work } => {
                 NodeIntersectionQueryOutcome::BudgetExhausted {
-                    work: work.with_receipt(receipt),
+                    receipt: NodeIntersectionQueryReceipt::new(work, proof),
                 }
             }
         })
@@ -314,7 +305,7 @@ impl ViewShared {
             .try_borrow_mut()
             .map_err(|_| ViewSessionError::Busy)?;
         ensure_open(state.status)?;
-        let receipt = AlignmentSnapQueryReceipt::issue(
+        let proof = InteractionQueryProof::issue(
             Some(query.interaction_binding()),
             state.query_identity(),
             [
@@ -324,14 +315,23 @@ impl ViewShared {
                 0,
             ],
         )?;
-        let work = |entries_examined| {
-            AlignmentSnapWork::new(query.generation(), entries_examined).with_receipt(receipt)
+        let receipt = |cells_examined, entries_examined, candidates_examined| {
+            AlignmentSnapQueryReceipt::new(
+                AlignmentSnapWork::new(cells_examined, entries_examined, candidates_examined),
+                proof,
+            )
         };
         if query.view() != state.id || query.view_generation() != state.generation {
-            return Ok(AlignmentSnapQueryOutcome::GeometryIndeterminate(work(0)));
+            return Ok(AlignmentSnapQueryOutcome::GeometryIndeterminate {
+                generation: query.generation(),
+                receipt: receipt(0, 0, 0),
+            });
         }
         let Some(transform) = ViewportTransform::new(state.facts.pan, state.facts.zoom) else {
-            return Ok(AlignmentSnapQueryOutcome::GeometryIndeterminate(work(0)));
+            return Ok(AlignmentSnapQueryOutcome::GeometryIndeterminate {
+                generation: query.generation(),
+                receipt: receipt(0, 0, 0),
+            });
         };
         let acquire_tolerance = query.acquire_tolerance_in_view() / transform.zoom;
         let release_tolerance = query.release_tolerance_in_view() / transform.zoom;
@@ -341,11 +341,17 @@ impl ViewShared {
             || release_tolerance < acquire_tolerance
             || query.entry_budget() == 0
         {
-            return Ok(AlignmentSnapQueryOutcome::GeometryIndeterminate(work(0)));
+            return Ok(AlignmentSnapQueryOutcome::GeometryIndeterminate {
+                generation: query.generation(),
+                receipt: receipt(0, 0, 0),
+            });
         }
         let geometry = state.derived.snapshot();
         if query.moving_nodes().len() > query.entry_budget() {
-            return Ok(AlignmentSnapQueryOutcome::BudgetExhausted(work(0)));
+            return Ok(AlignmentSnapQueryOutcome::BudgetExhausted {
+                generation: query.generation(),
+                receipt: receipt(0, 0, 0),
+            });
         }
         let Some(moving_bounds) = query
             .moving_nodes()
@@ -364,7 +370,10 @@ impl ViewShared {
             })
             .collect::<Option<Vec<_>>>()
         else {
-            return Ok(AlignmentSnapQueryOutcome::GeometryIndeterminate(work(0)));
+            return Ok(AlignmentSnapQueryOutcome::GeometryIndeterminate {
+                generation: query.generation(),
+                receipt: receipt(0, 0, 0),
+            });
         };
         let candidates = state.derived.nodes_near_alignment_with_limit(
             &moving_bounds,
@@ -372,20 +381,26 @@ impl ViewShared {
             query.entry_budget(),
         );
         if candidates.truncated {
-            return Ok(AlignmentSnapQueryOutcome::BudgetExhausted(work(
-                candidates.entries_examined,
-            )));
+            return Ok(AlignmentSnapQueryOutcome::BudgetExhausted {
+                generation: query.generation(),
+                receipt: receipt(candidates.cells_examined, candidates.entries_examined, 0),
+            });
         }
-        Ok(AlignmentSnapQueryOutcome::Complete(
-            resolve_alignment_snap(
-                &geometry,
-                &query,
-                &candidates.nodes,
-                acquire_tolerance,
-                release_tolerance,
-            )
-            .with_receipt(receipt),
-        ))
+        let (result, candidates_examined) = resolve_alignment_snap(
+            &geometry,
+            &query,
+            &candidates.nodes,
+            acquire_tolerance,
+            release_tolerance,
+        );
+        Ok(AlignmentSnapQueryOutcome::Complete {
+            result,
+            receipt: receipt(
+                candidates.cells_examined,
+                candidates.entries_examined,
+                candidates_examined,
+            ),
+        })
     }
 }
 
@@ -716,7 +731,7 @@ impl ViewSpatialIndex {
         let mut remaining = entry_limit;
         let mut entries_examined = 0_u64;
         let mut cells_examined = 0_u64;
-        let mut truncated = extend_unique_spatial_candidates(
+        let mut truncated = extend_spatial_candidates(
             &mut nodes,
             self.overflow_nodes.iter(),
             &mut remaining,
@@ -728,7 +743,7 @@ impl ViewSpatialIndex {
             }
             cells_examined = cells_examined.saturating_add(1);
             if let Some(candidates) = self.alignment_x.get(&cell) {
-                truncated = extend_unique_spatial_candidates(
+                truncated = extend_spatial_candidates(
                     &mut nodes,
                     candidates.iter(),
                     &mut remaining,
@@ -742,7 +757,7 @@ impl ViewSpatialIndex {
             }
             cells_examined = cells_examined.saturating_add(1);
             if let Some(candidates) = self.alignment_y.get(&cell) {
-                truncated = extend_unique_spatial_candidates(
+                truncated = extend_spatial_candidates(
                     &mut nodes,
                     candidates.iter(),
                     &mut remaining,
@@ -871,26 +886,6 @@ fn extend_spatial_candidates<'a>(
     entries_examined: &mut u64,
 ) -> bool {
     for node in nodes {
-        if *remaining == 0 {
-            return true;
-        }
-        *remaining -= 1;
-        *entries_examined = entries_examined.saturating_add(1);
-        candidates.insert(*node);
-    }
-    false
-}
-
-fn extend_unique_spatial_candidates<'a>(
-    candidates: &mut BTreeSet<NodeId>,
-    nodes: impl IntoIterator<Item = &'a NodeId>,
-    remaining: &mut usize,
-    entries_examined: &mut u64,
-) -> bool {
-    for node in nodes {
-        if candidates.contains(node) {
-            continue;
-        }
         if *remaining == 0 {
             return true;
         }

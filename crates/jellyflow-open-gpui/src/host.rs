@@ -236,7 +236,7 @@ pub struct OpenGpuiSceneHost {
     prepaint_close_fault: bool,
     stats: OpenGpuiSceneHostStats,
     last_diagnostic: Option<OpenGpuiSceneHostDiagnostic>,
-    last_frame_materialization_overflow: FrameMaterializationOverflow,
+    last_frame_materialization_overflow: Option<FrameMaterializationOverflow>,
     last_edge_layer_overflow: OpenGpuiEdgeLayerOverflow,
 }
 
@@ -352,7 +352,7 @@ impl OpenGpuiSceneHost {
             prepaint_close_fault: false,
             stats: OpenGpuiSceneHostStats::default(),
             last_diagnostic: None,
-            last_frame_materialization_overflow: FrameMaterializationOverflow::default(),
+            last_frame_materialization_overflow: None,
             last_edge_layer_overflow: OpenGpuiEdgeLayerOverflow::default(),
         }
     }
@@ -879,7 +879,7 @@ impl Render for OpenGpuiSceneHost {
             }
             Err(error) => return self.frame_failure(error.to_string(), cx),
         };
-        self.record_frame_materialization_overflow(frame.materialization_overflow());
+        self.record_frame_materialization_overflow(frame.materialization_receipt().overflow());
         let collector = frame.collector();
         let presentation_offsets = self.interaction_node_drag_offsets();
         let measurements = Rc::new(OpenGpuiPendingMeasurements::new(

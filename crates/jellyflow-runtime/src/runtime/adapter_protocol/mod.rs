@@ -22,9 +22,11 @@ pub use feedback::{
 pub use frame::{
     AdapterEnvironment, AdapterFrame, DEFAULT_FRAME_REQUIRED_NODE_BUDGET,
     DEFAULT_FRAME_ROUTING_DEPENDENCY_BUDGET, DEFAULT_FRAME_VISIBLE_NODE_BUDGET,
-    DEFAULT_FRAME_VISIBLE_NODE_SCAN_LIMIT, FrameBoundsSource, FrameMaterializationBudget,
-    FrameMaterializationOverflow, FrameNode, FramePort, FrameRequest, NodeInstanceKey,
-    NodeLayoutTarget, PortLayoutTarget, RendererStamp,
+    DEFAULT_FRAME_VISIBLE_NODE_SCAN_LIMIT, FrameAdmissionReceipt, FrameBoundsSource,
+    FrameGeometryReceipt, FrameIncidentRoutingReceipt, FrameIncidentSnapshotReceipt,
+    FrameMaterializationBudget, FrameMaterializationOverflow, FrameMaterializationReceipt,
+    FrameNode, FramePort, FrameRequest, NodeInstanceKey, NodeLayoutTarget, PortLayoutTarget,
+    RendererStamp,
 };
 pub(crate) use geometry::SharedGeometryMap;
 pub use geometry::{

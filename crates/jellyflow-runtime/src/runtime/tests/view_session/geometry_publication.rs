@@ -731,7 +731,16 @@ fn runtime_owned_edge_pick_resolves_against_latest_view_facts() {
 
     set_selection_by_id(&view, [], [ids.edge], Vec::new()).unwrap();
     let resolved = advance_terminal_query_page(&mut interaction, requested, |page| {
-        matches!(page, CanvasInteractionQueryPageReceipt::EdgePick(_))
+        matches!(
+            page,
+            CanvasInteractionQueryPageReceipt::EdgePick(receipt)
+                if receipt.work().entries_examined > 0
+                    && receipt.work().exact_tests > 0
+                    && receipt.work().candidates_matched > 0
+                    && receipt.work().flatten_cache_hits
+                        + receipt.work().flatten_cache_misses
+                        > 0
+        )
     });
     assert!(resolved.effects().is_empty());
     assert!(interaction.presentation().hovered_edge().is_some());
@@ -784,7 +793,13 @@ fn runtime_owned_connection_probe_resolves_against_latest_graph_revision() {
         .applied()
         .expect("unrelated graph mutation advances the revision");
     let resolved = advance_terminal_query_page(&mut interaction, moved, |page| {
-        matches!(page, CanvasInteractionQueryPageReceipt::ConnectionProbe(_))
+        matches!(
+            page,
+            CanvasInteractionQueryPageReceipt::ConnectionProbe(receipt)
+                if receipt.work().entries_examined > 0
+                    && receipt.work().exact_tests > 0
+                    && receipt.work().policy_evaluations == 1
+        )
     });
     assert!(resolved.effects().is_empty());
 }
@@ -1324,10 +1339,10 @@ fn view_space_layout_uses_the_issued_transform_for_all_canvas_geometry() {
     {
         ConnectionProbeQueryOutcome::Complete {
             probe: ConnectionProbe::Valid { target, .. },
-            work,
+            receipt,
         } => {
             assert_eq!(target.port(), ids.target_port);
-            assert_eq!(work.policy_evaluations, 1);
+            assert_eq!(receipt.work().policy_evaluations, 1);
         }
         other => panic!("published target port must be a valid candidate: {other:?}"),
     }
@@ -1342,9 +1357,9 @@ fn view_space_layout_uses_the_issued_transform_for_all_canvas_geometry() {
     {
         ConnectionProbeQueryOutcome::Complete {
             probe: ConnectionProbe::Invalid { diagnostics, .. },
-            work,
+            receipt,
         } => {
-            assert_eq!(work.policy_evaluations, 1);
+            assert_eq!(receipt.work().policy_evaluations, 1);
             assert!(
                 diagnostics
                     .iter()
@@ -1427,8 +1442,8 @@ fn view_space_layout_uses_the_issued_transform_for_all_canvas_geometry() {
         .edge_pick(EdgePickQuery::new(ViewPoint::new(440.0, 118.0), 0.0, 0))
         .unwrap()
     {
-        EdgePickQueryOutcome::Incomplete { cursor, work } => {
-            assert_eq!(work.entries_examined, 0);
+        EdgePickQueryOutcome::Incomplete { cursor, receipt } => {
+            assert_eq!(receipt.work().entries_examined, 0);
             cursor
         }
         other => panic!("zero-budget edge pick must be resumable: {other:?}"),
@@ -1447,12 +1462,12 @@ fn view_space_layout_uses_the_issued_transform_for_all_canvas_geometry() {
     {
         EdgePickQueryOutcome::Complete {
             pick: Some(pick),
-            work,
+            receipt,
         } => {
             assert_eq!(pick.edge(), ids.edge);
             assert_eq!(pick.distance_in_view(), 0.0);
-            assert_eq!(work.exact_tests, 1);
-            assert_eq!(work.flatten_cache_hits, 1);
+            assert_eq!(receipt.work().exact_tests, 1);
+            assert_eq!(receipt.work().flatten_cache_hits, 1);
         }
         other => panic!("published route must be edge-pickable: {other:?}"),
     }
@@ -2311,6 +2326,11 @@ fn culling_preserves_root_admission_but_withdraws_ports_and_routes() {
         ))
         .unwrap();
     assert!(culled.nodes().is_empty());
+    let culling_work = culled.materialization_receipt().geometry();
+    assert_eq!(culling_work.node_invalidations(), 2);
+    assert_eq!(culling_work.spatial_updates(), 0);
+    assert_eq!(culling_work.route_invalidations(), 1);
+    assert_eq!(culling_work.route_recomputations(), 1);
     let after_cull = session.geometry_snapshot().unwrap();
     assert_eq!(after_cull.layout_revision(), 2);
     assert!(after_cull.node(ids.source).unwrap().is_fresh());
@@ -2422,6 +2442,11 @@ fn renderer_replacement_withdraws_old_instance_ports_before_new_layout() {
         .unwrap();
 
     let replacement = session.frame(request(2)).unwrap();
+    let replacement_work = replacement.materialization_receipt().geometry();
+    assert_eq!(replacement_work.node_invalidations(), 3);
+    assert_eq!(replacement_work.spatial_updates(), 1);
+    assert_eq!(replacement_work.route_invalidations(), 1);
+    assert_eq!(replacement_work.route_recomputations(), 1);
     assert_eq!(layout_events.get(), 1);
     let geometry = session.geometry_snapshot().unwrap();
     assert!(geometry.node(ids.source).is_none());
@@ -2467,7 +2492,12 @@ fn renderer_replacement_withdraws_old_instance_ports_before_new_layout() {
         2
     );
     let revision = geometry.layout_revision();
-    session.frame(request(2)).unwrap();
+    let stable = session.frame(request(2)).unwrap();
+    let stable_work = stable.materialization_receipt().geometry();
+    assert_eq!(stable_work.node_invalidations(), 0);
+    assert_eq!(stable_work.spatial_updates(), 0);
+    assert_eq!(stable_work.route_invalidations(), 0);
+    assert_eq!(stable_work.route_recomputations(), 0);
     assert_eq!(layout_events.get(), 2);
     assert_eq!(
         session.geometry_snapshot().unwrap().layout_revision(),

@@ -395,6 +395,14 @@ impl IncidentSnapshotWork {
         self.entries_read = self.entries_read.saturating_add(snapshot.len() as u64);
         self.materializations = self.materializations.saturating_add(1);
     }
+
+    pub(crate) const fn entries_read(self) -> u64 {
+        self.entries_read
+    }
+
+    pub(crate) const fn materializations(self) -> u64 {
+        self.materializations
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -560,10 +568,6 @@ pub struct GraphRuntimeStats {
     pub connection_query_fact_reads: u64,
     pub connection_query_index_bucket_reads: u64,
     pub connection_query_index_entries_read: u64,
-    pub frame_incident_routing_index_bucket_reads: u64,
-    pub frame_incident_routing_index_entries_read: u64,
-    pub frame_incident_snapshot_entries_read: u64,
-    pub frame_incident_snapshot_materializations: u64,
     pub feedback_incident_snapshot_entries_read: u64,
     pub feedback_incident_snapshot_materializations: u64,
 }
@@ -1211,25 +1215,6 @@ impl RuntimeShared {
             .collect())
     }
 
-    pub(crate) fn record_frame_incident_snapshot_work(
-        &self,
-        work: IncidentSnapshotWork,
-    ) -> Result<(), GraphRuntimeError> {
-        let mut state = self
-            .state
-            .try_borrow_mut()
-            .map_err(|_| GraphRuntimeError::Busy)?;
-        state.stats.frame_incident_snapshot_entries_read = state
-            .stats
-            .frame_incident_snapshot_entries_read
-            .saturating_add(work.entries_read);
-        state.stats.frame_incident_snapshot_materializations = state
-            .stats
-            .frame_incident_snapshot_materializations
-            .saturating_add(work.materializations);
-        Ok(())
-    }
-
     pub(crate) fn record_feedback_incident_snapshot_work(
         &self,
         work: IncidentSnapshotWork,
@@ -1256,26 +1241,17 @@ impl RuntimeShared {
         node_limit: usize,
         scan_limit: usize,
     ) -> Result<IncidentNodeQuery, GraphRuntimeError> {
-        let mut state = self
+        let state = self
             .state
-            .try_borrow_mut()
+            .try_borrow()
             .map_err(|_| GraphRuntimeError::Busy)?;
-        let query = state.index.incident_nodes_for_nodes(
+        Ok(state.index.incident_nodes_for_nodes(
             &state.graph,
             nodes,
             excluded,
             node_limit,
             scan_limit,
-        );
-        state.stats.frame_incident_routing_index_bucket_reads = state
-            .stats
-            .frame_incident_routing_index_bucket_reads
-            .saturating_add(query.index_bucket_reads);
-        state.stats.frame_incident_routing_index_entries_read = state
-            .stats
-            .frame_incident_routing_index_entries_read
-            .saturating_add(query.index_entries_read);
-        Ok(query)
+        ))
     }
 
     pub(crate) fn history_state(&self) -> Result<HistoryState, GraphRuntimeError> {

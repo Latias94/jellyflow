@@ -165,7 +165,6 @@ pub struct OpenGpuiSceneHostStats {
     pub(super) eligible_lru_entries: usize,
     pub(super) strong_instances: usize,
     pub(super) strong_instance_high_water: usize,
-    pub(super) frame_materialization_overflows: u64,
     pub(super) edge_layer_plans: u64,
     pub(super) edge_route_list_reuses: u64,
     pub(super) edge_route_query_entries_examined: u64,
@@ -415,12 +414,6 @@ impl OpenGpuiSceneHostStats {
     #[must_use]
     pub fn strong_instance_high_water(self) -> usize {
         self.strong_instance_high_water
-    }
-
-    /// Number of rendered frames that exceeded at least one materialization budget.
-    #[must_use]
-    pub fn frame_materialization_overflows(self) -> u64 {
-        self.frame_materialization_overflows
     }
 
     /// Number of successful published edge-layer admission passes.
@@ -878,7 +871,9 @@ impl OpenGpuiSceneHost {
 
     /// Returns overflow evidence from the most recently materialized frame.
     #[must_use]
-    pub const fn last_frame_materialization_overflow(&self) -> FrameMaterializationOverflow {
+    pub const fn last_frame_materialization_overflow(
+        &self,
+    ) -> Option<FrameMaterializationOverflow> {
         self.last_frame_materialization_overflow
     }
 
@@ -978,12 +973,10 @@ impl OpenGpuiSceneHost {
         &mut self,
         overflow: FrameMaterializationOverflow,
     ) {
-        self.last_frame_materialization_overflow = overflow;
+        self.last_frame_materialization_overflow = Some(overflow);
         if overflow.is_empty() {
             return;
         }
-        self.stats.frame_materialization_overflows =
-            self.stats.frame_materialization_overflows.saturating_add(1);
         self.last_diagnostic = Some(OpenGpuiSceneHostDiagnostic {
             kind: OpenGpuiSceneHostDiagnosticKind::FrameMaterialization,
             instance: None,

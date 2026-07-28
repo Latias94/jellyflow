@@ -34,8 +34,8 @@ use crate::runtime::graph_runtime::{
     RuntimeFactKey, RuntimeId, RuntimePatch, RuntimePatchKind, RuntimeProvenance, RuntimeShared,
 };
 use crate::runtime::interaction::{
-    ConnectionGestureBinding, InteractionQueryId, NodeDragStart, SelectionBaseline, SelectionMode,
-    SelectionMutation,
+    AlignmentSnapWork, ConnectionGestureBinding, InteractionQueryId, NodeDragStart,
+    SelectionBaseline, SelectionMode, SelectionMutation,
 };
 use crate::runtime::unwind::{PanicCollector, PanicPayload, resume, suppress};
 use crate::runtime::viewport::{
@@ -203,14 +203,14 @@ impl InteractionQueryBinding {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct InteractionQueryReceiptCore {
+pub(crate) struct InteractionQueryProof {
     provenance: ViewProvenance,
     query: InteractionQueryId,
     viewport_revision: ViewportRevision,
     fact_generations: [u128; 4],
 }
 
-impl InteractionQueryReceiptCore {
+impl InteractionQueryProof {
     fn issue(
         binding: Option<InteractionQueryBinding>,
         identity: ViewQueryIdentity,
@@ -228,8 +228,12 @@ impl InteractionQueryReceiptCore {
         }))
     }
 
-    fn authenticates(self, binding: InteractionQueryBinding) -> bool {
+    pub(crate) fn authenticates(self, binding: InteractionQueryBinding) -> bool {
         self.provenance == binding.provenance && self.query == binding.query
+    }
+
+    pub(crate) const fn query_id(self) -> InteractionQueryId {
+        self.query
     }
 
     fn is_current(
@@ -245,49 +249,35 @@ impl InteractionQueryReceiptCore {
     }
 }
 
-macro_rules! interaction_query_receipt {
-    ($name:ident) => {
-        /// Opaque proof that one typed interaction query was executed by its bound view.
-        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-        pub struct $name(InteractionQueryReceiptCore);
-
-        impl $name {
-            fn issue(
-                binding: Option<InteractionQueryBinding>,
-                identity: ViewQueryIdentity,
-                fact_generations: [u128; 4],
-            ) -> Result<Option<Self>, ViewSessionError> {
-                InteractionQueryReceiptCore::issue(binding, identity, fact_generations)
-                    .map(|receipt| receipt.map(Self))
-            }
-
-            pub fn provenance(self) -> ViewProvenance {
-                self.0.provenance
-            }
-
-            pub fn query_id(self) -> InteractionQueryId {
-                self.0.query
-            }
-
-            pub fn viewport_revision(self) -> ViewportRevision {
-                self.0.viewport_revision
-            }
-
-            pub fn fact_generations(self) -> [u128; 4] {
-                self.0.fact_generations
-            }
-
-            pub(crate) fn authenticates(self, binding: InteractionQueryBinding) -> bool {
-                self.0.authenticates(binding)
-            }
-        }
-    };
+/// Bounded work evidence for one successfully executed query page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QueryPageReceipt<W> {
+    work: W,
+    interaction: Option<InteractionQueryProof>,
 }
 
-interaction_query_receipt!(EdgePickQueryReceipt);
-interaction_query_receipt!(ConnectionProbeQueryReceipt);
-interaction_query_receipt!(NodeIntersectionQueryReceipt);
-interaction_query_receipt!(AlignmentSnapQueryReceipt);
+impl<W> QueryPageReceipt<W> {
+    pub(crate) const fn new(work: W, interaction: Option<InteractionQueryProof>) -> Self {
+        Self { work, interaction }
+    }
+
+    pub fn work(&self) -> &W {
+        &self.work
+    }
+
+    pub fn into_work(self) -> W {
+        self.work
+    }
+
+    pub(crate) const fn interaction_proof(&self) -> Option<InteractionQueryProof> {
+        self.interaction
+    }
+}
+
+pub type EdgePickQueryReceipt = QueryPageReceipt<EdgePickWork>;
+pub type ConnectionProbeQueryReceipt = QueryPageReceipt<ConnectionProbeWork>;
+pub type NodeIntersectionQueryReceipt = QueryPageReceipt<NodeIntersectionWork>;
+pub type AlignmentSnapQueryReceipt = QueryPageReceipt<AlignmentSnapWork>;
 
 #[derive(Debug, Clone, Default)]
 pub struct ViewSessionOptions {
@@ -527,19 +517,6 @@ pub struct ViewSessionStats {
     pub layout_impact_candidates_checked: u64,
     pub layout_impact_candidates_stale: u64,
     pub port_index_updates: u64,
-    pub port_query_cells_examined: u64,
-    pub port_query_entries_examined: u64,
-    pub port_query_exact_tests: u64,
-    pub port_query_incomplete: u64,
-    pub port_query_budget_exhausted: u64,
-    pub connection_probe_policy_evaluations: u64,
-    pub edge_pick_cells_examined: u64,
-    pub edge_pick_entries_examined: u64,
-    pub edge_pick_exact_tests: u64,
-    pub edge_pick_candidates_matched: u64,
-    pub edge_pick_incomplete: u64,
-    pub edge_pick_budget_exhausted: u64,
-    pub edge_pick_geometry_indeterminate: u64,
     pub route_invalidations: u64,
     pub route_recomputations: u64,
     pub route_index_updates: u64,
@@ -559,18 +536,8 @@ pub struct ViewSessionStats {
     pub edge_selection_membership_rebuilds: u64,
     /// Selected edges inserted across authoritative membership rebuilds.
     pub edge_selection_membership_entries_rebuilt: u64,
-    pub frame_nodes_materialized: u64,
-    /// Admitted node candidates ranked with one cached selection-membership lookup each.
-    pub frame_order_candidates_ranked: u64,
-    /// Cached selection-membership lookups performed for admitted frame candidates.
-    pub frame_selection_membership_lookups: u64,
-    /// Nodes visited while rebuilding or incrementally patching the provisional admission index.
+    /// Nodes visited while incrementally patching the provisional admission index.
     pub admission_nodes_visited: u64,
-    /// Spatial cells examined by provisional-admission and published-layout frame queries.
-    pub admission_query_cells_examined: u64,
-    /// Raw index entries examined by frame queries before candidate de-duplication.
-    pub admission_query_entries_examined: u64,
-    pub admission_index_rebuilds: u64,
     pub geometry_snapshot_builds: u64,
     pub geometry_snapshot_fact_updates: u64,
     pub layout_publications: u64,
@@ -582,7 +549,6 @@ struct ViewControlStats {
     runtime_patches: u64,
     fact_records_visited: u64,
     node_binding_notifications: u64,
-    connection_probe_policy_evaluations: u64,
     view_state_sanitizations: u64,
     edge_selection_membership_rebuilds: u64,
     edge_selection_membership_entries_rebuilt: u64,
@@ -598,18 +564,6 @@ struct DerivedGeometryStats {
     layout_impact_candidates_checked: u64,
     layout_impact_candidates_stale: u64,
     port_index_updates: u64,
-    port_query_cells_examined: u64,
-    port_query_entries_examined: u64,
-    port_query_exact_tests: u64,
-    port_query_incomplete: u64,
-    port_query_budget_exhausted: u64,
-    edge_pick_cells_examined: u64,
-    edge_pick_entries_examined: u64,
-    edge_pick_exact_tests: u64,
-    edge_pick_candidates_matched: u64,
-    edge_pick_incomplete: u64,
-    edge_pick_budget_exhausted: u64,
-    edge_pick_geometry_indeterminate: u64,
     route_invalidations: u64,
     route_recomputations: u64,
     route_index_updates: u64,
@@ -624,13 +578,7 @@ struct DerivedGeometryStats {
     route_flatten_cache_invalidations: u64,
     route_flatten_segments_built: u64,
     route_flatten_overflows: u64,
-    frame_nodes_materialized: u64,
-    frame_order_candidates_ranked: u64,
-    frame_selection_membership_lookups: u64,
     admission_nodes_visited: u64,
-    admission_query_cells_examined: u64,
-    admission_query_entries_examined: u64,
-    admission_index_rebuilds: u64,
     geometry_snapshot_builds: u64,
     geometry_snapshot_fact_updates: u64,
     layout_publications: u64,
@@ -694,19 +642,6 @@ impl ViewState {
             layout_impact_candidates_checked: derived.layout_impact_candidates_checked,
             layout_impact_candidates_stale: derived.layout_impact_candidates_stale,
             port_index_updates: derived.port_index_updates,
-            port_query_cells_examined: derived.port_query_cells_examined,
-            port_query_entries_examined: derived.port_query_entries_examined,
-            port_query_exact_tests: derived.port_query_exact_tests,
-            port_query_incomplete: derived.port_query_incomplete,
-            port_query_budget_exhausted: derived.port_query_budget_exhausted,
-            connection_probe_policy_evaluations: control.connection_probe_policy_evaluations,
-            edge_pick_cells_examined: derived.edge_pick_cells_examined,
-            edge_pick_entries_examined: derived.edge_pick_entries_examined,
-            edge_pick_exact_tests: derived.edge_pick_exact_tests,
-            edge_pick_candidates_matched: derived.edge_pick_candidates_matched,
-            edge_pick_incomplete: derived.edge_pick_incomplete,
-            edge_pick_budget_exhausted: derived.edge_pick_budget_exhausted,
-            edge_pick_geometry_indeterminate: derived.edge_pick_geometry_indeterminate,
             route_invalidations: derived.route_invalidations,
             route_recomputations: derived.route_recomputations,
             route_index_updates: derived.route_index_updates,
@@ -725,13 +660,7 @@ impl ViewState {
             edge_selection_membership_rebuilds: control.edge_selection_membership_rebuilds,
             edge_selection_membership_entries_rebuilt: control
                 .edge_selection_membership_entries_rebuilt,
-            frame_nodes_materialized: derived.frame_nodes_materialized,
-            frame_order_candidates_ranked: derived.frame_order_candidates_ranked,
-            frame_selection_membership_lookups: derived.frame_selection_membership_lookups,
             admission_nodes_visited: derived.admission_nodes_visited,
-            admission_query_cells_examined: derived.admission_query_cells_examined,
-            admission_query_entries_examined: derived.admission_query_entries_examined,
-            admission_index_rebuilds: derived.admission_index_rebuilds,
             geometry_snapshot_builds: derived.geometry_snapshot_builds,
             geometry_snapshot_fact_updates: derived.geometry_snapshot_fact_updates,
             layout_publications: derived.layout_publications,
@@ -1453,10 +1382,13 @@ impl WeakViewSession {
             .map_err(|_| ViewSessionError::Busy)?;
         ensure_open(state.status)?;
         let (path_epoch, pick_epoch) = state.derived.edge_pick_epochs();
-        receipt.0.is_current(
-            state.query_identity(),
-            [path_epoch, pick_epoch, state.interaction_order_revision, 0],
-        )
+        receipt
+            .interaction_proof()
+            .ok_or(ViewSessionError::ForeignInteractionFacts)?
+            .is_current(
+                state.query_identity(),
+                [path_epoch, pick_epoch, state.interaction_order_revision, 0],
+            )
     }
 
     pub(crate) fn connection_probe_receipt_stale_reason(
@@ -1471,15 +1403,17 @@ impl WeakViewSession {
             .map_err(|_| ViewSessionError::Busy)?;
         ensure_open(state.status)?;
         let identity = state.query_identity();
-        let provenance = receipt.provenance();
-        let reason = if provenance.view() != identity.view {
+        let proof = receipt
+            .interaction_proof()
+            .ok_or(ViewSessionError::ForeignInteractionFacts)?;
+        let reason = if proof.provenance.view() != identity.view {
             Some(ConnectionProbeCursorStaleReason::ForeignView)
-        } else if provenance.generation() != identity.generation {
+        } else if proof.provenance.generation() != identity.generation {
             Some(ConnectionProbeCursorStaleReason::ViewGeneration)
-        } else if receipt.viewport_revision() != identity.viewport_revision {
+        } else if proof.viewport_revision != identity.viewport_revision {
             Some(ConnectionProbeCursorStaleReason::ViewportTransform)
         } else {
-            let facts = receipt.fact_generations();
+            let facts = proof.fact_generations;
             (facts[0] != u128::from(graph.revision()))
                 .then_some(ConnectionProbeCursorStaleReason::GraphRevision)
                 .or_else(|| {
@@ -1504,10 +1438,13 @@ impl WeakViewSession {
             .try_borrow()
             .map_err(|_| ViewSessionError::Busy)?;
         ensure_open(state.status)?;
-        receipt.0.is_current(
-            state.query_identity(),
-            [state.derived.node_spatial_index_epoch(), 0, 0, 0],
-        )
+        receipt
+            .interaction_proof()
+            .ok_or(ViewSessionError::ForeignInteractionFacts)?
+            .is_current(
+                state.query_identity(),
+                [state.derived.node_spatial_index_epoch(), 0, 0, 0],
+            )
     }
 
     pub(crate) fn alignment_snap_receipt_is_current(
@@ -1521,15 +1458,18 @@ impl WeakViewSession {
             .try_borrow()
             .map_err(|_| ViewSessionError::Busy)?;
         ensure_open(state.status)?;
-        receipt.0.is_current(
-            state.query_identity(),
-            [
-                state.derived.node_spatial_index_epoch(),
-                state.interaction_order_revision,
-                u128::from(graph.revision()),
-                0,
-            ],
-        )
+        receipt
+            .interaction_proof()
+            .ok_or(ViewSessionError::ForeignInteractionFacts)?
+            .is_current(
+                state.query_identity(),
+                [
+                    state.derived.node_spatial_index_epoch(),
+                    state.interaction_order_revision,
+                    u128::from(graph.revision()),
+                    0,
+                ],
+            )
     }
 
     /// Returns the exact live view generation represented by this weak capability.

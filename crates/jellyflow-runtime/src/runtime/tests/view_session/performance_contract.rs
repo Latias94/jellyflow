@@ -60,8 +60,8 @@ fn node_intersection_query_never_publishes_a_partial_result() {
         .nodes_intersecting(NodeIntersectionQuery::new(bounds, 1))
         .unwrap()
     {
-        NodeIntersectionQueryOutcome::Incomplete { cursor, work } => {
-            assert_eq!(work.entries_examined, 1);
+        NodeIntersectionQueryOutcome::Incomplete { cursor, receipt } => {
+            assert_eq!(receipt.work().entries_examined, 1);
             cursor
         }
         other => panic!("a one-entry page must not expose partial membership: {other:?}"),
@@ -73,10 +73,10 @@ fn node_intersection_query_never_publishes_a_partial_result() {
     {
         NodeIntersectionQueryOutcome::Complete {
             nodes: intersecting,
-            work,
+            receipt,
         } => {
             assert_eq!(intersecting, nodes);
-            assert!(work.entries_examined >= 3);
+            assert!(receipt.work().entries_examined >= 3);
         }
         other => panic!("the resumed query must publish one complete membership: {other:?}"),
     }
@@ -117,6 +117,9 @@ fn marquee_interaction_publishes_only_after_all_query_pages_complete() {
 
     let mut update = interaction.move_to(end).unwrap();
     let mut pages = 0_u64;
+    let mut cells_examined = 0_u64;
+    let mut entries_examined = 0_u64;
+    let mut exact_tests = 0_u64;
     loop {
         assert!(update.effects().is_empty());
         assert!(update.query_work_pending());
@@ -126,10 +129,13 @@ fn marquee_interaction_publishes_only_after_all_query_pages_complete() {
         assert!(terminal_error.is_none());
         assert_eq!(receipt.pages_granted(), 1);
         assert_eq!(receipt.pages_attempted(), 1);
-        assert!(matches!(
-            receipt.page_receipts(),
-            [CanvasInteractionQueryPageReceipt::NodeIntersection(_)]
-        ));
+        let [CanvasInteractionQueryPageReceipt::NodeIntersection(page)] = receipt.page_receipts()
+        else {
+            panic!("marquee advancement must receipt one node-intersection page");
+        };
+        cells_examined = cells_examined.saturating_add(page.work().cells_examined);
+        entries_examined = entries_examined.saturating_add(page.work().entries_examined);
+        exact_tests = exact_tests.saturating_add(page.work().exact_tests);
         pages += 1;
         update = next_update;
         assert_eq!(needs_tick, interaction.query_work_pending());
@@ -148,6 +154,9 @@ fn marquee_interaction_publishes_only_after_all_query_pages_complete() {
         break;
     }
     assert!(pages > 1);
+    assert!(cells_examined > 0);
+    assert!(entries_examined >= exact_tests);
+    assert!(exact_tests >= u64::try_from(nodes.len()).unwrap());
 }
 
 #[test]
@@ -210,8 +219,8 @@ fn degenerate_node_intersection_bounds_complete_with_empty_membership() {
                 },
                 1,
             )),
-            Ok(NodeIntersectionQueryOutcome::Complete { nodes, work })
-                if nodes.is_empty() && work == Default::default()
+            Ok(NodeIntersectionQueryOutcome::Complete { nodes, receipt })
+                if nodes.is_empty() && receipt.work() == &Default::default()
         ));
     }
 }
@@ -275,7 +284,6 @@ fn opt_in_incident_routing_dependencies_materialize_the_other_edge_endpoint() {
         "incident dependency derivation remains opt-in by default",
     );
 
-    let before_incident_query = runtime.stats().unwrap();
     let incident_frame = session
         .frame(
             FrameRequest::new(viewport, RendererStamp::new("test.node", 1))
@@ -290,17 +298,9 @@ fn opt_in_incident_routing_dependencies_materialize_the_other_edge_endpoint() {
     assert_eq!(materialized, BTreeSet::from([ids.source, ids.target]));
     assert!(!materialized.contains(&ids.alternate_source));
     assert!(!materialized.contains(&unrelated_target));
-    let after_incident_query = runtime.stats().unwrap();
-    assert_eq!(
-        after_incident_query.frame_incident_routing_index_bucket_reads
-            - before_incident_query.frame_incident_routing_index_bucket_reads,
-        1,
-    );
-    assert_eq!(
-        after_incident_query.frame_incident_routing_index_entries_read
-            - before_incident_query.frame_incident_routing_index_entries_read,
-        1,
-    );
+    let receipt = incident_frame.materialization_receipt();
+    assert_eq!(receipt.incident_routing().index_bucket_reads(), 1);
+    assert_eq!(receipt.incident_routing().index_entries_read(), 1);
 }
 
 #[test]
@@ -318,8 +318,6 @@ fn incident_routing_ignores_broad_phase_candidates_that_fail_exact_admission() {
         },
     };
     publish_node_layouts(&session, [(ids.source, viewport)]);
-    let before = runtime.stats().unwrap();
-
     let frame = session
         .frame(
             FrameRequest::new(viewport, RendererStamp::new("test.node", 1))
@@ -328,17 +326,9 @@ fn incident_routing_ignores_broad_phase_candidates_that_fail_exact_admission() {
         .unwrap();
 
     assert!(frame.nodes().is_empty());
-    let after = runtime.stats().unwrap();
-    assert_eq!(
-        after.frame_incident_routing_index_bucket_reads
-            - before.frame_incident_routing_index_bucket_reads,
-        0,
-    );
-    assert_eq!(
-        after.frame_incident_routing_index_entries_read
-            - before.frame_incident_routing_index_entries_read,
-        0,
-    );
+    let receipt = frame.materialization_receipt();
+    assert_eq!(receipt.incident_routing().index_bucket_reads(), 0);
+    assert_eq!(receipt.incident_routing().index_entries_read(), 0);
 }
 
 #[test]
@@ -363,11 +353,10 @@ fn high_fanout_incident_routing_has_bounded_scan_and_materialization() {
         .with_incident_routing_dependencies()
     };
 
-    let before = runtime.stats().unwrap();
     let first = session.frame(request()).unwrap();
-    let after_first = runtime.stats().unwrap();
     let first_ids = first.nodes().iter().map(FrameNode::id).collect::<Vec<_>>();
-    let overflow = first.materialization_overflow();
+    let overflow = first.materialization_receipt().overflow();
+    let first_receipt = first.materialization_receipt();
 
     assert_eq!(first_ids.first(), Some(&hub));
     assert_eq!(first_ids.len(), DEFAULT_FRAME_ROUTING_DEPENDENCY_BUDGET + 1,);
@@ -375,28 +364,29 @@ fn high_fanout_incident_routing_has_bounded_scan_and_materialization() {
     assert_eq!(overflow.required_nodes(), 0);
     assert_eq!(overflow.routing_dependency_nodes(), 0);
     assert!(overflow.incident_scan_truncated());
+    assert_eq!(first_receipt.incident_routing().index_bucket_reads(), 1);
     assert_eq!(
-        after_first.frame_incident_routing_index_bucket_reads
-            - before.frame_incident_routing_index_bucket_reads,
-        1,
-    );
-    assert_eq!(
-        after_first.frame_incident_routing_index_entries_read
-            - before.frame_incident_routing_index_entries_read,
+        first_receipt.incident_routing().index_entries_read(),
         DEFAULT_FRAME_ROUTING_DEPENDENCY_BUDGET as u64,
     );
 
     let second = session.frame(request()).unwrap();
-    let after_second = runtime.stats().unwrap();
     assert_eq!(
         second.nodes().iter().map(FrameNode::id).collect::<Vec<_>>(),
         first_ids,
         "the same stable draw/ID prefix must win every frame",
     );
-    assert!(second.materialization_overflow().incident_scan_truncated(),);
+    assert!(
+        second
+            .materialization_receipt()
+            .overflow()
+            .incident_scan_truncated(),
+    );
     assert_eq!(
-        after_second.frame_incident_routing_index_entries_read
-            - after_first.frame_incident_routing_index_entries_read,
+        second
+            .materialization_receipt()
+            .incident_routing()
+            .index_entries_read(),
         DEFAULT_FRAME_ROUTING_DEPENDENCY_BUDGET as u64,
     );
 }
@@ -425,6 +415,7 @@ fn high_fanout_equal_frame_feedback_reuses_incident_snapshot_handles() {
 
     let before_initial = runtime.stats().unwrap();
     let initial = session.frame(request()).unwrap();
+    let initial_materialization = initial.materialization_receipt();
     let initial_hub = initial
         .nodes()
         .iter()
@@ -437,13 +428,13 @@ fn high_fanout_equal_frame_feedback_reuses_incident_snapshot_handles() {
         .unwrap();
     let after_initial = runtime.stats().unwrap();
     assert_eq!(
-        after_initial.frame_incident_snapshot_entries_read
-            - before_initial.frame_incident_snapshot_entries_read,
+        initial_materialization.incident_snapshot().entries_read(),
         0
     );
     assert_eq!(
-        after_initial.frame_incident_snapshot_materializations
-            - before_initial.frame_incident_snapshot_materializations,
+        initial_materialization
+            .incident_snapshot()
+            .materializations(),
         0
     );
     assert_eq!(
@@ -458,19 +449,11 @@ fn high_fanout_equal_frame_feedback_reuses_incident_snapshot_handles() {
     );
 
     for _ in 0..3 {
-        let before_frame = runtime.stats().unwrap();
         let frame = session.frame(request()).unwrap();
         let after_frame = runtime.stats().unwrap();
-        assert_eq!(
-            after_frame.frame_incident_snapshot_entries_read
-                - before_frame.frame_incident_snapshot_entries_read,
-            0
-        );
-        assert_eq!(
-            after_frame.frame_incident_snapshot_materializations
-                - before_frame.frame_incident_snapshot_materializations,
-            0
-        );
+        let materialization = frame.materialization_receipt();
+        assert_eq!(materialization.incident_snapshot().entries_read(), 0);
+        assert_eq!(materialization.incident_snapshot().materializations(), 0);
 
         let hub_node = frame.nodes().iter().find(|node| node.id() == hub).unwrap();
         let collector = frame.collector();
@@ -492,7 +475,6 @@ fn high_fanout_equal_frame_feedback_reuses_incident_snapshot_handles() {
         );
     }
 
-    let before_replacement = runtime.stats().unwrap();
     let replacement = session
         .frame(FrameRequest::new(
             CanvasRect {
@@ -505,15 +487,18 @@ fn high_fanout_equal_frame_feedback_reuses_incident_snapshot_handles() {
             RendererStamp::new("star.node", 2),
         ))
         .unwrap();
-    let after_replacement_frame = runtime.stats().unwrap();
     assert_eq!(
-        after_replacement_frame.frame_incident_snapshot_entries_read
-            - before_replacement.frame_incident_snapshot_entries_read,
+        replacement
+            .materialization_receipt()
+            .incident_snapshot()
+            .entries_read(),
         EDGE_COUNT
     );
     assert_eq!(
-        after_replacement_frame.frame_incident_snapshot_materializations
-            - before_replacement.frame_incident_snapshot_materializations,
+        replacement
+            .materialization_receipt()
+            .incident_snapshot()
+            .materializations(),
         1
     );
     let replacement_hub = replacement
@@ -529,7 +514,6 @@ fn high_fanout_equal_frame_feedback_reuses_incident_snapshot_handles() {
         .submit_feedback(collector.finish().unwrap())
         .unwrap();
 
-    let before_culling = runtime.stats().unwrap();
     let culled = session
         .frame(FrameRequest::new(
             CanvasRect {
@@ -546,15 +530,18 @@ fn high_fanout_equal_frame_feedback_reuses_incident_snapshot_handles() {
         ))
         .unwrap();
     assert!(culled.nodes().is_empty());
-    let after_culling = runtime.stats().unwrap();
     assert_eq!(
-        after_culling.frame_incident_snapshot_entries_read
-            - before_culling.frame_incident_snapshot_entries_read,
+        culled
+            .materialization_receipt()
+            .incident_snapshot()
+            .entries_read(),
         EDGE_COUNT
     );
     assert_eq!(
-        after_culling.frame_incident_snapshot_materializations
-            - before_culling.frame_incident_snapshot_materializations,
+        culled
+            .materialization_receipt()
+            .incident_snapshot()
+            .materializations(),
         1
     );
 }
@@ -748,7 +735,7 @@ fn frame_budget_reports_visible_required_and_explicit_routing_overflow_separatel
             .with_routing_dependencies(nodes[15..20].iter().copied()),
         )
         .unwrap();
-    let overflow = frame.materialization_overflow();
+    let overflow = frame.materialization_receipt().overflow();
 
     assert_eq!(FrameMaterializationBudget::default().required_nodes(), 64);
     assert_eq!(DEFAULT_FRAME_REQUIRED_NODE_BUDGET, 64);
@@ -759,7 +746,21 @@ fn frame_budget_reports_visible_required_and_explicit_routing_overflow_separatel
     assert!(!overflow.visible_scan_truncated());
     assert!(!overflow.incident_scan_truncated());
     assert!(!overflow.is_empty());
-    assert_eq!(session.stats().unwrap().frame_nodes_materialized, 7);
+    assert_eq!(
+        frame
+            .materialization_receipt()
+            .admission()
+            .nodes_materialized(),
+        7
+    );
+    assert_eq!(
+        frame
+            .materialization_receipt()
+            .admission()
+            .order_candidates_ranked(),
+        47,
+        "overflow ranking includes 30 visible, 5 required, 5 routing, and 7 final candidates",
+    );
 }
 
 #[test]
@@ -791,32 +792,36 @@ fn oversized_all_visible_frames_bound_spatial_and_candidate_work() {
         )
     };
 
-    let before = session.stats().unwrap();
     let mut stable_ids = None;
     for _ in 0..FRAME_COUNT {
         let frame = session.frame(request()).unwrap();
+        let receipt = frame.materialization_receipt();
         let ids = frame.nodes().iter().map(FrameNode::id).collect::<Vec<_>>();
         assert_eq!(ids.len(), VISIBLE_LIMIT);
-        assert_eq!(frame.materialization_overflow().visible_nodes(), 32);
-        assert!(frame.materialization_overflow().visible_scan_truncated());
+        assert_eq!(
+            frame.materialization_receipt().overflow().visible_nodes(),
+            32
+        );
+        assert!(
+            frame
+                .materialization_receipt()
+                .overflow()
+                .visible_scan_truncated()
+        );
         if let Some(stable_ids) = &stable_ids {
             assert_eq!(&ids, stable_ids, "bounded admission must be deterministic");
         } else {
             stable_ids = Some(ids);
         }
+        assert!(
+            receipt.admission().query_entries_examined() <= EXPECTED_SCAN_LIMIT as u64,
+            "the visible-node budget must bound each raw spatial admission scan",
+        );
+        assert!(
+            receipt.admission().selection_membership_lookups() <= EXPECTED_SCAN_LIMIT as u64,
+            "candidate construction must remain bounded before ordering and truncation",
+        );
     }
-    let after = session.stats().unwrap();
-
-    assert!(
-        after.admission_query_entries_examined - before.admission_query_entries_examined
-            <= FRAME_COUNT as u64 * EXPECTED_SCAN_LIMIT as u64,
-        "the visible-node budget must bound raw spatial admission scans",
-    );
-    assert!(
-        after.frame_selection_membership_lookups - before.frame_selection_membership_lookups
-            <= FRAME_COUNT as u64 * EXPECTED_SCAN_LIMIT as u64,
-        "candidate construction must remain bounded before ordering and truncation",
-    );
 }
 
 #[test]
@@ -1235,6 +1240,7 @@ fn equal_layout_feedback_does_not_churn_layout_revision_or_spatial_work() {
         ))
         .unwrap();
     let materialized = frame.nodes().len();
+    let initial_materialization = frame.materialization_receipt();
     assert!(materialized < 100);
     let frame_node = frame
         .nodes()
@@ -1267,7 +1273,10 @@ fn equal_layout_feedback_does_not_churn_layout_revision_or_spatial_work() {
         assert_eq!(session.geometry_snapshot().unwrap().layout_revision(), 1);
     }
     let after_first = session.stats().unwrap();
-    assert_eq!(after_first.frame_nodes_materialized, materialized as u64);
+    assert_eq!(
+        initial_materialization.admission().nodes_materialized(),
+        materialized as u64
+    );
     assert_eq!(after_first.geometry_snapshot_builds, 1);
 
     for index in 0..120 {
@@ -1352,19 +1361,21 @@ fn frame_materializes_only_visible_overscan_and_explicit_routing_dependencies() 
             snapshot.graph().node(&record.id()).unwrap(),
         ));
     }
-    let stats = session.stats().unwrap();
-    assert_eq!(stats.frame_nodes_materialized, frame.nodes().len() as u64);
+    let receipt = frame.materialization_receipt();
     assert_eq!(
-        stats.frame_order_candidates_ranked,
+        receipt.admission().nodes_materialized(),
+        frame.nodes().len() as u64
+    );
+    assert_eq!(
+        receipt.admission().order_candidates_ranked(),
         frame.nodes().len() as u64,
         "paint ordering must visit only the admitted candidate subset",
     );
-    assert_eq!(stats.admission_index_rebuilds, 1);
-    assert!(stats.admission_nodes_visited >= 10_000);
-    assert!(stats.admission_query_cells_examined > 0);
-    assert!(stats.admission_query_entries_examined < 100);
+    assert!(receipt.admission().index_rebuilt());
+    assert!(receipt.admission().nodes_visited() >= 10_000);
+    assert!(receipt.admission().query_cells_examined() > 0);
+    assert!(receipt.admission().query_entries_examined() < 100);
 
-    let before_sweep = stats;
     for step in 0..120 {
         let frame = session
             .frame(FrameRequest::new(
@@ -1382,27 +1393,17 @@ fn frame_materializes_only_visible_overscan_and_explicit_routing_dependencies() 
             ))
             .unwrap();
         assert!(frame.nodes().len() < 100);
+        let receipt = frame.materialization_receipt();
+        assert!(!receipt.admission().index_rebuilt());
+        assert_eq!(receipt.admission().nodes_visited(), 0);
+        assert_eq!(
+            receipt.admission().order_candidates_ranked(),
+            receipt.admission().nodes_materialized(),
+            "each steady-state frame ranks exactly the nodes it materializes",
+        );
+        assert!(receipt.admission().query_cells_examined() <= 8);
+        assert!(receipt.admission().query_entries_examined() < 100);
     }
-    let after_sweep = session.stats().unwrap();
-    assert_eq!(after_sweep.admission_index_rebuilds, 1);
-    assert_eq!(
-        after_sweep.admission_nodes_visited,
-        before_sweep.admission_nodes_visited
-    );
-    assert_eq!(
-        after_sweep.frame_order_candidates_ranked - before_sweep.frame_order_candidates_ranked,
-        after_sweep.frame_nodes_materialized - before_sweep.frame_nodes_materialized,
-        "each steady-state frame ranks exactly the nodes it materializes",
-    );
-    assert!(
-        after_sweep.admission_query_cells_examined - before_sweep.admission_query_cells_examined
-            <= 120 * 8
-    );
-    assert!(
-        after_sweep.admission_query_entries_examined
-            - before_sweep.admission_query_entries_examined
-            < 120 * 100
-    );
 }
 
 #[test]
@@ -1441,35 +1442,33 @@ fn frame_order_ranks_only_admitted_candidates_with_a_large_selection() {
         session.export_seed().unwrap().selection().nodes().len(),
         10_000
     );
-    let before = session.stats().unwrap();
+    let first_receipt = first.materialization_receipt();
     assert_eq!(
-        before.frame_order_candidates_ranked,
+        first_receipt.admission().order_candidates_ranked(),
         first.nodes().len() as u64
     );
     assert_eq!(
-        before.frame_selection_membership_lookups,
+        first_receipt.admission().selection_membership_lookups(),
         first.nodes().len() as u64,
         "selection membership is read exactly once for each admitted candidate",
     );
 
     for _ in 0..20 {
-        assert!(session.frame(request()).unwrap().nodes().len() < 100);
+        let frame = session.frame(request()).unwrap();
+        assert!(frame.nodes().len() < 100);
+        let receipt = frame.materialization_receipt();
+        assert_eq!(
+            receipt.admission().order_candidates_ranked(),
+            receipt.admission().nodes_materialized(),
+            "large selection membership must be cached; steady-state order work follows admitted nodes",
+        );
+        assert_eq!(
+            receipt.admission().selection_membership_lookups(),
+            receipt.admission().nodes_materialized(),
+            "frame-local selection facts must not scan the complete graph or selection",
+        );
+        assert_eq!(receipt.admission().nodes_visited(), 0);
     }
-    let after = session.stats().unwrap();
-    assert_eq!(
-        after.frame_order_candidates_ranked - before.frame_order_candidates_ranked,
-        after.frame_nodes_materialized - before.frame_nodes_materialized,
-        "large selection membership must be cached; steady-state order work follows admitted nodes",
-    );
-    assert_eq!(
-        after.frame_selection_membership_lookups - before.frame_selection_membership_lookups,
-        after.frame_nodes_materialized - before.frame_nodes_materialized,
-        "frame-local selection facts must not scan the complete graph or selection",
-    );
-    assert_eq!(
-        after.admission_nodes_visited,
-        before.admission_nodes_visited
-    );
 }
 
 #[test]
@@ -1701,7 +1700,7 @@ fn one_port_remove_and_restore_in_ten_thousand_ports_has_bounded_identity_copy_w
 }
 
 #[test]
-fn admission_query_stats_count_index_entries_before_node_deduplication() {
+fn frame_materialization_receipt_counts_index_entries_before_node_deduplication() {
     let node_id = NodeId::from_u128(1);
     let mut large_node = node("test.node", 0.0);
     large_node.size = Some(CanvasSize {
@@ -1727,12 +1726,12 @@ fn admission_query_stats_count_index_entries_before_node_deduplication() {
             RendererStamp::new("test.node", 1),
         ))
         .unwrap();
-    let stats = session.stats().unwrap();
+    let receipt = frame.materialization_receipt();
 
     assert_eq!(frame.nodes().len(), 1);
-    assert_eq!(stats.admission_nodes_visited, 1);
-    assert_eq!(stats.admission_query_cells_examined, 8);
-    assert_eq!(stats.admission_query_entries_examined, 4);
+    assert_eq!(receipt.admission().nodes_visited(), 1);
+    assert_eq!(receipt.admission().query_cells_examined(), 8);
+    assert_eq!(receipt.admission().query_entries_examined(), 4);
 
     let collector = frame.collector();
     collector
@@ -1752,8 +1751,6 @@ fn admission_query_stats_count_index_entries_before_node_deduplication() {
     session
         .submit_feedback(collector.finish().unwrap())
         .unwrap();
-    let before_union_query = session.stats().unwrap();
-
     let next_frame = session
         .frame(FrameRequest::new(
             CanvasRect {
@@ -1766,19 +1763,11 @@ fn admission_query_stats_count_index_entries_before_node_deduplication() {
             RendererStamp::new("test.node", 1),
         ))
         .unwrap();
-    let after_union_query = session.stats().unwrap();
+    let receipt = next_frame.materialization_receipt();
 
     assert_eq!(next_frame.nodes().len(), 1);
-    assert_eq!(
-        after_union_query.admission_query_cells_examined
-            - before_union_query.admission_query_cells_examined,
-        8
-    );
-    assert_eq!(
-        after_union_query.admission_query_entries_examined
-            - before_union_query.admission_query_entries_examined,
-        8
-    );
+    assert_eq!(receipt.admission().query_cells_examined(), 8);
+    assert_eq!(receipt.admission().query_entries_examined(), 8);
 }
 
 #[test]
@@ -1801,11 +1790,14 @@ fn oversized_viewport_query_reports_linear_index_fallback_cost() {
             RendererStamp::new("test.node", 1),
         ))
         .unwrap();
-    let stats = session.stats().unwrap();
+    let receipt = frame.materialization_receipt();
 
     assert_eq!(frame.nodes().len(), nodes.len());
-    assert_eq!(stats.admission_query_cells_examined, 0);
-    assert_eq!(stats.admission_query_entries_examined, nodes.len() as u64);
+    assert_eq!(receipt.admission().query_cells_examined(), 0);
+    assert_eq!(
+        receipt.admission().query_entries_examined(),
+        nodes.len() as u64
+    );
 }
 
 #[test]
@@ -1838,11 +1830,11 @@ fn oversized_node_remains_admitted_through_the_overflow_index() {
             RendererStamp::new("test.node", 1),
         ))
         .unwrap();
-    let stats = session.stats().unwrap();
+    let receipt = frame.materialization_receipt();
 
     assert_eq!(frame.nodes().len(), 1);
     assert_eq!(frame.nodes()[0].id(), node_id);
-    assert_eq!(stats.admission_query_entries_examined, 1);
+    assert_eq!(receipt.admission().query_entries_examined(), 1);
 }
 
 #[test]
@@ -1866,9 +1858,14 @@ fn admission_index_applies_graph_patches_without_a_full_rebuild() {
     };
     let initial = session.frame(request_at(0.0)).unwrap();
     assert!(initial.nodes().iter().any(|node| node.id() == nodes[0]));
-    let before = session.stats().unwrap();
-    assert_eq!(before.admission_index_rebuilds, 1);
+    assert!(
+        initial
+            .materialization_receipt()
+            .admission()
+            .index_rebuilt()
+    );
 
+    let before_patch = session.stats().unwrap();
     session
         .execute(GraphCommand::set_node_position(
             session.graph_snapshot().unwrap().version(),
@@ -1881,19 +1878,19 @@ fn admission_index_applies_graph_patches_without_a_full_rebuild() {
         .unwrap()
         .into_result()
         .unwrap();
+    let after_patch = session.stats().unwrap();
+    assert_eq!(
+        after_patch.admission_nodes_visited - before_patch.admission_nodes_visited,
+        1,
+        "incremental patch reconciliation must visit only the changed admission node",
+    );
 
     let moved = session.frame(request_at(499_980.0)).unwrap();
     assert!(moved.nodes().iter().any(|node| node.id() == nodes[0]));
-    let after = session.stats().unwrap();
-    assert_eq!(
-        after.admission_index_rebuilds,
-        before.admission_index_rebuilds
-    );
-    assert_eq!(
-        after.admission_nodes_visited - before.admission_nodes_visited,
-        1
-    );
-    assert!(after.admission_query_entries_examined - before.admission_query_entries_examined < 10);
+    let moved_receipt = moved.materialization_receipt();
+    assert!(!moved_receipt.admission().index_rebuilt());
+    assert_eq!(moved_receipt.admission().nodes_visited(), 0);
+    assert!(moved_receipt.admission().query_entries_examined() < 10);
 }
 
 #[test]
@@ -2013,6 +2010,7 @@ fn one_measurement_in_a_ten_thousand_node_chain_updates_only_incident_facts() {
     };
 
     let frame = first.frame(request()).unwrap();
+    assert!(frame.materialization_receipt().admission().index_rebuilt());
     assert_eq!(frame.nodes().len(), 3);
     let snapshot = first.graph_snapshot().unwrap();
     for record in frame.nodes() {
@@ -2044,10 +2042,10 @@ fn one_measurement_in_a_ten_thousand_node_chain_updates_only_incident_facts() {
     assert_eq!(publication.route_recomputations(), 2);
     assert_eq!(second.stats().unwrap(), second_before);
     let stable = first.stats().unwrap();
-    assert_eq!(stable.admission_index_rebuilds, 1);
 
     for index in 0..120 {
         let frame = first.frame(request()).unwrap();
+        assert!(!frame.materialization_receipt().admission().index_rebuilt());
         let middle = frame
             .nodes()
             .iter()
@@ -2080,6 +2078,5 @@ fn one_measurement_in_a_ten_thousand_node_chain_updates_only_incident_facts() {
         stable.layout_publications
     );
     assert_eq!(after_epsilon.refresh_requests, stable.refresh_requests);
-    assert_eq!(after_epsilon.admission_index_rebuilds, 1);
     assert_eq!(second.stats().unwrap(), second_before);
 }

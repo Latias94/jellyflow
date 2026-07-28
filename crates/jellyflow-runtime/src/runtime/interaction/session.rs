@@ -25,8 +25,9 @@ use crate::runtime::view_session::{
     ConnectionProbeTargeting, EdgePickCursorStaleReason, EdgePickQuery, EdgePickQueryError,
     EdgePickQueryOutcome, EdgePickQueryReceipt, InteractionQueryBinding,
     NodeIntersectionCursorStaleReason, NodeIntersectionQuery, NodeIntersectionQueryError,
-    NodeIntersectionQueryOutcome, NodeIntersectionQueryReceipt, ViewCreateFromWireQueryError,
-    ViewGeneration, ViewId, ViewProvenance, ViewSession, ViewSessionError, WeakViewSession,
+    NodeIntersectionQueryOutcome, NodeIntersectionQueryReceipt, QueryPageReceipt,
+    ViewCreateFromWireQueryError, ViewGeneration, ViewId, ViewProvenance, ViewSession,
+    ViewSessionError, WeakViewSession,
 };
 use crate::runtime::viewport::{
     ViewportIntent, ViewportPanRequest, ViewportPointerSample, ViewportSnapshot,
@@ -1098,7 +1099,7 @@ pub enum CanvasInteractionEffect {
     Search(ConnectionSearchRequest),
 }
 
-/// Runtime proof returned for one successfully executed interaction-query page.
+/// Runtime proof and bounded work evidence for one executed interaction-query page.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CanvasInteractionQueryPageReceipt {
     AlignmentSnap(AlignmentSnapQueryReceipt),
@@ -1109,7 +1110,7 @@ pub enum CanvasInteractionQueryPageReceipt {
 
 /// Bounded work evidence for one native query advancement grant.
 #[must_use = "query advancement receipts and terminal errors must be handled"]
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct CanvasInteractionQueryAdvanceReceipt {
     pages_granted: usize,
     pages_attempted: usize,
@@ -1324,10 +1325,10 @@ pub enum CanvasInteractionError {
     SubmissionCompletionStateMismatch,
     #[error("the command completion identity does not match the bound interaction submission")]
     CommandCompletionIdentityMismatch,
-    #[error("interaction query {query:?} has no runtime receipt")]
-    MissingInteractionQueryReceipt { query: InteractionQueryId },
-    #[error("interaction query receipt belongs to {actual:?}, expected {expected:?}")]
-    MismatchedInteractionQueryReceipt {
+    #[error("interaction query {query:?} has no runtime-issued proof")]
+    MissingInteractionQueryProof { query: InteractionQueryId },
+    #[error("interaction query proof belongs to {actual:?}, expected {expected:?}")]
+    MismatchedInteractionQueryProof {
         expected: InteractionQueryId,
         actual: InteractionQueryId,
     },
@@ -2799,7 +2800,8 @@ impl CanvasInteractionSession {
         let mut update = CanvasInteractionUpdate::default();
         let mut receipt = CanvasInteractionQueryAdvanceReceipt {
             pages_granted: page_budget,
-            ..CanvasInteractionQueryAdvanceReceipt::default()
+            pages_attempted: 0,
+            page_receipts: Vec::new(),
         };
         let mut terminal_error = self.ensure_session_open().err();
 
@@ -2924,9 +2926,9 @@ impl CanvasInteractionSession {
         match query.kind {
             PendingInteractionQueryKind::EdgePick { id, query } => match view.edge_pick(query) {
                 Ok(outcome) => {
-                    let receipt = outcome
-                        .receipt()
-                        .map(CanvasInteractionQueryPageReceipt::EdgePick);
+                    let receipt = Some(CanvasInteractionQueryPageReceipt::EdgePick(
+                        outcome.receipt(),
+                    ));
                     self.resolve_edge_pick_outcome(id, outcome)
                         .map(|update| (update, receipt))
                 }
@@ -2937,9 +2939,9 @@ impl CanvasInteractionSession {
             PendingInteractionQueryKind::ConnectionProbe { id, query, .. } => {
                 match view.connection_probe(query) {
                     Ok(outcome) => {
-                        let receipt = outcome
-                            .receipt()
-                            .map(CanvasInteractionQueryPageReceipt::ConnectionProbe);
+                        let receipt = Some(CanvasInteractionQueryPageReceipt::ConnectionProbe(
+                            outcome.receipt(),
+                        ));
                         self.resolve_connection_probe_outcome(id, outcome)
                             .map(|update| (update, receipt))
                     }
@@ -2951,9 +2953,9 @@ impl CanvasInteractionSession {
             PendingInteractionQueryKind::NodeIntersection { id, query, .. } => {
                 match view.nodes_intersecting(query) {
                     Ok(outcome) => {
-                        let receipt = outcome
-                            .receipt()
-                            .map(CanvasInteractionQueryPageReceipt::NodeIntersection);
+                        let receipt = Some(CanvasInteractionQueryPageReceipt::NodeIntersection(
+                            outcome.receipt(),
+                        ));
                         self.resolve_node_intersection_outcome(id, outcome)
                             .map(|update| (update, receipt))
                     }
@@ -2965,9 +2967,9 @@ impl CanvasInteractionSession {
             PendingInteractionQueryKind::AlignmentSnap { id, query, .. } => {
                 match view.alignment_snap(query) {
                     Ok(outcome) => {
-                        let receipt = outcome
-                            .receipt()
-                            .map(CanvasInteractionQueryPageReceipt::AlignmentSnap);
+                        let receipt = Some(CanvasInteractionQueryPageReceipt::AlignmentSnap(
+                            outcome.receipt(),
+                        ));
                         self.resolve_alignment_snap_outcome(id, outcome)
                             .map(|update| (update, receipt))
                     }
@@ -3109,18 +3111,8 @@ impl CanvasInteractionSession {
         self.ensure_open()?;
         self.ensure_interaction_session(id.session())?;
         let view = self.authoritative_view()?;
-        let Some(receipt) = outcome.receipt() else {
-            return Err(CanvasInteractionError::MissingInteractionQueryReceipt { query: id });
-        };
-        if receipt.query_id() != id {
-            return Err(CanvasInteractionError::MismatchedInteractionQueryReceipt {
-                expected: id,
-                actual: receipt.query_id(),
-            });
-        }
-        if !receipt.authenticates(self.interaction_query_binding(id)) {
-            return Err(CanvasInteractionError::ForeignInteractionFacts);
-        }
+        let receipt = outcome.receipt();
+        self.authenticate_interaction_query_receipt(id, &receipt)?;
         match view.edge_pick_receipt_is_current(receipt) {
             Ok(true) => self.resolve_edge_pick_current(id, outcome),
             Ok(false) | Err(ViewSessionError::StaleInteractionFacts) => {
@@ -3843,18 +3835,8 @@ impl CanvasInteractionSession {
         self.ensure_open()?;
         self.ensure_interaction_session(id.session())?;
         let view = self.authoritative_view()?;
-        let Some(receipt) = outcome.receipt() else {
-            return Err(CanvasInteractionError::MissingInteractionQueryReceipt { query: id });
-        };
-        if receipt.query_id() != id {
-            return Err(CanvasInteractionError::MismatchedInteractionQueryReceipt {
-                expected: id,
-                actual: receipt.query_id(),
-            });
-        }
-        if !receipt.authenticates(self.interaction_query_binding(id)) {
-            return Err(CanvasInteractionError::ForeignInteractionFacts);
-        }
+        let receipt = outcome.receipt();
+        self.authenticate_interaction_query_receipt(id, &receipt)?;
         match view.connection_probe_receipt_stale_reason(receipt) {
             Ok(None) => self.resolve_connection_probe_current(id, outcome),
             Ok(Some(reason)) if reason.is_restartable() => {
@@ -3983,18 +3965,8 @@ impl CanvasInteractionSession {
         self.ensure_open()?;
         self.ensure_interaction_session(id.session())?;
         let view = self.authoritative_view()?;
-        let Some(receipt) = outcome.receipt() else {
-            return Err(CanvasInteractionError::MissingInteractionQueryReceipt { query: id });
-        };
-        if receipt.query_id() != id {
-            return Err(CanvasInteractionError::MismatchedInteractionQueryReceipt {
-                expected: id,
-                actual: receipt.query_id(),
-            });
-        }
-        if !receipt.authenticates(self.interaction_query_binding(id)) {
-            return Err(CanvasInteractionError::ForeignInteractionFacts);
-        }
+        let receipt = outcome.receipt();
+        self.authenticate_interaction_query_receipt(id, &receipt)?;
         match view.node_intersection_receipt_is_current(receipt) {
             Ok(true) => {
                 let snapshot = view
@@ -4624,18 +4596,8 @@ impl CanvasInteractionSession {
         self.ensure_open()?;
         self.ensure_interaction_session(id.session())?;
         let view = self.authoritative_view()?;
-        let Some(receipt) = outcome.receipt() else {
-            return Err(CanvasInteractionError::MissingInteractionQueryReceipt { query: id });
-        };
-        if receipt.query_id() != id {
-            return Err(CanvasInteractionError::MismatchedInteractionQueryReceipt {
-                expected: id,
-                actual: receipt.query_id(),
-            });
-        }
-        if !receipt.authenticates(self.interaction_query_binding(id)) {
-            return Err(CanvasInteractionError::ForeignInteractionFacts);
-        }
+        let receipt = outcome.receipt();
+        self.authenticate_interaction_query_receipt(id, &receipt)?;
         match view.alignment_snap_receipt_is_current(receipt) {
             Ok(true) => self.resolve_alignment_snap_current(id, outcome),
             Ok(false) | Err(ViewSessionError::StaleInteractionFacts) => {
@@ -4663,14 +4625,14 @@ impl CanvasInteractionSession {
             {
                 drag.pending_alignment_query = None;
                 match outcome {
-                    AlignmentSnapQueryOutcome::Complete(result) => {
+                    AlignmentSnapQueryOutcome::Complete { result, .. } => {
                         let (_, delta, guides, locks) = result.into_parts();
                         drag.delta = delta;
                         drag.guides = Arc::from(guides);
                         drag.alignment_locks = locks;
                     }
-                    AlignmentSnapQueryOutcome::BudgetExhausted(_)
-                    | AlignmentSnapQueryOutcome::GeometryIndeterminate(_) => {
+                    AlignmentSnapQueryOutcome::BudgetExhausted { .. }
+                    | AlignmentSnapQueryOutcome::GeometryIndeterminate { .. } => {
                         drag.delta = drag.raw_delta;
                         drag.guides = Arc::default();
                         drag.alignment_locks = AlignmentSnapLocks::default();
@@ -5386,6 +5348,27 @@ impl CanvasInteractionSession {
         InteractionQueryBinding::new(self.provenance, id)
     }
 
+    fn authenticate_interaction_query_receipt<W>(
+        &self,
+        id: InteractionQueryId,
+        receipt: &QueryPageReceipt<W>,
+    ) -> Result<(), CanvasInteractionError> {
+        let Some(proof) = receipt.interaction_proof() else {
+            return Err(CanvasInteractionError::MissingInteractionQueryProof { query: id });
+        };
+        let actual = proof.query_id();
+        if actual != id {
+            return Err(CanvasInteractionError::MismatchedInteractionQueryProof {
+                expected: id,
+                actual,
+            });
+        }
+        if !proof.authenticates(self.interaction_query_binding(id)) {
+            return Err(CanvasInteractionError::ForeignInteractionFacts);
+        }
+        Ok(())
+    }
+
     #[cfg(test)]
     fn accepts_unsigned_query_outcomes_for_test(&self) -> bool {
         self.provenance.view()
@@ -5403,7 +5386,8 @@ impl CanvasInteractionSession {
     ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
         if !outcome
             .receipt()
-            .is_some_and(|receipt| receipt.authenticates(self.interaction_query_binding(id)))
+            .interaction_proof()
+            .is_some_and(|proof| proof.authenticates(self.interaction_query_binding(id)))
             && !self.accepts_unsigned_query_outcomes_for_test()
         {
             return Ok(self.finalize_update(CanvasInteractionUpdate::default()));
@@ -5419,7 +5403,8 @@ impl CanvasInteractionSession {
     ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
         if !outcome
             .receipt()
-            .is_some_and(|receipt| receipt.authenticates(self.interaction_query_binding(id)))
+            .interaction_proof()
+            .is_some_and(|proof| proof.authenticates(self.interaction_query_binding(id)))
             && !self.accepts_unsigned_query_outcomes_for_test()
         {
             return Ok(self.finalize_update(CanvasInteractionUpdate::default()));
@@ -5435,7 +5420,8 @@ impl CanvasInteractionSession {
     ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
         if !outcome
             .receipt()
-            .is_some_and(|receipt| receipt.authenticates(self.interaction_query_binding(id)))
+            .interaction_proof()
+            .is_some_and(|proof| proof.authenticates(self.interaction_query_binding(id)))
             && !self.accepts_unsigned_query_outcomes_for_test()
         {
             return Ok(self.finalize_update(CanvasInteractionUpdate::default()));
@@ -5451,7 +5437,8 @@ impl CanvasInteractionSession {
     ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
         if !outcome
             .receipt()
-            .is_some_and(|receipt| receipt.authenticates(self.interaction_query_binding(id)))
+            .interaction_proof()
+            .is_some_and(|proof| proof.authenticates(self.interaction_query_binding(id)))
             && !self.accepts_unsigned_query_outcomes_for_test()
         {
             return Ok(self.finalize_update(CanvasInteractionUpdate::default()));

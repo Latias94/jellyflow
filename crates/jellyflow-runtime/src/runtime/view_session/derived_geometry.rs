@@ -21,14 +21,13 @@ use crate::runtime::interaction::ConnectionGestureBinding;
 use crate::runtime::policy::resolve_edge_policy;
 use crate::runtime::viewport::ViewportTransform;
 
-use super::edge_pick::{EdgePickCursor, InternalEdgePickOutcome, record_edge_pick_stats};
+use super::edge_pick::{EdgePickCursor, InternalEdgePickOutcome, record_edge_pick_flatten_stats};
 use super::geometry::{
     AdmissionIndex, InternalNodeIntersectionOutcome, NodeIntersectionCursor, SpatialQuery,
     ViewSpatialIndex,
 };
 use super::port_geometry::{
     ConnectionProbeCursor, ConnectionProbeTargeting, InternalProbeOutcome, PortGeometryIndex,
-    record_probe_query_stats,
 };
 use super::route_geometry::{
     InternalRouteQueryOutcome, RouteGeometryIndex, RouteGeometryRevision, VisibleRouteCursor,
@@ -40,6 +39,14 @@ use super::{DerivedGeometryStats, SelectedEdgeMembership, ViewProvenance, ViewQu
 pub(super) struct RouteRecomputation {
     pub(super) attempts: u64,
     pub(super) changed: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct FrameGeometryReconciliationWork {
+    pub(super) node_invalidations: u64,
+    pub(super) spatial_updates: u64,
+    pub(super) route_invalidations: u64,
+    pub(super) route_recomputations: u64,
 }
 
 #[derive(Debug)]
@@ -174,7 +181,7 @@ impl DerivedGeometry {
         cursor: ConnectionProbeCursor,
         entry_budget: usize,
     ) -> InternalProbeOutcome {
-        let outcome = self.port_index.query_page(
+        self.port_index.query_page(
             snapshot.graph(),
             |port| snapshot.port_instance_key(port),
             node_draw_order_ranks,
@@ -182,9 +189,7 @@ impl DerivedGeometry {
             recent_interaction_node,
             cursor,
             entry_budget,
-        );
-        record_probe_query_stats(&mut self.stats, &outcome);
-        outcome
+        )
     }
 
     pub(super) fn new_visible_route_cursor(
@@ -252,7 +257,7 @@ impl DerivedGeometry {
             cursor,
             entry_budget,
         );
-        record_edge_pick_stats(&mut self.stats, &outcome);
+        record_edge_pick_flatten_stats(&mut self.stats, &outcome);
         outcome
     }
 
@@ -414,46 +419,6 @@ impl DerivedGeometry {
             .saturating_add(fallbacks);
     }
 
-    pub(super) fn record_frame_admission(
-        &mut self,
-        nodes_visited: u64,
-        cells_examined: u64,
-        entries_examined: u64,
-        rebuilt: bool,
-        candidates_ranked: u64,
-        selection_lookups: u64,
-    ) {
-        self.stats.admission_nodes_visited = self
-            .stats
-            .admission_nodes_visited
-            .saturating_add(nodes_visited);
-        self.stats.admission_query_cells_examined = self
-            .stats
-            .admission_query_cells_examined
-            .saturating_add(cells_examined);
-        self.stats.admission_query_entries_examined = self
-            .stats
-            .admission_query_entries_examined
-            .saturating_add(entries_examined);
-        self.stats.admission_index_rebuilds = self
-            .stats
-            .admission_index_rebuilds
-            .saturating_add(u64::from(rebuilt));
-        self.stats.frame_order_candidates_ranked = self
-            .stats
-            .frame_order_candidates_ranked
-            .saturating_add(candidates_ranked);
-        self.stats.frame_selection_membership_lookups = self
-            .stats
-            .frame_selection_membership_lookups
-            .saturating_add(selection_lookups);
-    }
-
-    pub(super) fn record_frame_nodes_materialized(&mut self, count: u64) {
-        self.stats.frame_nodes_materialized =
-            self.stats.frame_nodes_materialized.saturating_add(count);
-    }
-
     pub(super) fn record_layout_candidate_impact(&mut self, checked: u64, stale: u64) {
         self.stats.layout_impact_candidates_checked = self
             .stats
@@ -558,6 +523,7 @@ impl DerivedGeometry {
         Option<(u64, Vec<NodeId>)>,
         IncidentSnapshotWork,
         BTreeMap<NodeId, u64>,
+        FrameGeometryReconciliationWork,
     ) {
         let inactive_nodes = self.inactive_frame_nodes(active_nodes);
         let mut invalidated_nodes = Vec::new();
@@ -634,10 +600,17 @@ impl DerivedGeometry {
             .saturating_add(route_recomputation.attempts);
         self.active_frame_nodes = active_nodes.clone();
         self.assert_consistent();
+        let work = FrameGeometryReconciliationWork {
+            node_invalidations: invalidated_nodes.len() as u64,
+            spatial_updates,
+            route_invalidations: route_edges.len() as u64,
+            route_recomputations: route_recomputation.attempts,
+        };
         (
             publication_changed.then_some((self.layout_revision, invalidated_nodes)),
             incident_work,
             generations,
+            work,
         )
     }
 

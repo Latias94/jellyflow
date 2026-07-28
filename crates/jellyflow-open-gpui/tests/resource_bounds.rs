@@ -336,7 +336,9 @@ fn protected_nodes_ignore_zero_required_budget_then_resume_ordinary_culling(
         assert_eq!(host.stats().parked_nodes(), 0);
         assert_eq!(host.frame_materialization_budget().required_nodes(), 0);
         assert_eq!(
-            host.last_frame_materialization_overflow().required_nodes(),
+            host.last_frame_materialization_overflow()
+                .expect("a rendered frame must publish overflow diagnostics")
+                .required_nodes(),
             0
         );
     });
