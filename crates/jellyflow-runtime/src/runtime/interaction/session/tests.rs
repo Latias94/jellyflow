@@ -2537,6 +2537,32 @@ fn marquee_query_failure_retries_press_baseline_restore_exactly_once() {
     );
     assert!(view.selection().unwrap().nodes().is_empty());
 
+    let retained_marquee = session.presentation().marquee();
+    let deferred_position = bound_position(&session, &view, 72.0, 60.0);
+    let deferred_move = session
+        .move_to(deferred_position)
+        .expect("cleanup defers pointer movement");
+    assert!(deferred_move.query_work_pending());
+    assert_eq!(deferred_move.tick_demand(), InteractionTickDemand::None);
+    assert_eq!(session.presentation().marquee(), retained_marquee);
+    assert!(session.query_work.pending_for_test().is_none());
+
+    let deferred_release = session
+        .release(deferred_position)
+        .expect("cleanup defers pointer release");
+    assert!(deferred_release.query_work_pending());
+    assert_eq!(deferred_release.tick_demand(), InteractionTickDemand::None);
+    assert_eq!(session.presentation().marquee(), retained_marquee);
+    assert!(session.query_work.pending_for_test().is_none());
+
+    let deferred_tick = session
+        .tick(1.0 / 60.0, ViewSize::new(200.0, 120.0))
+        .expect("cleanup defers auto-pan ticks");
+    assert!(deferred_tick.query_work_pending());
+    assert_eq!(deferred_tick.tick_demand(), InteractionTickDemand::None);
+    assert_eq!(session.presentation().marquee(), retained_marquee);
+    assert!(session.query_work.pending_for_test().is_none());
+
     let (restored, needs_tick, receipt, terminal_error) =
         session.advance_query_work(1).into_parts();
     assert_eq!(receipt.pages_attempted(), 0);

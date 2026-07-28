@@ -51,7 +51,9 @@ impl EguiInteractionOutput {
         self.attempted_query_page_count
     }
 
-    /// Returns a terminal query failure after its cleanup update has already been applied.
+    /// Returns a terminal query failure after immediately available cleanup has been applied.
+    ///
+    /// [`Self::renderer_work_pending`] reports cleanup deferred by a transient view borrow.
     pub fn terminal_query_error(&self) -> Option<CanvasInteractionError> {
         self.terminal_query_error
     }

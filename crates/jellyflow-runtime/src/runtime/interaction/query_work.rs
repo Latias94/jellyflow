@@ -5,47 +5,74 @@ use super::session::{InteractionGeneration, InteractionQueryId};
 
 #[derive(Debug, Default)]
 pub(super) struct QueryWork {
-    pending: Option<PendingInteractionQuery>,
-    cleanup_pending: bool,
+    state: QueryWorkState,
+}
+
+#[derive(Debug, Default)]
+// Keeping the query inline avoids a heap allocation on every pointer-driven replacement.
+#[allow(clippy::large_enum_variant)]
+enum QueryWorkState {
+    #[default]
+    Empty,
+    Pending(PendingInteractionQuery),
+    CleanupPending,
 }
 
 impl QueryWork {
     pub(super) fn replace(&mut self, query: PendingInteractionQuery) {
-        self.pending = Some(query);
-        self.cleanup_pending = false;
+        let can_replace = !matches!(self.state, QueryWorkState::CleanupPending);
+        debug_assert!(
+            can_replace,
+            "terminal query cleanup must complete before replacement work is queued"
+        );
+        if !can_replace {
+            return;
+        }
+        self.state = QueryWorkState::Pending(query);
     }
 
     pub(super) fn take(&mut self) -> Option<PendingInteractionQuery> {
-        self.pending.take()
+        match std::mem::take(&mut self.state) {
+            QueryWorkState::Pending(query) => Some(query),
+            QueryWorkState::CleanupPending => {
+                self.state = QueryWorkState::CleanupPending;
+                None
+            }
+            QueryWorkState::Empty => None,
+        }
     }
 
     pub(super) fn clear(&mut self) {
-        self.pending = None;
-        self.cleanup_pending = false;
+        self.state = QueryWorkState::Empty;
     }
 
     pub(super) fn clear_if_id(&mut self, id: InteractionQueryId) {
-        if self.pending.as_ref().is_some_and(|query| query.id() == id) {
-            self.pending = None;
+        if matches!(
+            &self.state,
+            QueryWorkState::Pending(query) if query.id() == id
+        ) {
+            self.state = QueryWorkState::Empty;
         }
     }
 
     pub(super) fn is_pending(&self) -> bool {
-        self.pending.is_some() || self.cleanup_pending
+        !matches!(self.state, QueryWorkState::Empty)
     }
 
     pub(super) fn cleanup_pending(&self) -> bool {
-        self.cleanup_pending
+        matches!(self.state, QueryWorkState::CleanupPending)
     }
 
     pub(super) fn require_cleanup(&mut self) {
-        self.pending = None;
-        self.cleanup_pending = true;
+        self.state = QueryWorkState::CleanupPending;
     }
 
     #[cfg(test)]
     pub(super) fn pending_for_test(&self) -> Option<&PendingInteractionQuery> {
-        self.pending.as_ref()
+        match &self.state {
+            QueryWorkState::Pending(query) => Some(query),
+            QueryWorkState::Empty | QueryWorkState::CleanupPending => None,
+        }
     }
 }
 

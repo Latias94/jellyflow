@@ -1728,7 +1728,7 @@ impl CanvasInteractionSession {
     /// Adapters use this as the scheduling authority so duplicate callbacks and stale redraws cannot
     /// keep an idle, release-pending, or terminal interaction alive.
     pub fn tick_demand(&self) -> InteractionTickDemand {
-        if self.closed || self.terminal.is_some() {
+        if self.closed || self.terminal.is_some() || self.query_work.cleanup_pending() {
             InteractionTickDemand::None
         } else if state_needs_tick(&self.state) {
             InteractionTickDemand::WhileActive
@@ -3645,6 +3645,13 @@ impl CanvasInteractionSession {
         &mut self,
         sample: ViewportPointerSample,
     ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
+        self.ensure_session_open()?;
+        if sample.snapshot().provenance() != self.provenance {
+            return Err(CanvasInteractionError::ForeignInteractionFacts);
+        }
+        if self.query_work.cleanup_pending() {
+            return Ok(self.finalize_update(CanvasInteractionUpdate::default()));
+        }
         let (position, current) = self.normalize_pointer_sample(sample)?;
         if let Some(update) = self.move_pan_if_active(position, current)? {
             return Ok(update);
@@ -3724,6 +3731,13 @@ impl CanvasInteractionSession {
         &mut self,
         sample: ViewportPointerSample,
     ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
+        self.ensure_session_open()?;
+        if sample.snapshot().provenance() != self.provenance {
+            return Err(CanvasInteractionError::ForeignInteractionFacts);
+        }
+        if self.query_work.cleanup_pending() {
+            return Ok(self.finalize_update(CanvasInteractionUpdate::default()));
+        }
         let (position, current) = self.normalize_pointer_sample(sample)?;
         if let Some(mut update) = self.move_pan_if_active(position, current)? {
             self.state = InteractionState::Idle;
@@ -4666,7 +4680,11 @@ impl CanvasInteractionSession {
         elapsed_seconds: f32,
         viewport: ViewSize,
     ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
-        self.ensure_open()?;
+        self.ensure_session_open()?;
+        if self.query_work.cleanup_pending() {
+            return Ok(self.finalize_update(CanvasInteractionUpdate::default()));
+        }
+        self.ensure_bound_view()?;
         if !elapsed_seconds.is_finite() || elapsed_seconds <= 0.0 || !viewport.is_positive_finite()
         {
             return Ok(self.finalize_update(CanvasInteractionUpdate::default()));
