@@ -1163,7 +1163,7 @@ fn normalized_phase(presentation: &CanvasInteractionPresentation) -> Conformance
         CanvasInteractionPhase::ConnectionDrag
             if presentation
                 .connection()
-                .is_some_and(|connection| connection.probe().is_valid()) =>
+                .is_some_and(|connection| connection.probe().is_committable()) =>
         {
             ConformancePhase::Candidate
         }
@@ -1479,7 +1479,7 @@ fn consumer_owned_bridge_drives_node_intersection_to_a_complete_page() {
         &view,
         start,
         CanvasInteractionConfig {
-            query_entry_budget: 1,
+            query_work_budget: 1,
             ..CanvasInteractionConfig::default()
         },
     );

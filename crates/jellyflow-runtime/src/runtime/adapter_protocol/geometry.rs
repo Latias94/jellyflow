@@ -3,7 +3,7 @@ use std::ops::Index;
 use std::sync::Arc;
 
 use jellyflow_core::core::{CanvasPoint, CanvasRect, EdgeId, NodeId, PortId};
-use rpds::RedBlackTreeMapSync;
+use rpds::{RedBlackTreeMapSync, RedBlackTreeSetSync};
 
 use crate::runtime::geometry::{EdgeRouteFacts, HandlePosition};
 use crate::runtime::graph_runtime::{EdgeInstanceKey, NodeLifetimeKey};
@@ -249,10 +249,6 @@ impl PublishedNodeGeometry {
         self.ports = rendered_ports(&self.port_outcomes);
     }
 
-    pub(crate) fn mark_ports_culled(&mut self, ports: impl IntoIterator<Item = PortId>) -> bool {
-        self.replace_port_outcomes(ports, || PublishedPortOutcome::Culled)
-    }
-
     pub(crate) fn mark_stale(&mut self, ports: impl IntoIterator<Item = PortId>) -> bool {
         let outcomes_changed =
             self.replace_port_outcomes(ports, || PublishedPortOutcome::Unavailable);
@@ -341,7 +337,38 @@ fn optional_rect_approximately_eq(
 }
 
 pub(crate) type SharedGeometryMap<K, V> = RedBlackTreeMapSync<K, Arc<V>>;
+pub(crate) type SharedGeometryOwnerMap<K> = RedBlackTreeMapSync<K, NodeId>;
+pub(crate) type SharedFrameCullSet = RedBlackTreeSetSync<NodeId>;
 type SharedGeometryMapIter<'a, K, V> = <&'a SharedGeometryMap<K, V> as IntoIterator>::IntoIter;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct GeometryVisibleCounts {
+    pub nodes: usize,
+    pub ports: usize,
+    pub port_outcomes: usize,
+}
+
+#[derive(Debug)]
+struct GeometryVisibility<'a, K: Ord> {
+    owners: &'a SharedGeometryOwnerMap<K>,
+    frame_culled_nodes: &'a SharedFrameCullSet,
+}
+
+impl<K: Ord> Copy for GeometryVisibility<'_, K> {}
+
+impl<K: Ord> Clone for GeometryVisibility<'_, K> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<K: Ord> GeometryVisibility<'_, K> {
+    fn includes(self, key: &K) -> bool {
+        self.owners
+            .get(key)
+            .is_some_and(|node| !self.frame_culled_nodes.contains(node))
+    }
+}
 
 /// Read-only view over one published geometry collection.
 ///
@@ -350,11 +377,15 @@ type SharedGeometryMapIter<'a, K, V> = <&'a SharedGeometryMap<K, V> as IntoItera
 #[derive(Debug, Clone, Copy)]
 pub struct GeometryElements<'a, K: Ord, V> {
     entries: &'a SharedGeometryMap<K, V>,
+    visibility: Option<GeometryVisibility<'a, K>>,
+    len: usize,
 }
 
 /// Iterator over published geometry ids and values.
 pub struct GeometryElementIter<'a, K: Ord, V> {
     inner: SharedGeometryMapIter<'a, K, V>,
+    visibility: Option<GeometryVisibility<'a, K>>,
+    remaining: usize,
 }
 
 /// Iterator over published geometry ids.
@@ -369,28 +400,58 @@ pub struct GeometryElementValues<'a, K: Ord, V> {
 
 impl<'a, K: Ord, V> GeometryElements<'a, K, V> {
     pub(crate) fn new(entries: &'a SharedGeometryMap<K, V>) -> Self {
-        Self { entries }
+        Self {
+            entries,
+            visibility: None,
+            len: entries.size(),
+        }
+    }
+
+    pub(crate) fn visible(
+        entries: &'a SharedGeometryMap<K, V>,
+        owners: &'a SharedGeometryOwnerMap<K>,
+        frame_culled_nodes: &'a SharedFrameCullSet,
+        len: usize,
+    ) -> Self {
+        Self {
+            entries,
+            visibility: Some(GeometryVisibility {
+                owners,
+                frame_culled_nodes,
+            }),
+            len,
+        }
+    }
+
+    fn includes(&self, key: &K) -> bool {
+        self.visibility
+            .is_none_or(|visibility| visibility.includes(key))
     }
 
     pub fn len(&self) -> usize {
-        self.entries.size()
+        self.len
     }
 
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.len == 0
     }
 
     pub fn contains_key(&self, key: &K) -> bool {
-        self.entries.contains_key(key)
+        self.includes(key) && self.entries.contains_key(key)
     }
 
     pub fn get(&self, key: &K) -> Option<&'a V> {
+        if !self.includes(key) {
+            return None;
+        }
         self.entries.get(key).map(Arc::as_ref)
     }
 
     pub fn iter(&self) -> GeometryElementIter<'a, K, V> {
         GeometryElementIter {
             inner: self.entries.into_iter(),
+            visibility: self.visibility,
+            remaining: self.len,
         }
     }
 
@@ -424,19 +485,39 @@ impl<'a, K: Ord, V> Iterator for GeometryElementIter<'a, K, V> {
     type Item = (&'a K, &'a V);
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next().map(|(key, value)| (key, value.as_ref()))
+        for (key, value) in self.inner.by_ref() {
+            if self
+                .visibility
+                .is_some_and(|visibility| !visibility.includes(key))
+            {
+                continue;
+            }
+            self.remaining = self.remaining.saturating_sub(1);
+            return Some((key, value.as_ref()));
+        }
+        debug_assert_eq!(self.remaining, 0);
+        None
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        self.inner.size_hint()
+        (self.remaining, Some(self.remaining))
     }
 }
 
 impl<K: Ord, V> DoubleEndedIterator for GeometryElementIter<'_, K, V> {
     fn next_back(&mut self) -> Option<Self::Item> {
-        self.inner
-            .next_back()
-            .map(|(key, value)| (key, value.as_ref()))
+        while let Some((key, value)) = self.inner.next_back() {
+            if self
+                .visibility
+                .is_some_and(|visibility| !visibility.includes(key))
+            {
+                continue;
+            }
+            self.remaining = self.remaining.saturating_sub(1);
+            return Some((key, value.as_ref()));
+        }
+        debug_assert_eq!(self.remaining, 0);
+        None
     }
 }
 
@@ -487,11 +568,21 @@ struct GeometrySnapshotInner {
     provenance: ViewProvenance,
     layout_revision: u64,
     nodes: SharedGeometryMap<NodeId, PublishedNodeGeometry>,
+    node_owners: SharedGeometryOwnerMap<NodeId>,
     ports: SharedGeometryMap<PortId, PublishedPortGeometry>,
     port_outcomes: SharedGeometryMap<PortId, PublishedPortOutcome>,
+    port_owners: SharedGeometryOwnerMap<PortId>,
+    frame_culled_nodes: SharedFrameCullSet,
+    visible_counts: GeometryVisibleCounts,
     routes: SharedGeometryMap<EdgeId, PublishedEdgeRoute>,
 }
 
+/// Immutable geometry visible to one published layout revision.
+///
+/// Whole-node frame culling is represented as snapshot visibility, not as synthetic per-port
+/// [`PublishedPortOutcome::Culled`] values. A culled node and all of its ports are absent from
+/// point and collection queries in snapshots created after that frame. Previously acquired
+/// snapshots retain their original visibility.
 #[derive(Debug, Clone)]
 pub struct GeometrySnapshot {
     inner: Arc<GeometrySnapshotInner>,
@@ -513,8 +604,12 @@ impl GeometrySnapshot {
         provenance: ViewProvenance,
         layout_revision: u64,
         nodes: SharedGeometryMap<NodeId, PublishedNodeGeometry>,
+        node_owners: SharedGeometryOwnerMap<NodeId>,
         ports: SharedGeometryMap<PortId, PublishedPortGeometry>,
         port_outcomes: SharedGeometryMap<PortId, PublishedPortOutcome>,
+        port_owners: SharedGeometryOwnerMap<PortId>,
+        frame_culled_nodes: SharedFrameCullSet,
+        visible_counts: GeometryVisibleCounts,
         routes: SharedGeometryMap<EdgeId, PublishedEdgeRoute>,
     ) -> Self {
         Self {
@@ -522,8 +617,12 @@ impl GeometrySnapshot {
                 provenance,
                 layout_revision,
                 nodes,
+                node_owners,
                 ports,
                 port_outcomes,
+                port_owners,
+                frame_culled_nodes,
+                visible_counts,
                 routes,
             }),
         }
@@ -538,27 +637,61 @@ impl GeometrySnapshot {
     }
 
     pub fn node(&self, node: NodeId) -> Option<&PublishedNodeGeometry> {
+        if self.inner.frame_culled_nodes.contains(&node) {
+            return None;
+        }
         self.inner.nodes.get(&node).map(Arc::as_ref)
     }
 
     pub fn port(&self, port: PortId) -> Option<&PublishedPortGeometry> {
+        let is_visible = self
+            .inner
+            .port_owners
+            .get(&port)
+            .is_some_and(|node| !self.inner.frame_culled_nodes.contains(node));
+        if !is_visible {
+            return None;
+        }
         self.inner.ports.get(&port).map(Arc::as_ref)
     }
 
     pub fn nodes(&self) -> GeometryElements<'_, NodeId, PublishedNodeGeometry> {
-        GeometryElements::new(&self.inner.nodes)
+        GeometryElements::visible(
+            &self.inner.nodes,
+            &self.inner.node_owners,
+            &self.inner.frame_culled_nodes,
+            self.inner.visible_counts.nodes,
+        )
     }
 
     pub fn ports(&self) -> GeometryElements<'_, PortId, PublishedPortGeometry> {
-        GeometryElements::new(&self.inner.ports)
+        GeometryElements::visible(
+            &self.inner.ports,
+            &self.inner.port_owners,
+            &self.inner.frame_culled_nodes,
+            self.inner.visible_counts.ports,
+        )
     }
 
     pub fn port_outcome(&self, port: PortId) -> Option<&PublishedPortOutcome> {
+        let is_visible = self
+            .inner
+            .port_owners
+            .get(&port)
+            .is_some_and(|node| !self.inner.frame_culled_nodes.contains(node));
+        if !is_visible {
+            return None;
+        }
         self.inner.port_outcomes.get(&port).map(Arc::as_ref)
     }
 
     pub fn port_outcomes(&self) -> GeometryElements<'_, PortId, PublishedPortOutcome> {
-        GeometryElements::new(&self.inner.port_outcomes)
+        GeometryElements::visible(
+            &self.inner.port_outcomes,
+            &self.inner.port_owners,
+            &self.inner.frame_culled_nodes,
+            self.inner.visible_counts.port_outcomes,
+        )
     }
 
     pub fn route(&self, edge: EdgeId) -> Option<&PublishedEdgeRoute> {

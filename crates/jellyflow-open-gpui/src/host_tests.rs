@@ -17,9 +17,9 @@ use jellyflow_runtime::{
     graph::RuntimePatch, interaction::CanvasInteractionPhase,
     interaction::ConnectionGestureBinding, interaction::InteractionTerminalReason,
     interaction::InteractionTickDemand, view::AdapterEnvironment, view::FeedbackSubmissionError,
-    view::FrameRequest, view::LayoutNodeStatus, view::PublishedPortOutcome, view::RendererStamp,
-    view::StaleFrameReason, view::ViewCloseReason, view::ViewSession, view::ViewSessionError,
-    view::ViewSessionEvent, view::ViewSessionOptions,
+    view::FrameMaterializationBudget, view::FrameRequest, view::LayoutNodeStatus,
+    view::PublishedPortOutcome, view::RendererStamp, view::StaleFrameReason, view::ViewCloseReason,
+    view::ViewSession, view::ViewSessionError, view::ViewSessionEvent, view::ViewSessionOptions,
 };
 use open_gpui::{
     AppContext, Context, Entity, FocusHandle, HitboxId, InteractiveElement, KeyDownEvent,
@@ -1469,8 +1469,12 @@ fn ten_thousand_routes_keep_each_visible_query_page_hard_bounded() {
     let mut pending_pages = 0_u64;
     loop {
         let wires = host.scene_wires().expect("bounded dense edge plan");
-        assert!(wires.published.is_empty());
         let overflow = host.last_edge_layer_overflow();
+        assert!(
+            wires.published.is_empty(),
+            "page {pending_pages} published {} wires with {overflow:?}",
+            wires.published.len(),
+        );
         assert!(overflow.query_entries_examined() <= ROUTE_SCAN_LIMIT as u64);
         assert!(overflow.query_candidates_matched() <= ROUTE_SCAN_LIMIT as u64);
         assert!(!overflow.reused_previous_plan());
@@ -1517,7 +1521,7 @@ fn ten_thousand_routes_keep_each_visible_query_page_hard_bounded() {
 fn ten_thousand_spatial_routes_materialize_only_the_local_hundred() {
     const GRID_SIDE: usize = 100;
     const SPACING: f32 = 512.0;
-    const QUERY_BUDGET: usize = 256;
+    const QUERY_BUDGET: usize = 512;
 
     let (graph, edges) = spatial_edge_graph(GRID_SIDE, SPACING);
     let runtime = GraphRuntime::builder(catalog())
@@ -7962,6 +7966,13 @@ fn high_fanout_output_pointer_and_keyboard_drag_skip_incident_edges(
         .expect("output bounds");
     cx.simulate_mouse_down(output.center(), MouseButton::Left, Default::default());
     cx.read_entity(&host, |host, _| {
+        let query_work = host
+            .scene_evidence
+            .last_port_connection_query_work
+            .get()
+            .expect("pointer admission publishes its operation receipt");
+        assert_eq!(query_work.incident_bucket_reads(), 0);
+        assert_eq!(query_work.incident_entries_read(), 0);
         assert_eq!(
             host.interaction_presentation().phase(),
             CanvasInteractionPhase::Armed
@@ -7990,9 +8001,21 @@ fn high_fanout_output_pointer_and_keyboard_drag_skip_incident_edges(
         OpenGpuiPortActivationSource::Keyboard,
     ));
     cx.update(|window, cx| {
-        host.update(cx, |host, cx| host.handle_port_event(event, window, cx));
+        host.update(cx, |host, cx| {
+            host.scene_evidence
+                .last_port_connection_query_work
+                .set(None);
+            host.handle_port_event(event, window, cx);
+        });
     });
     cx.read_entity(&host, |host, _| {
+        let query_work = host
+            .scene_evidence
+            .last_port_connection_query_work
+            .get()
+            .expect("keyboard activation publishes its operation receipt");
+        assert_eq!(query_work.incident_bucket_reads(), 0);
+        assert_eq!(query_work.incident_entries_read(), 0);
         assert!(host.connection_search_request().is_none());
         assert_connect_search_binding(host, PortId::from_u128(20));
         assert_eq!(
@@ -10091,11 +10114,19 @@ fn publish_edge_geometry_with(
     mut visual_for_port: impl FnMut(NodeId, usize, CanvasRect, PortDirection) -> ViewRect,
 ) {
     set_selection_by_id(view, Vec::new(), selected).expect("select priority edge");
+    let port_count = view
+        .graph_snapshot()
+        .expect("edge geometry graph snapshot")
+        .graph()
+        .ports()
+        .len();
     let frame = view
-        .frame(FrameRequest::new(
-            frame_bounds,
-            RendererStamp::new(RENDERER, 1),
-        ))
+        .frame(
+            FrameRequest::new(frame_bounds, RendererStamp::new(RENDERER, 1))
+                .with_materialization_budget(
+                    FrameMaterializationBudget::default().with_port_scan_limit(port_count),
+                ),
+        )
         .expect("materialize all edge endpoints");
     let collector = frame.collector();
     for node in frame.nodes() {

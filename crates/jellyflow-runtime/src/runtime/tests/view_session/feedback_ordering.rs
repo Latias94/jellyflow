@@ -195,6 +195,44 @@ fn interleaved_feedback_correlates_an_execution_error_without_shifting_its_neigh
 }
 
 #[test]
+fn feedback_install_failure_preserves_completed_planning_work() {
+    let (graph, nodes) = graph_with_nodes(1);
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .unwrap();
+    runtime.set_revision_for_test(u64::MAX);
+    let session = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    let frame = one_node_frame(&session);
+    let collector = frame.collector();
+    let command = GraphCommand::set_node_data(
+        frame.graph_version(),
+        nodes[0],
+        serde_json::json!({ "attempted": true }),
+    );
+    let identity = command.identity().clone();
+    collector.command(command).unwrap();
+    let before = runtime.snapshot().unwrap();
+
+    let receipt = session
+        .submit_feedback(collector.finish().unwrap())
+        .unwrap();
+    let completion = receipt.command_completion(&identity).unwrap();
+
+    assert!(matches!(
+        completion.result(),
+        Err(GraphRuntimeError::RevisionExhausted)
+    ));
+    assert_eq!(
+        completion
+            .planning_work()
+            .expect("feedback preserves work after successful planning")
+            .operations_emitted(),
+        1,
+    );
+    assert!(runtime.snapshot().unwrap().ptr_eq(&before));
+}
+
+#[test]
 fn feedback_receipt_batch_consumption_is_keyed_ordered_and_atomic() {
     let (graph, nodes) = graph_with_nodes(2);
     let runtime = GraphRuntime::builder(Default::default())

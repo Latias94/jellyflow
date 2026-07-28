@@ -345,7 +345,9 @@ fn projected_interaction_input(
         let target = connection.probe().target()?;
         let candidate = match connection.probe() {
             ConnectionProbe::None => OpenGpuiPortCandidateInput::Idle,
-            ConnectionProbe::Valid { .. } => OpenGpuiPortCandidateInput::ValidTarget,
+            ConnectionProbe::Deferred { .. } | ConnectionProbe::Valid { .. } => {
+                OpenGpuiPortCandidateInput::ValidTarget
+            }
             ConnectionProbe::Invalid { diagnostics, .. } => {
                 OpenGpuiPortCandidateInput::invalid(diagnostics)
             }

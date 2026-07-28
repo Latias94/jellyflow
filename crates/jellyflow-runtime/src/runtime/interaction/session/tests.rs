@@ -939,6 +939,37 @@ fn connection_wire_projection_uses_probe_time_geometry_and_stable_pointer_direct
     );
 
     let moved = session.move_to(position(12.0, 6.0)).unwrap();
+    let deferred_anchor = CanvasPoint { x: 94.0, y: 62.0 };
+    let deferred = ConnectionProbe::Deferred {
+        version: test_graph_version(),
+        target: ConnectionProbeTarget::new(
+            PortInstanceKey::unavailable(NodeId::from_u128(2), target_port()),
+            deferred_anchor,
+            HandlePosition::Top,
+            0.0,
+        ),
+    };
+    assert!(!deferred.is_valid());
+    assert!(deferred.is_committable());
+    session
+        .resolve_connection_probe_for_test(
+            connection_query_id(&session, &moved),
+            complete(deferred),
+        )
+        .unwrap();
+    let deferred = session
+        .presentation()
+        .connection()
+        .expect("deferred connection presentation")
+        .wire();
+    assert_eq!(deferred.endpoints().target.point, deferred_anchor);
+    assert_eq!(
+        deferred.probe_validity(),
+        super::super::ConnectionProbeValidity::Deferred
+    );
+    assert!(deferred.probe_validity().is_committable());
+
+    let moved = session.move_to(position(14.0, 7.0)).unwrap();
     let target_anchor = CanvasPoint { x: 96.0, y: 64.0 };
     let valid = ConnectionProbe::Valid {
         version: test_graph_version(),
@@ -1012,7 +1043,7 @@ fn released_connection_at_auto_pan_edge_preserves_its_final_probe() {
 #[test]
 fn stale_drag_probe_restart_replaces_identity_and_ignores_the_old_page() {
     let mut session = test_session(CanvasInteractionConfig {
-        query_entry_budget: 1,
+        query_work_budget: 1,
         ..CanvasInteractionConfig::default()
     });
     session
@@ -1051,7 +1082,7 @@ fn stale_drag_probe_restart_replaces_identity_and_ignores_the_old_page() {
 #[test]
 fn stale_release_probe_restart_preserves_release_pending_until_commit() {
     let mut session = test_session(CanvasInteractionConfig {
-        query_entry_budget: 1,
+        query_work_budget: 1,
         ..CanvasInteractionConfig::default()
     });
     session
@@ -1094,7 +1125,7 @@ fn stale_release_probe_restart_preserves_release_pending_until_commit() {
 #[test]
 fn stale_commit_revalidation_restart_reuses_ticket_and_keeps_budget_terminal() {
     let mut session = test_session(CanvasInteractionConfig {
-        query_entry_budget: 1,
+        query_work_budget: 1,
         ..CanvasInteractionConfig::default()
     });
     let ticket = begin_direct_connection_commit(&mut session);
@@ -1133,7 +1164,7 @@ fn stale_commit_revalidation_restart_reuses_ticket_and_keeps_budget_terminal() {
 #[test]
 fn stale_edge_pick_restart_replaces_identity_without_relaxing_budget_failure() {
     let mut session = test_session(CanvasInteractionConfig {
-        query_entry_budget: 1,
+        query_work_budget: 1,
         ..CanvasInteractionConfig::default()
     });
     let requested = session.request_edge_pick(position(20.0, 10.0)).unwrap();
@@ -1380,7 +1411,7 @@ fn release_before_exact_pick_completion_suppresses_delayed_edge_click_and_finish
 fn exact_press_pagination_latches_maximum_displacement_until_completion() {
     let edge = EdgeId::from_u128(60);
     let mut session = test_session(CanvasInteractionConfig {
-        query_entry_budget: 1,
+        query_work_budget: 1,
         ..CanvasInteractionConfig::default()
     });
     let pressed = session
@@ -2861,7 +2892,7 @@ fn non_restartable_view_generation_cursor_terminates_without_leaking_continuatio
     let mut session = CanvasInteractionSession::attach(
         &view,
         CanvasInteractionConfig {
-            query_entry_budget: 1,
+            query_work_budget: 1,
             ..CanvasInteractionConfig::default()
         },
     )

@@ -73,7 +73,7 @@ impl TraceQuerySchedule {
         match self {
             Self::Default => CanvasInteractionConfig::default(),
             Self::ManyPagesPerFrame => CanvasInteractionConfig {
-                query_entry_budget: 1,
+                query_work_budget: 1,
                 ..CanvasInteractionConfig::default()
             },
         }
@@ -649,7 +649,10 @@ impl EguiTraceRunner {
             (TraceCandidate::Invalid, ConnectionProbe::Invalid { diagnostics, .. }) => {
                 assert!(!diagnostics.is_empty())
             }
-            (TraceCandidate::Valid, ConnectionProbe::Valid { .. }) => {}
+            (
+                TraceCandidate::Valid,
+                ConnectionProbe::Deferred { .. } | ConnectionProbe::Valid { .. },
+            ) => {}
             (candidate, probe) => panic!("trace candidate {candidate:?} disagrees with {probe:?}"),
         }
     }
@@ -729,7 +732,7 @@ impl EguiTraceRunner {
             CanvasInteractionPhase::ConnectionDrag
                 if presentation
                     .connection()
-                    .is_some_and(|connection| connection.probe().is_valid()) =>
+                    .is_some_and(|connection| connection.probe().is_committable()) =>
             {
                 TracePhase::Candidate
             }
@@ -1231,7 +1234,7 @@ fn paint_native_evidence(ui: &Ui, state: &EguiTraceState) {
     let presentation = state.interaction.presentation();
     if let Some(connection) = presentation.connection() {
         let (center, color) = match connection.probe() {
-            ConnectionProbe::Valid { target, .. } => {
+            ConnectionProbe::Deferred { target, .. } | ConnectionProbe::Valid { target, .. } => {
                 (target.route_anchor(), Color32::from_rgb(70, 190, 120))
             }
             ConnectionProbe::Invalid { target, .. } => {

@@ -272,7 +272,7 @@ impl CanonicalDriver {
                 let session = jellyflow_runtime::interaction::CanvasInteractionSession::attach(
                     &host.view,
                     jellyflow_runtime::interaction::CanvasInteractionConfig {
-                        query_entry_budget: 1,
+                        query_work_budget: 1,
                         ..jellyflow_runtime::interaction::CanvasInteractionConfig::default()
                     },
                 )
@@ -1104,7 +1104,7 @@ fn normalized_phase(
         CanvasInteractionPhase::ConnectionDrag
             if presentation
                 .connection()
-                .is_some_and(|connection| connection.probe().is_valid()) =>
+                .is_some_and(|connection| connection.probe().is_committable()) =>
         {
             ConformancePhase::Candidate
         }

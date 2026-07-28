@@ -60,7 +60,7 @@ impl PagedMarqueeState {
             host.view(),
             CanvasInteractionConfig {
                 canvas_drag_threshold_in_view: 1.0,
-                query_entry_budget: 1,
+                query_work_budget: 1,
                 ..CanvasInteractionConfig::default()
             },
         )

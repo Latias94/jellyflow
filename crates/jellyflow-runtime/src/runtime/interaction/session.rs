@@ -10,13 +10,13 @@ use jellyflow_core::interaction::NodeGraphConnectionMode;
 use crate::rules::{Diagnostic, EdgeEndpoint};
 use crate::runtime::adapter_protocol::{PublishedEdgeRoute, ViewDelta, ViewPoint, ViewSize};
 use crate::runtime::commands::{
-    CommandExecutionCompletion, CommandExecutionKind, GraphCommandIdentity,
+    CommandExecutionCompletion, CommandExecutionKind, GraphCommandIdentity, GraphCommandOutcome,
 };
 use crate::runtime::geometry::{EdgeEndpointPosition, HandlePosition};
 use crate::runtime::graph_runtime::{
     CreateFromWireCandidates, CreateFromWireQueryError, EdgeInstanceKey, GraphRuntimeError,
     GraphRuntimePolicy, GraphSnapshot, GraphVersion, NodeLifetimeKey, PortConnectionDragIntent,
-    PortConnectionDragQueryOutcome, PortInstanceKey,
+    PortConnectionDragQueryOutcome, PortConnectionQueryWork, PortInstanceKey,
 };
 use crate::runtime::unwind::{PanicPayload, resume};
 use crate::runtime::view_session::{
@@ -97,7 +97,7 @@ pub struct CanvasInteractionConfig {
     pub alignment_snap: Option<AlignmentSnapConfig>,
     pub auto_pan_band_in_view: f32,
     pub auto_pan_speed_in_view_per_second: f32,
-    pub query_entry_budget: usize,
+    pub query_work_budget: usize,
 }
 
 impl Default for CanvasInteractionConfig {
@@ -117,7 +117,7 @@ impl Default for CanvasInteractionConfig {
             alignment_snap: None,
             auto_pan_band_in_view: 36.0,
             auto_pan_speed_in_view_per_second: 720.0,
-            query_entry_budget: 256,
+            query_work_budget: 256,
         }
     }
 }
@@ -148,7 +148,7 @@ impl CanvasInteractionConfig {
             && self.auto_pan_band_in_view > 0.0
             && self.auto_pan_speed_in_view_per_second.is_finite()
             && self.auto_pan_speed_in_view_per_second >= 0.0
-            && self.query_entry_budget > 0
+            && self.query_work_budget > 0
             && self
                 .grid_size_in_canvas
                 .is_none_or(CanvasSize::is_positive_finite)
@@ -782,13 +782,13 @@ impl WeakViewSession {
         source: KeyboardConnectionPort,
         prospective_edge: EdgeId,
         mode: NodeGraphConnectionMode,
-    ) -> Result<Option<KeyboardConnectionStart>, ViewSessionError> {
+    ) -> Result<(Option<KeyboardConnectionStart>, PortConnectionQueryWork), ViewSessionError> {
         let provenance = self.provenance()?;
         let snapshot = self.graph_snapshot()?;
         let policy = self.graph_policy()?;
-        let drag_intent = self
+        let (drag_intent, work) = self
             .port_connection_drag_intent(source.instance())?
-            .into_outcome();
+            .into_parts();
         let drag_intent = match drag_intent {
             PortConnectionDragQueryOutcome::Ready(intent) => intent,
             PortConnectionDragQueryOutcome::Foreign => {
@@ -798,7 +798,7 @@ impl WeakViewSession {
                 return Err(ViewSessionError::StaleInteractionFacts);
             }
         };
-        keyboard_connection_start_from_facts(
+        let start = keyboard_connection_start_from_facts(
             provenance,
             &snapshot,
             policy,
@@ -806,7 +806,8 @@ impl WeakViewSession {
             drag_intent,
             prospective_edge,
             mode,
-        )
+        )?;
+        Ok((start, work))
     }
 }
 
@@ -1205,6 +1206,7 @@ pub struct CanvasInteractionUpdate {
     damage: InteractionDamage,
     tick_demand: InteractionTickDemand,
     query_work_pending: bool,
+    port_connection_query_work: Option<PortConnectionQueryWork>,
 }
 
 /// Adapter work emitted by one semantic interaction transition.
@@ -1218,6 +1220,7 @@ pub struct CanvasInteractionDispatch {
     pub damage: InteractionDamage,
     pub tick_demand: InteractionTickDemand,
     pub query_work_pending: bool,
+    pub port_connection_query_work: Option<PortConnectionQueryWork>,
 }
 
 impl CanvasInteractionUpdate {
@@ -1231,6 +1234,7 @@ impl CanvasInteractionUpdate {
             damage: self.damage,
             tick_demand: self.tick_demand,
             query_work_pending: self.query_work_pending,
+            port_connection_query_work: self.port_connection_query_work,
         }
     }
 
@@ -1251,6 +1255,12 @@ impl CanvasInteractionUpdate {
         self.query_work_pending
     }
 
+    /// Returns exact runtime work performed while resolving a semantic port activation.
+    #[must_use]
+    pub fn port_connection_query_work(&self) -> Option<PortConnectionQueryWork> {
+        self.port_connection_query_work
+    }
+
     fn with_damage(mut self, damage: InteractionDamage) -> Self {
         self.damage.merge(damage);
         self
@@ -1262,6 +1272,10 @@ impl CanvasInteractionUpdate {
         #[cfg(test)]
         self.selection_mutations.extend(other.selection_mutations);
         self.damage.merge(other.damage);
+        if other.port_connection_query_work.is_some() {
+            debug_assert!(self.port_connection_query_work.is_none());
+            self.port_connection_query_work = other.port_connection_query_work;
+        }
     }
 }
 
@@ -2120,7 +2134,7 @@ impl CanvasInteractionSession {
                     EdgePickQuery::new(
                         position.view(),
                         self.config.edge_pick_radius_in_view,
-                        self.config.query_entry_budget,
+                        self.config.query_work_budget,
                     )
                     .bind_interaction(self.interaction_query_binding(query)),
                 ));
@@ -2440,11 +2454,15 @@ impl CanvasInteractionSession {
             return Err(CanvasInteractionError::AlreadyActive);
         }
         let view = self.authoritative_view()?;
-        let Some(start) = view
+        let (start, work) = view
             .keyboard_connection_start(source, prospective_edge, mode)
-            .map_err(map_connection_binding_error)?
-        else {
-            return Ok(self.finalize_update(CanvasInteractionUpdate::default()));
+            .map_err(map_connection_binding_error)?;
+        let mut update = CanvasInteractionUpdate {
+            port_connection_query_work: Some(work),
+            ..CanvasInteractionUpdate::default()
+        };
+        let Some(start) = start else {
+            return Ok(self.finalize_update(update));
         };
         let generation = self.allocate_generation()?;
         self.terminal = None;
@@ -2454,16 +2472,15 @@ impl CanvasInteractionSession {
             start,
             feedback: None,
         });
-        Ok(self.finalize_update(
-            CanvasInteractionUpdate::default().with_damage(InteractionDamage::connection()),
-        ))
+        update.damage.merge(InteractionDamage::connection());
+        Ok(self.finalize_update(update))
     }
 
     /// Activates one exact real target port for the currently armed keyboard source.
     ///
-    /// Rejected policy decisions retain the active source and expose diagnostics through
-    /// [`Self::keyboard_connection_feedback`]. Accepted decisions use the same fresh connection
-    /// evaluation and `FreshGraphMutation` binder as pointer connection commits.
+    /// Target activation performs only current-instance validation. Authoritative connection
+    /// planning remains in graph command execution; a rejected completion restores the armed
+    /// source and exposes its diagnostics through [`Self::keyboard_connection_feedback`].
     pub fn activate_keyboard_connection_target(
         &mut self,
         target: KeyboardConnectionPort,
@@ -2493,22 +2510,6 @@ impl CanvasInteractionSession {
         }
         view.validate_connection_binding(&start.binding)
             .map_err(map_connection_binding_error)?;
-        let evaluation = view
-            .evaluate_connection(start.binding.edit_for_target(target.port()))
-            .map_err(|_| CanvasInteractionError::ViewUnavailable)?;
-        if !evaluation.is_accept() {
-            let feedback = KeyboardConnectionFeedback::rejected(
-                start.source.port(),
-                target.port(),
-                evaluation.diagnostics().to_vec(),
-            );
-            if let InteractionState::KeyboardConnection(connection) = &mut self.state {
-                connection.feedback = Some(feedback);
-            }
-            return Ok(self.finalize_update(
-                CanvasInteractionUpdate::default().with_damage(InteractionDamage::connection()),
-            ));
-        }
         let Some(ticket) = self.allocate_ticket() else {
             self.terminal = Some(InteractionTerminalReason::IdentityExhausted);
             self.state = InteractionState::Idle;
@@ -2524,7 +2525,7 @@ impl CanvasInteractionSession {
             FreshGraphMutation::connection(
                 start.binding.clone(),
                 ConnectionCommitTarget::existing(target.instance()),
-                evaluation.version(),
+                snapshot.version(),
             ),
         );
         self.state = InteractionState::Committing(CommitInteraction::KeyboardConnection(
@@ -2767,7 +2768,7 @@ impl CanvasInteractionSession {
             EdgePickQuery::new(
                 position.view(),
                 self.config.edge_pick_radius_in_view,
-                self.config.query_entry_budget,
+                self.config.query_work_budget,
             )
             .bind_interaction(self.interaction_query_binding(id)),
         ));
@@ -3160,7 +3161,7 @@ impl CanvasInteractionSession {
             EdgePickQueryOutcome::Incomplete { cursor, .. } => {
                 self.query_work.replace(PendingInteractionQuery::edge_pick(
                     id,
-                    EdgePickQuery::resume(cursor, self.config.query_entry_budget)
+                    EdgePickQuery::resume(cursor, self.config.query_work_budget)
                         .bind_interaction(self.interaction_query_binding(id)),
                 ));
             }
@@ -3207,7 +3208,7 @@ impl CanvasInteractionSession {
     ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
         let resolution = match outcome {
             EdgePickQueryOutcome::Incomplete { cursor, .. } => CanvasEdgePickResolution::Continue(
-                EdgePickQuery::resume(cursor, self.config.query_entry_budget)
+                EdgePickQuery::resume(cursor, self.config.query_work_budget)
                     .bind_interaction(self.interaction_query_binding(id)),
             ),
             EdgePickQueryOutcome::Complete { pick, .. } => {
@@ -3500,7 +3501,7 @@ impl CanvasInteractionSession {
                 EdgePickQuery::new(
                     pending.press.view(),
                     self.config.edge_pick_radius_in_view,
-                    self.config.query_entry_budget,
+                    self.config.query_work_budget,
                 )
                 .bind_interaction(self.interaction_query_binding(next)),
             ));
@@ -3548,7 +3549,7 @@ impl CanvasInteractionSession {
                 EdgePickQuery::new(
                     pending.position.view(),
                     self.config.edge_pick_radius_in_view,
-                    self.config.query_entry_budget,
+                    self.config.query_work_budget,
                 )
                 .bind_interaction(self.interaction_query_binding(next)),
             ));
@@ -3645,7 +3646,7 @@ impl CanvasInteractionSession {
                                     self.config,
                                     commit.probe.target().map(|target| target.identity()),
                                 ),
-                                self.config.query_entry_budget,
+                                self.config.query_work_budget,
                             )
                             .bind_interaction(self.interaction_query_binding(next)),
                         ));
@@ -3885,11 +3886,8 @@ impl CanvasInteractionSession {
                             .replace(PendingInteractionQuery::connection_probe(
                                 id,
                                 drag.generation,
-                                ConnectionProbeQuery::resume(
-                                    cursor,
-                                    self.config.query_entry_budget,
-                                )
-                                .bind_interaction(self.interaction_query_binding(id)),
+                                ConnectionProbeQuery::resume(cursor, self.config.query_work_budget)
+                                    .bind_interaction(self.interaction_query_binding(id)),
                             ));
                         InteractionState::Connection(ConnectionInteraction::Dragging(drag))
                     }
@@ -3918,11 +3916,8 @@ impl CanvasInteractionSession {
                             .replace(PendingInteractionQuery::connection_probe(
                                 id,
                                 commit.generation,
-                                ConnectionProbeQuery::resume(
-                                    cursor,
-                                    self.config.query_entry_budget,
-                                )
-                                .bind_interaction(self.interaction_query_binding(id)),
+                                ConnectionProbeQuery::resume(cursor, self.config.query_work_budget)
+                                    .bind_interaction(self.interaction_query_binding(id)),
                             ));
                         InteractionState::Committing(CommitInteraction::Connection(commit))
                     }
@@ -3936,7 +3931,8 @@ impl CanvasInteractionSession {
                     ConnectionProbeQueryOutcome::Complete { probe, .. } => {
                         update.damage.merge(InteractionDamage::connection());
                         match probe {
-                            valid @ ConnectionProbe::Valid { version, target } => {
+                            valid @ (ConnectionProbe::Deferred { version, target }
+                            | ConnectionProbe::Valid { version, target }) => {
                                 commit.probe = valid;
                                 commit.target =
                                     ConnectionCommitTarget::existing(target.identity().instance());
@@ -4016,7 +4012,7 @@ impl CanvasInteractionSession {
                                 marquee.generation,
                                 NodeIntersectionQuery::resume(
                                     cursor,
-                                    self.config.query_entry_budget,
+                                    self.config.query_work_budget,
                                 )
                                 .bind_interaction(self.interaction_query_binding(id)),
                             ));
@@ -4256,7 +4252,20 @@ impl CanvasInteractionSession {
         }
         self.submission_binding = None;
         let kind = completion.kind();
-        self.complete_submission_with_terminal(ticket, completion_terminal(kind))
+        let keyboard_rejection = match completion.result() {
+            Ok(GraphCommandOutcome::Rejected(rejection)) => Some(rejection.diagnostics().to_vec()),
+            Ok(
+                GraphCommandOutcome::Applied(_)
+                | GraphCommandOutcome::Noop(_)
+                | GraphCommandOutcome::Conflict(_),
+            )
+            | Err(_) => None,
+        };
+        self.complete_submission_with_terminal(
+            ticket,
+            completion_terminal(kind),
+            keyboard_rejection,
+        )
     }
 
     pub fn complete_submission_without_command(
@@ -4276,7 +4285,7 @@ impl CanvasInteractionSession {
             return Err(CanvasInteractionError::SubmissionCompletionStateMismatch);
         }
         self.submission_binding = None;
-        self.complete_submission_with_terminal(ticket, InteractionTerminalReason::Noop)
+        self.complete_submission_with_terminal(ticket, InteractionTerminalReason::Noop, None)
     }
 
     pub fn submission_not_dispatched(
@@ -4296,7 +4305,11 @@ impl CanvasInteractionSession {
             return Err(CanvasInteractionError::SubmissionCompletionStateMismatch);
         }
         self.submission_binding = None;
-        self.complete_submission_with_terminal(ticket, InteractionTerminalReason::TransportFailure)
+        self.complete_submission_with_terminal(
+            ticket,
+            InteractionTerminalReason::TransportFailure,
+            None,
+        )
     }
 
     pub fn submission_outcome_unknown(
@@ -4316,7 +4329,7 @@ impl CanvasInteractionSession {
             return Err(CanvasInteractionError::SubmissionCompletionStateMismatch);
         }
         self.submission_binding = None;
-        self.complete_submission_with_terminal(ticket, InteractionTerminalReason::Uncertain)
+        self.complete_submission_with_terminal(ticket, InteractionTerminalReason::Uncertain, None)
     }
 
     fn submission_callback_is_stale(
@@ -4334,6 +4347,7 @@ impl CanvasInteractionSession {
         &mut self,
         ticket: InteractionTicketId,
         terminal: InteractionTerminalReason,
+        keyboard_rejection: Option<Vec<Diagnostic>>,
     ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
         let state = std::mem::take(&mut self.state);
         let mut update = CanvasInteractionUpdate::default();
@@ -4347,9 +4361,22 @@ impl CanvasInteractionSession {
             InteractionState::Committing(CommitInteraction::KeyboardConnection(commit))
                 if commit.ticket == ticket =>
             {
-                self.terminal = Some(terminal);
                 update.damage.merge(InteractionDamage::connection());
-                InteractionState::Idle
+                if let Some(diagnostics) = keyboard_rejection {
+                    self.terminal = None;
+                    InteractionState::KeyboardConnection(KeyboardConnectionInteraction {
+                        generation: commit.generation,
+                        feedback: Some(KeyboardConnectionFeedback::rejected(
+                            commit.start.source.port(),
+                            commit.target.port(),
+                            diagnostics,
+                        )),
+                        start: commit.start,
+                    })
+                } else {
+                    self.terminal = Some(terminal);
+                    InteractionState::Idle
+                }
             }
             InteractionState::Committing(CommitInteraction::NodeMove(commit))
                 if commit.ticket == ticket =>
@@ -4473,16 +4500,6 @@ impl CanvasInteractionSession {
         }
         view.validate_connection_binding(&start.binding)
             .map_err(map_connection_binding_error)?;
-        let evaluation = view
-            .evaluate_connection(start.binding.edit_for_target(target.port()))
-            .map_err(|_| CanvasInteractionError::ViewUnavailable)?;
-        if !evaluation.is_accept() {
-            self.state = InteractionState::Idle;
-            self.terminal = Some(InteractionTerminalReason::Rejected);
-            return Ok(self.finalize_update(
-                CanvasInteractionUpdate::default().with_damage(InteractionDamage::connection()),
-            ));
-        }
         let mut update =
             CanvasInteractionUpdate::default().with_damage(InteractionDamage::connection());
         self.push_graph_mutation(
@@ -4491,7 +4508,7 @@ impl CanvasInteractionSession {
             FreshGraphMutation::connection(
                 start.binding,
                 ConnectionCommitTarget::existing(target.instance()),
-                evaluation.version(),
+                snapshot.version(),
             ),
         );
         Ok(self.finalize_update(update))
@@ -4533,7 +4550,7 @@ impl CanvasInteractionSession {
                                     self.config,
                                     commit.probe.target().map(|target| target.identity()),
                                 ),
-                                self.config.query_entry_budget,
+                                self.config.query_work_budget,
                             )
                             .bind_interaction(self.interaction_query_binding(id)),
                         ));
@@ -5675,7 +5692,7 @@ impl CanvasInteractionSession {
                     drag.raw_delta,
                     config.acquire_tolerance_in_view(),
                     config.release_tolerance_in_view(),
-                    self.config.query_entry_budget,
+                    self.config.query_work_budget,
                     drag.alignment_locks,
                     self.interaction_query_binding(id),
                 ),
@@ -5709,7 +5726,7 @@ impl CanvasInteractionSession {
                 marquee.generation,
                 NodeIntersectionQuery::new(
                     rect_between(marquee.start.canvas(), marquee.pointer.canvas()),
-                    self.config.query_entry_budget,
+                    self.config.query_work_budget,
                 )
                 .bind_interaction(self.interaction_query_binding(id)),
             ));
@@ -5768,7 +5785,7 @@ impl CanvasInteractionSession {
                     drag.start.binding.clone(),
                     drag.pointer.view(),
                     connection_probe_targeting(self.config, drag.target_lock),
-                    self.config.query_entry_budget,
+                    self.config.query_work_budget,
                 )
                 .bind_interaction(self.interaction_query_binding(id)),
             ));
@@ -5781,11 +5798,11 @@ impl CanvasInteractionSession {
         update: &mut CanvasInteractionUpdate,
     ) -> InteractionState {
         match drag.probe.target() {
-            Some(target) if drag.probe.is_valid() => {
+            Some(target) if drag.probe.is_committable() => {
                 let validated_version = drag
                     .probe
                     .version()
-                    .expect("a valid connection probe always carries its graph version");
+                    .expect("a committable connection probe always carries its graph version");
                 self.begin_connection_commit(
                     drag.generation,
                     drag.start,

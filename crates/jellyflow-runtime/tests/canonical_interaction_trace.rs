@@ -343,7 +343,7 @@ fn one_native_grant_advances_multiple_runtime_owned_query_pages() {
     let config = CanvasInteractionConfig {
         connection_acquire_radius_in_view: 1_000.0,
         connection_release_radius_in_view: 1_000.0,
-        query_entry_budget: 1,
+        query_work_budget: 1,
         ..CanvasInteractionConfig::default()
     };
     let mut session = CanvasInteractionSession::attach(&harness.view, config).unwrap();
@@ -406,7 +406,7 @@ fn connection_commit_revalidation_resumes_real_view_query_before_resubmission() 
     let config = CanvasInteractionConfig {
         connection_acquire_radius_in_view: 1_000.0,
         connection_release_radius_in_view: 1_000.0,
-        query_entry_budget: 1,
+        query_work_budget: 1,
         ..CanvasInteractionConfig::default()
     };
     let mut session = CanvasInteractionSession::attach(&harness.view, config).unwrap();
@@ -490,7 +490,7 @@ fn paged_connection_queries_restart_after_viewport_layout_and_graph_changes() {
     let config = CanvasInteractionConfig {
         connection_acquire_radius_in_view: 1_000.0,
         connection_release_radius_in_view: 1_000.0,
-        query_entry_budget: 1,
+        query_work_budget: 1,
         ..CanvasInteractionConfig::default()
     };
     let mut session = CanvasInteractionSession::attach(&harness.view, config).unwrap();
@@ -1155,7 +1155,10 @@ impl TraceHarness {
         match (&candidate, probe) {
             (TraceCandidate::None, ConnectionProbe::None)
             | (TraceCandidate::Invalid, ConnectionProbe::Invalid { .. })
-            | (TraceCandidate::Valid, ConnectionProbe::Valid { .. }) => {}
+            | (
+                TraceCandidate::Valid,
+                ConnectionProbe::Deferred { .. } | ConnectionProbe::Valid { .. },
+            ) => {}
             _ => panic!("trace candidate disagrees with the session-owned query: {probe:?}"),
         }
         TraceEffect::ProbeConnection
@@ -1276,7 +1279,7 @@ impl TraceHarness {
             CanvasInteractionPhase::ConnectionDrag
                 if presentation
                     .connection()
-                    .is_some_and(|connection| connection.probe().is_valid()) =>
+                    .is_some_and(|connection| connection.probe().is_committable()) =>
             {
                 TracePhase::Candidate
             }

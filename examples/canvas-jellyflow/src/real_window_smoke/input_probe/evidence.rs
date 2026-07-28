@@ -266,7 +266,7 @@ pub(super) fn connection_preview_path(
     let target = connection
         .probe()
         .target()
-        .filter(|_| connection.probe().is_valid())
+        .filter(|_| connection.probe().is_committable())
         .ok_or("input_connection_candidate_missing")?;
     let fixed = EdgeEndpointPosition {
         point: connection.fixed_anchor(),

@@ -364,3 +364,31 @@ fn failed_history_install_preserves_graph_history_indexes_and_notifications() {
     );
     assert_eq!(event_count.get(), 0);
 }
+
+#[test]
+fn failed_mutation_install_preserves_completed_planning_work() {
+    let (graph, nodes) = graph_with_nodes(1);
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .unwrap();
+    runtime.set_revision_for_test(u64::MAX);
+
+    let before = runtime.snapshot().unwrap();
+    let history_before = runtime.history_state().unwrap();
+    let completion = runtime.execute(GraphCommand::set_node_position(
+        before.version(),
+        nodes[0],
+        CanvasPoint { x: 12.0, y: 34.0 },
+    ));
+
+    assert!(matches!(
+        completion.result(),
+        Err(GraphRuntimeError::RevisionExhausted)
+    ));
+    let planning_work = completion
+        .planning_work()
+        .expect("successful planning remains observable after installation fails");
+    assert_eq!(planning_work.operations_emitted(), 1);
+    assert!(before.ptr_eq(&runtime.snapshot().unwrap()));
+    assert_eq!(runtime.history_state().unwrap(), history_before);
+}

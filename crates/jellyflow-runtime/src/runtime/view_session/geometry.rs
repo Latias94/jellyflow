@@ -22,6 +22,10 @@ use crate::runtime::viewport::ViewportTransform;
 
 use super::derived_geometry::LayoutWithdrawal;
 use super::protocol::{ExpectedNodeLayout, PendingFrame, PendingLayout};
+use super::spatial_grid::{
+    HierarchicalSpatialIndex, SpatialQueryCursor, SpatialQuerySource, SpatialQueryStep,
+    bounded_spatial_cells_for_rect, max_spatial_query_setup_work,
+};
 use super::{
     AlignmentSnapQueryReceipt, InteractionQueryBinding, InteractionQueryProof,
     NodeIntersectionQueryReceipt, ViewQueryIdentity, ViewQueryIdentityStaleReason, ViewSession,
@@ -29,6 +33,10 @@ use super::{
 };
 
 const HARD_NODE_INTERSECTION_ENTRY_LIMIT: u64 = 16_384;
+const MAX_NODE_SPATIAL_CELLS: i64 = 4_096;
+const MAX_NODE_QUERY_SETUP_WORK: u64 = max_spatial_query_setup_work(MAX_NODE_SPATIAL_CELLS as u64);
+const HARD_NODE_INTERSECTION_WORK_LIMIT: u64 =
+    HARD_NODE_INTERSECTION_ENTRY_LIMIT + MAX_NODE_QUERY_SETUP_WORK;
 
 #[derive(Debug)]
 pub struct NodeIntersectionQuery {
@@ -71,20 +79,37 @@ pub struct NodeIntersectionCursor {
     identity: ViewQueryIdentity,
     index_epoch: u128,
     bounds: CanvasBounds,
-    sources: Vec<NodeSpatialQuerySource>,
-    source_index: usize,
-    source_started: bool,
-    last_node: Option<NodeId>,
+    spatial_query: SpatialQueryCursor,
+    active_source: Option<SpatialQuerySource>,
+    next_node: Option<NodeId>,
     checked: BTreeSet<NodeId>,
     matched: BTreeSet<NodeId>,
     total_entries_examined: u64,
+    total_spatial_work: u64,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct NodeIntersectionWork {
+    /// Level-discovery steps, including the terminal exhausted check.
+    pub spatial_level_checks: u64,
+    /// Cell or whole-level sources initialized by the spatial cursor.
+    pub spatial_source_setups: u64,
+    /// Cell sources initialized; this is a subset of `spatial_source_setups`.
     pub cells_examined: u64,
+    /// Node entries consumed from initialized sources.
     pub entries_examined: u64,
+    /// Exact bounds tests performed; this is a subset of `entries_examined`.
     pub exact_tests: u64,
+}
+
+impl NodeIntersectionWork {
+    /// Returns the level, source, and entry units charged against the page budget.
+    #[must_use]
+    pub const fn spatial_work_units(self) -> u64 {
+        self.spatial_level_checks
+            .saturating_add(self.spatial_source_setups)
+            .saturating_add(self.entries_examined)
+    }
 }
 
 #[derive(Debug)]
@@ -140,20 +165,13 @@ pub enum NodeIntersectionQueryError {
     StaleCursor(NodeIntersectionCursorStaleReason),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum NodeSpatialQuerySource {
-    Overflow,
-    Cell(SpatialCell),
-    All,
-}
-
 pub(super) enum InternalNodeIntersectionOutcome {
     Complete {
         nodes: BTreeSet<NodeId>,
         work: NodeIntersectionWork,
     },
     Incomplete {
-        cursor: NodeIntersectionCursor,
+        cursor: Box<NodeIntersectionCursor>,
         work: NodeIntersectionWork,
     },
     BudgetExhausted {
@@ -257,7 +275,7 @@ impl ViewShared {
                 }
                 NodeIntersectionRequest::Resume(cursor) => {
                     validate_node_intersection_cursor(&state, &cursor)?;
-                    *cursor
+                    cursor
                 }
             };
             let outcome = state
@@ -274,7 +292,7 @@ impl ViewShared {
             }
             InternalNodeIntersectionOutcome::Incomplete { cursor, work } => {
                 NodeIntersectionQueryOutcome::Incomplete {
-                    cursor: Box::new(cursor),
+                    cursor,
                     receipt: NodeIntersectionQueryReceipt::new(work, proof),
                 }
             }
@@ -420,6 +438,8 @@ pub(super) struct SpatialQuery {
 #[derive(Debug, Default)]
 pub(super) struct ViewSpatialIndex {
     cells: BTreeMap<SpatialCell, BTreeSet<NodeId>>,
+    // Paged queries need hierarchical levels; fixed cells remain for synchronous frame admission.
+    intersection: HierarchicalSpatialIndex<NodeId>,
     alignment_x: BTreeMap<i32, BTreeSet<NodeId>>,
     alignment_y: BTreeMap<i32, BTreeSet<NodeId>>,
     nodes: BTreeMap<NodeId, IndexedNodeSpatial>,
@@ -450,6 +470,10 @@ impl ViewSpatialIndex {
             return false;
         }
         self.remove(node);
+        self.intersection.upsert(
+            node,
+            bounded_spatial_cells_for_rect(bounds, MAX_NODE_SPATIAL_CELLS),
+        );
         let covered = covered_spatial_cells(bounds).unwrap_or_default();
         if covered.is_empty() {
             self.overflow_nodes.insert(node);
@@ -482,6 +506,7 @@ impl ViewSpatialIndex {
         let Some(indexed) = self.nodes.remove(&node) else {
             return false;
         };
+        self.intersection.remove(node);
         self.overflow_nodes.remove(&node);
         for cell in indexed.covered {
             let remove_cell = self.cells.get_mut(&cell).is_some_and(|nodes| {
@@ -501,6 +526,7 @@ impl ViewSpatialIndex {
     pub(super) fn clear(&mut self) {
         let changed = !self.nodes.is_empty();
         self.cells.clear();
+        self.intersection.clear();
         self.alignment_x.clear();
         self.alignment_y.clear();
         self.nodes.clear();
@@ -514,99 +540,104 @@ impl ViewSpatialIndex {
         self.index_epoch
     }
 
+    pub(super) fn invalidate_visibility(&mut self) {
+        self.index_epoch = self.index_epoch.saturating_add(1);
+    }
+
     pub(super) fn new_intersection_cursor(
         &self,
         identity: ViewQueryIdentity,
         bounds: CanvasRect,
         canvas_bounds: CanvasBounds,
-    ) -> NodeIntersectionCursor {
-        let sources = covered_spatial_cells(bounds).map_or_else(
-            || vec![NodeSpatialQuerySource::All],
-            |cells| {
-                std::iter::once(NodeSpatialQuerySource::Overflow)
-                    .chain(cells.into_iter().map(NodeSpatialQuerySource::Cell))
-                    .collect()
-            },
-        );
-        NodeIntersectionCursor {
+    ) -> Box<NodeIntersectionCursor> {
+        Box::new(NodeIntersectionCursor {
             identity,
             index_epoch: self.index_epoch,
             bounds: canvas_bounds,
-            sources,
-            source_index: 0,
-            source_started: false,
-            last_node: None,
+            spatial_query: SpatialQueryCursor::new(bounds, MAX_NODE_SPATIAL_CELLS),
+            active_source: None,
+            next_node: None,
             checked: BTreeSet::new(),
             matched: BTreeSet::new(),
             total_entries_examined: 0,
-        }
+            total_spatial_work: 0,
+        })
     }
 
     pub(super) fn query_intersection_page(
         &self,
-        mut cursor: NodeIntersectionCursor,
+        mut cursor: Box<NodeIntersectionCursor>,
         entry_budget: usize,
+        mut is_visible: impl FnMut(NodeId) -> bool,
     ) -> InternalNodeIntersectionOutcome {
         let mut work = NodeIntersectionWork::default();
         let mut remaining = entry_budget;
         let query = cursor.bounds;
         loop {
-            if cursor.source_index >= cursor.sources.len() {
-                return InternalNodeIntersectionOutcome::Complete {
-                    nodes: cursor.matched,
-                    work,
-                };
-            }
-            let source = cursor.sources[cursor.source_index];
-            if !cursor.source_started {
-                if matches!(source, NodeSpatialQuerySource::Cell(_)) {
-                    work.cells_examined = work.cells_examined.saturating_add(1);
+            let Some(node) = cursor.next_node else {
+                if remaining == 0 {
+                    return InternalNodeIntersectionOutcome::Incomplete { cursor, work };
                 }
-                cursor.source_started = true;
-            }
-            let next = match source {
-                NodeSpatialQuerySource::Overflow => cursor.last_node.map_or_else(
-                    || self.overflow_nodes.iter().next().copied(),
-                    |last| {
-                        self.overflow_nodes
-                            .range((Excluded(last), Unbounded))
-                            .next()
-                            .copied()
-                    },
-                ),
-                NodeSpatialQuerySource::Cell(cell) => self.cells.get(&cell).and_then(|nodes| {
-                    cursor.last_node.map_or_else(
-                        || nodes.iter().next().copied(),
-                        |last| nodes.range((Excluded(last), Unbounded)).next().copied(),
-                    )
-                }),
-                NodeSpatialQuerySource::All => cursor.last_node.map_or_else(
-                    || self.nodes.keys().next().copied(),
-                    |last| {
-                        self.nodes
-                            .range((Excluded(last), Unbounded))
-                            .next()
-                            .map(|(node, _)| *node)
-                    },
-                ),
-            };
-            let Some(node) = next else {
-                cursor.source_index += 1;
-                cursor.source_started = false;
-                cursor.last_node = None;
+                if cursor.total_spatial_work >= HARD_NODE_INTERSECTION_WORK_LIMIT {
+                    return InternalNodeIntersectionOutcome::BudgetExhausted { work };
+                }
+                remaining -= 1;
+                cursor.total_spatial_work = cursor.total_spatial_work.saturating_add(1);
+                match self.intersection.advance_query(&mut cursor.spatial_query) {
+                    SpatialQueryStep::LevelInitialized => {
+                        work.spatial_level_checks = work.spatial_level_checks.saturating_add(1);
+                    }
+                    SpatialQueryStep::Source(source) => {
+                        work.spatial_source_setups = work.spatial_source_setups.saturating_add(1);
+                        if matches!(source, SpatialQuerySource::Cell(_)) {
+                            work.cells_examined = work.cells_examined.saturating_add(1);
+                        }
+                        cursor.active_source = Some(source);
+                        cursor.next_node = self
+                            .intersection
+                            .source(source)
+                            .and_then(|nodes| nodes.iter().next().copied());
+                        if cursor.next_node.is_none() {
+                            cursor.active_source = None;
+                        }
+                    }
+                    SpatialQueryStep::Exhausted => {
+                        work.spatial_level_checks = work.spatial_level_checks.saturating_add(1);
+                        let cursor = *cursor;
+                        return InternalNodeIntersectionOutcome::Complete {
+                            nodes: cursor.matched,
+                            work,
+                        };
+                    }
+                }
                 continue;
             };
             if remaining == 0 {
                 return InternalNodeIntersectionOutcome::Incomplete { cursor, work };
             }
-            if cursor.total_entries_examined >= HARD_NODE_INTERSECTION_ENTRY_LIMIT {
+            if cursor.total_entries_examined >= HARD_NODE_INTERSECTION_ENTRY_LIMIT
+                || cursor.total_spatial_work >= HARD_NODE_INTERSECTION_WORK_LIMIT
+            {
                 return InternalNodeIntersectionOutcome::BudgetExhausted { work };
             }
             remaining -= 1;
-            cursor.last_node = Some(node);
             cursor.total_entries_examined = cursor.total_entries_examined.saturating_add(1);
+            cursor.total_spatial_work = cursor.total_spatial_work.saturating_add(1);
             work.entries_examined = work.entries_examined.saturating_add(1);
+            let source = cursor
+                .active_source
+                .expect("a pending node always belongs to an active spatial source");
+            cursor.next_node = self
+                .intersection
+                .source(source)
+                .and_then(|nodes| nodes.range((Excluded(node), Unbounded)).next().copied());
+            if cursor.next_node.is_none() {
+                cursor.active_source = None;
+            }
             if !cursor.checked.insert(node) {
+                continue;
+            }
+            if !is_visible(node) {
                 continue;
             }
             work.exact_tests = work.exact_tests.saturating_add(1);
@@ -952,7 +983,7 @@ fn covered_spatial_cells(bounds: CanvasRect) -> Option<Vec<SpatialCell>> {
     let max_y = spatial_cell_coordinate(bounds.origin.y + bounds.size.height);
     let width = i64::from(max_x) - i64::from(min_x) + 1;
     let height = i64::from(max_y) - i64::from(min_y) + 1;
-    if width <= 0 || height <= 0 || width.saturating_mul(height) > 4_096 {
+    if width <= 0 || height <= 0 || width.saturating_mul(height) > MAX_NODE_SPATIAL_CELLS {
         return None;
     }
     let mut cells = Vec::with_capacity((width * height) as usize);
@@ -1286,4 +1317,159 @@ fn validate_node_intersection_cursor(
     stale
         .map(NodeIntersectionQueryError::StaleCursor)
         .map_or(Ok(()), Err)
+}
+
+#[cfg(test)]
+mod intersection_tests {
+    use super::*;
+    use crate::runtime::view_session::{ViewGeneration, ViewId};
+    use crate::runtime::viewport::ViewportRevision;
+
+    #[test]
+    fn zero_budget_does_not_initialize_empty_node_sources() {
+        let node = NodeId::from_u128(1);
+        let mut index = ViewSpatialIndex::default();
+        index.upsert(
+            node,
+            CanvasRect {
+                origin: CanvasPoint {
+                    x: 10_000.0,
+                    y: 10_000.0,
+                },
+                size: CanvasSize {
+                    width: 100.0,
+                    height: 100.0,
+                },
+            },
+        );
+        let bounds = CanvasRect {
+            origin: CanvasPoint { x: -9.0, y: -9.0 },
+            size: CanvasSize {
+                width: 18.0,
+                height: 18.0,
+            },
+        };
+        let cursor = intersection_cursor(&index, bounds);
+
+        let InternalNodeIntersectionOutcome::Incomplete { cursor, work } =
+            index.query_intersection_page(cursor, 0, |_| true)
+        else {
+            panic!("zero budget must preserve an untouched node cursor");
+        };
+        assert_eq!(work.spatial_work_units(), 0);
+        assert_eq!(cursor.total_spatial_work, 0);
+
+        let InternalNodeIntersectionOutcome::Incomplete { cursor, work } =
+            index.query_intersection_page(cursor, 1, |_| true)
+        else {
+            panic!("one unit initializes only the occupied node level");
+        };
+        assert_eq!(work.spatial_level_checks, 1);
+        assert_eq!(work.spatial_source_setups, 0);
+        assert_eq!(work.entries_examined, 0);
+
+        let (nodes, work) = complete_intersection(&index, cursor, 1);
+        assert!(nodes.is_empty());
+        assert_eq!(work.spatial_level_checks, 1);
+        assert_eq!(work.spatial_source_setups, 4);
+        assert_eq!(work.cells_examined, 4);
+        assert_eq!(work.entries_examined, 0);
+        assert_eq!(work.spatial_work_units(), 5);
+    }
+
+    #[test]
+    fn cross_level_whole_level_node_query_is_split_invariant() {
+        let fine = NodeId::from_u128(1);
+        let coarse = NodeId::from_u128(2);
+        let mut index = ViewSpatialIndex::default();
+        index.upsert(
+            fine,
+            CanvasRect {
+                origin: CanvasPoint::default(),
+                size: CanvasSize {
+                    width: 100.0,
+                    height: 100.0,
+                },
+            },
+        );
+        let bounds = CanvasRect {
+            origin: CanvasPoint {
+                x: -8_500.0,
+                y: -8_500.0,
+            },
+            size: CanvasSize {
+                width: 17_000.0,
+                height: 17_000.0,
+            },
+        };
+        index.upsert(coarse, bounds);
+
+        let (full_nodes, full_work) =
+            complete_intersection(&index, intersection_cursor(&index, bounds), 128);
+        let (split_nodes, split_work) =
+            complete_intersection(&index, intersection_cursor(&index, bounds), 1);
+
+        assert_eq!(full_nodes, BTreeSet::from([fine, coarse]));
+        assert_eq!(split_nodes, full_nodes);
+        assert_eq!(split_work, full_work);
+        assert_eq!(split_work.spatial_level_checks, 3);
+        assert_eq!(split_work.spatial_source_setups, 37);
+        assert_eq!(split_work.cells_examined, 36);
+        assert_eq!(split_work.entries_examined, 37);
+        assert_eq!(split_work.exact_tests, 2);
+        assert_eq!(split_work.spatial_work_units(), 77);
+    }
+
+    fn intersection_cursor(
+        index: &ViewSpatialIndex,
+        bounds: CanvasRect,
+    ) -> Box<NodeIntersectionCursor> {
+        index.new_intersection_cursor(
+            ViewQueryIdentity::new(
+                ViewId::unavailable(),
+                ViewGeneration::initial(),
+                ViewportRevision::initial(),
+            ),
+            bounds,
+            CanvasBounds::from_rect(bounds).expect("positive finite query bounds"),
+        )
+    }
+
+    fn complete_intersection(
+        index: &ViewSpatialIndex,
+        mut cursor: Box<NodeIntersectionCursor>,
+        page_budget: usize,
+    ) -> (BTreeSet<NodeId>, NodeIntersectionWork) {
+        let mut total = NodeIntersectionWork::default();
+        for _ in 0..4_096 {
+            match index.query_intersection_page(cursor, page_budget, |_| true) {
+                InternalNodeIntersectionOutcome::Complete { nodes, work } => {
+                    assert!(work.spatial_work_units() <= page_budget as u64);
+                    accumulate_work(&mut total, work);
+                    return (nodes, total);
+                }
+                InternalNodeIntersectionOutcome::Incomplete { cursor: next, work } => {
+                    assert!(work.spatial_work_units() <= page_budget as u64);
+                    accumulate_work(&mut total, work);
+                    cursor = next;
+                }
+                InternalNodeIntersectionOutcome::BudgetExhausted { .. } => {
+                    panic!("small node fixture cannot exhaust the hard budget")
+                }
+            }
+        }
+        panic!("node query did not complete")
+    }
+
+    fn accumulate_work(total: &mut NodeIntersectionWork, page: NodeIntersectionWork) {
+        total.spatial_level_checks = total
+            .spatial_level_checks
+            .saturating_add(page.spatial_level_checks);
+        total.spatial_source_setups = total
+            .spatial_source_setups
+            .saturating_add(page.spatial_source_setups);
+        total.cells_examined = total.cells_examined.saturating_add(page.cells_examined);
+        total.entries_examined = total.entries_examined.saturating_add(page.entries_examined);
+        total.exact_tests = total.exact_tests.saturating_add(page.exact_tests);
+    }
 }

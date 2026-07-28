@@ -52,6 +52,16 @@ fn default_policy_allows_authoritative_graph_mutations() {
     assert!(policy.node_deletion_enabled());
     assert!(policy.edge_deletion_enabled());
     assert!(policy.edge_reconnection_enabled());
+    assert!(policy.cycles_allowed(EdgeKind::Data));
+    assert!(policy.cycles_allowed(EdgeKind::Exec));
+}
+
+#[test]
+fn cycle_policy_is_resolved_independently_per_edge_kind() {
+    let policy = GraphRuntimePolicy::default().with_cycles(EdgeKind::Data, false);
+
+    assert!(!policy.cycles_allowed(EdgeKind::Data));
+    assert!(policy.cycles_allowed(EdgeKind::Exec));
 }
 
 #[test]

@@ -126,6 +126,7 @@ pub enum ConnectionSearchStatus {
 pub enum ConnectionProbeValidity {
     Unresolved,
     Invalid,
+    Deferred,
     Valid,
 }
 
@@ -134,12 +135,17 @@ impl ConnectionProbeValidity {
         match probe {
             ConnectionProbe::None => Self::Unresolved,
             ConnectionProbe::Invalid { .. } => Self::Invalid,
+            ConnectionProbe::Deferred { .. } => Self::Deferred,
             ConnectionProbe::Valid { .. } => Self::Valid,
         }
     }
 
     pub const fn is_invalid(self) -> bool {
         matches!(self, Self::Invalid)
+    }
+
+    pub const fn is_committable(self) -> bool {
+        matches!(self, Self::Deferred | Self::Valid)
     }
 }
 
@@ -175,10 +181,12 @@ impl ConnectionWireProjection {
             position: fixed_outward,
         };
         let moving = match probe {
-            ConnectionProbe::Valid { target, .. } => EdgeEndpointPosition {
-                point: target.route_anchor(),
-                position: target.outward(),
-            },
+            ConnectionProbe::Deferred { target, .. } | ConnectionProbe::Valid { target, .. } => {
+                EdgeEndpointPosition {
+                    point: target.route_anchor(),
+                    position: target.outward(),
+                }
+            }
             ConnectionProbe::None | ConnectionProbe::Invalid { .. } => EdgeEndpointPosition {
                 point: pointer.canvas(),
                 position: moving_outward,

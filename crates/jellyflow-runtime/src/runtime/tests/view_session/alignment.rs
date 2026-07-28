@@ -48,19 +48,31 @@ fn alignment_feature_index_finds_columns_across_large_perpendicular_distance() {
     let (_runtime, view, ids) = alignment_view(2, 1.0, &[0.0, 205.0]);
     publish_node_layouts(
         &view,
-        [(
-            ids[1],
-            CanvasRect {
-                origin: CanvasPoint {
-                    x: 205.0,
-                    y: 5_000.0,
+        [
+            (
+                ids[0],
+                CanvasRect {
+                    origin: CanvasPoint::default(),
+                    size: CanvasSize {
+                        width: 100.0,
+                        height: 80.0,
+                    },
                 },
-                size: CanvasSize {
-                    width: 100.0,
-                    height: 80.0,
+            ),
+            (
+                ids[1],
+                CanvasRect {
+                    origin: CanvasPoint {
+                        x: 205.0,
+                        y: 5_000.0,
+                    },
+                    size: CanvasSize {
+                        width: 100.0,
+                        height: 80.0,
+                    },
                 },
-            },
-        )],
+            ),
+        ],
     );
     let mut interaction = interaction_session(&view, 64);
     move_and_resolve(&view, &mut interaction, ids[0], 100.0, 1.0);
@@ -274,12 +286,12 @@ fn alignment_view(
     (runtime, view, ids)
 }
 
-fn interaction_session(view: &ViewSession, query_entry_budget: usize) -> CanvasInteractionSession {
+fn interaction_session(view: &ViewSession, query_work_budget: usize) -> CanvasInteractionSession {
     CanvasInteractionSession::attach(
         view,
         CanvasInteractionConfig {
             alignment_snap: AlignmentSnapConfig::new(6.0, 9.0),
-            query_entry_budget,
+            query_work_budget,
             ..CanvasInteractionConfig::default()
         },
     )

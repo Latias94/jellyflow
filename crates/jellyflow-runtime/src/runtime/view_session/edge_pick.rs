@@ -14,7 +14,8 @@ use crate::runtime::viewport::ViewportTransform;
 
 use super::order::render_order_key;
 use super::route_geometry::{
-    RouteFlattenWork, RouteGeometryIndex, RouteQuerySource, RouteSegmentKey,
+    MAX_ROUTE_QUERY_SETUP_WORK, RouteFlattenWork, RouteGeometryIndex, RouteQuerySource,
+    RouteQueryStep, RouteScan, RouteSegmentKey,
 };
 use super::{
     EdgePickQueryReceipt, InteractionQueryBinding, InteractionQueryProof, SelectedEdgeMembership,
@@ -25,6 +26,7 @@ use super::{
 use super::{ViewGeneration, ViewId};
 
 const HARD_EDGE_PICK_ENTRY_LIMIT: u64 = 16_384;
+const HARD_EDGE_PICK_WORK_LIMIT: u64 = HARD_EDGE_PICK_ENTRY_LIMIT + MAX_ROUTE_QUERY_SETUP_WORK;
 const MIN_PICK_RADIUS_IN_VIEW: f32 = 0.001;
 
 pub(super) trait EdgeSelectionLookup {
@@ -97,14 +99,14 @@ pub struct EdgePickCursor {
     canvas_pointer: CanvasPoint,
     zoom: f32,
     radius_in_view: f32,
-    sources: Vec<RouteQuerySource>,
-    source_index: usize,
-    source_started: bool,
-    last_entry: Option<RouteSegmentKey>,
+    scan: RouteScan,
+    active_source: Option<RouteQuerySource>,
+    next_entry: Option<RouteSegmentKey>,
     checked: BTreeSet<EdgeId>,
     best: Option<EdgePickCandidate>,
     geometry_failures: BTreeMap<EdgeId, EdgePathFlattenError>,
     total_entries_examined: u64,
+    total_spatial_work: u64,
 }
 
 /// One deterministic edge pick and its flattened-path distance from the pointer.
@@ -157,7 +159,13 @@ impl EdgePickGeometryFailure {
 /// Work performed by one page of a bounded edge-pick query.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct EdgePickWork {
+    /// Level-discovery steps, including the terminal exhausted check.
+    pub spatial_level_checks: u64,
+    /// Cell or whole-level sources initialized by the spatial cursor.
+    pub spatial_source_setups: u64,
+    /// Cell sources initialized; this is a subset of `spatial_source_setups`.
     pub cells_examined: u64,
+    /// Route-segment entries consumed from initialized sources.
     pub entries_examined: u64,
     pub exact_tests: u64,
     pub candidates_matched: u64,
@@ -169,6 +177,14 @@ pub struct EdgePickWork {
 }
 
 impl EdgePickWork {
+    /// Returns the level, source, and entry units charged against the page budget.
+    #[must_use]
+    pub const fn spatial_work_units(self) -> u64 {
+        self.spatial_level_checks
+            .saturating_add(self.spatial_source_setups)
+            .saturating_add(self.entries_examined)
+    }
+
     fn record_flatten(&mut self, work: RouteFlattenWork) {
         self.flatten_cache_hits = self.flatten_cache_hits.saturating_add(work.cache_hits);
         self.flatten_cache_misses = self.flatten_cache_misses.saturating_add(work.cache_misses);
@@ -288,7 +304,7 @@ impl RouteGeometryIndex {
         pointer: ViewPoint,
         radius_in_view: f32,
         transform: ViewportTransform,
-    ) -> Option<EdgePickCursor> {
+    ) -> Option<Box<EdgePickCursor>> {
         if !pointer.is_finite() || !radius_in_view.is_finite() || radius_in_view < 0.0 {
             return None;
         }
@@ -301,7 +317,7 @@ impl RouteGeometryIndex {
             return None;
         }
         let query_bounds = centered_rect(canvas_pointer, broad_radius_in_canvas)?;
-        Some(EdgePickCursor {
+        Some(Box::new(EdgePickCursor {
             identity,
             path_epoch: self.index_epoch(),
             pick_epoch: self.pick_epoch(),
@@ -309,74 +325,91 @@ impl RouteGeometryIndex {
             canvas_pointer,
             zoom: transform.zoom,
             radius_in_view,
-            sources: self.pick_query_sources(query_bounds),
-            source_index: 0,
-            source_started: false,
-            last_entry: None,
+            scan: self.new_route_scan(query_bounds),
+            active_source: None,
+            next_entry: None,
             checked: BTreeSet::new(),
             best: None,
             geometry_failures: BTreeMap::new(),
             total_entries_examined: 0,
-        })
+            total_spatial_work: 0,
+        }))
     }
 
     pub(super) fn query_pick_page(
         &mut self,
         edge_draw_order_ranks: &BTreeMap<EdgeId, usize>,
         selected_edges: &impl EdgeSelectionLookup,
-        mut cursor: EdgePickCursor,
+        mut cursor: Box<EdgePickCursor>,
         entry_budget: usize,
     ) -> InternalEdgePickOutcome {
         let mut work = EdgePickWork::default();
         let mut remaining = entry_budget;
         loop {
-            if cursor.source_index >= cursor.sources.len() {
-                if cursor.geometry_failures.is_empty() {
-                    return InternalEdgePickOutcome::Complete {
-                        pick: cursor.best.map(|candidate| candidate.pick),
-                        work,
-                    };
+            let Some(entry) = cursor.next_entry else {
+                if remaining == 0 {
+                    return InternalEdgePickOutcome::Incomplete { cursor, work };
                 }
-                return InternalEdgePickOutcome::GeometryIndeterminate {
-                    failures: cursor.geometry_failures,
-                    work,
-                };
-            }
-            if !cursor.source_started {
-                if matches!(
-                    cursor.sources[cursor.source_index],
-                    RouteQuerySource::Cell(_)
-                ) {
-                    work.cells_examined = work.cells_examined.saturating_add(1);
+                if cursor.total_spatial_work >= HARD_EDGE_PICK_WORK_LIMIT {
+                    return InternalEdgePickOutcome::BudgetExhausted { work };
                 }
-                cursor.source_started = true;
-            }
-            let source = cursor.sources[cursor.source_index];
-            let next = self.pick_source(source).and_then(|entries| {
-                cursor.last_entry.map_or_else(
-                    || entries.iter().next().copied(),
-                    |last| entries.range((Excluded(last), Unbounded)).next().copied(),
-                )
-            });
-            let Some(entry) = next else {
-                cursor.source_index += 1;
-                cursor.source_started = false;
-                cursor.last_entry = None;
+                remaining -= 1;
+                cursor.total_spatial_work = cursor.total_spatial_work.saturating_add(1);
+                match self.advance_route_scan(&mut cursor.scan) {
+                    RouteQueryStep::LevelInitialized => {
+                        work.spatial_level_checks = work.spatial_level_checks.saturating_add(1);
+                    }
+                    RouteQueryStep::Source(source) => {
+                        work.spatial_source_setups = work.spatial_source_setups.saturating_add(1);
+                        if matches!(source, RouteQuerySource::Cell(_)) {
+                            work.cells_examined = work.cells_examined.saturating_add(1);
+                        }
+                        cursor.active_source = Some(source);
+                        cursor.next_entry = self
+                            .pick_source(source)
+                            .and_then(|entries| entries.iter().next().copied());
+                        if cursor.next_entry.is_none() {
+                            cursor.active_source = None;
+                        }
+                    }
+                    RouteQueryStep::Exhausted => {
+                        work.spatial_level_checks = work.spatial_level_checks.saturating_add(1);
+                        let cursor = *cursor;
+                        if cursor.geometry_failures.is_empty() {
+                            return InternalEdgePickOutcome::Complete {
+                                pick: cursor.best.map(|candidate| candidate.pick),
+                                work,
+                            };
+                        }
+                        return InternalEdgePickOutcome::GeometryIndeterminate {
+                            failures: cursor.geometry_failures,
+                            work,
+                        };
+                    }
+                }
                 continue;
             };
             if remaining == 0 {
-                return InternalEdgePickOutcome::Incomplete {
-                    cursor: Box::new(cursor),
-                    work,
-                };
+                return InternalEdgePickOutcome::Incomplete { cursor, work };
             }
-            if cursor.total_entries_examined >= HARD_EDGE_PICK_ENTRY_LIMIT {
+            if cursor.total_entries_examined >= HARD_EDGE_PICK_ENTRY_LIMIT
+                || cursor.total_spatial_work >= HARD_EDGE_PICK_WORK_LIMIT
+            {
                 return InternalEdgePickOutcome::BudgetExhausted { work };
             }
             remaining -= 1;
-            cursor.last_entry = Some(entry);
             cursor.total_entries_examined = cursor.total_entries_examined.saturating_add(1);
+            cursor.total_spatial_work = cursor.total_spatial_work.saturating_add(1);
             work.entries_examined = work.entries_examined.saturating_add(1);
+            let source = cursor
+                .active_source
+                .expect("a pending pick entry always belongs to an active spatial source");
+            cursor.next_entry = self
+                .pick_source(source)
+                .and_then(|entries| entries.range((Excluded(entry), Unbounded)).next().copied());
+            if cursor.next_entry.is_none() {
+                cursor.active_source = None;
+            }
 
             let edge = entry.edge();
             if !cursor.checked.insert(edge) {
@@ -493,7 +526,7 @@ impl ViewShared {
                     .ok_or(EdgePickQueryError::InvalidQuery)?,
                 EdgePickRequest::Resume(cursor) => {
                     validate_edge_pick_cursor(&state, &cursor)?;
-                    *cursor
+                    cursor
                 }
             };
             let proof = InteractionQueryProof::issue(
@@ -1004,26 +1037,74 @@ mod tests {
 
     #[test]
     fn edge_pick_resumes_deterministically_across_small_pages() {
-        let mut index = RouteGeometryIndex::default();
+        let mut full_index = RouteGeometryIndex::default();
+        let mut split_index = RouteGeometryIndex::default();
         let mut ranks = BTreeMap::new();
         for ordinal in 0..8_u128 {
             let edge = EdgeId::from_u128(ordinal + 1);
-            index.upsert(edge, &straight_route(edge, -50.0, 0.0, 50.0, 0.0));
+            let route = straight_route(edge, -50.0, 0.0, 50.0, 0.0);
+            full_index.upsert(edge, &route);
+            split_index.upsert(edge, &route);
             ranks.insert(edge, ordinal as usize);
         }
         let expected = EdgeId::from_u128(8);
 
-        let (pick, work) = complete_pick(
-            cursor(&index, ViewPoint::new(0.0, 0.0), 4.0, 1.0),
-            &mut index,
+        let (full_pick, full_work) = complete_pick(
+            cursor(&full_index, ViewPoint::new(0.0, 0.0), 4.0, 1.0),
+            &mut full_index,
+            &ranks,
+            &HashSet::new(),
+            64,
+        );
+        let (split_pick, split_work) = complete_pick(
+            cursor(&split_index, ViewPoint::new(0.0, 0.0), 4.0, 1.0),
+            &mut split_index,
             &ranks,
             &HashSet::new(),
             1,
         );
 
-        assert_eq!(pick.map(EdgePick::edge), Some(expected));
-        assert_eq!(work.exact_tests, 8);
-        assert!(work.entries_examined >= 8);
+        assert_eq!(full_pick.map(EdgePick::edge), Some(expected));
+        assert_eq!(split_pick, full_pick);
+        assert_eq!(split_work, full_work);
+        assert_eq!(split_work.exact_tests, 8);
+        assert!(split_work.entries_examined >= 8);
+    }
+
+    #[test]
+    fn zero_budget_does_not_initialize_empty_pick_sources() {
+        let edge = EdgeId::from_u128(1);
+        let mut index = RouteGeometryIndex::default();
+        index.upsert(
+            edge,
+            &straight_route(edge, 10_000.0, 10_000.0, 10_100.0, 10_000.0),
+        );
+        let cursor = cursor(&index, ViewPoint::new(0.0, 0.0), 4.0, 1.0);
+
+        let InternalEdgePickOutcome::Incomplete { cursor, work } =
+            index.query_pick_page(&BTreeMap::new(), &HashSet::new(), cursor, 0)
+        else {
+            panic!("zero budget must preserve an untouched pick cursor");
+        };
+        assert_eq!(work.spatial_work_units(), 0);
+        assert_eq!(cursor.total_spatial_work, 0);
+
+        let InternalEdgePickOutcome::Incomplete { cursor, work } =
+            index.query_pick_page(&BTreeMap::new(), &HashSet::new(), cursor, 1)
+        else {
+            panic!("one unit initializes only the occupied route level");
+        };
+        assert_eq!(work.spatial_level_checks, 1);
+        assert_eq!(work.spatial_source_setups, 0);
+        assert_eq!(work.entries_examined, 0);
+
+        let (pick, work) = complete_pick(cursor, &mut index, &BTreeMap::new(), &HashSet::new(), 1);
+        assert_eq!(pick, None);
+        assert_eq!(work.spatial_level_checks, 1);
+        assert_eq!(work.spatial_source_setups, 4);
+        assert_eq!(work.cells_examined, 4);
+        assert_eq!(work.entries_examined, 0);
+        assert_eq!(work.spatial_work_units(), 5);
     }
 
     #[test]
@@ -1161,7 +1242,7 @@ mod tests {
     }
 
     fn complete_pick(
-        mut cursor: EdgePickCursor,
+        mut cursor: Box<EdgePickCursor>,
         index: &mut RouteGeometryIndex,
         ranks: &BTreeMap<EdgeId, usize>,
         selected: &HashSet<EdgeId>,
@@ -1171,12 +1252,14 @@ mod tests {
         for _ in 0..128 {
             match index.query_pick_page(ranks, selected, cursor, page_budget) {
                 InternalEdgePickOutcome::Complete { pick, work } => {
+                    assert!(work.spatial_work_units() <= page_budget as u64);
                     accumulate_work(&mut total, work);
                     return (pick, total);
                 }
                 InternalEdgePickOutcome::Incomplete { cursor: next, work } => {
+                    assert!(work.spatial_work_units() <= page_budget as u64);
                     accumulate_work(&mut total, work);
-                    cursor = *next;
+                    cursor = next;
                 }
                 InternalEdgePickOutcome::BudgetExhausted { .. } => {
                     panic!("small fixture must not exhaust the hard budget")
@@ -1190,6 +1273,12 @@ mod tests {
     }
 
     fn accumulate_work(total: &mut EdgePickWork, page: EdgePickWork) {
+        total.spatial_level_checks = total
+            .spatial_level_checks
+            .saturating_add(page.spatial_level_checks);
+        total.spatial_source_setups = total
+            .spatial_source_setups
+            .saturating_add(page.spatial_source_setups);
         total.cells_examined = total.cells_examined.saturating_add(page.cells_examined);
         total.entries_examined = total.entries_examined.saturating_add(page.entries_examined);
         total.exact_tests = total.exact_tests.saturating_add(page.exact_tests);
@@ -1218,7 +1307,7 @@ mod tests {
         pointer: ViewPoint,
         radius_in_view: f32,
         zoom: f32,
-    ) -> EdgePickCursor {
+    ) -> Box<EdgePickCursor> {
         index
             .new_pick_cursor(
                 ViewQueryIdentity::new(

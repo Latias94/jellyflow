@@ -160,7 +160,9 @@ pub(super) fn publish_node_layouts(
     )
     .with_required_nodes(layouts.keys().copied())
     .with_materialization_budget(
-        FrameMaterializationBudget::new(0, node_count, 0).with_visible_node_scan_limit(0),
+        FrameMaterializationBudget::new(0, node_count, 0)
+            .with_visible_node_scan_limit(0)
+            .with_required_node_scan_limit(node_count),
     );
     let frame = session.frame(request).expect("fixture adapter frame");
     assert_eq!(

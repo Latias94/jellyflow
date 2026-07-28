@@ -67,7 +67,7 @@ pub(super) fn plan_connection_edit(
             if let Some(affected_ports) = affected_ports {
                 context.schedule_type_revalidation(affected_ports, IncidentEdgePolicy::Reject);
             }
-            reject_disallowed_cycle(context, edge, profile)?;
+            reject_disallowed_cycle(context, edge, profile, policy)?;
         }
         ConnectionEdit::Disconnect { edge } => {
             if context.was_edge_added(edge) {
@@ -116,7 +116,7 @@ pub(super) fn plan_connection_edit(
             if let Some(affected_ports) = affected_ports {
                 context.schedule_type_revalidation(affected_ports, IncidentEdgePolicy::Reject);
             }
-            reject_disallowed_cycle(context, edge, profile)?;
+            reject_disallowed_cycle(context, edge, profile, policy)?;
         }
     }
     Ok(())
@@ -177,15 +177,21 @@ fn reject_disallowed_cycle(
     context: &mut PlanningContext<'_>,
     edge_id: EdgeId,
     profile: Option<&dyn GraphProfile>,
+    policy: &GraphRuntimePolicy,
 ) -> Result<(), GraphCommandPlanningError> {
-    let Some(profile) = profile else {
+    if profile.is_none()
+        && policy.cycles_allowed(EdgeKind::Data)
+        && policy.cycles_allowed(EdgeKind::Exec)
+    {
         return Ok(());
-    };
+    }
     context.read_facts(1);
     let Some(edge) = context.graph().edge(&edge_id).cloned() else {
         return Ok(());
     };
-    if profile.allow_cycles(edge.kind) {
+    if policy.cycles_allowed(edge.kind)
+        && profile.is_none_or(|profile| profile.allow_cycles(edge.kind))
+    {
         return Ok(());
     }
     context.read_facts(2);

@@ -22,19 +22,22 @@ pub use feedback::{
     StaleFrameReason,
 };
 pub use frame::{
-    AdapterEnvironment, AdapterFrame, DEFAULT_FRAME_REQUIRED_NODE_BUDGET,
-    DEFAULT_FRAME_ROUTING_DEPENDENCY_BUDGET, DEFAULT_FRAME_VISIBLE_NODE_BUDGET,
-    DEFAULT_FRAME_VISIBLE_NODE_SCAN_LIMIT, FrameAdmissionReceipt, FrameBoundsSource,
-    FrameGeometryReceipt, FrameIncidentRoutingReceipt, FrameIncidentSnapshotReceipt,
-    FrameMaterializationBudget, FrameMaterializationOverflow, FrameMaterializationReceipt,
-    FrameNode, FramePort, FrameRequest, NodeInstanceKey, NodeLayoutTarget, PortLayoutTarget,
-    RendererStamp,
+    AdapterEnvironment, AdapterFrame, DEFAULT_FRAME_PORT_SCAN_LIMIT,
+    DEFAULT_FRAME_REQUIRED_NODE_BUDGET, DEFAULT_FRAME_REQUIRED_NODE_SCAN_LIMIT,
+    DEFAULT_FRAME_ROUTING_DEPENDENCY_BUDGET, DEFAULT_FRAME_ROUTING_DEPENDENCY_SCAN_LIMIT,
+    DEFAULT_FRAME_VISIBLE_NODE_BUDGET, DEFAULT_FRAME_VISIBLE_NODE_SCAN_LIMIT,
+    FrameAdmissionReceipt, FrameBoundsSource, FrameGeometryReceipt, FrameIncidentRoutingReceipt,
+    FrameIncidentSnapshotReceipt, FrameInputReceipt, FrameMaterializationBudget,
+    FrameMaterializationOverflow, FrameMaterializationReceipt, FrameNode, FramePort, FrameRequest,
+    NodeInstanceKey, NodeLayoutTarget, PortLayoutTarget, RendererStamp,
 };
-pub(crate) use geometry::SharedGeometryMap;
 pub use geometry::{
     GeometryElementIter, GeometryElementKeys, GeometryElementValues, GeometryElements,
     GeometrySnapshot, PublishedEdgeRoute, PublishedNodeGeometry, PublishedPortGeometry,
     PublishedPortOutcome,
+};
+pub(crate) use geometry::{
+    GeometryVisibleCounts, SharedFrameCullSet, SharedGeometryMap, SharedGeometryOwnerMap,
 };
 pub use work::GeometryImpactMergeWork;
 

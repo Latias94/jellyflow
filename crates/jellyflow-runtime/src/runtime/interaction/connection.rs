@@ -335,6 +335,12 @@ pub enum ConnectionProbe {
         target: ConnectionProbeTarget,
         diagnostics: Vec<Diagnostic>,
     },
+    /// Bounded base rules accept the target, while structural types or a profile require final
+    /// authoritative command planning.
+    Deferred {
+        version: GraphVersion,
+        target: ConnectionProbeTarget,
+    },
     Valid {
         version: GraphVersion,
         target: ConnectionProbeTarget,
@@ -345,21 +351,27 @@ impl ConnectionProbe {
     pub const fn target(&self) -> Option<ConnectionProbeTarget> {
         match self {
             Self::None => None,
-            Self::Invalid { target, .. } | Self::Valid { target, .. } => Some(*target),
+            Self::Invalid { target, .. }
+            | Self::Deferred { target, .. }
+            | Self::Valid { target, .. } => Some(*target),
         }
     }
 
     pub const fn revision(&self) -> Option<GraphRevision> {
         match self {
             Self::None => None,
-            Self::Invalid { version, .. } | Self::Valid { version, .. } => Some(version.revision()),
+            Self::Invalid { version, .. }
+            | Self::Deferred { version, .. }
+            | Self::Valid { version, .. } => Some(version.revision()),
         }
     }
 
     pub const fn version(&self) -> Option<GraphVersion> {
         match self {
             Self::None => None,
-            Self::Invalid { version, .. } | Self::Valid { version, .. } => Some(*version),
+            Self::Invalid { version, .. }
+            | Self::Deferred { version, .. }
+            | Self::Valid { version, .. } => Some(*version),
         }
     }
 
@@ -367,10 +379,15 @@ impl ConnectionProbe {
         matches!(self, Self::Valid { .. })
     }
 
+    /// Returns whether releasing this probe should submit an authoritative graph command.
+    pub const fn is_committable(&self) -> bool {
+        matches!(self, Self::Deferred { .. } | Self::Valid { .. })
+    }
+
     pub fn diagnostics(&self) -> &[Diagnostic] {
         match self {
             Self::Invalid { diagnostics, .. } => diagnostics,
-            Self::None | Self::Valid { .. } => &[],
+            Self::None | Self::Deferred { .. } | Self::Valid { .. } => &[],
         }
     }
 }

@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::runtime::graph_runtime::{GraphRevision, GraphRuntimeError, GraphVersion};
 
-use super::{GraphCommandIdentity, GraphCommandOutcome};
+use super::{GraphCommandIdentity, GraphCommandOutcome, GraphCommandPlanningWork};
 
 /// The terminal classification shared by every command execution consumer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,20 +20,33 @@ pub enum CommandExecutionKind {
 pub struct CommandExecutionCompletion {
     identity: GraphCommandIdentity,
     result: Result<GraphCommandOutcome, GraphRuntimeError>,
+    planning_work: Option<GraphCommandPlanningWork>,
 }
 
 impl CommandExecutionCompletion {
     pub(crate) fn from_outcome(outcome: GraphCommandOutcome) -> Self {
+        let planning_work = match &outcome {
+            GraphCommandOutcome::Applied(receipt) => Some(receipt.planning_work()),
+            GraphCommandOutcome::Noop(noop) => Some(noop.planning_work()),
+            GraphCommandOutcome::Rejected(rejection) => Some(rejection.planning_work()),
+            GraphCommandOutcome::Conflict(_) => None,
+        };
         Self {
             identity: outcome.identity().clone(),
             result: Ok(outcome),
+            planning_work,
         }
     }
 
-    pub(crate) fn from_error(identity: GraphCommandIdentity, error: GraphRuntimeError) -> Self {
+    pub(crate) fn from_error(
+        identity: GraphCommandIdentity,
+        error: GraphRuntimeError,
+        planning_work: Option<GraphCommandPlanningWork>,
+    ) -> Self {
         Self {
             identity,
             result: Err(error),
+            planning_work,
         }
     }
 
@@ -45,6 +58,12 @@ impl CommandExecutionCompletion {
         self.result.as_ref()
     }
 
+    /// Returns command-planning work completed by this execution attempt, when planning began.
+    #[must_use]
+    pub const fn planning_work(&self) -> Option<GraphCommandPlanningWork> {
+        self.planning_work
+    }
+
     pub fn into_result(self) -> Result<GraphCommandOutcome, GraphRuntimeError> {
         self.result
     }
@@ -54,8 +73,9 @@ impl CommandExecutionCompletion {
     ) -> (
         GraphCommandIdentity,
         Result<GraphCommandOutcome, GraphRuntimeError>,
+        Option<GraphCommandPlanningWork>,
     ) {
-        (self.identity, self.result)
+        (self.identity, self.result, self.planning_work)
     }
 
     pub fn kind(&self) -> CommandExecutionKind {
@@ -263,7 +283,21 @@ mod tests {
     use super::*;
 
     fn failed(identity: &GraphCommandIdentity) -> CommandExecutionCompletion {
-        CommandExecutionCompletion::from_error(identity.clone(), GraphRuntimeError::Busy)
+        CommandExecutionCompletion::from_error(identity.clone(), GraphRuntimeError::Busy, None)
+    }
+
+    #[test]
+    fn failed_completion_retains_work_from_a_completed_planning_attempt() {
+        let identity = GraphCommandIdentity::new();
+        let work = GraphCommandPlanningWork::new(3, 2, 5, 1, 0);
+        let completion = CommandExecutionCompletion::from_error(
+            identity,
+            GraphRuntimeError::RevisionExhausted,
+            Some(work),
+        );
+
+        assert_eq!(completion.kind(), CommandExecutionKind::Failed);
+        assert_eq!(completion.planning_work(), Some(work));
     }
 
     #[test]

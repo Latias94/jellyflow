@@ -1739,6 +1739,12 @@ impl OpenGpuiSceneHost {
             return;
         }
         let dispatch = update.into_dispatch();
+        #[cfg(test)]
+        if let Some(work) = dispatch.port_connection_query_work {
+            self.scene_evidence
+                .last_port_connection_query_work
+                .set(Some(work));
+        }
         let effects = dispatch.effects;
         let damage = dispatch.damage;
         let tick_demand = dispatch.tick_demand;
@@ -2508,7 +2514,7 @@ mod tests {
             .owner
             .set_config(CanvasInteractionConfig {
                 alignment_snap: jellyflow_runtime::interaction::AlignmentSnapConfig::new(6.0, 9.0),
-                query_entry_budget: 1,
+                query_work_budget: 1,
                 ..CanvasInteractionConfig::default()
             })
             .expect("alignment query config");

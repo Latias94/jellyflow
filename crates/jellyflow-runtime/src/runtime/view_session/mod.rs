@@ -54,10 +54,10 @@ pub use self::geometry::{
     NodeIntersectionQueryError, NodeIntersectionQueryOutcome, NodeIntersectionWork,
 };
 use self::order::index_draw_order;
-pub use self::port_geometry::{
-    ConnectionProbeCursor, ConnectionProbeCursorStaleReason, ConnectionProbeQuery,
-    ConnectionProbeQueryError, ConnectionProbeQueryOutcome, ConnectionProbeTargeting,
-    ConnectionProbeWork,
+pub use self::port_geometry::ConnectionProbeWork;
+pub(crate) use self::port_geometry::{
+    ConnectionProbeCursorStaleReason, ConnectionProbeQuery, ConnectionProbeQueryError,
+    ConnectionProbeQueryOutcome, ConnectionProbeTargeting,
 };
 use self::protocol::PendingFrame;
 pub use self::route_geometry::{

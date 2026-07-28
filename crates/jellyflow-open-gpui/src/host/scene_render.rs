@@ -11,6 +11,8 @@ use jellyflow_runtime::geometry::{
     EdgeFlattenOptions, EdgePath, EdgePathAnchor, EdgePathSample, EdgePosition, EdgeRouteFacts,
     HandlePosition, PathCommand, flatten_edge_path, resolve_edge_route_path,
 };
+#[cfg(test)]
+use jellyflow_runtime::graph::PortConnectionQueryWork;
 use jellyflow_runtime::viewport::ViewportTransform;
 use jellyflow_runtime::{
     geometry::ViewPoint, geometry::ViewRect, geometry::ViewSize, graph::EdgeEndpoint,
@@ -286,6 +288,7 @@ pub(super) struct OpenGpuiSceneEvidence {
     pub(super) last_scene_phase: Cell<Option<OpenGpuiSceneGesturePhase>>,
     pub(super) last_scene_kind: RefCell<Option<OpenGpuiSceneGestureKind>>,
     pub(super) host_closed_scene_cancellations: Cell<u64>,
+    pub(super) last_port_connection_query_work: Cell<Option<PortConnectionQueryWork>>,
 }
 
 #[cfg(test)]
@@ -309,6 +312,7 @@ impl OpenGpuiSceneEvidence {
             last_scene_phase: Cell::new(None),
             last_scene_kind: RefCell::new(None),
             host_closed_scene_cancellations: Cell::new(0),
+            last_port_connection_query_work: Cell::new(None),
         }
     }
 

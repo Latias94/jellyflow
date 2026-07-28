@@ -85,17 +85,45 @@ pub(super) enum CommandExecution {
     },
 }
 
+pub(super) struct CommandExecutionFailure {
+    error: GraphRuntimeError,
+    planning_work: Option<GraphCommandPlanningWork>,
+}
+
+impl CommandExecutionFailure {
+    fn after_planning(error: GraphRuntimeError, planning_work: GraphCommandPlanningWork) -> Self {
+        Self {
+            error,
+            planning_work: Some(planning_work),
+        }
+    }
+
+    pub(super) fn into_parts(self) -> (GraphRuntimeError, Option<GraphCommandPlanningWork>) {
+        (self.error, self.planning_work)
+    }
+}
+
+impl From<GraphRuntimeError> for CommandExecutionFailure {
+    fn from(error: GraphRuntimeError) -> Self {
+        Self {
+            error,
+            planning_work: None,
+        }
+    }
+}
+
 pub(super) fn execute_command_locked(
     state: &mut RuntimeState,
     catalog: &NodeCatalog,
     command: &GraphCommand,
-) -> Result<CommandExecution, GraphRuntimeError> {
+) -> Result<CommandExecution, CommandExecutionFailure> {
     let current_version = GraphVersion::new(state.provenance, state.revision);
     if command.expected_version().provenance() != state.provenance {
         return Err(GraphRuntimeError::ForeignCommandRuntime {
             command: command.expected_version().provenance(),
             runtime: state.provenance,
-        });
+        }
+        .into());
     }
     let mut declared_footprint = command.conflict_footprint(&state.graph, &state.index);
     if state.profile.is_some() {
@@ -122,10 +150,12 @@ pub(super) fn execute_command_locked(
 
     match command.execution_kind() {
         GraphCommandExecutionKind::Undo => {
-            return execute_history_command_locked(state, command, HistoryDirection::Undo);
+            return execute_history_command_locked(state, command, HistoryDirection::Undo)
+                .map_err(Into::into);
         }
         GraphCommandExecutionKind::Redo => {
-            return execute_history_command_locked(state, command, HistoryDirection::Redo);
+            return execute_history_command_locked(state, command, HistoryDirection::Redo)
+                .map_err(Into::into);
         }
         GraphCommandExecutionKind::Mutation => {}
     }
@@ -179,7 +209,8 @@ pub(super) fn execute_command_locked(
     }
 
     let (patch, sessions) =
-        install_incremental(state, graph, transaction, command.records_history())?;
+        install_incremental(state, graph, transaction, command.records_history())
+            .map_err(|error| CommandExecutionFailure::after_planning(error, planning_work))?;
 
     Ok(CommandExecution::Committed {
         identity: command.identity().clone(),

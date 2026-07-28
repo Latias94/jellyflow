@@ -1,5 +1,6 @@
 //! Authoritative graph document runtime shared by independently disposable views.
 
+mod connection_admission;
 mod create_from_wire;
 mod execution;
 mod impact;
@@ -43,11 +44,14 @@ use crate::runtime::view_session::{
     ViewShared,
 };
 
+pub(crate) use self::connection_admission::{
+    ConnectionAdmissionCursor, ConnectionAdmissionOutcome, ConnectionAdmissionWork,
+};
 use self::execution::collect_live_sessions;
 use self::execution::{
-    CommandExecution, MutationGuard, NotificationDrainGuard, allocate_edge_incarnation,
-    allocate_incarnation, allocate_port_incarnation, command_rejection_from_planning,
-    execute_command_locked, middleware_snapshot, validate_graph,
+    CommandExecution, CommandExecutionFailure, MutationGuard, NotificationDrainGuard,
+    allocate_edge_incarnation, allocate_incarnation, allocate_port_incarnation,
+    command_rejection_from_planning, execute_command_locked, middleware_snapshot, validate_graph,
 };
 use self::index::IncidentNodeQuery;
 
@@ -383,7 +387,15 @@ pub(crate) type IncidentEdgeSnapshot = Arc<BTreeSet<EdgeId>>;
 pub(crate) struct AdapterNodeRuntimeFacts {
     pub(crate) lifetime: NodeLifetimeKey,
     pub(crate) incident_edges: IncidentEdgeSnapshot,
+    pub(crate) port_order: Vec<PortId>,
     pub(crate) port_instances: BTreeMap<PortId, PortInstanceKey>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct AdapterFrameNodeFacts {
+    pub(crate) nodes: BTreeMap<NodeId, AdapterNodeRuntimeFacts>,
+    pub(crate) port_identities_examined: u64,
+    pub(crate) port_budget_omitted_nodes: BTreeSet<NodeId>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -1003,6 +1015,11 @@ impl GraphRuntime {
     }
 
     #[cfg(test)]
+    pub(crate) fn set_revision_for_test(&self, revision: GraphRevision) {
+        self.shared.state.borrow_mut().revision = revision;
+    }
+
+    #[cfg(test)]
     pub(crate) fn installed_impact_state_for_test(
         &self,
     ) -> (GraphIndex, BTreeMap<NodeId, NodeIncarnation>, u64) {
@@ -1157,38 +1174,73 @@ impl RuntimeShared {
         Ok(port_instance_key_from_state(self.id, &state, port))
     }
 
-    pub(crate) fn adapter_frame_node_facts(
+    pub(crate) fn adapter_node_facts(
         &self,
         nodes: &BTreeSet<NodeId>,
     ) -> Result<BTreeMap<NodeId, AdapterNodeRuntimeFacts>, GraphRuntimeError> {
+        let port_nodes = nodes.iter().copied().collect::<Vec<_>>();
+        self.adapter_frame_node_facts(nodes, &port_nodes, usize::MAX)
+            .map(|facts| facts.nodes)
+    }
+
+    pub(crate) fn adapter_frame_node_facts(
+        &self,
+        nodes: &BTreeSet<NodeId>,
+        port_nodes_in_render_order: &[NodeId],
+        port_scan_limit: usize,
+    ) -> Result<AdapterFrameNodeFacts, GraphRuntimeError> {
         let state = self
             .state
             .try_borrow()
             .map_err(|_| GraphRuntimeError::Busy)?;
-        Ok(nodes
+        let mut remaining_port_scan = port_scan_limit;
+        let mut port_identities_examined = 0_u64;
+        let mut port_budget_omitted_nodes = BTreeSet::new();
+        let mut admitted_port_instances = BTreeMap::new();
+        for node in port_nodes_in_render_order.iter().rev().copied() {
+            let Some(record) = state.graph.node(&node) else {
+                continue;
+            };
+            if record.ports.len() > remaining_port_scan {
+                port_budget_omitted_nodes.insert(node);
+                continue;
+            }
+            remaining_port_scan = remaining_port_scan.saturating_sub(record.ports.len());
+            port_identities_examined =
+                port_identities_examined.saturating_add(record.ports.len() as u64);
+            let mut port_order = Vec::with_capacity(record.ports.len());
+            let mut port_instances = BTreeMap::new();
+            for port in &record.ports {
+                if let Some(instance) = port_instance_key_from_state(self.id, &state, *port) {
+                    port_order.push(*port);
+                    port_instances.insert(*port, instance);
+                }
+            }
+            admitted_port_instances.insert(node, (port_order, port_instances));
+        }
+        let facts = nodes
             .iter()
             .filter_map(|node| {
                 let lifetime = node_lifetime_key_from_state(self.id, &state, *node)?;
                 let incident_edges = state.index.incident_edge_snapshot(*node)?;
-                let record = state.graph.node(node)?;
-                let port_instances = record
-                    .ports
-                    .iter()
-                    .filter_map(|port| {
-                        port_instance_key_from_state(self.id, &state, *port)
-                            .map(|instance| (*port, instance))
-                    })
-                    .collect();
+                let (port_order, port_instances) =
+                    admitted_port_instances.remove(node).unwrap_or_default();
                 Some((
                     *node,
                     AdapterNodeRuntimeFacts {
                         lifetime,
                         incident_edges,
+                        port_order,
                         port_instances,
                     },
                 ))
             })
-            .collect())
+            .collect();
+        Ok(AdapterFrameNodeFacts {
+            nodes: facts,
+            port_identities_examined,
+            port_budget_omitted_nodes,
+        })
     }
 
     pub(crate) fn adapter_frame_incident_routing_dependencies(
@@ -1299,14 +1351,17 @@ impl RuntimeShared {
         let identity = command.identity().clone();
         match self.try_execute_command(command) {
             Ok(outcome) => CommandExecutionCompletion::from_outcome(outcome),
-            Err(error) => CommandExecutionCompletion::from_error(identity, error),
+            Err(failure) => {
+                let (error, planning_work) = failure.into_parts();
+                CommandExecutionCompletion::from_error(identity, error, planning_work)
+            }
         }
     }
 
     fn try_execute_command(
         self: &Rc<Self>,
         command: GraphCommand,
-    ) -> Result<GraphCommandOutcome, GraphRuntimeError> {
+    ) -> Result<GraphCommandOutcome, CommandExecutionFailure> {
         self.ensure_command_runtime(&command)?;
         let guard = MutationGuard::acquire(self)?;
         let execution = {
@@ -1492,9 +1547,11 @@ impl RuntimeShared {
                     }
                 }
                 Err(error) => {
+                    let (error, planning_work) = error.into_parts();
                     completions.push(CommandExecutionCompletion::from_error(
                         command.identity().clone(),
                         error,
+                        planning_work,
                     ));
                 }
             }
@@ -1518,7 +1575,7 @@ impl RuntimeShared {
         self: &Rc<Self>,
         command: &GraphCommand,
         notifications: &mut Vec<(RuntimePatch, Vec<(Rc<ViewShared>, ViewGeneration)>)>,
-    ) -> Result<CommandFinalization, GraphRuntimeError> {
+    ) -> Result<CommandFinalization, CommandExecutionFailure> {
         self.ensure_command_runtime(command)?;
         let execution = {
             let mut state = self

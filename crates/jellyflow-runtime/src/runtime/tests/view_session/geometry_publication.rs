@@ -26,11 +26,12 @@ use crate::runtime::interaction::{
 };
 use crate::runtime::tests::fixtures::{port_connection_drag_intent_by_id, set_selection_by_id};
 use crate::runtime::view_session::{
-    ConnectionProbeQuery, ConnectionProbeQueryOutcome, ConnectionProbeTargeting,
-    EdgePickCursorStaleReason, EdgePickQuery, EdgePickQueryError, EdgePickQueryOutcome,
-    ViewSession, ViewSessionError, ViewSessionEvent, ViewSessionOptions,
-    VisibleRouteCursorStaleReason, VisibleRouteQuery, VisibleRouteQueryError,
-    VisibleRouteQueryOutcome,
+    ConnectionProbeCursorStaleReason, ConnectionProbeQuery, ConnectionProbeQueryError,
+    ConnectionProbeQueryOutcome, ConnectionProbeTargeting, EdgePickCursorStaleReason,
+    EdgePickQuery, EdgePickQueryError, EdgePickQueryOutcome, NodeIntersectionCursorStaleReason,
+    NodeIntersectionQuery, NodeIntersectionQueryError, NodeIntersectionQueryOutcome, ViewSession,
+    ViewSessionError, ViewSessionEvent, ViewSessionOptions, VisibleRouteCursorStaleReason,
+    VisibleRouteQuery, VisibleRouteQueryError, VisibleRouteQueryOutcome,
 };
 use crate::runtime::viewport::{ViewportPointerSample, ViewportTransform};
 
@@ -796,13 +797,7 @@ fn runtime_owned_connection_probe_resolves_against_latest_graph_revision() {
         matches!(
             page,
             CanvasInteractionQueryPageReceipt::ConnectionProbe(receipt)
-                if receipt.work().entries_examined > 0
-                    && receipt.work().exact_tests > 0
-                    && receipt.work().policy_evaluations == 1
-                    && receipt
-                        .work()
-                        .planning_work()
-                        .is_some_and(|work| work.fact_reads() > 0)
+                if receipt.work().admission_work_units() > 0
         )
     });
     assert!(resolved.effects().is_empty());
@@ -1143,11 +1138,9 @@ fn complete_port_outcomes_control_hits_routes_culling_and_retirement() {
     let unavailable = session.frame(request()).unwrap();
     let receipt = publish(&unavailable, FirstPortOutcome::Unavailable);
     assert_eq!(receipt.publication().unwrap().layout_revision(), 3);
+    let before_frame_cull = session.geometry_snapshot().unwrap();
     assert!(matches!(
-        session
-            .geometry_snapshot()
-            .unwrap()
-            .port_outcome(ids.ports[0]),
+        before_frame_cull.port_outcome(ids.ports[0]),
         Some(PublishedPortOutcome::Unavailable)
     ));
 
@@ -1169,11 +1162,25 @@ fn complete_port_outcomes_control_hits_routes_culling_and_retirement() {
     assert!(culled.nodes().is_empty());
     let geometry = session.geometry_snapshot().unwrap();
     assert_eq!(geometry.layout_revision(), 4);
-    assert!(ids.ports.iter().all(|port| matches!(
-        geometry.port_outcome(*port),
-        Some(PublishedPortOutcome::Culled)
-    )));
-    assert!(geometry.ports().get(&ids.ports[0]).is_none());
+    assert!(geometry.node(ids.node).is_none());
+    assert!(geometry.nodes().is_empty());
+    assert!(geometry.ports().is_empty());
+    assert!(geometry.port_outcomes().is_empty());
+    assert!(
+        ids.ports
+            .iter()
+            .all(|port| geometry.port_outcome(*port).is_none())
+    );
+    assert!(ids.edges.iter().all(|edge| geometry.route(*edge).is_none()));
+    assert!(before_frame_cull.node(ids.node).is_some());
+    assert_eq!(
+        before_frame_cull
+            .node(ids.node)
+            .unwrap()
+            .port_outcomes()
+            .len(),
+        ids.ports.len(),
+    );
 
     let repeated_cull = session
         .frame(FrameRequest::new(
@@ -1346,13 +1353,8 @@ fn view_space_layout_uses_the_issued_transform_for_all_canvas_geometry() {
             receipt,
         } => {
             assert_eq!(target.port(), ids.target_port);
-            assert_eq!(receipt.work().policy_evaluations, 1);
-            let planning = receipt
-                .work()
-                .planning_work()
-                .expect("valid candidate must expose its planning work");
-            assert!(planning.fact_reads() > 0);
-            assert_eq!(planning.operations_emitted(), 1);
+            assert!(receipt.work().admission_base_rules_examined > 0);
+            assert!(receipt.work().admission_incident_buckets_examined > 0);
         }
         other => panic!("published target port must be a valid candidate: {other:?}"),
     }
@@ -1369,13 +1371,8 @@ fn view_space_layout_uses_the_issued_transform_for_all_canvas_geometry() {
             probe: ConnectionProbe::Invalid { diagnostics, .. },
             receipt,
         } => {
-            assert_eq!(receipt.work().policy_evaluations, 1);
-            let planning = receipt
-                .work()
-                .planning_work()
-                .expect("invalid candidate must expose its partial planning work");
-            assert!(planning.fact_reads() > 0);
-            assert_eq!(planning.operations_emitted(), 0);
+            assert_eq!(receipt.work().admission_base_rules_examined, 1);
+            assert_eq!(receipt.work().admission_incident_entries_examined, 0);
             assert!(
                 diagnostics
                     .iter()
@@ -2302,7 +2299,7 @@ fn adapter_environment_invalidation_is_exact_and_view_local() {
 }
 
 #[test]
-fn culling_preserves_root_admission_but_withdraws_ports_and_routes() {
+fn whole_frame_culling_withdraws_queries_and_republish_restores_geometry() {
     let (graph, ids) = graph_with_routed_edge();
     let runtime = GraphRuntime::builder(Default::default())
         .build(graph)
@@ -2357,6 +2354,33 @@ fn culling_preserves_root_admission_but_withdraws_ports_and_routes() {
     assert!(before.port(ids.source_port).is_some());
     assert!(before.port(ids.target_port).is_some());
     assert!(before.route(ids.edge).is_some());
+    let intent = connection_binding(&session, ids.source_port, EdgeId::from_u128(0xc011_0001));
+    let probe_cursor = match session
+        .connection_probe(ConnectionProbeQuery::new(
+            intent.clone(),
+            ViewPoint::new(246.0, 78.0),
+            ConnectionProbeTargeting::new(12.0, 12.0).unwrap(),
+            0,
+        ))
+        .unwrap()
+    {
+        ConnectionProbeQueryOutcome::Incomplete { cursor, .. } => cursor,
+        other => panic!("zero probe work must retain a resumable cursor: {other:?}"),
+    };
+    let node_query_bounds = CanvasRect {
+        origin: CanvasPoint { x: -20.0, y: 0.0 },
+        size: CanvasSize {
+            width: 500.0,
+            height: 200.0,
+        },
+    };
+    let node_cursor = match session
+        .nodes_intersecting(NodeIntersectionQuery::new(node_query_bounds, 0))
+        .unwrap()
+    {
+        NodeIntersectionQueryOutcome::Incomplete { cursor, .. } => cursor,
+        other => panic!("zero node-query work must retain a resumable cursor: {other:?}"),
+    };
 
     let culled = session
         .frame(FrameRequest::new(
@@ -2381,19 +2405,48 @@ fn culling_preserves_root_admission_but_withdraws_ports_and_routes() {
     assert_eq!(culling_work.route_recomputations(), 1);
     let after_cull = session.geometry_snapshot().unwrap();
     assert_eq!(after_cull.layout_revision(), 2);
-    assert!(after_cull.node(ids.source).unwrap().is_fresh());
-    assert!(after_cull.node(ids.target).unwrap().is_fresh());
+    assert!(after_cull.node(ids.source).is_none());
+    assert!(after_cull.node(ids.target).is_none());
     assert!(after_cull.port(ids.source_port).is_none());
     assert!(after_cull.port(ids.target_port).is_none());
-    assert!(matches!(
-        after_cull.port_outcome(ids.source_port),
-        Some(PublishedPortOutcome::Culled)
-    ));
-    assert!(matches!(
-        after_cull.port_outcome(ids.target_port),
-        Some(PublishedPortOutcome::Culled)
-    ));
+    assert!(after_cull.port_outcome(ids.source_port).is_none());
+    assert!(after_cull.port_outcome(ids.target_port).is_none());
     assert!(after_cull.route(ids.edge).is_none());
+    assert!(after_cull.nodes().is_empty());
+    assert!(after_cull.ports().is_empty());
+    assert!(after_cull.port_outcomes().is_empty());
+    assert!(before.node(ids.source).is_some());
+    assert!(before.node(ids.target).is_some());
+    assert!(before.port(ids.source_port).is_some());
+    assert!(before.port(ids.target_port).is_some());
+    assert!(before.route(ids.edge).is_some());
+    assert!(matches!(
+        session.connection_probe(ConnectionProbeQuery::resume(probe_cursor, 64)),
+        Err(ConnectionProbeQueryError::StaleCursor(
+            ConnectionProbeCursorStaleReason::PortGeometry
+        ))
+    ));
+    assert!(matches!(
+        session.nodes_intersecting(NodeIntersectionQuery::resume(node_cursor, 64)),
+        Err(NodeIntersectionQueryError::StaleCursor(
+            NodeIntersectionCursorStaleReason::NodeGeometry
+        ))
+    ));
+    assert!(complete_nodes_intersecting(&session, node_query_bounds).is_empty());
+    assert!(matches!(
+        session
+            .connection_probe(ConnectionProbeQuery::new(
+                intent.clone(),
+                ViewPoint::new(246.0, 78.0),
+                ConnectionProbeTargeting::new(12.0, 12.0).unwrap(),
+                128,
+            ))
+            .unwrap(),
+        ConnectionProbeQueryOutcome::Complete {
+            probe: ConnectionProbe::None,
+            ..
+        }
+    ));
 
     let culled_collector = culled.collector();
     culled_collector
@@ -2422,6 +2475,88 @@ fn culling_preserves_root_admission_but_withdraws_ports_and_routes() {
             .port(ids.source_port)
             .is_none()
     );
+
+    let restored = session
+        .frame(FrameRequest::new(
+            CanvasRect {
+                origin: CanvasPoint {
+                    x: -100.0,
+                    y: -100.0,
+                },
+                size: CanvasSize {
+                    width: 1_000.0,
+                    height: 600.0,
+                },
+            },
+            RendererStamp::new("test.node", 1),
+        ))
+        .unwrap();
+    assert_eq!(restored.nodes().len(), 3);
+    assert!(session.geometry_snapshot().unwrap().nodes().is_empty());
+    let collector = restored.collector();
+    collector
+        .layout(node_layout(
+            &node_target(&restored, ids.source),
+            root_rect(0.0),
+            [port_layout(
+                &port_target(&restored, ids.source_port),
+                port_rect(174.0),
+                HandlePosition::Right,
+            )],
+        ))
+        .unwrap();
+    collector
+        .layout(node_layout(
+            &node_target(&restored, ids.target),
+            root_rect(240.0),
+            [port_layout(
+                &port_target(&restored, ids.target_port),
+                port_rect(240.0),
+                HandlePosition::Left,
+            )],
+        ))
+        .unwrap();
+    session
+        .submit_feedback(collector.finish().unwrap())
+        .unwrap();
+    let after_restore = session.geometry_snapshot().unwrap();
+    assert!(after_restore.node(ids.source).is_some());
+    assert!(after_restore.node(ids.target).is_some());
+    assert!(after_restore.port(ids.source_port).is_some());
+    assert!(after_restore.port(ids.target_port).is_some());
+    assert!(after_restore.route(ids.edge).is_some());
+    let restored_nodes = complete_nodes_intersecting(&session, node_query_bounds);
+    assert!(restored_nodes.contains(&ids.source));
+    assert!(restored_nodes.contains(&ids.target));
+    assert!(matches!(
+        session
+            .connection_probe(ConnectionProbeQuery::new(
+                intent,
+                ViewPoint::new(246.0, 78.0),
+                ConnectionProbeTargeting::new(12.0, 12.0).unwrap(),
+                128,
+            ))
+            .unwrap(),
+        ConnectionProbeQueryOutcome::Complete {
+            probe: ConnectionProbe::Valid { target, .. },
+            ..
+        } if target.port() == ids.target_port
+    ));
+
+    session
+        .execute(GraphCommand::topology(
+            session.graph_snapshot().unwrap().version(),
+            TopologyEdit::new().remove_node(ids.source, IncidentEdgePolicy::Cascade),
+        ))
+        .unwrap()
+        .into_result()
+        .unwrap();
+    let after_remove = session.geometry_snapshot().unwrap();
+    assert!(after_remove.node(ids.source).is_none());
+    assert!(after_remove.port(ids.source_port).is_none());
+    assert!(after_remove.port_outcome(ids.source_port).is_none());
+    assert!(after_remove.route(ids.edge).is_none());
+    assert!(after_remove.node(ids.target).is_some());
 }
 
 #[test]

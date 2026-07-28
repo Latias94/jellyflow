@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Bound::{Excluded, Unbounded};
 use std::sync::Arc;
 
 use jellyflow_core::core::{
@@ -74,6 +75,14 @@ impl GraphIndex {
 
     pub(crate) fn incident_edge_count(&self, port: PortId) -> usize {
         self.incident_edges.get(&port).map_or(0, BTreeSet::len)
+    }
+
+    pub(crate) fn next_incident_edge(&self, port: PortId, after: Option<EdgeId>) -> Option<EdgeId> {
+        let edges = self.incident_edges.get(&port)?;
+        after.map_or_else(
+            || edges.iter().next().copied(),
+            |edge| edges.range((Excluded(edge), Unbounded)).next().copied(),
+        )
     }
 
     pub(crate) fn bindings_for_target(

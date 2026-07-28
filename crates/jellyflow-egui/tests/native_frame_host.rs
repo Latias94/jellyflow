@@ -4,23 +4,18 @@ use std::rc::Rc;
 use egui::{Id, Pos2, Rect, Sense, TextEdit, Ui, UiBuilder, Vec2, accesskit::Role};
 use egui_kittest::{Harness, kittest::Queryable as _};
 use jellyflow_core::{
-    CanvasPoint, CanvasRect, CanvasSize, EdgeId, GraphBuilder, GraphId, Node,
-    NodeGraphConnectionMode, NodeId, NodeKindKey, Port, PortCapacity, PortDirection, PortId,
-    PortKey, PortKind,
+    CanvasPoint, CanvasRect, CanvasSize, GraphBuilder, GraphId, Node, NodeId, NodeKindKey, Port,
+    PortCapacity, PortDirection, PortId, PortKey, PortKind,
 };
 use jellyflow_egui::{EguiNativeFrameError, EguiNativeFrameHost, EguiNativeFrameOutcome};
 use jellyflow_runtime::commands::{
     CommandExecutionKind, GraphCommand, IncidentEdgePolicy, TopologyEdit, TopologyPort,
 };
-use jellyflow_runtime::geometry::{HandlePosition, ViewPoint};
+use jellyflow_runtime::geometry::HandlePosition;
 use jellyflow_runtime::graph::{GraphRevision, GraphRuntime, HistoryState};
-use jellyflow_runtime::interaction::{
-    ConnectionGestureBinding, ConnectionInteractionStart, ConnectionProbe,
-};
 use jellyflow_runtime::view::{
-    ConnectionProbeQuery, ConnectionProbeQueryOutcome, ConnectionProbeTargeting,
     FeedbackSubmissionError, FrameRequest, LayoutNodeStatus, PublishedPortOutcome, RendererStamp,
-    ViewCloseReason, ViewSession, ViewSessionError, ViewSessionEvent, ViewSessionOptions,
+    ViewCloseReason, ViewSessionError, ViewSessionEvent, ViewSessionOptions,
 };
 use jellyflow_runtime::viewport::ViewportTransform;
 
@@ -264,28 +259,6 @@ fn native_clip_controls_effective_port_hit_without_withdrawing_route_geometry() 
     let expected_partial = screen_rect_to_canvas(effective, state.scene_origin);
     assert_eq!(partial_port.hit_bounds(), Some(expected_partial));
     let route_anchor = partial_port.route_anchor();
-    let clipped_pointer =
-        ViewPoint::new(declared.max.x - state.scene_origin.x - 1.0, route_anchor.y);
-    assert!(matches!(
-        state
-            .host
-            .view()
-            .connection_probe(ConnectionProbeQuery::new(
-                connection_binding(
-                    state.host.view(),
-                    state.source_port,
-                    EdgeId::from_u128(0xc001),
-                ),
-                clipped_pointer,
-                ConnectionProbeTargeting::new(1.0, 1.0).expect("valid target radius"),
-                64,
-            ))
-            .expect("partial clip probe"),
-        ConnectionProbeQueryOutcome::Complete {
-            probe: ConnectionProbe::None,
-            ..
-        }
-    ));
 
     harness.state_mut().clip = PortClip::Full;
     harness.step();
@@ -306,26 +279,6 @@ fn native_clip_controls_effective_port_hit_without_withdrawing_route_geometry() 
         .expect("fully clipped target keeps route geometry");
     assert_eq!(clipped_port.hit_bounds(), None);
     assert_eq!(clipped_port.route_anchor(), route_anchor);
-    assert!(matches!(
-        state
-            .host
-            .view()
-            .connection_probe(ConnectionProbeQuery::new(
-                connection_binding(
-                    state.host.view(),
-                    state.source_port,
-                    EdgeId::from_u128(0xc002),
-                ),
-                ViewPoint::new(route_anchor.x, route_anchor.y),
-                ConnectionProbeTargeting::new(12.0, 12.0).expect("valid target radius"),
-                64,
-            ))
-            .expect("full clip probe"),
-        ConnectionProbeQueryOutcome::Complete {
-            probe: ConnectionProbe::None,
-            ..
-        }
-    ));
 
     harness.state_mut().clip = PortClip::Visible;
     harness.step();
@@ -346,26 +299,6 @@ fn native_clip_controls_effective_port_hit_without_withdrawing_route_geometry() 
         ))
     );
     assert_eq!(restored_port.route_anchor(), route_anchor);
-    assert!(matches!(
-        state
-            .host
-            .view()
-            .connection_probe(ConnectionProbeQuery::new(
-                connection_binding(
-                    state.host.view(),
-                    state.source_port,
-                    EdgeId::from_u128(0xc003),
-                ),
-                ViewPoint::new(route_anchor.x, route_anchor.y),
-                ConnectionProbeTargeting::new(12.0, 12.0).expect("valid target radius"),
-                64,
-            ))
-            .expect("restored probe"),
-        ConnectionProbeQueryOutcome::Complete {
-            probe: ConnectionProbe::Valid { target, .. },
-            ..
-        } if target.port() == state.target_port
-    ));
 }
 
 struct ExplicitPortOutcomesState {
@@ -1780,21 +1713,6 @@ fn frame_request_with_renderer(renderer_incarnation: u64) -> FrameRequest {
         },
         RendererStamp::new(RENDERER_KEY, renderer_incarnation),
     )
-}
-
-fn connection_binding(view: &ViewSession, port: PortId, edge: EdgeId) -> ConnectionGestureBinding {
-    let port = view
-        .port_instance_key(port)
-        .expect("connection port identity query")
-        .expect("source port is current");
-    let drag = view
-        .port_connection_drag_intent(port)
-        .expect("source port can begin a connection")
-        .into_outcome()
-        .ready()
-        .expect("source port remains current");
-    ConnectionInteractionStart::binding_from_port_drag(drag, edge, NodeGraphConnectionMode::Strict)
-        .expect("source port admits a strict connection")
 }
 
 fn graph_with_ports(

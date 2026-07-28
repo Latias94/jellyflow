@@ -283,6 +283,9 @@ fn effective_frame_materialization_budget(
         configured.routing_dependency_nodes(),
     )
     .with_visible_node_scan_limit(configured.visible_node_scan_limit())
+    .with_required_node_scan_limit(configured.required_node_scan_limit())
+    .with_routing_dependency_scan_limit(configured.routing_dependency_scan_limit())
+    .with_port_scan_limit(configured.port_scan_limit())
 }
 
 impl OpenGpuiSceneHost {

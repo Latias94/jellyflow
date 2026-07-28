@@ -26,8 +26,20 @@ pub const DEFAULT_FRAME_VISIBLE_NODE_SCAN_LIMIT: usize = 4_096;
 /// This matches the reference Open GPUI host's protected-instance lease capacity.
 pub const DEFAULT_FRAME_REQUIRED_NODE_BUDGET: usize = 64;
 
+/// Default maximum number of adapter-required node identities examined in one frame.
+///
+/// This is intentionally larger than [`DEFAULT_FRAME_REQUIRED_NODE_BUDGET`] so missing, hidden,
+/// or already-visible identities do not immediately exhaust normal protected-instance requests.
+pub const DEFAULT_FRAME_REQUIRED_NODE_SCAN_LIMIT: usize = 256;
+
 /// Default maximum number of routing dependency nodes materialized in one frame.
 pub const DEFAULT_FRAME_ROUTING_DEPENDENCY_BUDGET: usize = 512;
+
+/// Default maximum number of explicit routing-dependency identities examined in one frame.
+pub const DEFAULT_FRAME_ROUTING_DEPENDENCY_SCAN_LIMIT: usize = 2_048;
+
+/// Default maximum number of graph port identities examined while materializing one frame.
+pub const DEFAULT_FRAME_PORT_SCAN_LIMIT: usize = 16_384;
 
 /// Geometry-affecting native environment generations.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -187,16 +199,20 @@ impl NodeInstanceKey {
 
 /// Independent node-materialization limits for one native frame.
 ///
-/// Node materialization limits apply after hidden, invalid, and duplicate nodes are removed. The
-/// visible scan limit applies earlier to raw spatial entries. A value of zero disables that class
-/// for the request. Callers may opt into larger limits explicitly, but the defaults remain finite
-/// so a viewport or high-fan-out node cannot mount or scan an unbounded native tree.
+/// Node materialization limits apply after hidden, invalid, and duplicate nodes are removed. Scan
+/// limits apply earlier to raw spatial entries, explicit node identities, and graph port
+/// identities. A value of zero disables that class for the request. Callers may opt into larger
+/// limits explicitly, but the defaults remain finite so a viewport, malformed identity list, or
+/// high-port node cannot mount or scan an unbounded native tree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FrameMaterializationBudget {
     visible_nodes: usize,
     visible_node_scan_limit: usize,
     required_nodes: usize,
+    required_node_scan_limit: usize,
     routing_dependency_nodes: usize,
+    routing_dependency_scan_limit: usize,
+    port_scan_limit: usize,
 }
 
 impl FrameMaterializationBudget {
@@ -210,7 +226,10 @@ impl FrameMaterializationBudget {
             visible_nodes,
             visible_node_scan_limit: DEFAULT_FRAME_VISIBLE_NODE_SCAN_LIMIT,
             required_nodes,
+            required_node_scan_limit: DEFAULT_FRAME_REQUIRED_NODE_SCAN_LIMIT,
             routing_dependency_nodes,
+            routing_dependency_scan_limit: DEFAULT_FRAME_ROUTING_DEPENDENCY_SCAN_LIMIT,
+            port_scan_limit: DEFAULT_FRAME_PORT_SCAN_LIMIT,
         }
     }
 
@@ -243,9 +262,51 @@ impl FrameMaterializationBudget {
         self.required_nodes
     }
 
+    /// Returns the maximum number of unique required-node identities examined.
+    #[must_use]
+    pub const fn required_node_scan_limit(self) -> usize {
+        self.required_node_scan_limit
+    }
+
+    /// Overrides the required-node identity scan limit.
+    #[must_use]
+    pub const fn with_required_node_scan_limit(mut self, limit: usize) -> Self {
+        self.required_node_scan_limit = limit;
+        self
+    }
+
     #[must_use]
     pub const fn routing_dependency_nodes(self) -> usize {
         self.routing_dependency_nodes
+    }
+
+    /// Returns the maximum number of unique explicit routing-dependency identities examined.
+    #[must_use]
+    pub const fn routing_dependency_scan_limit(self) -> usize {
+        self.routing_dependency_scan_limit
+    }
+
+    /// Overrides the explicit routing-dependency identity scan limit.
+    #[must_use]
+    pub const fn with_routing_dependency_scan_limit(mut self, limit: usize) -> Self {
+        self.routing_dependency_scan_limit = limit;
+        self
+    }
+
+    /// Returns the maximum number of graph port identities examined for complete admitted nodes.
+    #[must_use]
+    pub const fn port_scan_limit(self) -> usize {
+        self.port_scan_limit
+    }
+
+    /// Overrides the graph port identity scan limit.
+    ///
+    /// Candidate nodes are considered from highest to lowest render priority. A node whose whole
+    /// port set does not fit is omitted; frames never expose only a prefix of a node's real ports.
+    #[must_use]
+    pub const fn with_port_scan_limit(mut self, limit: usize) -> Self {
+        self.port_scan_limit = limit;
+        self
     }
 }
 
@@ -262,16 +323,20 @@ impl Default for FrameMaterializationBudget {
 /// Structured evidence that a frame request exceeded one or more materialization limits.
 ///
 /// Counts include valid, unique candidates known to the admission pass but omitted by their class
-/// budget. When [`Self::visible_scan_truncated`] is false, `visible_nodes` is the exact omitted
-/// count. When it is true, `visible_nodes` is a lower bound from the scanned prefix and additional
-/// visible candidates may exist in unexamined spatial entries. Incident routing discovery is also
-/// bounded, so [`Self::incident_scan_truncated`] reports the equivalent routing degradation.
+/// budget. A class whose scan-truncated flag is false reports an exact omitted count; when true,
+/// its count is a lower bound from the examined prefix and additional candidates may exist in the
+/// unexamined suffix. Port admission remains node-atomic: a candidate whose complete port set does
+/// not fit is omitted instead of exposing a partial native component contract. Incident routing
+/// discovery has its own bounded-scan flag.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct FrameMaterializationOverflow {
     visible_nodes: usize,
     required_nodes: usize,
     routing_dependency_nodes: usize,
     visible_scan_truncated: bool,
+    required_scan_truncated: bool,
+    routing_dependency_scan_truncated: bool,
+    port_budget_nodes: usize,
     incident_scan_truncated: bool,
 }
 
@@ -281,6 +346,8 @@ impl FrameMaterializationOverflow {
         required_nodes: usize,
         routing_dependency_nodes: usize,
         visible_scan_truncated: bool,
+        required_scan_truncated: bool,
+        routing_dependency_scan_truncated: bool,
         incident_scan_truncated: bool,
     ) -> Self {
         Self {
@@ -288,8 +355,16 @@ impl FrameMaterializationOverflow {
             required_nodes,
             routing_dependency_nodes,
             visible_scan_truncated,
+            required_scan_truncated,
+            routing_dependency_scan_truncated,
+            port_budget_nodes: 0,
             incident_scan_truncated,
         }
+    }
+
+    pub(crate) const fn with_port_budget_omissions(mut self, omitted_nodes: usize) -> Self {
+        self.port_budget_nodes = omitted_nodes;
+        self
     }
 
     #[must_use]
@@ -316,6 +391,36 @@ impl FrameMaterializationOverflow {
         self.visible_scan_truncated
     }
 
+    /// Returns whether required-node admission stopped at its identity scan limit.
+    ///
+    /// When true, [`Self::required_nodes`] counts only known overflow in the examined prefix;
+    /// additional valid candidates may exist in the unexamined suffix.
+    #[must_use]
+    pub const fn required_scan_truncated(self) -> bool {
+        self.required_scan_truncated
+    }
+
+    /// Returns whether explicit routing admission stopped at its identity scan limit.
+    ///
+    /// When true, [`Self::routing_dependency_nodes`] counts only known overflow in the examined
+    /// prefix; additional valid candidates may exist in the unexamined suffix.
+    #[must_use]
+    pub const fn routing_dependency_scan_truncated(self) -> bool {
+        self.routing_dependency_scan_truncated
+    }
+
+    /// Returns the number of candidate nodes omitted because their complete port set did not fit.
+    #[must_use]
+    pub const fn port_budget_nodes(self) -> usize {
+        self.port_budget_nodes
+    }
+
+    /// Returns whether one or more candidate nodes could not be admitted atomically.
+    #[must_use]
+    pub const fn port_scan_truncated(self) -> bool {
+        self.port_budget_nodes > 0
+    }
+
     #[must_use]
     pub const fn incident_scan_truncated(self) -> bool {
         self.incident_scan_truncated
@@ -327,7 +432,53 @@ impl FrameMaterializationOverflow {
             && self.required_nodes == 0
             && self.routing_dependency_nodes == 0
             && !self.visible_scan_truncated
+            && !self.required_scan_truncated
+            && !self.routing_dependency_scan_truncated
+            && self.port_budget_nodes == 0
             && !self.incident_scan_truncated
+    }
+}
+
+/// Raw request and graph identity work performed for one frame materialization.
+///
+/// These counters describe identities actually examined, including identities that were missing,
+/// hidden, already admitted by another class, or otherwise rejected before materialization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameInputReceipt {
+    required_node_identities_examined: u64,
+    routing_dependency_identities_examined: u64,
+    port_identities_examined: u64,
+}
+
+impl FrameInputReceipt {
+    pub(crate) const fn new(
+        required_node_identities_examined: u64,
+        routing_dependency_identities_examined: u64,
+        port_identities_examined: u64,
+    ) -> Self {
+        Self {
+            required_node_identities_examined,
+            routing_dependency_identities_examined,
+            port_identities_examined,
+        }
+    }
+
+    /// Returns the number of unique required-node identities examined from the request.
+    #[must_use]
+    pub const fn required_node_identities_examined(self) -> u64 {
+        self.required_node_identities_examined
+    }
+
+    /// Returns the number of unique explicit routing-dependency identities examined.
+    #[must_use]
+    pub const fn routing_dependency_identities_examined(self) -> u64 {
+        self.routing_dependency_identities_examined
+    }
+
+    /// Returns the number of graph port identities examined for admitted frame nodes.
+    #[must_use]
+    pub const fn port_identities_examined(self) -> u64 {
+        self.port_identities_examined
     }
 }
 
@@ -506,6 +657,7 @@ impl FrameGeometryReceipt {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrameMaterializationReceipt {
     overflow: FrameMaterializationOverflow,
+    input: FrameInputReceipt,
     admission: FrameAdmissionReceipt,
     incident_routing: FrameIncidentRoutingReceipt,
     incident_snapshot: FrameIncidentSnapshotReceipt,
@@ -515,6 +667,7 @@ pub struct FrameMaterializationReceipt {
 impl FrameMaterializationReceipt {
     pub(crate) const fn new(
         overflow: FrameMaterializationOverflow,
+        input: FrameInputReceipt,
         admission: FrameAdmissionReceipt,
         incident_routing: FrameIncidentRoutingReceipt,
         incident_snapshot: FrameIncidentSnapshotReceipt,
@@ -522,6 +675,7 @@ impl FrameMaterializationReceipt {
     ) -> Self {
         Self {
             overflow,
+            input,
             admission,
             incident_routing,
             incident_snapshot,
@@ -533,6 +687,12 @@ impl FrameMaterializationReceipt {
     #[must_use]
     pub const fn overflow(&self) -> FrameMaterializationOverflow {
         self.overflow
+    }
+
+    /// Raw request and graph identities examined by this frame.
+    #[must_use]
+    pub const fn input(&self) -> &FrameInputReceipt {
+        &self.input
     }
 
     #[must_use]
@@ -645,7 +805,7 @@ impl FrameRequest {
         self
     }
 
-    /// Overrides the independent visible, required, and routing-dependency limits for this frame.
+    /// Overrides node admission and raw identity scan limits for this frame.
     #[must_use]
     pub fn with_materialization_budget(mut self, budget: FrameMaterializationBudget) -> Self {
         self.materialization_budget = budget;

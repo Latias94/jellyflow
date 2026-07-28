@@ -219,7 +219,7 @@ mod tests {
     use super::{NativeGraphVisualProfile, SHADER_FLOAT_STYLE_SLOT};
 
     #[test]
-    fn shader_profile_keeps_typed_ports_and_wires_on_one_explicit_theme() {
+    fn shader_visual_profile_keeps_typed_ports_and_wires_on_one_explicit_theme() {
         let profile = NativeGraphVisualProfile::shader();
         let expected_theme = profile.graph_theme();
         let (host_theme, painters) = profile.into_host_parts();

@@ -9,10 +9,10 @@ use crate::runtime::adapter_protocol::{
     AdapterEnvironment, AdapterFrame, FeedbackLayoutWork, FeedbackOperation, FeedbackReceipt,
     FeedbackSubmissionError, FeedbackWorkReceipt, FrameAdmissionReceipt, FrameBoundsSource,
     FrameFeedback, FrameGeometryReceipt, FrameIncidentRoutingReceipt, FrameIncidentSnapshotReceipt,
-    FrameMaterializationError, FrameMaterializationOverflow, FrameMaterializationReceipt,
-    FrameNode, FramePort, FrameRequest, FrameToken, GeometryImpactMergeWork,
-    LayoutOperationReceipt, NodeInstanceKey, NodeLayout, NodeLayoutTarget, RendererStamp,
-    StaleFrameReason,
+    FrameInputReceipt, FrameMaterializationError, FrameMaterializationOverflow,
+    FrameMaterializationReceipt, FrameNode, FramePort, FrameRequest, FrameToken,
+    GeometryImpactMergeWork, LayoutOperationReceipt, NodeInstanceKey, NodeLayout, NodeLayoutTarget,
+    RendererStamp, StaleFrameReason,
 };
 use crate::runtime::commands::CommandExecutionCompletion;
 use crate::runtime::geometry::CanvasBounds;
@@ -107,6 +107,8 @@ struct FrameAdmissionWork {
     index_rebuilt: bool,
     candidates_ranked: u64,
     selection_lookups: u64,
+    required_node_identities_examined: u64,
+    routing_dependency_identities_examined: u64,
     incident_routing_index_bucket_reads: u64,
     incident_routing_index_entries_read: u64,
 }
@@ -147,9 +149,9 @@ impl ViewSession {
         let (
             view_id,
             mut candidates,
-            candidate_ids,
+            mut candidate_ids,
             inactive_nodes,
-            materialization_overflow,
+            mut materialization_overflow,
             admission_work,
         ) = {
             let mut state = self
@@ -185,6 +187,8 @@ impl ViewSession {
                 materialization_overflow,
                 selection_membership_lookups,
                 order_candidates_ranked,
+                required_node_identities_examined,
+                routing_dependency_identities_examined,
                 incident_routing_index_bucket_reads,
                 incident_routing_index_entries_read,
             ) = {
@@ -233,9 +237,14 @@ impl ViewSession {
                     .collect::<BTreeSet<_>>();
                 let mut candidate_ids = visible_ids.clone();
 
+                let required_scan_limit = request.materialization_budget.required_node_scan_limit();
+                let required_node_identities_examined =
+                    request.required_nodes.len().min(required_scan_limit) as u64;
+                let required_scan_truncated = request.required_nodes.len() > required_scan_limit;
                 let required_candidates = request
                     .required_nodes
                     .iter()
+                    .take(required_scan_limit)
                     .filter(|node| !candidate_ids.contains(node))
                     .filter_map(|node| candidate_for(*node, true))
                     .collect::<Vec<_>>();
@@ -254,9 +263,17 @@ impl ViewSession {
                 candidates.extend(required_candidates);
 
                 let routing_budget = request.materialization_budget.routing_dependency_nodes();
+                let routing_scan_limit = request
+                    .materialization_budget
+                    .routing_dependency_scan_limit();
+                let routing_dependency_identities_examined =
+                    request.routing_dependencies.len().min(routing_scan_limit) as u64;
+                let routing_dependency_scan_truncated =
+                    request.routing_dependencies.len() > routing_scan_limit;
                 let explicit_routing_candidates = request
                     .routing_dependencies
                     .iter()
+                    .take(routing_scan_limit)
                     .filter(|node| !candidate_ids.contains(node))
                     .filter_map(|node| candidate_for(*node, true))
                     .collect::<Vec<_>>();
@@ -332,6 +349,8 @@ impl ViewSession {
                     required_overflow,
                     routing_overflow,
                     visible_scan_truncated,
+                    required_scan_truncated,
+                    routing_dependency_scan_truncated,
                     incident_scan_truncated,
                 );
                 order_candidates_ranked =
@@ -349,6 +368,8 @@ impl ViewSession {
                     materialization_overflow,
                     selection_membership_lookups,
                     order_candidates_ranked,
+                    required_node_identities_examined,
+                    routing_dependency_identities_examined,
                     incident_routing_index_bucket_reads,
                     incident_routing_index_entries_read,
                 )
@@ -361,6 +382,8 @@ impl ViewSession {
                 index_rebuilt: rebuilt,
                 candidates_ranked: order_candidates_ranked,
                 selection_lookups: selection_membership_lookups,
+                required_node_identities_examined,
+                routing_dependency_identities_examined,
                 incident_routing_index_bucket_reads,
                 incident_routing_index_entries_read,
             };
@@ -377,9 +400,26 @@ impl ViewSession {
             .union(&inactive_nodes)
             .copied()
             .collect::<BTreeSet<_>>();
-        let facts = runtime
-            .adapter_frame_node_facts(&fact_nodes)
+        let port_nodes_in_render_order = candidates
+            .iter()
+            .map(|candidate| candidate.node)
+            .collect::<Vec<_>>();
+        let frame_facts = runtime
+            .adapter_frame_node_facts(
+                &fact_nodes,
+                &port_nodes_in_render_order,
+                request.materialization_budget.port_scan_limit(),
+            )
             .map_err(ViewSessionError::from)?;
+        let port_identities_examined = frame_facts.port_identities_examined;
+        let port_budget_omitted_nodes = frame_facts.port_budget_omitted_nodes;
+        materialization_overflow =
+            materialization_overflow.with_port_budget_omissions(port_budget_omitted_nodes.len());
+        if !port_budget_omitted_nodes.is_empty() {
+            candidates.retain(|candidate| !port_budget_omitted_nodes.contains(&candidate.node));
+            candidate_ids.retain(|node| !port_budget_omitted_nodes.contains(node));
+        }
+        let facts = frame_facts.nodes;
 
         let (renderer_publication, frame_incident_work, frame_geometry_work) = {
             let mut state = self
@@ -441,9 +481,6 @@ impl ViewSession {
             let Some(runtime_facts) = facts.get(&node_id) else {
                 continue;
             };
-            let Some(node) = snapshot.graph().node(&node_id) else {
-                continue;
-            };
             let Some(instance) =
                 NodeInstanceKey::new(view_id, renderer.clone(), runtime_facts.lifetime)
             else {
@@ -454,17 +491,20 @@ impl ViewSession {
                 layout_generation,
                 frame_sequence: sequence,
             });
-            let ports = node
-                .ports
+            let ports = runtime_facts
+                .port_order
                 .iter()
                 .filter_map(|port_id| {
-                    snapshot.graph().port(port_id)?;
-                    let port_instance = runtime_facts.port_instances.get(port_id).copied()?;
-                    Some(FramePort::new(
-                        snapshot.clone(),
-                        Arc::clone(&layout_target),
-                        port_instance,
-                    ))
+                    runtime_facts
+                        .port_instances
+                        .get(port_id)
+                        .map(|port_instance| {
+                            FramePort::new(
+                                snapshot.clone(),
+                                Arc::clone(&layout_target),
+                                *port_instance,
+                            )
+                        })
                 })
                 .collect::<Vec<_>>();
             expected_nodes.insert(
@@ -473,7 +513,7 @@ impl ViewSession {
                     lifetime: runtime_facts.lifetime,
                     renderer: renderer.clone(),
                     layout_generation,
-                    ports: node.ports.iter().copied().collect(),
+                    ports: runtime_facts.port_order.iter().copied().collect(),
                     incident_edges: runtime_facts.incident_edges.clone(),
                 },
             );
@@ -491,6 +531,11 @@ impl ViewSession {
         let materialized_count = frame_nodes.len() as u64;
         let materialization_receipt = FrameMaterializationReceipt::new(
             materialization_overflow,
+            FrameInputReceipt::new(
+                admission_work.required_node_identities_examined,
+                admission_work.routing_dependency_identities_examined,
+                port_identities_examined,
+            ),
             FrameAdmissionReceipt::new(
                 materialized_count,
                 admission_work.nodes_visited,
@@ -723,7 +768,7 @@ impl ViewSession {
                     .map(|pending| pending.layout.node())
                     .collect::<BTreeSet<_>>();
                 let current_node_facts = runtime
-                    .adapter_frame_node_facts(&layout_nodes)
+                    .adapter_node_facts(&layout_nodes)
                     .map_err(ViewSessionError::from)?;
                 let mut state = self
                     .shared
@@ -910,7 +955,7 @@ impl ViewSession {
             .map_err(|_| ViewSessionError::Busy)?
             .derived
             .node_ids();
-        let facts = runtime.adapter_frame_node_facts(&nodes)?;
+        let facts = runtime.adapter_node_facts(&nodes)?;
         let publication = {
             let mut state = self
                 .shared
@@ -969,7 +1014,7 @@ impl ViewSession {
             });
         };
         let nodes = BTreeSet::from([instance.node()]);
-        let facts = runtime.adapter_frame_node_facts(&nodes)?;
+        let facts = runtime.adapter_node_facts(&nodes)?;
         let publication = {
             let mut state = self
                 .shared

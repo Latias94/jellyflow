@@ -77,8 +77,7 @@ pub(crate) fn shader_demo_graph(catalog: &NodeCatalog) -> Result<Graph, String> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jellyflow_runtime::graph::GraphRuntime;
-    use open_gpui_canvas_jellyflow::ShaderGraphProfile;
+    use jellyflow_runtime::graph::{GraphRuntime, GraphRuntimePolicy};
     use open_gpui_canvas_jellyflow::nodes::native_node_catalog;
 
     #[test]
@@ -86,7 +85,7 @@ mod tests {
         let catalog = native_node_catalog().expect("native node catalog");
         let graph = shader_demo_graph(&catalog).expect("valid shader demo graph");
         let runtime = GraphRuntime::builder(catalog)
-            .with_profile(Box::new(ShaderGraphProfile))
+            .with_policy(GraphRuntimePolicy::default().with_cycles(EdgeKind::Data, false))
             .build(graph)
             .expect("shader demo runtime");
         let snapshot = runtime.snapshot().expect("shader demo snapshot");

@@ -5,7 +5,8 @@ use std::rc::Rc;
 
 use jellyflow_open_gpui::host::InitialViewportPolicy;
 use jellyflow_open_gpui::navigation::{OpenGpuiInputPreset, OpenGpuiNavigationConfig};
-use jellyflow_runtime::graph::GraphRuntime;
+use jellyflow_core::EdgeKind;
+use jellyflow_runtime::graph::{GraphRuntime, GraphRuntimePolicy};
 use jellyflow_runtime::view::ViewSessionOptions;
 use open_gpui::{
     App, AppContext, Bounds, Context, Entity, ParentElement, QuitMode, Render, Styled, Window,
@@ -17,7 +18,7 @@ use open_gpui_canvas_jellyflow::nodes::{
     NativeGraphVisualProfile, NativeNodeResources, ShaderFieldStore, WorkflowFieldStore,
     native_node_catalog, native_node_registry, workflow_demo_graph,
 };
-use open_gpui_canvas_jellyflow::{NativeProductTheme, ShaderGraphProfile};
+use open_gpui_canvas_jellyflow::NativeProductTheme;
 use open_gpui_platform::application;
 use open_gpui_ui_components::ThemeMode;
 use open_gpui_ui_components::gpui_adapter::init_text_input;
@@ -229,7 +230,7 @@ fn launch_native_graph(
     let runtime = Rc::new(
         match options.demo {
             NativeDemo::Shader => GraphRuntime::builder(catalog)
-                .with_profile(Box::new(ShaderGraphProfile))
+                .with_policy(GraphRuntimePolicy::default().with_cycles(EdgeKind::Data, false))
                 .build(document),
             NativeDemo::Workflow => GraphRuntime::builder(catalog).build(document),
         }

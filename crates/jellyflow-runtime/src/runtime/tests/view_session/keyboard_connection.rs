@@ -1,6 +1,12 @@
-use jellyflow_core::core::EdgeId;
-use jellyflow_core::interaction::NodeGraphConnectionMode;
+use std::cell::Cell;
+use std::rc::Rc;
 
+use jellyflow_core::core::{EdgeId, Graph, PortId};
+use jellyflow_core::interaction::NodeGraphConnectionMode;
+use jellyflow_core::types::TypeDesc;
+
+use crate::profile::GraphProfile;
+use crate::rules::Diagnostic;
 use crate::runtime::commands::{GraphCommand, IncidentEdgePolicy, TopologyEdit};
 use crate::runtime::graph_runtime::GraphRuntime;
 use crate::runtime::interaction::{
@@ -33,6 +39,11 @@ fn keyboard_connection_uses_exact_ports_and_the_fresh_connection_mutation_pipeli
         .activate_connection_port(source, edge, NodeGraphConnectionMode::Strict)
         .expect("source activation");
     assert!(activated.effects().is_empty());
+    let work = activated
+        .port_connection_query_work()
+        .expect("semantic source activation retains operation work");
+    assert_eq!(work.incident_bucket_reads(), 0);
+    assert_eq!(work.incident_entries_read(), 0);
     assert_eq!(
         session.presentation().phase(),
         CanvasInteractionPhase::ConnectionDrag
@@ -87,6 +98,80 @@ fn keyboard_connection_uses_exact_ports_and_the_fresh_connection_mutation_pipeli
 }
 
 #[test]
+fn keyboard_target_activation_defers_profile_hooks_to_authoritative_execution() {
+    struct CountingProfile {
+        calls: Rc<Cell<u64>>,
+    }
+
+    impl GraphProfile for CountingProfile {
+        fn type_of_port(&self, graph: &Graph, port: PortId) -> Option<TypeDesc> {
+            self.calls.set(self.calls.get().saturating_add(1));
+            graph.port(&port).and_then(|port| port.ty.clone())
+        }
+
+        fn validate_graph(&self, _graph: &Graph) -> Vec<Diagnostic> {
+            self.calls.set(self.calls.get().saturating_add(1));
+            Vec::new()
+        }
+    }
+
+    let (graph, ids) = graph_with_routed_edge();
+    let calls = Rc::new(Cell::new(0));
+    let runtime = GraphRuntime::builder(Default::default())
+        .with_profile(Box::new(CountingProfile {
+            calls: Rc::clone(&calls),
+        }))
+        .build(graph)
+        .expect("profiled keyboard runtime");
+    let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    let source = keyboard_connection_port_by_id(&view, ids.alternate_source_port).unwrap();
+    let target = keyboard_connection_port_by_id(&view, ids.target_port).unwrap();
+    let mut session = CanvasInteractionSession::attach(&view, CanvasInteractionConfig::default())
+        .expect("profiled keyboard session");
+    calls.set(0);
+
+    session
+        .activate_keyboard_connection(
+            source,
+            EdgeId::from_u128(0x305),
+            NodeGraphConnectionMode::Strict,
+        )
+        .unwrap();
+    assert_eq!(calls.get(), 0);
+    let submitted = session
+        .activate_keyboard_connection_target(target)
+        .expect("target activation only validates interaction identities");
+    assert_eq!(
+        calls.get(),
+        0,
+        "input callbacks must not invoke profile hooks"
+    );
+
+    let submitted = submitted.into_dispatch();
+    let CanvasInteractionEffect::SubmitGraph { submission } = submitted
+        .effects
+        .into_iter()
+        .next()
+        .expect("authoritative keyboard submission")
+    else {
+        unreachable!("keyboard target emits one graph submission")
+    };
+    let ticket = submission.ticket();
+    let command = session.bind_submission(submission).unwrap().unwrap();
+    assert_eq!(
+        calls.get(),
+        0,
+        "binding remains a profile-free identity check"
+    );
+    let completion = runtime.execute(command);
+    assert!(
+        calls.get() > 0,
+        "command planning owns product profile hooks"
+    );
+    session.complete_submission(ticket, completion).unwrap();
+}
+
+#[test]
 fn keyboard_connection_retains_structured_invalid_feedback_and_escape_cancels() {
     let (graph, ids) = graph_with_routed_edge();
     let runtime = GraphRuntime::builder(Default::default())
@@ -109,8 +194,29 @@ fn keyboard_connection_retains_structured_invalid_feedback_and_escape_cancels() 
 
     let rejected = session
         .activate_keyboard_connection_target(invalid_target)
-        .expect("policy rejection is structured state, not a session error");
-    assert!(rejected.effects().is_empty());
+        .expect("target activation defers policy planning to command execution");
+    let [CanvasInteractionEffect::SubmitGraph { submission }] = rejected.effects() else {
+        panic!("keyboard target must submit one authoritative command");
+    };
+    let ticket = submission.ticket();
+    let rejected = rejected.into_dispatch();
+    let CanvasInteractionEffect::SubmitGraph { submission } = rejected
+        .effects
+        .into_iter()
+        .next()
+        .expect("keyboard mutation")
+    else {
+        unreachable!("the only effect was checked above")
+    };
+    let command = session
+        .bind_submission(submission)
+        .expect("fresh binding")
+        .expect("connection command");
+    let completion = runtime.execute(command);
+    assert!(completion.result().unwrap().rejection().is_some());
+    session
+        .complete_submission(ticket, completion)
+        .expect("policy rejection becomes structured interaction feedback");
     let feedback = session
         .keyboard_connection_feedback()
         .expect("invalid target feedback");

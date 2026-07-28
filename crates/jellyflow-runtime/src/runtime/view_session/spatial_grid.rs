@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Bound::{Excluded, Unbounded};
 
 use jellyflow_core::core::{CanvasPoint, CanvasRect};
 
@@ -16,6 +17,82 @@ pub(super) struct SpatialCell {
 pub(super) enum SpatialQuerySource {
     Cell(SpatialCell),
     Level(u8),
+}
+
+#[derive(Debug)]
+pub(super) struct SpatialQueryCursor {
+    bounds: CanvasRect,
+    max_cells: i64,
+    last_level: Option<u8>,
+    state: SpatialQueryCursorState,
+}
+
+impl SpatialQueryCursor {
+    pub(super) fn new(bounds: CanvasRect, max_cells: i64) -> Self {
+        Self {
+            bounds,
+            max_cells,
+            last_level: None,
+            state: SpatialQueryCursorState::FindLevel,
+        }
+    }
+}
+
+#[derive(Debug)]
+enum SpatialQueryCursorState {
+    FindLevel,
+    Cells(SpatialCellRange),
+    WholeLevel(u8),
+    Exhausted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SpatialQueryStep {
+    LevelInitialized,
+    Source(SpatialQuerySource),
+    Exhausted,
+}
+
+#[derive(Debug)]
+struct SpatialCellRange {
+    level: u8,
+    min_x: i32,
+    next_x: i32,
+    next_y: i32,
+    max_x: i32,
+    max_y: i32,
+}
+
+impl SpatialCellRange {
+    fn new(bounds: CanvasRect, level: u8, limit: i64) -> Option<Self> {
+        let (min_x, min_y, max_x, max_y) = spatial_cell_bounds(bounds, level, limit)?;
+        Some(Self {
+            level,
+            min_x,
+            next_x: min_x,
+            next_y: min_y,
+            max_x,
+            max_y,
+        })
+    }
+
+    fn advance(&mut self) -> (SpatialCell, bool) {
+        let cell = SpatialCell {
+            level: self.level,
+            x: self.next_x,
+            y: self.next_y,
+        };
+        let exhausted = self.next_x == self.max_x && self.next_y == self.max_y;
+        if !exhausted {
+            if self.next_x == self.max_x {
+                self.next_x = self.min_x;
+                self.next_y = self.next_y.saturating_add(1);
+            } else {
+                self.next_x = self.next_x.saturating_add(1);
+            }
+        }
+        (cell, exhausted)
+    }
 }
 
 #[derive(Debug)]
@@ -77,16 +154,44 @@ impl<Key: Copy + Ord> HierarchicalSpatialIndex<Key> {
         self.levels.clear();
     }
 
-    pub fn query_sources(&self, bounds: CanvasRect, max_cells: i64) -> Vec<SpatialQuerySource> {
-        let mut sources = Vec::new();
-        for level in self.levels.keys().copied() {
-            if let Some(cells) = spatial_cells_for_rect(bounds, level, max_cells) {
-                sources.extend(cells.into_iter().map(SpatialQuerySource::Cell));
-            } else {
-                sources.push(SpatialQuerySource::Level(level));
+    pub fn advance_query(&self, cursor: &mut SpatialQueryCursor) -> SpatialQueryStep {
+        match &mut cursor.state {
+            SpatialQueryCursorState::FindLevel => {
+                let next_level = cursor.last_level.map_or_else(
+                    || self.levels.keys().next().copied(),
+                    |last| {
+                        self.levels
+                            .range((Excluded(last), Unbounded))
+                            .next()
+                            .map(|(&level, _)| level)
+                    },
+                );
+                let Some(level) = next_level else {
+                    cursor.state = SpatialQueryCursorState::Exhausted;
+                    return SpatialQueryStep::Exhausted;
+                };
+                cursor.last_level = Some(level);
+                cursor.state = SpatialCellRange::new(cursor.bounds, level, cursor.max_cells)
+                    .map_or(
+                        SpatialQueryCursorState::WholeLevel(level),
+                        SpatialQueryCursorState::Cells,
+                    );
+                SpatialQueryStep::LevelInitialized
             }
+            SpatialQueryCursorState::Cells(cells) => {
+                let (cell, exhausted) = cells.advance();
+                if exhausted {
+                    cursor.state = SpatialQueryCursorState::FindLevel;
+                }
+                SpatialQueryStep::Source(SpatialQuerySource::Cell(cell))
+            }
+            SpatialQueryCursorState::WholeLevel(level) => {
+                let level = *level;
+                cursor.state = SpatialQueryCursorState::FindLevel;
+                SpatialQueryStep::Source(SpatialQuerySource::Level(level))
+            }
+            SpatialQueryCursorState::Exhausted => SpatialQueryStep::Exhausted,
         }
-        sources
     }
 
     pub fn source(&self, source: SpatialQuerySource) -> Option<&BTreeSet<Key>> {
@@ -114,6 +219,19 @@ pub(super) fn spatial_cells_for_rect(
     level: u8,
     limit: i64,
 ) -> Option<Vec<SpatialCell>> {
+    let (min_x, min_y, max_x, max_y) = spatial_cell_bounds(bounds, level, limit)?;
+    let width = i64::from(max_x) - i64::from(min_x) + 1;
+    let height = i64::from(max_y) - i64::from(min_y) + 1;
+    let mut cells = Vec::with_capacity((width * height) as usize);
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            cells.push(SpatialCell { level, x, y });
+        }
+    }
+    Some(cells)
+}
+
+fn spatial_cell_bounds(bounds: CanvasRect, level: u8, limit: i64) -> Option<(i32, i32, i32, i32)> {
     if limit <= 0 || !bounds.is_positive_finite() {
         return None;
     }
@@ -130,16 +248,8 @@ pub(super) fn spatial_cells_for_rect(
     );
     let width = i64::from(max_x) - i64::from(min_x) + 1;
     let height = i64::from(max_y) - i64::from(min_y) + 1;
-    if width <= 0 || height <= 0 || i128::from(width) * i128::from(height) > i128::from(limit) {
-        return None;
-    }
-    let mut cells = Vec::with_capacity((width * height) as usize);
-    for y in min_y..=max_y {
-        for x in min_x..=max_x {
-            cells.push(SpatialCell { level, x, y });
-        }
-    }
-    Some(cells)
+    (width > 0 && height > 0 && i128::from(width) * i128::from(height) <= i128::from(limit))
+        .then_some((min_x, min_y, max_x, max_y))
 }
 
 pub(super) fn spatial_cell_size(level: u8) -> f64 {
@@ -159,4 +269,10 @@ fn spatial_cell_coord(value: f64, cell_size: f64) -> i32 {
 
 pub(super) const fn max_spatial_cell_level() -> u8 {
     MAX_SPATIAL_CELL_LEVEL
+}
+
+/// Includes one level check and at most `max_cells_per_level` sources per occupied level,
+/// followed by the terminal exhausted-level check.
+pub(super) const fn max_spatial_query_setup_work(max_cells_per_level: u64) -> u64 {
+    (MAX_SPATIAL_CELL_LEVEL as u64 + 1) * (max_cells_per_level + 1) + 1
 }

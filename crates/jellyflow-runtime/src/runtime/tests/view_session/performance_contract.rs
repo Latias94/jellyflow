@@ -77,10 +77,12 @@ fn node_intersection_query_never_publishes_a_partial_result() {
         .unwrap()
     {
         NodeIntersectionQueryOutcome::Incomplete { cursor, receipt } => {
-            assert_eq!(receipt.work().entries_examined, 1);
+            assert_eq!(receipt.work().spatial_work_units(), 1);
+            assert_eq!(receipt.work().spatial_level_checks, 1);
+            assert_eq!(receipt.work().entries_examined, 0);
             cursor
         }
-        other => panic!("a one-entry page must not expose partial membership: {other:?}"),
+        other => panic!("a one-unit page must not expose partial membership: {other:?}"),
     };
 
     match session
@@ -92,7 +94,7 @@ fn node_intersection_query_never_publishes_a_partial_result() {
             receipt,
         } => {
             assert_eq!(intersecting, nodes);
-            assert!(receipt.work().entries_examined >= 3);
+            assert!(receipt.work().entries_examined >= 4);
         }
         other => panic!("the resumed query must publish one complete membership: {other:?}"),
     }
@@ -109,7 +111,7 @@ fn marquee_interaction_publishes_only_after_all_query_pages_complete() {
     let mut interaction = CanvasInteractionSession::attach(
         &view,
         CanvasInteractionConfig {
-            query_entry_budget: 1,
+            query_work_budget: 1,
             ..CanvasInteractionConfig::default()
         },
     )
@@ -755,8 +757,32 @@ fn frame_budget_reports_visible_required_and_explicit_routing_overflow_separatel
     assert_eq!(overflow.required_nodes(), 3);
     assert_eq!(overflow.routing_dependency_nodes(), 3);
     assert!(!overflow.visible_scan_truncated());
+    assert!(!overflow.required_scan_truncated());
+    assert!(!overflow.routing_dependency_scan_truncated());
+    assert!(!overflow.port_scan_truncated());
     assert!(!overflow.incident_scan_truncated());
     assert!(!overflow.is_empty());
+    assert_eq!(
+        frame
+            .materialization_receipt()
+            .input()
+            .required_node_identities_examined(),
+        5,
+    );
+    assert_eq!(
+        frame
+            .materialization_receipt()
+            .input()
+            .routing_dependency_identities_examined(),
+        5,
+    );
+    assert_eq!(
+        frame
+            .materialization_receipt()
+            .input()
+            .port_identities_examined(),
+        0,
+    );
     assert_eq!(
         frame
             .materialization_receipt()
@@ -772,6 +798,288 @@ fn frame_budget_reports_visible_required_and_explicit_routing_overflow_separatel
         47,
         "overflow ranking includes 30 visible, 5 required, 5 routing, and 7 final candidates",
     );
+}
+
+#[test]
+fn explicit_frame_identity_scans_are_bounded_before_missing_and_duplicate_filtering() {
+    let (graph, nodes) = graph_with_nodes(3);
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .unwrap();
+    let session = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    let missing = NodeId::from_u128(0);
+    let request = |scan_limit| {
+        FrameRequest::new(
+            CanvasRect {
+                origin: CanvasPoint {
+                    x: -10_000.0,
+                    y: -10_000.0,
+                },
+                size: CanvasSize {
+                    width: 1.0,
+                    height: 1.0,
+                },
+            },
+            RendererStamp::new("test.node", 1),
+        )
+        .with_required_nodes([missing, missing, nodes[0], nodes[0], nodes[1]])
+        .with_routing_dependencies([missing, missing, nodes[1], nodes[1], nodes[2]])
+        .with_materialization_budget(
+            FrameMaterializationBudget::new(0, 3, 3)
+                .with_visible_node_scan_limit(0)
+                .with_required_node_scan_limit(scan_limit)
+                .with_routing_dependency_scan_limit(scan_limit)
+                .with_port_scan_limit(0),
+        )
+    };
+
+    for (scan_limit, examined, materialized, truncated) in
+        [(0, 0, 0, true), (1, 1, 0, true), (3, 3, 3, false)]
+    {
+        let frame = session.frame(request(scan_limit)).unwrap();
+        let receipt = frame.materialization_receipt();
+        assert_eq!(frame.nodes().len(), materialized);
+        assert_eq!(
+            receipt.input().required_node_identities_examined(),
+            examined,
+        );
+        assert_eq!(
+            receipt.input().routing_dependency_identities_examined(),
+            examined,
+        );
+        assert_eq!(receipt.overflow().required_scan_truncated(), truncated);
+        assert_eq!(
+            receipt.overflow().routing_dependency_scan_truncated(),
+            truncated,
+        );
+        assert_eq!(
+            receipt.admission().selection_membership_lookups(),
+            materialized as u64
+        );
+    }
+}
+
+#[test]
+fn frame_port_scan_budget_keeps_high_port_node_materialization_atomic() {
+    const PORT_COUNT: usize = 1_024;
+    let node_id = NodeId::from_u128(0x20d_000);
+    let ports = (0..PORT_COUNT)
+        .map(|index| PortId::from_u128(0x20e_000 + ((index * 17) % PORT_COUNT) as u128))
+        .collect::<Vec<_>>();
+    let mut node_record = node("ports.node", 0.0);
+    node_record.ports = ports.clone();
+    let mut builder = GraphBuilder::new(GraphId::from_u128(0x20d));
+    builder.insert_node(node_id, node_record);
+    for (index, port_id) in ports.iter().copied().enumerate() {
+        let mut port = chain_port_record(node_id, PortDirection::Out);
+        port.key = PortKey::new(format!("out-{index}"));
+        builder.insert_port(port_id, port);
+    }
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(builder.build().unwrap())
+        .unwrap();
+    let session = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    let request = |port_scan_limit| {
+        FrameRequest::new(
+            CanvasRect {
+                origin: CanvasPoint {
+                    x: -10_000.0,
+                    y: -10_000.0,
+                },
+                size: CanvasSize {
+                    width: 1.0,
+                    height: 1.0,
+                },
+            },
+            RendererStamp::new("ports.node", 1),
+        )
+        .with_required_nodes([node_id])
+        .with_materialization_budget(
+            FrameMaterializationBudget::new(0, 1, 0)
+                .with_visible_node_scan_limit(0)
+                .with_required_node_scan_limit(1)
+                .with_routing_dependency_scan_limit(0)
+                .with_port_scan_limit(port_scan_limit),
+        )
+    };
+
+    for (limit, materialized, examined, omitted) in
+        [(0, 0, 0, 1), (1, 0, 0, 1), (PORT_COUNT, 1, PORT_COUNT, 0)]
+    {
+        let frame = session.frame(request(limit)).unwrap();
+        let receipt = frame.materialization_receipt();
+        assert_eq!(frame.nodes().len(), materialized);
+        if let Some(frame_node) = frame.nodes().first() {
+            assert_eq!(frame_node.ports().len(), PORT_COUNT);
+            assert_eq!(
+                frame_node
+                    .ports()
+                    .iter()
+                    .map(|port| port.id())
+                    .collect::<Vec<_>>(),
+                ports,
+            );
+        }
+        assert_eq!(receipt.input().port_identities_examined(), examined as u64);
+        assert_eq!(receipt.overflow().port_budget_nodes(), omitted);
+        assert_eq!(receipt.overflow().port_scan_truncated(), omitted > 0);
+    }
+
+    let published = session.frame(request(PORT_COUNT)).unwrap();
+    let collector = published.collector();
+    collector
+        .layout(chain_layout(&published.nodes()[0], 0.0))
+        .unwrap();
+    session
+        .submit_feedback(collector.finish().unwrap())
+        .unwrap();
+    let before_cull = session.geometry_snapshot().unwrap();
+    assert!(before_cull.node(node_id).is_some());
+    assert_eq!(before_cull.ports().len(), PORT_COUNT);
+
+    let contracted = session.frame(request(0)).unwrap();
+    assert!(contracted.nodes().is_empty());
+    let cull_receipt = contracted.materialization_receipt();
+    assert_eq!(cull_receipt.input().port_identities_examined(), 0);
+    assert_eq!(cull_receipt.overflow().port_budget_nodes(), 1);
+    assert_eq!(cull_receipt.geometry().node_invalidations(), 1);
+    assert_eq!(cull_receipt.geometry().spatial_updates(), 0);
+    assert_eq!(cull_receipt.geometry().route_invalidations(), 0);
+    assert_eq!(cull_receipt.geometry().route_recomputations(), 0);
+    assert_eq!(cull_receipt.incident_snapshot().entries_read(), 0);
+    assert_eq!(cull_receipt.incident_snapshot().materializations(), 0);
+    let geometry = session.geometry_snapshot().unwrap();
+    assert!(geometry.node(node_id).is_none());
+    assert!(geometry.nodes().is_empty());
+    assert!(geometry.ports().is_empty());
+    assert!(geometry.port_outcomes().is_empty());
+    assert!(before_cull.node(node_id).is_some());
+    assert_eq!(before_cull.ports().len(), PORT_COUNT);
+
+    let restored = session.frame(request(PORT_COUNT)).unwrap();
+    assert_eq!(restored.nodes().len(), 1);
+    assert!(session.geometry_snapshot().unwrap().node(node_id).is_none());
+    let collector = restored.collector();
+    collector
+        .layout(chain_layout(&restored.nodes()[0], 0.0))
+        .unwrap();
+    session
+        .submit_feedback(collector.finish().unwrap())
+        .unwrap();
+    let after_restore = session.geometry_snapshot().unwrap();
+    assert!(after_restore.node(node_id).is_some());
+    assert_eq!(after_restore.ports().len(), PORT_COUNT);
+
+    session
+        .execute(GraphCommand::topology(
+            session.graph_snapshot().unwrap().version(),
+            TopologyEdit::new().remove_node(node_id, IncidentEdgePolicy::Reject),
+        ))
+        .unwrap()
+        .into_result()
+        .unwrap();
+    let after_remove = session.geometry_snapshot().unwrap();
+    assert!(after_remove.node(node_id).is_none());
+    assert!(after_remove.nodes().is_empty());
+    assert!(after_remove.ports().is_empty());
+    assert!(after_remove.port_outcomes().is_empty());
+}
+
+#[test]
+fn frame_port_budget_admits_the_highest_render_priority_node_atomically() {
+    let graph_id = GraphId::from_u128(0x20f);
+    let selected = NodeId::from_u128(1);
+    let mut builder = GraphBuilder::new(graph_id);
+    for index in 0..3_u128 {
+        let node_id = NodeId::from_u128(index + 1);
+        let ports = [
+            PortId::from_u128(0x210_000 + index * 2),
+            PortId::from_u128(0x210_001 + index * 2),
+        ];
+        let mut record = node("priority.node", index as f32 * 40.0);
+        record.ports = ports.to_vec();
+        builder.insert_node(node_id, record);
+        builder.insert_port(ports[0], chain_port_record(node_id, PortDirection::In));
+        builder.insert_port(ports[1], chain_port_record(node_id, PortDirection::Out));
+    }
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(builder.build().unwrap())
+        .unwrap();
+    let session = runtime
+        .attach_view(view_options(ViewSessionSeed::new(graph_id).with_selection(
+            ViewSelectionSeed::new(vec![selected], vec![], vec![]),
+        )))
+        .unwrap();
+    let request = |port_scan_limit| {
+        FrameRequest::new(
+            CanvasRect {
+                origin: CanvasPoint {
+                    x: -100.0,
+                    y: -100.0,
+                },
+                size: CanvasSize {
+                    width: 600.0,
+                    height: 400.0,
+                },
+            },
+            RendererStamp::new("priority.node", 1),
+        )
+        .with_materialization_budget(
+            FrameMaterializationBudget::new(3, 0, 0)
+                .with_visible_node_scan_limit(8)
+                .with_port_scan_limit(port_scan_limit),
+        )
+    };
+
+    let initial = session.frame(request(6)).unwrap();
+    assert_eq!(initial.nodes().len(), 3);
+    let collector = initial.collector();
+    for frame_node in initial.nodes() {
+        collector.layout(chain_layout(frame_node, 0.0)).unwrap();
+    }
+    session
+        .submit_feedback(collector.finish().unwrap())
+        .unwrap();
+    let before_contraction = session.geometry_snapshot().unwrap();
+    assert_eq!(before_contraction.nodes().len(), 3);
+    assert_eq!(before_contraction.ports().len(), 6);
+
+    let frame = session.frame(request(2)).unwrap();
+
+    assert_eq!(frame.nodes().len(), 1);
+    assert_eq!(frame.nodes()[0].id(), selected);
+    assert!(frame.nodes()[0].selected());
+    assert_eq!(frame.nodes()[0].ports().len(), 2);
+    let receipt = frame.materialization_receipt();
+    assert_eq!(receipt.input().port_identities_examined(), 2);
+    assert_eq!(receipt.overflow().port_budget_nodes(), 2);
+    assert!(receipt.overflow().port_scan_truncated());
+    assert_eq!(receipt.geometry().node_invalidations(), 2);
+    assert_eq!(receipt.incident_snapshot().entries_read(), 0);
+    assert_eq!(receipt.incident_snapshot().materializations(), 0);
+    let after_contraction = session.geometry_snapshot().unwrap();
+    assert_eq!(after_contraction.nodes().len(), 1);
+    assert_eq!(after_contraction.ports().len(), 2);
+    assert_eq!(
+        after_contraction
+            .nodes()
+            .keys()
+            .copied()
+            .collect::<Vec<_>>(),
+        vec![selected],
+    );
+    assert!(
+        after_contraction
+            .ports()
+            .values()
+            .all(|port| port.node() == selected)
+    );
+    assert!(after_contraction.node(selected).is_some());
+    for culled in [NodeId::from_u128(2), NodeId::from_u128(3)] {
+        assert!(after_contraction.node(culled).is_none());
+    }
+    assert_eq!(before_contraction.nodes().len(), 3);
+    assert_eq!(before_contraction.ports().len(), 6);
 }
 
 #[test]

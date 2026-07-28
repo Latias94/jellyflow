@@ -7,6 +7,8 @@ mod edge;
 mod node;
 mod port;
 
+use jellyflow_core::core::EdgeKind;
+
 pub(crate) use edge::resolve_edge_policy;
 pub(crate) use node::resolve_node_policy;
 pub(crate) use port::{ResolvedPortPolicy, resolve_port_policy};
@@ -23,6 +25,8 @@ pub struct GraphRuntimePolicy {
     node_deletion: bool,
     edge_deletion: bool,
     edge_reconnection: bool,
+    data_cycles: bool,
+    exec_cycles: bool,
 }
 
 impl GraphRuntimePolicy {
@@ -50,6 +54,15 @@ impl GraphRuntimePolicy {
         self
     }
 
+    /// Sets whether commands may create cycles for one semantic edge kind.
+    pub const fn with_cycles(mut self, edge_kind: EdgeKind, allowed: bool) -> Self {
+        match edge_kind {
+            EdgeKind::Data => self.data_cycles = allowed,
+            EdgeKind::Exec => self.exec_cycles = allowed,
+        }
+        self
+    }
+
     pub const fn node_connections_enabled(self) -> bool {
         self.node_connections
     }
@@ -65,6 +78,14 @@ impl GraphRuntimePolicy {
     pub const fn edge_reconnection_enabled(self) -> bool {
         self.edge_reconnection
     }
+
+    /// Returns whether commands may create cycles for `edge_kind`.
+    pub const fn cycles_allowed(self, edge_kind: EdgeKind) -> bool {
+        match edge_kind {
+            EdgeKind::Data => self.data_cycles,
+            EdgeKind::Exec => self.exec_cycles,
+        }
+    }
 }
 
 impl Default for GraphRuntimePolicy {
@@ -74,6 +95,8 @@ impl Default for GraphRuntimePolicy {
             node_deletion: true,
             edge_deletion: true,
             edge_reconnection: true,
+            data_cycles: true,
+            exec_cycles: true,
         }
     }
 }

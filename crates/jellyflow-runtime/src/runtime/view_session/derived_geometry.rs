@@ -6,16 +6,17 @@ use std::sync::Arc;
 use jellyflow_core::core::{CanvasRect, EdgeId, Graph, Node, NodeId, PortId};
 
 use crate::runtime::adapter_protocol::{
-    FrameBoundsSource, FrameRequest, GeometrySnapshot, LayoutPublicationReceipt,
-    PublishedEdgeRoute, PublishedNodeGeometry, PublishedPortGeometry, PublishedPortOutcome,
-    RendererStamp, SharedGeometryMap, ViewPoint,
+    FrameBoundsSource, FrameRequest, GeometrySnapshot, GeometryVisibleCounts,
+    LayoutPublicationReceipt, PublishedEdgeRoute, PublishedNodeGeometry, PublishedPortGeometry,
+    PublishedPortOutcome, RendererStamp, SharedFrameCullSet, SharedGeometryMap,
+    SharedGeometryOwnerMap, ViewPoint,
 };
 use crate::runtime::geometry::{
     CanvasBounds, EdgeEndpointPosition, EdgeInteractionFacts, EdgePosition, resolve_edge_route_path,
 };
 use crate::runtime::graph_runtime::{
     GraphRevision, GraphRuntimePolicy, GraphSnapshot, IncidentEdgeSnapshot, IncidentSnapshotWork,
-    RuntimePatch, RuntimePatchKind,
+    PortInstanceKey, RuntimePatch, RuntimePatchKind,
 };
 use crate::runtime::interaction::ConnectionGestureBinding;
 use crate::runtime::policy::resolve_edge_policy;
@@ -99,8 +100,13 @@ pub(super) struct DerivedGeometry {
     binding_revisions: BTreeMap<NodeId, GraphRevision>,
     renderer_bindings: BTreeMap<NodeId, RendererStamp>,
     nodes: SharedGeometryMap<NodeId, PublishedNodeGeometry>,
+    node_owners: SharedGeometryOwnerMap<NodeId>,
     ports: SharedGeometryMap<PortId, PublishedPortGeometry>,
     port_outcomes: SharedGeometryMap<PortId, PublishedPortOutcome>,
+    port_owners: SharedGeometryOwnerMap<PortId>,
+    frame_culled_nodes: SharedFrameCullSet,
+    frame_culled_port_count: usize,
+    frame_culled_port_outcome_count: usize,
     port_index: PortGeometryIndex,
     node_spatial: ViewSpatialIndex,
     admission: AdmissionIndex,
@@ -121,8 +127,13 @@ impl DerivedGeometry {
             binding_revisions: BTreeMap::new(),
             renderer_bindings: BTreeMap::new(),
             nodes: SharedGeometryMap::default(),
+            node_owners: SharedGeometryOwnerMap::default(),
             ports: SharedGeometryMap::default(),
             port_outcomes: SharedGeometryMap::default(),
+            port_owners: SharedGeometryOwnerMap::default(),
+            frame_culled_nodes: SharedFrameCullSet::default(),
+            frame_culled_port_count: 0,
+            frame_culled_port_outcome_count: 0,
             port_index: PortGeometryIndex::default(),
             node_spatial: ViewSpatialIndex::default(),
             admission: AdmissionIndex::default(),
@@ -171,7 +182,7 @@ impl DerivedGeometry {
         pointer: ViewPoint,
         targeting: ConnectionProbeTargeting,
         transform: ViewportTransform,
-    ) -> Option<ConnectionProbeCursor> {
+    ) -> Option<Box<ConnectionProbeCursor>> {
         self.port_index.new_cursor(
             identity,
             graph_revision,
@@ -187,18 +198,31 @@ impl DerivedGeometry {
         self.port_index.index_epoch()
     }
 
+    pub(super) fn connection_endpoint_owner_is_frame_visible(
+        &self,
+        instance: PortInstanceKey,
+    ) -> bool {
+        !self.frame_culled_nodes.contains(&instance.node())
+    }
+
     pub(super) fn query_connection_probe_page(
         &mut self,
         snapshot: &GraphSnapshot,
         node_draw_order_ranks: &BTreeMap<NodeId, usize>,
         selected_nodes: &HashSet<NodeId>,
         recent_interaction_node: Option<NodeId>,
-        cursor: ConnectionProbeCursor,
+        cursor: Box<ConnectionProbeCursor>,
         entry_budget: usize,
     ) -> InternalProbeOutcome {
+        let frame_culled_nodes = &self.frame_culled_nodes;
         self.port_index.query_page(
             snapshot.graph(),
-            |port| snapshot.port_instance_key(port),
+            |port| {
+                let node = snapshot.graph().port(&port)?.node;
+                (!frame_culled_nodes.contains(&node))
+                    .then(|| snapshot.port_instance_key(port))
+                    .flatten()
+            },
             node_draw_order_ranks,
             selected_nodes,
             recent_interaction_node,
@@ -211,7 +235,7 @@ impl DerivedGeometry {
         &self,
         identity: ViewQueryIdentity,
         bounds: CanvasRect,
-    ) -> VisibleRouteCursor {
+    ) -> Box<VisibleRouteCursor> {
         self.route_index.new_cursor(identity, bounds)
     }
 
@@ -221,7 +245,7 @@ impl DerivedGeometry {
 
     pub(super) fn query_visible_route_page(
         &mut self,
-        cursor: VisibleRouteCursor,
+        cursor: Box<VisibleRouteCursor>,
         entry_budget: usize,
         zoom: f32,
     ) -> InternalRouteQueryOutcome {
@@ -240,7 +264,7 @@ impl DerivedGeometry {
         pointer: ViewPoint,
         radius_in_view: f32,
         transform: ViewportTransform,
-    ) -> Option<EdgePickCursor> {
+    ) -> Option<Box<EdgePickCursor>> {
         self.route_index.new_pick_cursor(
             identity,
             order_revision,
@@ -261,7 +285,7 @@ impl DerivedGeometry {
         &mut self,
         edge_draw_order_ranks: &BTreeMap<EdgeId, usize>,
         selected_edges: &SelectedEdgeMembership,
-        cursor: EdgePickCursor,
+        cursor: Box<EdgePickCursor>,
         entry_budget: usize,
     ) -> InternalEdgePickOutcome {
         self.route_index.query_pick_page(
@@ -281,6 +305,9 @@ impl DerivedGeometry {
         candidate: &PublishedNodeGeometry,
         epsilon: f32,
     ) -> bool {
+        if self.frame_culled_nodes.contains(&candidate.node()) {
+            return false;
+        }
         self.nodes
             .get(&candidate.node())
             .is_some_and(|current| current.approximately_eq(candidate, epsilon))
@@ -291,18 +318,20 @@ impl DerivedGeometry {
         identity: ViewQueryIdentity,
         bounds: CanvasRect,
         canvas_bounds: CanvasBounds,
-    ) -> NodeIntersectionCursor {
+    ) -> Box<NodeIntersectionCursor> {
         self.node_spatial
             .new_intersection_cursor(identity, bounds, canvas_bounds)
     }
 
     pub(super) fn query_node_intersection_page(
         &self,
-        cursor: NodeIntersectionCursor,
+        cursor: Box<NodeIntersectionCursor>,
         entry_budget: usize,
     ) -> InternalNodeIntersectionOutcome {
         self.node_spatial
-            .query_intersection_page(cursor, entry_budget)
+            .query_intersection_page(cursor, entry_budget, |node| {
+                !self.frame_culled_nodes.contains(&node)
+            })
     }
 
     pub(super) fn node_spatial_index_epoch(&self) -> u128 {
@@ -375,14 +404,7 @@ impl DerivedGeometry {
     pub(super) fn inactive_frame_nodes(&self, nodes: &BTreeSet<NodeId>) -> BTreeSet<NodeId> {
         self.active_frame_nodes
             .difference(nodes)
-            .filter(|node| {
-                self.nodes.get(node).is_some_and(|geometry| {
-                    geometry
-                        .port_outcomes()
-                        .values()
-                        .any(|outcome| !matches!(outcome, PublishedPortOutcome::Culled))
-                })
-            })
+            .filter(|node| self.nodes.contains_key(node) && !self.frame_culled_nodes.contains(node))
             .copied()
             .collect()
     }
@@ -396,8 +418,25 @@ impl DerivedGeometry {
             self.provenance,
             self.layout_revision,
             self.nodes.clone(),
+            self.node_owners.clone(),
             self.ports.clone(),
             self.port_outcomes.clone(),
+            self.port_owners.clone(),
+            self.frame_culled_nodes.clone(),
+            GeometryVisibleCounts {
+                nodes: self
+                    .nodes
+                    .size()
+                    .saturating_sub(self.frame_culled_nodes.size()),
+                ports: self
+                    .ports
+                    .size()
+                    .saturating_sub(self.frame_culled_port_count),
+                port_outcomes: self
+                    .port_outcomes
+                    .size()
+                    .saturating_sub(self.frame_culled_port_outcome_count),
+            },
             self.routes.clone(),
         );
         self.snapshot_cache = Some(snapshot.clone());
@@ -428,7 +467,7 @@ impl DerivedGeometry {
         for (node, geometry, incident_edges) in staged {
             spatial_updates = spatial_updates
                 .saturating_add(u64::from(self.node_spatial.upsert(node, geometry.bounds())));
-            self.upsert_node(node, geometry);
+            self.upsert_node(node, geometry, true);
             incident_work.materialize(&incident_edges);
             route_edges.extend(incident_edges.iter().copied());
             published_nodes.push(node);
@@ -537,18 +576,14 @@ impl DerivedGeometry {
         }
 
         for node in &inactive_nodes {
-            let ports = snapshot
-                .graph()
-                .node(node)
-                .map(|node| node.ports.iter().copied())
-                .into_iter()
-                .flatten();
-            if !self.mark_node_culled(*node, ports) {
+            if !self.mark_node_frame_culled(*node) {
                 continue;
             }
             geometry_changed = true;
             invalidated_nodes.push(*node);
-            if let Some(facts) = node_facts.get(node) {
+            if let Some(facts) = node_facts.get(node)
+                && !facts.incident_edges.is_empty()
+            {
                 incident_work.materialize(&facts.incident_edges);
                 route_edges.extend(facts.incident_edges.iter().copied());
             }
@@ -743,25 +778,47 @@ impl DerivedGeometry {
         self.snapshot_cache = None;
     }
 
-    fn upsert_node(&mut self, node: NodeId, geometry: PublishedNodeGeometry) -> bool {
+    fn upsert_node(
+        &mut self,
+        node: NodeId,
+        geometry: PublishedNodeGeometry,
+        restore_frame_visibility: bool,
+    ) -> bool {
         debug_assert_eq!(node, geometry.node());
-        if self
-            .nodes
-            .get(&node)
+        let current = self.nodes.get(&node).cloned();
+        let current_port_count = current.as_ref().map_or(0, |node| node.ports().len());
+        let current_port_outcome_count = current
+            .as_ref()
+            .map_or(0, |node| node.port_outcomes().len());
+        let was_frame_culled = self.frame_culled_nodes.contains(&node);
+        let visibility_changed =
+            restore_frame_visibility && self.frame_culled_nodes.remove_mut(&node);
+        if visibility_changed {
+            subtract_count(&mut self.frame_culled_port_count, current_port_count);
+            subtract_count(
+                &mut self.frame_culled_port_outcome_count,
+                current_port_outcome_count,
+            );
+            self.port_index.invalidate_visibility();
+            self.node_spatial.invalidate_visibility();
+        }
+        if current
+            .as_ref()
             .is_some_and(|current| current.as_ref() == &geometry)
         {
-            return false;
+            if visibility_changed {
+                self.invalidate_snapshot();
+            }
+            return visibility_changed;
         }
 
-        let old_ports = self
-            .nodes
-            .get(&node)
+        let old_ports = current
+            .as_ref()
             .map(|current| current.ports().keys().copied().collect::<BTreeSet<_>>())
             .unwrap_or_default();
         let new_ports = geometry.ports().keys().copied().collect::<BTreeSet<_>>();
-        let old_outcomes = self
-            .nodes
-            .get(&node)
+        let old_outcomes = current
+            .as_ref()
             .map(|current| {
                 current
                     .port_outcomes()
@@ -776,6 +833,7 @@ impl DerivedGeometry {
         }
         for port in old_outcomes {
             self.port_outcomes.remove_mut(&port);
+            self.port_owners.remove_mut(&port);
         }
         for (port, published) in geometry.ports() {
             self.port_index.upsert(published);
@@ -787,7 +845,21 @@ impl DerivedGeometry {
         for (port, outcome) in geometry.port_outcomes() {
             self.port_outcomes
                 .insert_mut(*port, Arc::new(outcome.clone()));
+            self.port_owners.insert_mut(*port, node);
         }
+        if was_frame_culled && !visibility_changed {
+            replace_count(
+                &mut self.frame_culled_port_count,
+                current_port_count,
+                geometry.ports().len(),
+            );
+            replace_count(
+                &mut self.frame_culled_port_outcome_count,
+                current_port_outcome_count,
+                geometry.port_outcomes().len(),
+            );
+        }
+        self.node_owners.insert_mut(node, node);
         self.nodes.insert_mut(node, Arc::new(geometry));
         self.invalidate_snapshot();
         true
@@ -798,12 +870,22 @@ impl DerivedGeometry {
             return false;
         };
         self.nodes.remove_mut(&node);
+        self.node_owners.remove_mut(&node);
+        if self.frame_culled_nodes.remove_mut(&node) {
+            subtract_count(&mut self.frame_culled_port_count, current.ports().len());
+            subtract_count(
+                &mut self.frame_culled_port_outcome_count,
+                current.port_outcomes().len(),
+            );
+            self.port_index.invalidate_visibility();
+        }
         for port in current.ports().keys() {
             self.ports.remove_mut(port);
             self.port_index.remove(*port);
         }
         for port in current.port_outcomes().keys() {
             self.port_outcomes.remove_mut(port);
+            self.port_owners.remove_mut(port);
         }
         self.node_spatial.remove(node);
         self.invalidate_snapshot();
@@ -816,20 +898,29 @@ impl DerivedGeometry {
         };
         translated.translate(x, y);
         let bounds = translated.bounds();
-        let geometry_changed = self.upsert_node(node, translated);
+        let geometry_changed = self.upsert_node(node, translated, false);
         let spatial_changed = self.node_spatial.upsert(node, bounds);
         geometry_changed || spatial_changed
     }
 
-    fn mark_node_culled(&mut self, node: NodeId, ports: impl IntoIterator<Item = PortId>) -> bool {
+    fn mark_node_frame_culled(&mut self, node: NodeId) -> bool {
         let Some(current) = self.nodes.get(&node) else {
             return false;
         };
-        let mut culled = current.as_ref().clone();
-        if !culled.mark_ports_culled(ports) {
+        if self.frame_culled_nodes.contains(&node) {
             return false;
         }
-        self.upsert_node(node, culled)
+        self.frame_culled_nodes.insert_mut(node);
+        self.frame_culled_port_count = self
+            .frame_culled_port_count
+            .saturating_add(current.ports().len());
+        self.frame_culled_port_outcome_count = self
+            .frame_culled_port_outcome_count
+            .saturating_add(current.port_outcomes().len());
+        self.port_index.invalidate_visibility();
+        self.node_spatial.invalidate_visibility();
+        self.invalidate_snapshot();
+        true
     }
 
     fn mark_node_stale(&mut self, node: NodeId, ports: impl IntoIterator<Item = PortId>) -> bool {
@@ -840,16 +931,29 @@ impl DerivedGeometry {
         if !stale.mark_stale(ports) {
             return false;
         }
-        self.upsert_node(node, stale)
+        self.upsert_node(node, stale, false)
     }
 
     fn clear_nodes(&mut self) {
-        if self.nodes.is_empty() && self.ports.is_empty() && self.port_outcomes.is_empty() {
+        if self.nodes.is_empty()
+            && self.node_owners.is_empty()
+            && self.ports.is_empty()
+            && self.port_outcomes.is_empty()
+            && self.port_owners.is_empty()
+            && self.frame_culled_nodes.is_empty()
+            && self.frame_culled_port_count == 0
+            && self.frame_culled_port_outcome_count == 0
+        {
             return;
         }
         self.nodes = SharedGeometryMap::new_sync();
+        self.node_owners = SharedGeometryOwnerMap::new_sync();
         self.ports = SharedGeometryMap::new_sync();
         self.port_outcomes = SharedGeometryMap::new_sync();
+        self.port_owners = SharedGeometryOwnerMap::new_sync();
+        self.frame_culled_nodes = SharedFrameCullSet::new_sync();
+        self.frame_culled_port_count = 0;
+        self.frame_culled_port_outcome_count = 0;
         self.port_index.clear();
         self.invalidate_snapshot();
     }
@@ -950,6 +1054,9 @@ impl DerivedGeometry {
         port: PortId,
     ) -> Option<&PublishedPortGeometry> {
         let owner = snapshot.graph().port(&port)?.node;
+        if self.frame_culled_nodes.contains(&owner) {
+            return None;
+        }
         let node = self.nodes.get(&owner)?;
         node.is_fresh().then(|| node.ports().get(&port)).flatten()
     }
@@ -961,8 +1068,13 @@ impl DerivedGeometry {
             && self.binding_revisions.is_empty()
             && self.renderer_bindings.is_empty()
             && self.nodes.is_empty()
+            && self.node_owners.is_empty()
             && self.ports.is_empty()
             && self.port_outcomes.is_empty()
+            && self.port_owners.is_empty()
+            && self.frame_culled_nodes.is_empty()
+            && self.frame_culled_port_count == 0
+            && self.frame_culled_port_outcome_count == 0
             && self.port_index.indexed_ports_for_test().is_empty()
             && self.node_spatial.indexed_bounds_for_test().is_empty()
             && self.active_frame_nodes.is_empty()
@@ -979,7 +1091,42 @@ impl DerivedGeometry {
         for node in self.nodes.keys() {
             let geometry = self.nodes.get(node).expect("node key remains present");
             assert_eq!(spatial.get(node), Some(&geometry.bounds()));
+            assert_eq!(self.node_owners.get(node), Some(node));
         }
+        assert_eq!(self.node_owners.size(), self.nodes.size());
+        assert!(
+            self.frame_culled_nodes
+                .iter()
+                .all(|node| self.nodes.contains_key(node)),
+            "only retained published nodes may be frame-culled",
+        );
+        let expected_culled_port_count = self
+            .frame_culled_nodes
+            .iter()
+            .map(|node| {
+                self.nodes
+                    .get(node)
+                    .expect("frame-culled node remains retained")
+                    .ports()
+                    .len()
+            })
+            .sum::<usize>();
+        let expected_culled_port_outcome_count = self
+            .frame_culled_nodes
+            .iter()
+            .map(|node| {
+                self.nodes
+                    .get(node)
+                    .expect("frame-culled node remains retained")
+                    .port_outcomes()
+                    .len()
+            })
+            .sum::<usize>();
+        assert_eq!(self.frame_culled_port_count, expected_culled_port_count);
+        assert_eq!(
+            self.frame_culled_port_outcome_count,
+            expected_culled_port_outcome_count
+        );
 
         let mut expected_ports = BTreeSet::new();
         let mut expected_outcomes = BTreeSet::new();
@@ -1009,6 +1156,11 @@ impl DerivedGeometry {
                     geometry.ports().get(port),
                     "rendered outcomes and node port geometry must agree"
                 );
+                assert_eq!(
+                    self.port_owners.get(port).copied(),
+                    Some(geometry.node()),
+                    "every retained port outcome keeps its node owner"
+                );
             }
         }
         assert_eq!(
@@ -1018,6 +1170,10 @@ impl DerivedGeometry {
         assert_eq!(
             expected_outcomes,
             self.port_outcomes.keys().copied().collect::<BTreeSet<_>>()
+        );
+        assert_eq!(
+            expected_outcomes,
+            self.port_owners.keys().copied().collect::<BTreeSet<_>>()
         );
         let expected_interactive_ports = self
             .ports
@@ -1050,22 +1206,48 @@ impl DerivedGeometry {
         );
 
         if let Some(snapshot) = &self.snapshot_cache {
+            let visible_node_count = self
+                .nodes
+                .keys()
+                .filter(|node| !self.frame_culled_nodes.contains(node))
+                .count();
+            let visible_port_count = self
+                .ports
+                .values()
+                .filter(|port| !self.frame_culled_nodes.contains(&port.node()))
+                .count();
+            let visible_outcome_count = self
+                .port_owners
+                .values()
+                .filter(|node| !self.frame_culled_nodes.contains(node))
+                .count();
             assert_eq!(snapshot.layout_revision(), self.layout_revision);
-            assert_eq!(snapshot.nodes().len(), self.nodes.size());
-            assert_eq!(snapshot.ports().len(), self.ports.size());
-            assert_eq!(snapshot.port_outcomes().len(), self.port_outcomes.size());
+            assert_eq!(snapshot.nodes().len(), visible_node_count);
+            assert_eq!(snapshot.ports().len(), visible_port_count);
+            assert_eq!(snapshot.port_outcomes().len(), visible_outcome_count);
             assert_eq!(snapshot.routes().len(), self.routes.size());
             for node in self.nodes.keys() {
-                assert_eq!(snapshot.node(*node), self.nodes.get(node).map(Arc::as_ref));
+                let expected = (!self.frame_culled_nodes.contains(node))
+                    .then(|| self.nodes.get(node).map(Arc::as_ref))
+                    .flatten();
+                assert_eq!(snapshot.node(*node), expected);
             }
             for port in self.ports.keys() {
-                assert_eq!(snapshot.port(*port), self.ports.get(port).map(Arc::as_ref));
+                let owner = self
+                    .port_owners
+                    .get(port)
+                    .expect("published port has owner");
+                let expected = (!self.frame_culled_nodes.contains(owner))
+                    .then(|| self.ports.get(port).map(Arc::as_ref))
+                    .flatten();
+                assert_eq!(snapshot.port(*port), expected);
             }
             for port in self.port_outcomes.keys() {
-                assert_eq!(
-                    snapshot.port_outcome(*port),
-                    self.port_outcomes.get(port).map(Arc::as_ref)
-                );
+                let owner = self.port_owners.get(port).expect("port outcome has owner");
+                let expected = (!self.frame_culled_nodes.contains(owner))
+                    .then(|| self.port_outcomes.get(port).map(Arc::as_ref))
+                    .flatten();
+                assert_eq!(snapshot.port_outcome(*port), expected);
             }
             for edge in self.routes.keys() {
                 assert_eq!(
@@ -1078,6 +1260,16 @@ impl DerivedGeometry {
 
     #[cfg(not(test))]
     fn assert_consistent(&self) {}
+}
+
+fn subtract_count(count: &mut usize, removed: usize) {
+    debug_assert!(*count >= removed);
+    *count = count.saturating_sub(removed);
+}
+
+fn replace_count(count: &mut usize, previous: usize, next: usize) {
+    subtract_count(count, previous);
+    *count = count.saturating_add(next);
 }
 
 fn absolute_port_endpoint(port: &PublishedPortGeometry) -> Option<EdgeEndpointPosition> {

@@ -713,7 +713,7 @@ fn connection_candidate_failure(
     if target.port() != expected {
         return Some("input_connection_candidate_mismatch");
     }
-    (!connection.probe().is_valid()).then_some("input_connection_candidate_invalid")
+    (!connection.probe().is_committable()).then_some("input_connection_candidate_invalid")
 }
 
 #[cfg(test)]

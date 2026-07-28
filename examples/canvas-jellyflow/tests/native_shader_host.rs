@@ -8,7 +8,7 @@ use std::task::{Context as TaskContext, Poll, Waker};
 
 use jellyflow_core::types::TypeDesc;
 use jellyflow_core::{
-    CanvasPoint, CanvasRect, CanvasSize, EdgeId, Graph, GraphBuilder, GraphId,
+    CanvasPoint, CanvasRect, CanvasSize, EdgeId, EdgeKind, Graph, GraphBuilder, GraphId,
     NodeGraphConnectionMode, NodeId, NodeKindKey, PortCapacity, PortDirection, PortId, PortKind,
 };
 use jellyflow_open_gpui::host::OpenGpuiSceneHost;
@@ -18,6 +18,7 @@ use jellyflow_runtime::commands::{
 };
 use jellyflow_runtime::graph::{
     CreateFromWireCandidates, Diagnostic, DiagnosticTarget, GraphRuntime, GraphRuntimeError,
+    GraphRuntimePolicy,
 };
 use jellyflow_runtime::interaction::{
     CanvasInteractionPhase, ConnectionSearchRequest, ConnectionSearchStatus,
@@ -30,7 +31,6 @@ use open_gpui::{
     AppContext, Bounds, Context, Entity, MouseButton, ParentElement, Pixels, Render, Styled,
     VisualTestContext, Window, div, point, px, size,
 };
-use open_gpui_canvas_jellyflow::ShaderGraphProfile;
 use open_gpui_canvas_jellyflow::connection_search::{
     NATIVE_CONNECTION_SEARCH_BACKDROP_SELECTOR, NATIVE_CONNECTION_SEARCH_DIAGNOSTIC_SELECTOR,
     NATIVE_CONNECTION_SEARCH_EMPTY_SELECTOR, NATIVE_CONNECTION_SEARCH_LOADING_SELECTOR,
@@ -1841,12 +1841,11 @@ fn typed_shader_catalog_ports_accept_compatible_and_reject_incompatible_commands
 }
 
 #[test]
-fn shader_profile_rejects_only_the_data_connection_that_closes_a_cycle() {
-    let runtime = native_profiled_runtime(
-        two_catalog_shader_nodes(TypeDesc::Float),
-        Box::new(ShaderGraphProfile),
-    )
-    .expect("profiled shader graph");
+fn shader_runtime_policy_rejects_only_the_data_connection_that_closes_a_cycle() {
+    let runtime = GraphRuntime::builder(native_node_catalog().expect("native node catalog"))
+        .with_policy(GraphRuntimePolicy::default().with_cycles(EdgeKind::Data, false))
+        .build(two_catalog_shader_nodes(TypeDesc::Float))
+        .expect("policy-owned shader graph");
     let initial = runtime.snapshot().expect("initial profiled shader graph");
     runtime
         .execute(GraphCommand::connect(

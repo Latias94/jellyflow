@@ -14,8 +14,9 @@ use crate::runtime::viewport::{ViewportRevision, ViewportTransform};
 
 use super::order::sort_render_order;
 use super::spatial_grid::{
-    HierarchicalSpatialIndex, SpatialCell, SpatialQuerySource, bounded_spatial_cells_for_rect,
-    max_spatial_cell_level, spatial_cell_coords, spatial_cell_size,
+    HierarchicalSpatialIndex, SpatialCell, SpatialQueryCursor, SpatialQuerySource,
+    SpatialQueryStep, bounded_spatial_cells_for_rect, max_spatial_cell_level,
+    max_spatial_query_setup_work, spatial_cell_coords, spatial_cell_size,
 };
 use super::{
     ViewGeneration, ViewId, ViewQueryIdentity, ViewQueryIdentityStaleReason, ViewSession,
@@ -27,6 +28,9 @@ const MAX_CELLS_PER_SEGMENT: usize = 128;
 const MAX_QUERY_CELLS_PER_LEVEL: i64 = 4_096;
 const INDEX_FLATTEN_ERROR: f32 = 8.0;
 const HARD_ROUTE_QUERY_ENTRY_LIMIT: u64 = 16_384;
+pub(super) const MAX_ROUTE_QUERY_SETUP_WORK: u64 =
+    max_spatial_query_setup_work(MAX_QUERY_CELLS_PER_LEVEL as u64);
+const HARD_ROUTE_QUERY_WORK_LIMIT: u64 = HARD_ROUTE_QUERY_ENTRY_LIMIT + MAX_ROUTE_QUERY_SETUP_WORK;
 const ROUTE_FLATTEN_CACHE_CAPACITY: usize = 4_096;
 
 #[derive(Debug)]
@@ -76,24 +80,31 @@ pub struct VisibleRouteCursor {
     index_epoch: u128,
     canvas_bounds: CanvasRect,
     scan: RouteScan,
-    source_index: usize,
-    source_started: bool,
-    last_entry: Option<RouteSegmentKey>,
+    active_source: Option<RouteQuerySource>,
+    next_entry: Option<RouteSegmentKey>,
     checked: BTreeSet<EdgeId>,
     matched: BTreeSet<EdgeId>,
     flatten_overflows: BTreeMap<EdgeId, EdgePathFlattenError>,
     total_entries_examined: u64,
+    total_spatial_work: u64,
 }
 
 #[derive(Debug)]
-struct RouteScan {
-    sources: Vec<RouteQuerySource>,
+pub(super) struct RouteScan {
+    spatial: SpatialQueryCursor,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum RouteQuerySource {
     Cell(SpatialCell),
     Level(u8),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RouteQueryStep {
+    LevelInitialized,
+    Source(RouteQuerySource),
+    Exhausted,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -110,7 +121,13 @@ impl RouteSegmentKey {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct VisibleRouteQueryWork {
+    /// Level-discovery steps, including the terminal exhausted check.
+    pub spatial_level_checks: u64,
+    /// Cell or whole-level sources initialized by the spatial cursor.
+    pub spatial_source_setups: u64,
+    /// Cell sources initialized; this is a subset of `spatial_source_setups`.
     pub cells_examined: u64,
+    /// Route-segment entries consumed from initialized sources.
     pub entries_examined: u64,
     pub candidates_matched: u64,
     pub flatten_cache_hits: u64,
@@ -118,6 +135,16 @@ pub struct VisibleRouteQueryWork {
     pub flatten_cache_evictions: u64,
     pub flatten_segments_built: u64,
     pub flatten_overflows: u64,
+}
+
+impl VisibleRouteQueryWork {
+    /// Returns the level, source, and entry units charged against the page budget.
+    #[must_use]
+    pub const fn spatial_work_units(self) -> u64 {
+        self.spatial_level_checks
+            .saturating_add(self.spatial_source_setups)
+            .saturating_add(self.entries_examined)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -390,16 +417,24 @@ impl RouteSpatialIndex {
         self.routes.clear();
     }
 
-    fn query_sources(&self, bounds: CanvasRect) -> Vec<RouteQuerySource> {
+    fn new_scan(&self, bounds: CanvasRect) -> RouteScan {
         let query_bounds = inflate_canvas_rect(bounds, INDEX_FLATTEN_ERROR).unwrap_or(bounds);
-        self.spatial
-            .query_sources(query_bounds, MAX_QUERY_CELLS_PER_LEVEL)
-            .into_iter()
-            .map(|source| match source {
-                SpatialQuerySource::Cell(cell) => RouteQuerySource::Cell(cell),
-                SpatialQuerySource::Level(level) => RouteQuerySource::Level(level),
-            })
-            .collect()
+        RouteScan {
+            spatial: SpatialQueryCursor::new(query_bounds, MAX_QUERY_CELLS_PER_LEVEL),
+        }
+    }
+
+    fn advance_scan(&self, scan: &mut RouteScan) -> RouteQueryStep {
+        match self.spatial.advance_query(&mut scan.spatial) {
+            SpatialQueryStep::LevelInitialized => RouteQueryStep::LevelInitialized,
+            SpatialQueryStep::Source(SpatialQuerySource::Cell(cell)) => {
+                RouteQueryStep::Source(RouteQuerySource::Cell(cell))
+            }
+            SpatialQueryStep::Source(SpatialQuerySource::Level(level)) => {
+                RouteQueryStep::Source(RouteQuerySource::Level(level))
+            }
+            SpatialQueryStep::Exhausted => RouteQueryStep::Exhausted,
+        }
     }
 
     fn source(&self, source: RouteQuerySource) -> Option<&BTreeSet<RouteSegmentKey>> {
@@ -552,8 +587,12 @@ impl RouteGeometryIndex {
             .map_or(0.0, |(bits, _)| f32::from_bits(*bits))
     }
 
-    pub(super) fn pick_query_sources(&self, bounds: CanvasRect) -> Vec<RouteQuerySource> {
-        self.spatial.query_sources(bounds)
+    pub(super) fn new_route_scan(&self, bounds: CanvasRect) -> RouteScan {
+        self.spatial.new_scan(bounds)
+    }
+
+    pub(super) fn advance_route_scan(&self, scan: &mut RouteScan) -> RouteQueryStep {
+        self.spatial.advance_scan(scan)
     }
 
     pub(super) fn pick_source(
@@ -612,74 +651,92 @@ impl RouteGeometryIndex {
         &self,
         identity: ViewQueryIdentity,
         canvas_bounds: CanvasRect,
-    ) -> VisibleRouteCursor {
-        let scan = RouteScan {
-            sources: self.spatial.query_sources(canvas_bounds),
-        };
-        VisibleRouteCursor {
+    ) -> Box<VisibleRouteCursor> {
+        Box::new(VisibleRouteCursor {
             identity,
             index_epoch: self.index_epoch,
             canvas_bounds,
-            scan,
-            source_index: 0,
-            source_started: false,
-            last_entry: None,
+            scan: self.spatial.new_scan(canvas_bounds),
+            active_source: None,
+            next_entry: None,
             checked: BTreeSet::new(),
             matched: BTreeSet::new(),
             flatten_overflows: BTreeMap::new(),
             total_entries_examined: 0,
-        }
+            total_spatial_work: 0,
+        })
     }
 
     pub(super) fn query_page(
         &mut self,
-        mut cursor: VisibleRouteCursor,
+        mut cursor: Box<VisibleRouteCursor>,
         entry_budget: usize,
         zoom: f32,
     ) -> InternalRouteQueryOutcome {
         let mut work = VisibleRouteQueryWork::default();
         let mut remaining = entry_budget;
         loop {
-            if cursor.source_index >= cursor.scan.sources.len() {
-                return InternalRouteQueryOutcome::Complete {
-                    edges: cursor.matched,
-                    overflows: cursor.flatten_overflows,
-                    work,
-                };
-            }
-            if !cursor.source_started {
-                if matches!(
-                    cursor.scan.sources[cursor.source_index],
-                    RouteQuerySource::Cell(_)
-                ) {
-                    work.cells_examined = work.cells_examined.saturating_add(1);
+            let Some(entry) = cursor.next_entry else {
+                if remaining == 0 {
+                    return InternalRouteQueryOutcome::Incomplete { cursor, work };
                 }
-                cursor.source_started = true;
-            }
-            let source = cursor.scan.sources[cursor.source_index];
-            let next = self
-                .spatial
-                .source(source)
-                .and_then(|source| match cursor.last_entry {
-                    Some(last) => source.range((Excluded(last), Unbounded)).next().copied(),
-                    None => source.iter().next().copied(),
-                });
-            let Some(entry) = next else {
-                cursor.source_index += 1;
-                cursor.source_started = false;
-                cursor.last_entry = None;
+                if cursor.total_spatial_work >= HARD_ROUTE_QUERY_WORK_LIMIT {
+                    return InternalRouteQueryOutcome::BudgetExhausted { work };
+                }
+                remaining -= 1;
+                cursor.total_spatial_work = cursor.total_spatial_work.saturating_add(1);
+                match self.spatial.advance_scan(&mut cursor.scan) {
+                    RouteQueryStep::LevelInitialized => {
+                        work.spatial_level_checks = work.spatial_level_checks.saturating_add(1);
+                    }
+                    RouteQueryStep::Source(source) => {
+                        work.spatial_source_setups = work.spatial_source_setups.saturating_add(1);
+                        if matches!(source, RouteQuerySource::Cell(_)) {
+                            work.cells_examined = work.cells_examined.saturating_add(1);
+                        }
+                        cursor.active_source = Some(source);
+                        cursor.next_entry = self
+                            .spatial
+                            .source(source)
+                            .and_then(|entries| entries.iter().next().copied());
+                        if cursor.next_entry.is_none() {
+                            cursor.active_source = None;
+                        }
+                    }
+                    RouteQueryStep::Exhausted => {
+                        work.spatial_level_checks = work.spatial_level_checks.saturating_add(1);
+                        let cursor = *cursor;
+                        return InternalRouteQueryOutcome::Complete {
+                            edges: cursor.matched,
+                            overflows: cursor.flatten_overflows,
+                            work,
+                        };
+                    }
+                }
                 continue;
             };
             if remaining == 0 {
                 return InternalRouteQueryOutcome::Incomplete { cursor, work };
             }
-            if cursor.total_entries_examined >= HARD_ROUTE_QUERY_ENTRY_LIMIT {
+            if cursor.total_entries_examined >= HARD_ROUTE_QUERY_ENTRY_LIMIT
+                || cursor.total_spatial_work >= HARD_ROUTE_QUERY_WORK_LIMIT
+            {
                 return InternalRouteQueryOutcome::BudgetExhausted { work };
             }
             remaining -= 1;
-            cursor.last_entry = Some(entry);
             cursor.total_entries_examined = cursor.total_entries_examined.saturating_add(1);
+            cursor.total_spatial_work = cursor.total_spatial_work.saturating_add(1);
             work.entries_examined = work.entries_examined.saturating_add(1);
+            let source = cursor
+                .active_source
+                .expect("a pending route entry always belongs to an active spatial source");
+            cursor.next_entry = self
+                .spatial
+                .source(source)
+                .and_then(|entries| entries.range((Excluded(entry), Unbounded)).next().copied());
+            if cursor.next_entry.is_none() {
+                cursor.active_source = None;
+            }
 
             let edge = entry.edge;
             if !cursor.checked.insert(edge) {
@@ -879,7 +936,7 @@ pub(super) enum InternalRouteQueryOutcome {
         work: VisibleRouteQueryWork,
     },
     Incomplete {
-        cursor: VisibleRouteCursor,
+        cursor: Box<VisibleRouteCursor>,
         work: VisibleRouteQueryWork,
     },
     BudgetExhausted {
@@ -933,7 +990,7 @@ impl ViewSession {
                 }
                 VisibleRouteRequest::Resume(cursor) => {
                     validate_cursor(&state, &cursor)?;
-                    *cursor
+                    cursor
                 }
             };
             state
@@ -988,10 +1045,7 @@ impl ViewSession {
                 })
             }
             InternalRouteQueryOutcome::Incomplete { cursor, work } => {
-                Ok(VisibleRouteQueryOutcome::Incomplete {
-                    cursor: Box::new(cursor),
-                    work,
-                })
+                Ok(VisibleRouteQueryOutcome::Incomplete { cursor, work })
             }
             InternalRouteQueryOutcome::BudgetExhausted { work } => {
                 Ok(VisibleRouteQueryOutcome::BudgetExhausted { work })
@@ -1344,6 +1398,21 @@ mod tests {
         }
 
         let epoch = index.index_epoch;
+        let full_cursor = index.new_cursor(
+            ViewQueryIdentity::new(
+                ViewId::unavailable(),
+                ViewGeneration::initial(),
+                ViewportRevision::initial(),
+            ),
+            CanvasRect {
+                origin: CanvasPoint { x: -10.0, y: -10.0 },
+                size: CanvasSize {
+                    width: 500.0,
+                    height: 40.0,
+                },
+            },
+        );
+        let (full_found, full_work) = finish_query(&mut index, full_cursor, 64);
         let cursor = index.new_cursor(
             ViewQueryIdentity::new(
                 ViewId::unavailable(),
@@ -1360,7 +1429,18 @@ mod tests {
         );
         let (found, total_work) = finish_query(&mut index, cursor, 1);
         assert_eq!(found, routes.iter().map(PublishedEdgeRoute::edge).collect());
-        assert!(total_work >= routes.len() as u64);
+        assert_eq!(found, full_found);
+        assert_eq!(
+            total_work.spatial_level_checks,
+            full_work.spatial_level_checks
+        );
+        assert_eq!(
+            total_work.spatial_source_setups,
+            full_work.spatial_source_setups
+        );
+        assert_eq!(total_work.cells_examined, full_work.cells_examined);
+        assert_eq!(total_work.entries_examined, full_work.entries_examined);
+        assert!(total_work.entries_examined >= routes.len() as u64);
         assert_eq!(index.flatten_cache.len(), routes.len());
 
         let selected = routes[0].clone().with_selected(true);
@@ -1404,7 +1484,107 @@ mod tests {
         );
         let (found, work) = finish_query(&mut index, cursor, 1);
         assert!(found.is_empty());
-        assert_eq!(work, 0);
+        assert_eq!(work.spatial_level_checks, 1);
+        assert_eq!(work.spatial_source_setups, 0);
+        assert_eq!(work.entries_examined, 0);
+    }
+
+    #[test]
+    fn zero_budget_does_not_initialize_empty_visible_route_sources() {
+        let edge = EdgeId::from_u128(1);
+        let route = test_route_at(edge, 10_000.0, 10_000.0);
+        let mut index = RouteGeometryIndex::default();
+        index.upsert(edge, &route);
+        let cursor = index.new_cursor(
+            ViewQueryIdentity::new(
+                ViewId::unavailable(),
+                ViewGeneration::initial(),
+                ViewportRevision::initial(),
+            ),
+            CanvasRect {
+                origin: CanvasPoint { x: -9.0, y: -9.0 },
+                size: CanvasSize {
+                    width: 18.0,
+                    height: 18.0,
+                },
+            },
+        );
+
+        let InternalRouteQueryOutcome::Incomplete { cursor, work } =
+            index.query_page(cursor, 0, 1.0)
+        else {
+            panic!("zero budget must preserve an untouched visible-route cursor");
+        };
+        assert_eq!(work.spatial_work_units(), 0);
+        assert_eq!(cursor.total_spatial_work, 0);
+
+        let InternalRouteQueryOutcome::Incomplete { cursor, work } =
+            index.query_page(cursor, 1, 1.0)
+        else {
+            panic!("one unit initializes only the occupied route level");
+        };
+        assert_eq!(work.spatial_level_checks, 1);
+        assert_eq!(work.spatial_source_setups, 0);
+        assert_eq!(work.entries_examined, 0);
+
+        let (edges, work) = finish_query(&mut index, cursor, 1);
+        assert!(edges.is_empty());
+        assert_eq!(work.spatial_level_checks, 1);
+        assert_eq!(work.spatial_source_setups, 4);
+        assert_eq!(work.cells_examined, 4);
+        assert_eq!(work.entries_examined, 0);
+        assert_eq!(work.spatial_work_units(), 5);
+    }
+
+    #[test]
+    fn cross_level_whole_level_route_scan_is_split_invariant() {
+        let fine_edge = EdgeId::from_u128(1);
+        let coarse_edge = EdgeId::from_u128(2);
+        let fine = test_route(fine_edge, 0.0);
+        let coarse = test_route_between(coarse_edge, -1_000_000.0, 1_000_000.0);
+        let mut index = RouteGeometryIndex::default();
+        index.upsert(fine_edge, &fine);
+        index.upsert(coarse_edge, &coarse);
+        let bounds = CanvasRect {
+            origin: CanvasPoint {
+                x: -1_000_000.0,
+                y: -100.0,
+            },
+            size: CanvasSize {
+                width: 2_000_000.0,
+                height: 200.0,
+            },
+        };
+        let identity = || {
+            ViewQueryIdentity::new(
+                ViewId::unavailable(),
+                ViewGeneration::initial(),
+                ViewportRevision::initial(),
+            )
+        };
+
+        let full_cursor = index.new_cursor(identity(), bounds);
+        let (full_edges, full_work) = finish_query(&mut index, full_cursor, 512);
+        let split_cursor = index.new_cursor(identity(), bounds);
+        let (split_edges, split_work) = finish_query(&mut index, split_cursor, 1);
+
+        assert_eq!(full_edges, BTreeSet::from([fine_edge, coarse_edge]));
+        assert_eq!(split_edges, full_edges);
+        assert_eq!(
+            split_work.spatial_level_checks,
+            full_work.spatial_level_checks
+        );
+        assert_eq!(
+            split_work.spatial_source_setups,
+            full_work.spatial_source_setups
+        );
+        assert_eq!(split_work.cells_examined, full_work.cells_examined);
+        assert_eq!(split_work.entries_examined, full_work.entries_examined);
+        assert_eq!(split_work.spatial_level_checks, 3);
+        assert_eq!(split_work.spatial_source_setups, 65);
+        assert_eq!(split_work.cells_examined, 64);
+        assert_eq!(split_work.entries_examined, 33);
+        assert_eq!(split_work.spatial_work_units(), 101);
     }
 
     #[test]
@@ -1563,12 +1743,13 @@ mod tests {
             },
         );
         let InternalRouteQueryOutcome::Complete { edges, work, .. } =
-            index.query_page(cursor, 256, 1.0)
+            index.query_page(cursor, 1_024, 1.0)
         else {
             panic!("the local route query must finish inside one frame budget");
         };
 
         assert_eq!(edges.len(), 100);
+        assert!(work.spatial_work_units() <= 1_024);
         assert!(work.entries_examined <= 256);
         assert_eq!(work.flatten_cache_misses, 100);
         assert_eq!(index.flatten_cache.len(), 100);
@@ -1619,19 +1800,20 @@ mod tests {
 
     fn finish_query(
         index: &mut RouteGeometryIndex,
-        mut cursor: VisibleRouteCursor,
+        mut cursor: Box<VisibleRouteCursor>,
         page_budget: usize,
-    ) -> (BTreeSet<EdgeId>, u64) {
-        let mut total_work = 0;
-        for _ in 0..128 {
+    ) -> (BTreeSet<EdgeId>, VisibleRouteQueryWork) {
+        let mut total_work = VisibleRouteQueryWork::default();
+        for _ in 0..4_096 {
             match index.query_page(cursor, page_budget, 1.0) {
                 InternalRouteQueryOutcome::Complete { edges, work, .. } => {
-                    total_work += work.entries_examined;
+                    assert!(work.spatial_work_units() <= page_budget as u64);
+                    accumulate_query_work(&mut total_work, work);
                     return (edges, total_work);
                 }
                 InternalRouteQueryOutcome::Incomplete { cursor: next, work } => {
-                    assert!(work.entries_examined <= page_budget as u64);
-                    total_work += work.entries_examined;
+                    assert!(work.spatial_work_units() <= page_budget as u64);
+                    accumulate_query_work(&mut total_work, work);
                     cursor = next;
                 }
                 InternalRouteQueryOutcome::BudgetExhausted { .. } => {
@@ -1642,22 +1824,68 @@ mod tests {
         panic!("route query did not complete")
     }
 
+    fn accumulate_query_work(total: &mut VisibleRouteQueryWork, page: VisibleRouteQueryWork) {
+        total.spatial_level_checks = total
+            .spatial_level_checks
+            .saturating_add(page.spatial_level_checks);
+        total.spatial_source_setups = total
+            .spatial_source_setups
+            .saturating_add(page.spatial_source_setups);
+        total.cells_examined = total.cells_examined.saturating_add(page.cells_examined);
+        total.entries_examined = total.entries_examined.saturating_add(page.entries_examined);
+        total.candidates_matched = total
+            .candidates_matched
+            .saturating_add(page.candidates_matched);
+        total.flatten_cache_hits = total
+            .flatten_cache_hits
+            .saturating_add(page.flatten_cache_hits);
+        total.flatten_cache_misses = total
+            .flatten_cache_misses
+            .saturating_add(page.flatten_cache_misses);
+        total.flatten_cache_evictions = total
+            .flatten_cache_evictions
+            .saturating_add(page.flatten_cache_evictions);
+        total.flatten_segments_built = total
+            .flatten_segments_built
+            .saturating_add(page.flatten_segments_built);
+        total.flatten_overflows = total
+            .flatten_overflows
+            .saturating_add(page.flatten_overflows);
+    }
+
     fn test_route(edge: EdgeId, x: f32) -> PublishedEdgeRoute {
         test_route_at(edge, x, 0.0)
     }
 
     fn test_route_at(edge: EdgeId, x: f32, y: f32) -> PublishedEdgeRoute {
+        test_route_between_at(edge, x, y, x + 100.0, y)
+    }
+
+    fn test_route_between(edge: EdgeId, from_x: f32, to_x: f32) -> PublishedEdgeRoute {
+        test_route_between_at(edge, from_x, 0.0, to_x, 0.0)
+    }
+
+    fn test_route_between_at(
+        edge: EdgeId,
+        from_x: f32,
+        from_y: f32,
+        to_x: f32,
+        to_y: f32,
+    ) -> PublishedEdgeRoute {
         let mut model = Edge::new(EdgeKind::Data, PortId::from_u128(1), PortId::from_u128(2));
         model.view = EdgeViewDescriptor::new().with_route(EdgeRouteSpec::straight());
         let facts = resolve_edge_route_path(
             &model,
             EdgePosition {
                 source: EdgeEndpointPosition {
-                    point: CanvasPoint { x, y },
+                    point: CanvasPoint {
+                        x: from_x,
+                        y: from_y,
+                    },
                     position: HandlePosition::Right,
                 },
                 target: EdgeEndpointPosition {
-                    point: CanvasPoint { x: x + 100.0, y },
+                    point: CanvasPoint { x: to_x, y: to_y },
                     position: HandlePosition::Left,
                 },
             },

@@ -879,7 +879,7 @@ fn paged_connection_probe_restarts_after_viewport_change_without_cancelling_drag
             let session = jellyflow_runtime::interaction::CanvasInteractionSession::attach(
                 &host.view,
                 jellyflow_runtime::interaction::CanvasInteractionConfig {
-                    query_entry_budget: 1,
+                    query_work_budget: 1,
                     ..jellyflow_runtime::interaction::CanvasInteractionConfig::default()
                 },
             )
@@ -987,7 +987,7 @@ fn paged_edge_pick_restarts_after_paint_order_change_without_terminal_failure(
                 &host.view,
                 jellyflow_runtime::interaction::CanvasInteractionConfig {
                     edge_pick_radius_in_view: 1_000.0,
-                    query_entry_budget: 1,
+                    query_work_budget: 1,
                     ..jellyflow_runtime::interaction::CanvasInteractionConfig::default()
                 },
             )
@@ -1026,7 +1026,7 @@ fn paged_edge_pick_restarts_after_paint_order_change_without_terminal_failure(
         );
     });
 
-    for _ in 0..32 {
+    for _ in 0..128 {
         if cx.read_entity(&host, |host, _| {
             !host.interaction_owner.test_query_work_pending()
         }) {
