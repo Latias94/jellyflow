@@ -2228,6 +2228,7 @@ mod tests {
     fn execute_applied(runtime: &GraphRuntime, command: GraphCommand) -> RuntimePatch {
         runtime
             .execute(command)
+            .into_result()
             .expect("runtime command")
             .applied()
             .expect("command applies")

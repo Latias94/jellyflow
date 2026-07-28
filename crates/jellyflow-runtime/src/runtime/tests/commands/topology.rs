@@ -39,6 +39,7 @@ fn runtime_add_node_requires_exact_canonical_registered_kind() {
                 [],
             ),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("latest canonical registered kind applies");
@@ -55,6 +56,7 @@ fn runtime_add_node_requires_exact_canonical_registered_kind() {
             runtime.snapshot().unwrap().version(),
             TopologyEdit::new().add_node(opaque, opaque_node.clone(), []),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("unregistered kinds remain opaque");
@@ -117,6 +119,7 @@ fn dynamic_port_replacement_is_one_undoable_command() {
             )
             .with_label("add dynamic branches"),
         )
+        .into_result()
         .unwrap();
 
     let receipt = outcome.applied().expect("topology applies");
@@ -226,6 +229,7 @@ fn data_ports_and_incident_edges_commit_undo_and_redo_as_one_topology_edit() {
                     IncidentEdgePolicy::Cascade,
                 ),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("atomic topology edit applies");
@@ -298,6 +302,7 @@ fn stable_ports_can_reorder_and_update_payload_without_reallocation() {
                 IncidentEdgePolicy::Reject,
             ),
         ))
+        .into_result()
         .unwrap();
     let before = runtime.snapshot().unwrap();
     let node_lifetime = runtime.node_lifetime_key(nodes[0]).unwrap().unwrap();
@@ -317,6 +322,7 @@ fn stable_ports_can_reorder_and_update_payload_without_reallocation() {
                 IncidentEdgePolicy::Reject,
             ),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("reorder applies");
@@ -379,6 +385,7 @@ fn semantic_port_replacement_retires_identity_across_execute_undo_and_redo() {
                 IncidentEdgePolicy::Reject,
             ),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("initial port applies");
@@ -400,6 +407,7 @@ fn semantic_port_replacement_retires_identity_across_execute_undo_and_redo() {
                 IncidentEdgePolicy::Reject,
             ),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("same-ID semantic replacement applies atomically");
@@ -478,6 +486,7 @@ fn node_snapshot_identity_never_revives_after_same_id_replacement_or_history_rep
             initial.version(),
             TopologyEdit::new().remove_node(node_id, IncidentEdgePolicy::Reject),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("node removal applies");
@@ -494,6 +503,7 @@ fn node_snapshot_identity_never_revives_after_same_id_replacement_or_history_rep
             removed.version(),
             TopologyEdit::new().add_node(node_id, node_record, []),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("same node ID can be created in a later command");
@@ -538,6 +548,7 @@ fn connected_port_removal_obeys_reject_and_cascade_policies() {
             runtime.snapshot().unwrap().version(),
             TopologyEdit::new().replace_node_ports(ids.source, [], IncidentEdgePolicy::Reject),
         ))
+        .into_result()
         .unwrap();
     assert!(rejected.rejection().is_some());
     assert_eq!(runtime.snapshot().unwrap().revision(), 0);
@@ -555,6 +566,7 @@ fn connected_port_removal_obeys_reject_and_cascade_policies() {
             runtime.snapshot().unwrap().version(),
             TopologyEdit::new().replace_node_ports(ids.source, [], IncidentEdgePolicy::Cascade),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("cascade applies");
@@ -580,6 +592,7 @@ fn node_removal_cascades_ports_and_edges_and_undo_restores_them() {
             runtime.snapshot().unwrap().version(),
             TopologyEdit::new().remove_node(ids.source, IncidentEdgePolicy::Cascade),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("cascade node removal applies");
@@ -617,6 +630,7 @@ fn duplicate_ports_reject_without_revision_or_history_changes() {
                 IncidentEdgePolicy::Reject,
             ),
         ))
+        .into_result()
         .unwrap();
 
     assert!(matches!(outcome, GraphCommandOutcome::Rejected(_)));
@@ -659,6 +673,7 @@ fn runtime_policy_governs_topology_node_deletion_with_element_override_precedenc
             runtime.snapshot().unwrap().version(),
             TopologyEdit::new().remove_node(nodes[0], IncidentEdgePolicy::Reject),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("per-node override permits deletion");

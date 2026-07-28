@@ -19,6 +19,7 @@ fn full_history_replay_prepares_only_the_top_owned_transaction() {
                     "payload": "x".repeat(PAYLOAD_BYTES),
                 }),
             ))
+            .into_result()
             .unwrap()
             .applied()
             .expect("history seed command applies");
@@ -143,6 +144,7 @@ fn dynamic_topology_on_large_graph_never_uses_full_graph_diff() {
                 IncidentEdgePolicy::Reject,
             ),
         ))
+        .into_result()
         .unwrap();
     let receipt = outcome.applied().expect("topology applies");
 
@@ -238,6 +240,7 @@ fn single_input_replacement_reads_only_incident_edges_and_bindings_at_scale() {
             single_target,
             NodeGraphConnectionMode::Strict,
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("single-input replacement applies");
@@ -305,6 +308,7 @@ fn batched_connections_query_only_port_local_staged_edges() {
             runtime.snapshot().unwrap().version(),
             edit,
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("batched connections apply");
@@ -355,6 +359,7 @@ fn add_node_preserves_declared_port_order_and_plans_from_affected_facts() {
                 ],
             ),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("node topology applies");
@@ -456,6 +461,7 @@ fn profiled_commands_keep_type_propagation_local_on_a_ten_thousand_edge_graph() 
             affected_source,
             CanvasPoint { x: 50.0, y: 25.0 },
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("profiled position command applies");
@@ -472,6 +478,7 @@ fn profiled_commands_keep_type_propagation_local_on_a_ten_thousand_edge_graph() 
             affected_source,
             serde_json::json!({ "value": 1 }),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("profiled payload command applies");

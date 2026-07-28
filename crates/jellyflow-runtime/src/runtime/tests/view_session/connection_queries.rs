@@ -172,6 +172,7 @@ fn same_id_port_replacement_refreshes_every_connection_fact_identity() {
                 IncidentEdgePolicy::Cascade,
             ),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("semantic replacement applies");
@@ -208,6 +209,7 @@ fn same_id_port_replacement_refreshes_every_connection_fact_identity() {
 
     runtime
         .execute(GraphCommand::undo(runtime.snapshot().unwrap().version()))
+        .into_result()
         .unwrap()
         .applied()
         .expect("undo restores port semantics");
@@ -254,6 +256,7 @@ fn occupied_input_drag_facts_carry_the_edge_lifetime_not_only_its_id() {
 
     runtime
         .execute(GraphCommand::disconnect(initial.version(), ids.edge))
+        .into_result()
         .unwrap()
         .applied()
         .expect("edge retirement applies");
@@ -262,6 +265,7 @@ fn occupied_input_drag_facts_carry_the_edge_lifetime_not_only_its_id() {
 
     runtime
         .execute(GraphCommand::undo(retired.version()))
+        .into_result()
         .unwrap()
         .applied()
         .expect("undo restores the edge id");
@@ -405,6 +409,8 @@ fn batched_port_summaries_preserve_order_missing_positions_and_one_revision() {
         serde_json::json!({ "revision": 1 }),
     ))
     .unwrap()
+    .into_result()
+    .unwrap()
     .applied()
     .expect("unrelated node update applies");
     let before_updated = runtime.stats().unwrap();
@@ -509,6 +515,8 @@ fn runtime_owned_policy_keeps_connection_queries_and_commands_consistent() {
             ids.target_port,
             NodeGraphConnectionMode::Strict,
         ))
+        .unwrap()
+        .into_result()
         .unwrap();
     assert_eq!(
         outcome.rejection().unwrap().diagnostics()[0].key,
@@ -565,6 +573,7 @@ fn create_from_wire_query_preserves_results_and_errors_across_view_capabilities(
                 IncidentEdgePolicy::Cascade,
             ),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("source replacement applies");

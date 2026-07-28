@@ -530,6 +530,7 @@ fn same_id_fixed_port_replacement_cancels_instead_of_switching_preview_type(
                 IncidentEdgePolicy::Reject,
             ),
         ))
+        .into_result()
         .expect("replace fixed port semantics")
         .applied()
         .expect("same-ID fixed port replacement applies");
@@ -592,6 +593,7 @@ fn late_events_from_replaced_port_lifetime_cannot_settle_successor_drag(
                 IncidentEdgePolicy::Reject,
             ),
         ))
+        .into_result()
         .expect("replace output lifetime")
         .applied()
         .expect("same-ID replacement applies");

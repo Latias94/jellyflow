@@ -10,13 +10,13 @@ use jellyflow_core::{CanvasPoint, EdgeId, NodeGraphConnectionMode, NodeId};
 use jellyflow_runtime::view::ViewSession;
 use jellyflow_runtime::viewport::ViewportTransform;
 use jellyflow_runtime::{
-    commands::GraphCommand, geometry::ViewPoint, geometry::ViewRect, geometry::ViewSize,
-    graph::GraphRevision, graph::GraphSnapshot, graph::NodeLifetimeKey,
-    interaction::CanvasInteractionConfig, interaction::CanvasInteractionEffect,
-    interaction::CanvasInteractionError, interaction::CanvasInteractionPhase,
-    interaction::CanvasInteractionPresentation, interaction::CanvasInteractionQuery,
-    interaction::CanvasInteractionSession, interaction::CanvasInteractionUpdate,
-    interaction::CanvasPressTarget, interaction::CommandSettlement,
+    commands::CommandExecutionCompletion, commands::GraphCommand, geometry::ViewPoint,
+    geometry::ViewRect, geometry::ViewSize, graph::GraphRevision, graph::GraphSnapshot,
+    graph::NodeLifetimeKey, interaction::CanvasInteractionConfig,
+    interaction::CanvasInteractionEffect, interaction::CanvasInteractionError,
+    interaction::CanvasInteractionPhase, interaction::CanvasInteractionPresentation,
+    interaction::CanvasInteractionQuery, interaction::CanvasInteractionSession,
+    interaction::CanvasInteractionUpdate, interaction::CanvasPressTarget,
     interaction::ConnectionGestureBinding, interaction::ConnectionInteractionStart,
     interaction::ConnectionSearchRequest, interaction::ConnectionSearchSelection,
     interaction::InteractionGeneration, interaction::InteractionGraphSubmission,
@@ -479,7 +479,7 @@ impl OpenGpuiNativeInteractionOwner {
     }
 
     pub(super) fn bind_submission(
-        &self,
+        &mut self,
         submission: InteractionGraphSubmission,
     ) -> Result<Option<GraphCommand>, InteractionGraphSubmissionBindError> {
         self.session.bind_submission(submission)
@@ -597,7 +597,6 @@ impl OpenGpuiNativeInteractionOwner {
     fn settle_node_drag_residency(
         &mut self,
         ticket: InteractionTicketId,
-        settlement: CommandSettlement,
         applied_revision: Option<GraphRevision>,
     ) {
         let Some(residency) = self
@@ -607,20 +606,10 @@ impl OpenGpuiNativeInteractionOwner {
         else {
             return;
         };
-        match (settlement, applied_revision) {
-            (CommandSettlement::Applied, Some(revision)) => {
-                residency.stage = NodeDragResidencyStage::AwaitingAppliedFrame { revision };
-            }
-            (CommandSettlement::Applied, None)
-            | (
-                CommandSettlement::Noop
-                | CommandSettlement::Rejected
-                | CommandSettlement::Conflict
-                | CommandSettlement::TransportFailure,
-                _,
-            ) => {
-                self.node_drag_residency = None;
-            }
+        if let Some(revision) = applied_revision {
+            residency.stage = NodeDragResidencyStage::AwaitingAppliedFrame { revision };
+        } else {
+            self.node_drag_residency = None;
         }
     }
 
@@ -707,14 +696,44 @@ impl OpenGpuiNativeInteractionOwner {
         self.session.select_search_result(selection)
     }
 
-    pub(super) fn settle(
+    pub(super) fn complete_submission(
         &mut self,
         ticket: InteractionTicketId,
-        settlement: CommandSettlement,
-        applied_revision: Option<GraphRevision>,
+        completion: CommandExecutionCompletion,
     ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
-        let update = self.session.settle(ticket, settlement)?;
-        self.settle_node_drag_residency(ticket, settlement, applied_revision);
+        let applied_revision = completion.applied_revision();
+        let update = self.session.complete_submission(ticket, completion)?;
+        self.settle_node_drag_residency(ticket, applied_revision);
+        self.reconcile_node_drag_residency();
+        Ok(update)
+    }
+
+    pub(super) fn complete_submission_without_command(
+        &mut self,
+        ticket: InteractionTicketId,
+    ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
+        let update = self.session.complete_submission_without_command(ticket)?;
+        self.settle_node_drag_residency(ticket, None);
+        self.reconcile_node_drag_residency();
+        Ok(update)
+    }
+
+    pub(super) fn submission_not_dispatched(
+        &mut self,
+        ticket: InteractionTicketId,
+    ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
+        let update = self.session.submission_not_dispatched(ticket)?;
+        self.settle_node_drag_residency(ticket, None);
+        self.reconcile_node_drag_residency();
+        Ok(update)
+    }
+
+    pub(super) fn submission_outcome_unknown(
+        &mut self,
+        ticket: InteractionTicketId,
+    ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
+        let update = self.session.submission_outcome_unknown(ticket)?;
+        self.settle_node_drag_residency(ticket, None);
         self.reconcile_node_drag_residency();
         Ok(update)
     }
@@ -1912,7 +1931,7 @@ impl OpenGpuiSceneHost {
                     && let Some(ticket) = self.interaction_owner.pending_submission_ticket()
                 {
                     self.discard_pending_interaction_submission();
-                    self.settle_interaction_without_native(ticket, CommandSettlement::Conflict);
+                    self.interaction_submission_not_dispatched(ticket);
                     self.sync_native_connection_state(window, cx);
                 } else {
                     self.interaction_owner
@@ -1937,7 +1956,7 @@ impl OpenGpuiSceneHost {
 
         let token = self.interaction_owner.callback_token();
         let barrier = self.commands.capture_prefix_barrier().map_err(|error| {
-            self.settle_interaction_without_native(ticket, CommandSettlement::TransportFailure);
+            self.interaction_submission_not_dispatched(ticket);
             format!("failed to capture native command prefix: {error}")
         })?;
         let identity = PendingInteractionSubmissionIdentity { ticket, token };
@@ -2012,11 +2031,11 @@ impl OpenGpuiSceneHost {
                 Ok(())
             }
             Ok(false) => {
-                self.settle_interaction_without_native(ticket, CommandSettlement::Noop);
+                self.complete_interaction_without_command(ticket);
                 Ok(())
             }
             Err(error) => {
-                self.settle_interaction_without_native(ticket, error.settlement());
+                self.interaction_submission_not_dispatched(ticket);
                 Err(error.message)
             }
         }
@@ -2075,7 +2094,7 @@ impl OpenGpuiSceneHost {
         let permit = match result {
             Ok(permit) => permit,
             Err(error) => {
-                self.settle_interaction_without_native(ticket, CommandSettlement::TransportFailure);
+                self.interaction_submission_not_dispatched(ticket);
                 self.record_prefix_barrier_failure(error);
                 self.sync_native_connection_state(window, cx);
                 return;
@@ -2092,7 +2111,7 @@ impl OpenGpuiSceneHost {
             Ok(update) => self.apply_canvas_interaction_update(update, window, cx),
             Err(error) => {
                 self.discard_pending_interaction_submission();
-                self.settle_interaction_without_native(ticket, CommandSettlement::TransportFailure);
+                self.interaction_submission_not_dispatched(ticket);
                 self.record_command_diagnostic(format!(
                     "failed to refresh native interaction command: {error}"
                 ));
@@ -2102,7 +2121,7 @@ impl OpenGpuiSceneHost {
     }
 
     fn bind_and_enqueue_interaction(
-        &self,
+        &mut self,
         submission: InteractionGraphSubmission,
         permit: OpenGpuiCommandPrefixPermit,
     ) -> Result<bool, InteractionEnqueueFailure> {
@@ -2110,50 +2129,100 @@ impl OpenGpuiSceneHost {
         let command = self
             .interaction_owner
             .bind_submission(submission)
-            .map_err(|error| InteractionEnqueueFailure::conflict(error.to_string()))?;
+            .map_err(|error| InteractionEnqueueFailure::new(error.to_string()))?;
         let Some(command) = command else {
             permit.abandon();
             return Ok(false);
         };
         permit
             .enqueue_detached(command, OpenGpuiCommandOrigin::Interaction { ticket })
-            .map_err(|error| InteractionEnqueueFailure::transport(error.to_string()))?;
+            .map_err(|error| InteractionEnqueueFailure::new(error.to_string()))?;
         Ok(true)
     }
 
     pub(super) fn settle_interaction_command(
         &mut self,
         ticket: InteractionTicketId,
-        settlement: CommandSettlement,
-        applied_revision: Option<GraphRevision>,
+        completion: CommandExecutionCompletion,
     ) {
         self.interaction_owner.clear_submission_for_ticket(ticket);
-        self.settle_interaction(ticket, settlement, applied_revision);
-    }
-
-    fn settle_interaction_without_native(
-        &mut self,
-        ticket: InteractionTicketId,
-        settlement: CommandSettlement,
-    ) {
-        self.settle_interaction(ticket, settlement, None);
-    }
-
-    fn settle_interaction(
-        &mut self,
-        ticket: InteractionTicketId,
-        settlement: CommandSettlement,
-        applied_revision: Option<GraphRevision>,
-    ) {
-        match self
+        let result = self
             .interaction_owner
-            .settle(ticket, settlement, applied_revision)
-        {
+            .complete_submission(ticket, completion);
+        self.finish_interaction_completion(result);
+    }
+
+    pub(super) fn interaction_submission_not_dispatched(&mut self, ticket: InteractionTicketId) {
+        self.interaction_owner.clear_submission_for_ticket(ticket);
+        let result = self.interaction_owner.submission_not_dispatched(ticket);
+        self.finish_interaction_completion(result);
+    }
+
+    pub(super) fn interaction_submission_outcome_unknown(&mut self, ticket: InteractionTicketId) {
+        self.interaction_owner.clear_submission_for_ticket(ticket);
+        let result = self.interaction_owner.submission_outcome_unknown(ticket);
+        self.finish_interaction_completion(result);
+    }
+
+    fn complete_interaction_without_command(&mut self, ticket: InteractionTicketId) {
+        self.interaction_owner.clear_submission_for_ticket(ticket);
+        let result = self
+            .interaction_owner
+            .complete_submission_without_command(ticket);
+        self.finish_interaction_completion(result);
+    }
+
+    fn finish_interaction_completion(
+        &mut self,
+        result: Result<CanvasInteractionUpdate, CanvasInteractionError>,
+    ) {
+        match result {
             Ok(update) => self.queue_interaction_queries(update.into_dispatch().queries),
             Err(error) => self.record_command_diagnostic(format!(
                 "failed to settle native canvas interaction: {error}"
             )),
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn bind_pending_interaction_submission_for_execution(
+        &mut self,
+    ) -> Result<(InteractionTicketId, Option<GraphCommand>), String> {
+        let pending = self
+            .interaction_owner
+            .take_pending_submission()
+            .ok_or_else(|| "native interaction has no pending submission".to_owned())?;
+        let PendingInteractionSubmission { ticket, stage } = pending;
+        let submission = match stage {
+            PendingInteractionSubmissionStage::PreparingPrefixTask {
+                submission,
+                cancellation,
+                ..
+            } => {
+                drop(cancellation);
+                submission
+            }
+            PendingInteractionSubmissionStage::WaitingForPrefix {
+                submission,
+                task,
+                cancellation,
+                ..
+            } => {
+                drop((task, cancellation));
+                submission
+            }
+            stage @ (PendingInteractionSubmissionStage::Revalidating { .. }
+            | PendingInteractionSubmissionStage::Enqueued { .. }) => {
+                self.interaction_owner
+                    .restore_pending_submission(PendingInteractionSubmission { ticket, stage });
+                return Err("native interaction submission is no longer bindable".to_owned());
+            }
+        };
+        let command = self
+            .interaction_owner
+            .bind_submission(submission)
+            .map_err(|error| error.to_string())?;
+        Ok((ticket, command))
     }
 
     pub(super) fn discard_pending_interaction_submission(&mut self) {
@@ -2406,27 +2475,12 @@ fn callback_epoch_is_current(epoch: &Weak<Cell<u64>>, token: CallbackToken) -> b
 }
 
 struct InteractionEnqueueFailure {
-    settlement: CommandSettlement,
     message: String,
 }
 
 impl InteractionEnqueueFailure {
-    fn conflict(message: String) -> Self {
-        Self {
-            settlement: CommandSettlement::Conflict,
-            message,
-        }
-    }
-
-    fn transport(message: String) -> Self {
-        Self {
-            settlement: CommandSettlement::TransportFailure,
-            message,
-        }
-    }
-
-    fn settlement(&self) -> CommandSettlement {
-        self.settlement
+    fn new(message: String) -> Self {
+        Self { message }
     }
 }
 
@@ -2585,10 +2639,7 @@ mod tests {
         fixture.owner.pending_submission =
             Some(PendingInteractionSubmission::enqueued(ticket, token));
         assert_required_nodes(&fixture, 2);
-        fixture
-            .owner
-            .settle(ticket, CommandSettlement::Noop, None)
-            .unwrap();
+        fixture.owner.submission_not_dispatched(ticket).unwrap();
         assert!(!fixture.owner.has_node_drag_residency());
     }
 
@@ -2601,21 +2652,38 @@ mod tests {
             .move_to(pointer_sample(&fixture.view, 40.0, 24.0))
             .unwrap();
         let g1_release = pointer_sample(&fixture.view, 40.0, 24.0);
-        let (g1_ticket, _) = release_node_drag(&mut fixture, g1_release);
+        let (g1_ticket, g1_submission) = release_node_drag(&mut fixture, g1_release);
+        let g1_command = fixture
+            .owner
+            .bind_submission(g1_submission)
+            .unwrap()
+            .expect("G1 node drag binds a command");
+        let g1_completion = fixture.runtime.execute(g1_command);
+        let g1_revision = g1_completion.applied_revision().unwrap();
         fixture
             .owner
-            .settle(g1_ticket, CommandSettlement::Applied, Some(5))
+            .complete_submission(g1_ticket, g1_completion)
             .unwrap();
         assert_required_nodes(&fixture, 2);
-        assert!(!fixture.owner.observe_materialized_frame(4, []));
+        assert!(
+            !fixture
+                .owner
+                .observe_materialized_frame(g1_revision.saturating_sub(1), [])
+        );
         assert_required_nodes(&fixture, 2);
 
         arm_node_drag(&mut fixture, 2);
-        assert!(!fixture.owner.observe_materialized_frame(5, []));
+        assert!(!fixture.owner.observe_materialized_frame(g1_revision, []));
         assert_required_nodes(&fixture, 2);
+        let late_snapshot = fixture.runtime.snapshot().unwrap();
+        let late_completion = fixture.runtime.execute(GraphCommand::set_node_data(
+            late_snapshot.version(),
+            fixture.nodes[0],
+            serde_json::json!({ "late": true }),
+        ));
         fixture
             .owner
-            .settle(g1_ticket, CommandSettlement::Applied, Some(5))
+            .complete_submission(g1_ticket, late_completion)
             .unwrap();
         assert_required_nodes(&fixture, 2);
 
@@ -2626,10 +2694,17 @@ mod tests {
             .move_to(pointer_sample(&fixture.view, 40.0, 24.0))
             .unwrap();
         let g2_release = pointer_sample(&fixture.view, 40.0, 24.0);
-        let (g2_ticket, _) = release_node_drag(&mut fixture, g2_release);
+        let (g2_ticket, g2_submission) = release_node_drag(&mut fixture, g2_release);
+        let g2_command = fixture
+            .owner
+            .bind_submission(g2_submission)
+            .unwrap()
+            .expect("G2 node drag binds a command");
+        let g2_completion = fixture.runtime.execute(g2_command);
+        let g2_revision = g2_completion.applied_revision().unwrap();
         fixture
             .owner
-            .settle(g2_ticket, CommandSettlement::Applied, Some(7))
+            .complete_submission(g2_ticket, g2_completion)
             .unwrap();
         let complete_cohort = fixture
             .nodes
@@ -2643,20 +2718,19 @@ mod tests {
                     .unwrap()
             })
             .collect::<Vec<_>>();
+        assert!(!fixture.owner.observe_materialized_frame(
+            g2_revision.saturating_sub(1),
+            complete_cohort.iter().copied(),
+        ));
         assert!(
             !fixture
                 .owner
-                .observe_materialized_frame(6, complete_cohort.iter().copied())
-        );
-        assert!(
-            !fixture
-                .owner
-                .observe_materialized_frame(7, complete_cohort[..1].iter().copied())
+                .observe_materialized_frame(g2_revision, complete_cohort[..1].iter().copied())
         );
         assert!(
             fixture
                 .owner
-                .observe_materialized_frame(7, complete_cohort.iter().copied())
+                .observe_materialized_frame(g2_revision, complete_cohort.iter().copied())
         );
         assert!(!fixture.owner.has_node_drag_residency());
     }
@@ -2674,6 +2748,7 @@ mod tests {
                 admitted.version(),
                 TopologyEdit::new().remove_node(peer, IncidentEdgePolicy::Reject),
             ))
+            .into_result()
             .unwrap()
             .applied()
             .unwrap();
@@ -2681,6 +2756,7 @@ mod tests {
         fixture
             .runtime
             .execute(GraphCommand::undo(retired.version()))
+            .into_result()
             .unwrap()
             .applied()
             .unwrap();

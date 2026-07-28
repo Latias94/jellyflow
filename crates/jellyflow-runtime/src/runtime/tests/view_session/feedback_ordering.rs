@@ -5,14 +5,16 @@ use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize, NodeId};
 
 use crate::profile::ApplyPipelineError;
 use crate::runtime::adapter_protocol::{
-    AdapterFrame, FeedbackCollectorError, FeedbackOperationReceipt, FrameRequest, LayoutNodeStatus,
+    AdapterFrame, FeedbackCollectorError, FeedbackSubmissionError, FrameRequest, LayoutNodeStatus,
     NodeLayout, RendererStamp, ViewPoint, ViewRect, ViewSize,
 };
-use crate::runtime::commands::GraphCommand;
-use crate::runtime::graph_runtime::{GraphRuntime, GraphRuntimeEvent, RuntimePatch};
+use crate::runtime::commands::{CommandCompletionCorrelationError, GraphCommand};
+use crate::runtime::graph_runtime::{
+    GraphRuntime, GraphRuntimeError, GraphRuntimeEvent, RuntimePatch,
+};
 use crate::runtime::middleware::{GraphRuntimeMiddleware, GraphRuntimeMiddlewareSnapshot};
 use crate::runtime::view_session::{
-    ViewCloseReason, ViewSession, ViewSessionEvent, ViewSessionOptions,
+    ViewCloseReason, ViewSession, ViewSessionError, ViewSessionEvent, ViewSessionOptions,
 };
 
 use super::fixtures::{graph_with_nodes, publish_graph_layouts};
@@ -37,6 +39,20 @@ fn one_node_frame(session: &ViewSession) -> AdapterFrame {
 
 fn layout_for(frame: &AdapterFrame) -> NodeLayout {
     frame.nodes()[0]
+        .begin_layout(ViewRect::new(
+            ViewPoint::default(),
+            ViewSize::new(200.0, 120.0),
+        ))
+        .finish()
+        .unwrap()
+}
+
+fn layout_for_node(frame: &AdapterFrame, node: NodeId) -> NodeLayout {
+    frame
+        .nodes()
+        .iter()
+        .find(|frame_node| frame_node.id() == node)
+        .expect("requested node is present in the frame")
         .begin_layout(ViewRect::new(
             ViewPoint::default(),
             ViewSize::new(200.0, 120.0),
@@ -71,6 +87,240 @@ impl GraphRuntimeMiddleware for CloseViewBeforeFeedbackCommand {
             .expect("middleware closes the feedback view");
         Ok(())
     }
+}
+
+#[test]
+fn duplicate_command_identity_rejects_before_consuming_the_frame_or_mutating_state() {
+    let (graph, nodes) = graph_with_nodes(1);
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .unwrap();
+    let session = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    let frame = one_node_frame(&session);
+    let collector = frame.collector();
+    let command = GraphCommand::set_node_data(
+        frame.graph_version(),
+        nodes[0],
+        serde_json::json!({ "value": "applied-on-retry" }),
+    );
+    let command_identity = command.identity().clone();
+    collector.command(command.clone()).unwrap();
+    collector.command(command).unwrap();
+    let invalid_feedback = collector.finish().unwrap();
+    let mut retry_feedback = invalid_feedback.duplicate_for_test();
+    retry_feedback
+        .operations
+        .pop()
+        .expect("retry removes exactly the duplicate command");
+
+    let before_snapshot = runtime.snapshot().unwrap();
+    let before_history = runtime.history_state().unwrap();
+    let before_runtime_stats = runtime.stats().unwrap();
+    let before_view_stats = session.stats().unwrap();
+
+    let error = session
+        .submit_feedback(invalid_feedback)
+        .expect_err("duplicate command identities must fail before admission");
+    let FeedbackSubmissionError::DuplicateCommandIdentity { identity } = error else {
+        panic!("expected DuplicateCommandIdentity, got {error:?}");
+    };
+
+    assert_eq!(identity, command_identity);
+    assert!(runtime.snapshot().unwrap().ptr_eq(&before_snapshot));
+    assert_eq!(runtime.history_state().unwrap(), before_history);
+    assert_eq!(runtime.stats().unwrap(), before_runtime_stats);
+    assert_eq!(session.stats().unwrap(), before_view_stats);
+
+    let receipt = session
+        .submit_feedback(retry_feedback)
+        .expect("duplicate rejection must leave the same frame available for retry");
+    assert!(matches!(
+        receipt.command_completion(&command_identity).unwrap().result(),
+        Ok(outcome) if outcome.applied().is_some()
+    ));
+}
+
+#[test]
+fn interleaved_feedback_correlates_an_execution_error_without_shifting_its_neighbor() {
+    let (graph, nodes) = graph_with_nodes(2);
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .unwrap();
+    let session = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    let frame = one_node_frame(&session);
+    let collector = frame.collector();
+
+    let (foreign_graph, _) = graph_with_nodes(1);
+    let foreign_runtime = GraphRuntime::builder(Default::default())
+        .build(foreign_graph)
+        .unwrap();
+    let failed = GraphCommand::set_node_data(
+        foreign_runtime.snapshot().unwrap().version(),
+        nodes[1],
+        serde_json::json!({ "must_not_apply": true }),
+    );
+    let failed_identity = failed.identity().clone();
+    let applied = GraphCommand::set_node_data(
+        frame.graph_version(),
+        nodes[0],
+        serde_json::json!({ "applied": true }),
+    );
+    let applied_identity = applied.identity().clone();
+
+    collector.layout(layout_for_node(&frame, nodes[0])).unwrap();
+    collector.command(failed).unwrap();
+    collector.layout(layout_for_node(&frame, nodes[1])).unwrap();
+    collector.command(applied).unwrap();
+
+    let receipt = session
+        .submit_feedback(collector.finish().unwrap())
+        .unwrap();
+
+    let failed_completion = receipt.command_completion(&failed_identity).unwrap();
+    assert_eq!(failed_completion.identity(), &failed_identity);
+    assert!(matches!(
+        failed_completion.result(),
+        Err(GraphRuntimeError::ForeignCommandRuntime { .. })
+    ));
+    let applied_completion = receipt.command_completion(&applied_identity).unwrap();
+    assert_eq!(applied_completion.identity(), &applied_identity);
+    assert!(matches!(
+        applied_completion.result(),
+        Ok(outcome) if outcome.applied().is_some()
+    ));
+    assert_eq!(receipt.command_completions().count(), 2);
+    assert_eq!(
+        receipt
+            .layout_receipts()
+            .map(|layout| layout.node())
+            .collect::<Vec<_>>(),
+        nodes
+    );
+}
+
+#[test]
+fn feedback_receipt_batch_consumption_is_keyed_ordered_and_atomic() {
+    let (graph, nodes) = graph_with_nodes(2);
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .unwrap();
+    let session = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    let frame = one_node_frame(&session);
+    let collector = frame.collector();
+
+    let first = GraphCommand::set_node_data(
+        frame.graph_version(),
+        nodes[0],
+        serde_json::json!({ "step": 1 }),
+    );
+    let first_identity = first.identity().clone();
+    let second = GraphCommand::set_node_data(
+        frame.graph_version(),
+        nodes[1],
+        serde_json::json!({ "step": 2 }),
+    );
+    let second_identity = second.identity().clone();
+    let missing_identity = GraphCommand::set_node_data(
+        frame.graph_version(),
+        nodes[1],
+        serde_json::json!({ "not_submitted": true }),
+    )
+    .identity()
+    .clone();
+    collector.command(first).unwrap();
+    collector.layout(layout_for_node(&frame, nodes[0])).unwrap();
+    collector.command(second).unwrap();
+
+    let mut receipt = session
+        .submit_feedback(collector.finish().unwrap())
+        .unwrap();
+    assert_eq!(receipt.layout_receipts().count(), 1);
+
+    let error = receipt
+        .take_exact_command_completions(std::slice::from_ref(&first_identity))
+        .expect_err("an exact subset must reject its foreign completion");
+    assert!(matches!(
+        error,
+        CommandCompletionCorrelationError::ForeignIdentity { identity }
+            if identity == second_identity
+    ));
+    assert_eq!(receipt.command_completions().count(), 2);
+
+    let error = receipt
+        .take_command_completions(&[first_identity.clone(), first_identity.clone()])
+        .expect_err("duplicate expected identities must reject atomically");
+    assert!(matches!(
+        error,
+        CommandCompletionCorrelationError::DuplicateIdentity { identity }
+            if identity == first_identity
+    ));
+    assert_eq!(receipt.command_completions().count(), 2);
+
+    let completions = receipt
+        .take_command_completions(&[second_identity.clone(), first_identity.clone()])
+        .unwrap();
+    assert_eq!(completions[0].identity(), &second_identity);
+    assert_eq!(completions[1].identity(), &first_identity);
+    assert!(receipt.command_completions().next().is_none());
+
+    assert!(matches!(
+        receipt.take_command_completion(&first_identity),
+        Err(CommandCompletionCorrelationError::AlreadyConsumed { identity })
+            if identity == first_identity
+    ));
+    assert!(matches!(
+        receipt.take_command_completion(&missing_identity),
+        Err(CommandCompletionCorrelationError::MissingIdentity { identity })
+            if identity == missing_identity
+    ));
+}
+
+#[test]
+fn layout_error_after_command_admission_preserves_the_keyed_completion() {
+    let (graph, nodes) = graph_with_nodes(1);
+    let view_slot = Rc::new(RefCell::new(None));
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .unwrap()
+        .with_middleware(CloseViewBeforeFeedbackCommand {
+            view: view_slot.clone(),
+        });
+    let session = Rc::new(runtime.attach_view(ViewSessionOptions::default()).unwrap());
+    *view_slot.borrow_mut() = Some(session.clone());
+    let frame = one_node_frame(&session);
+    let collector = frame.collector();
+    let command = GraphCommand::set_node_data(
+        frame.graph_version(),
+        nodes[0],
+        serde_json::json!({ "value": "admitted-before-layout-error" }),
+    );
+    let command_identity = command.identity().clone();
+    collector.command(command).unwrap();
+    collector.layout(layout_for(&frame)).unwrap();
+
+    let error = session
+        .submit_feedback(collector.finish().unwrap())
+        .expect_err("closing the view during command execution must fail layout publication");
+    let FeedbackSubmissionError::AfterCommandAdmission { source, receipt } = error else {
+        panic!("expected AfterCommandAdmission, got {error:?}");
+    };
+    assert!(matches!(
+        source,
+        ViewSessionError::Closed {
+            reason: ViewCloseReason::HostClosed
+        }
+    ));
+    let receipt = receipt.expect("post-admission failure must preserve admitted completions");
+    assert!(matches!(
+        receipt.command_completion(&command_identity).unwrap().result(),
+        Ok(outcome) if outcome.applied().is_some()
+    ));
+    assert_eq!(receipt.command_completions().count(), 1);
+    assert_eq!(receipt.layout_receipts().count(), 1);
+    assert_eq!(receipt.layout_receipts().next().unwrap().status(), None);
+    assert_eq!(runtime.snapshot().unwrap().revision(), 1);
+    assert_eq!(runtime.history_state().unwrap().undo_len(), 1);
+    assert_eq!(session.close_reason(), Some(ViewCloseReason::HostClosed));
 }
 
 #[test]
@@ -247,12 +497,13 @@ fn cloned_collectors_share_order_and_reject_late_writes_after_finish() {
     let host = frame.collector();
     let prepaint = host.clone();
     prepaint.layout(layout_for(&frame)).unwrap();
-    host.command(GraphCommand::set_node_data(
+    let command = GraphCommand::set_node_data(
         frame.graph_version(),
         nodes[0],
         serde_json::json!({ "source": "retained-callback" }),
-    ))
-    .unwrap();
+    );
+    let command_identity = command.identity().clone();
+    host.command(command).unwrap();
 
     let feedback = prepaint.finish().unwrap();
 
@@ -265,20 +516,17 @@ fn cloned_collectors_share_order_and_reject_late_writes_after_finish() {
         Err(FeedbackCollectorError::CollectorClosed)
     ));
     let receipt = session.submit_feedback(feedback).unwrap();
-    assert!(matches!(
-        receipt.operations(),
-        [
-            FeedbackOperationReceipt::Layout {
-                status: LayoutNodeStatus::Stale,
-                ..
-            },
-            FeedbackOperationReceipt::Command { .. }
-        ]
-    ));
+    assert!(receipt.command_completion(&command_identity).is_ok());
+    assert_eq!(receipt.command_completions().count(), 1);
+    assert_eq!(receipt.layout_receipts().count(), 1);
+    assert_eq!(
+        receipt.layout_receipts().next().unwrap().status().unwrap(),
+        LayoutNodeStatus::Stale
+    );
 }
 
 #[test]
-fn feedback_receipts_preserve_host_order_and_applied_commands_stale_layout() {
+fn feedback_receipts_correlate_applied_commands_and_stale_layout() {
     let (graph, nodes) = graph_with_nodes(1);
     let runtime = GraphRuntime::builder(Default::default())
         .build(graph)
@@ -300,29 +548,26 @@ fn feedback_receipts_preserve_host_order_and_applied_commands_stale_layout() {
         ))
         .unwrap();
     let collector = frame.collector();
-    collector
-        .command(GraphCommand::set_node_data(
-            frame.graph_version(),
-            nodes[0],
-            serde_json::json!({ "expanded": true }),
-        ))
-        .unwrap();
+    let command = GraphCommand::set_node_data(
+        frame.graph_version(),
+        nodes[0],
+        serde_json::json!({ "expanded": true }),
+    );
+    let command_identity = command.identity().clone();
+    collector.command(command).unwrap();
     collector.layout(layout_for(&frame)).unwrap();
 
     let receipt = session
         .submit_feedback(collector.finish().unwrap())
         .unwrap();
     assert!(matches!(
-        &receipt.operations()[0],
-        FeedbackOperationReceipt::Command { .. }
+        receipt.command_completion(&command_identity).unwrap().result(),
+        Ok(outcome) if outcome.applied().is_some()
     ));
-    assert!(matches!(
-        &receipt.operations()[1],
-        FeedbackOperationReceipt::Layout {
-            status: LayoutNodeStatus::Stale,
-            ..
-        }
-    ));
+    assert_eq!(
+        receipt.layout_receipts().next().unwrap().status().unwrap(),
+        LayoutNodeStatus::Stale
+    );
     assert!(
         session
             .geometry_snapshot()
@@ -341,13 +586,13 @@ fn rejected_command_feedback_does_not_stale_layout_from_the_same_frame() {
     let session = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     let frame = one_node_frame(&session);
     let collector = frame.collector();
-    collector
-        .command(GraphCommand::set_node_data(
-            frame.graph_version(),
-            NodeId::from_u128(9_999),
-            serde_json::json!({ "must_not_apply": true }),
-        ))
-        .unwrap();
+    let command = GraphCommand::set_node_data(
+        frame.graph_version(),
+        NodeId::from_u128(9_999),
+        serde_json::json!({ "must_not_apply": true }),
+    );
+    let command_identity = command.identity().clone();
+    collector.command(command).unwrap();
     collector.layout(layout_for(&frame)).unwrap();
 
     let receipt = session
@@ -355,28 +600,25 @@ fn rejected_command_feedback_does_not_stale_layout_from_the_same_frame() {
         .unwrap();
 
     assert!(
-        receipt.operations()[0]
-            .command_outcome()
+        receipt
+            .command_completion(&command_identity)
             .unwrap()
-            .as_ref()
+            .result()
             .unwrap()
             .rejection()
             .is_some()
     );
-    assert!(matches!(
-        receipt.operations()[1],
-        FeedbackOperationReceipt::Layout {
-            status: LayoutNodeStatus::Published,
-            ..
-        }
-    ));
+    assert_eq!(
+        receipt.layout_receipts().next().unwrap().status().unwrap(),
+        LayoutNodeStatus::Published
+    );
     assert_eq!(receipt.publication().unwrap().published_nodes(), [nodes[0]]);
     assert!(!receipt.request_next_frame());
     assert_eq!(runtime.snapshot().unwrap().revision(), 0);
 }
 
 #[test]
-fn conflicted_command_and_layout_keep_exact_host_order() {
+fn conflicted_command_correlates_without_staling_layout() {
     let (graph, nodes) = graph_with_nodes(1);
     let runtime = GraphRuntime::builder(Default::default())
         .build(graph)
@@ -389,6 +631,7 @@ fn conflicted_command_and_layout_keep_exact_host_order() {
             nodes[0],
             serde_json::json!({ "admitted": true }),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .unwrap();
@@ -408,37 +651,31 @@ fn conflicted_command_and_layout_keep_exact_host_order() {
         ))
         .unwrap();
     let collector = frame.collector();
-    collector
-        .command(GraphCommand::set_node_data(
-            stale_version,
-            nodes[0],
-            serde_json::json!({ "must_not_apply": true }),
-        ))
-        .unwrap();
+    let command = GraphCommand::set_node_data(
+        stale_version,
+        nodes[0],
+        serde_json::json!({ "must_not_apply": true }),
+    );
+    let command_identity = command.identity().clone();
+    collector.command(command).unwrap();
     collector.layout(layout_for(&frame)).unwrap();
 
     let receipt = session
         .submit_feedback(collector.finish().unwrap())
         .unwrap();
 
-    assert!(matches!(
-        receipt.operations(),
-        [
-            FeedbackOperationReceipt::Command { .. },
-            FeedbackOperationReceipt::Layout {
-                status: LayoutNodeStatus::Published,
-                ..
-            }
-        ]
-    ));
     assert!(
-        receipt.operations()[0]
-            .command_outcome()
+        receipt
+            .command_completion(&command_identity)
             .unwrap()
-            .as_ref()
+            .result()
             .unwrap()
             .conflict()
             .is_some()
+    );
+    assert_eq!(
+        receipt.layout_receipts().next().unwrap().status().unwrap(),
+        LayoutNodeStatus::Published
     );
     assert_eq!(runtime.snapshot().unwrap().revision(), 1);
     assert_eq!(receipt.publication().unwrap().published_nodes(), [nodes[0]]);
@@ -483,35 +720,33 @@ fn feedback_notifications_observe_completed_command_log_before_conflicted_follow
         ))
         .unwrap();
     let collector = frame.collector();
-    collector
-        .command(GraphCommand::set_node_data(
-            frame.graph_version(),
-            nodes[0],
-            serde_json::json!({ "step": 1 }),
-        ))
-        .unwrap();
-    collector
-        .command(GraphCommand::set_node_data(
-            frame.graph_version(),
-            nodes[1],
-            serde_json::json!({ "step": 2 }),
-        ))
-        .unwrap();
+    let applied = GraphCommand::set_node_data(
+        frame.graph_version(),
+        nodes[0],
+        serde_json::json!({ "step": 1 }),
+    );
+    let applied_identity = applied.identity().clone();
+    collector.command(applied).unwrap();
+    let conflicted = GraphCommand::set_node_data(
+        frame.graph_version(),
+        nodes[1],
+        serde_json::json!({ "step": 2 }),
+    );
+    let conflicted_identity = conflicted.identity().clone();
+    collector.command(conflicted).unwrap();
 
     let receipt = session
         .submit_feedback(collector.finish().unwrap())
         .unwrap();
 
-    assert_eq!(receipt.operations().len(), 2);
+    assert_eq!(receipt.command_completions().count(), 2);
     assert!(matches!(
-        receipt.operations()[0],
-        FeedbackOperationReceipt::Command { ref outcome }
-            if matches!(outcome.as_ref(), Ok(outcome) if outcome.applied().is_some())
+        receipt.command_completion(&applied_identity).unwrap().result(),
+        Ok(outcome) if outcome.applied().is_some()
     ));
     assert!(matches!(
-        receipt.operations()[1],
-        FeedbackOperationReceipt::Command { ref outcome }
-            if matches!(outcome.as_ref(), Ok(outcome) if outcome.conflict().is_some())
+        receipt.command_completion(&conflicted_identity).unwrap().result(),
+        Ok(outcome) if outcome.conflict().is_some()
     ));
     assert_eq!(runtime.snapshot().unwrap().revision(), 1);
     assert_eq!(observations.borrow().as_slice(), &[(1, 1)]);

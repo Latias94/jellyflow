@@ -117,6 +117,7 @@ fn weak_selection_filters_missing_and_duplicate_ids_and_sanitizes_retirement() {
             initial_version,
             TopologyEdit::new().remove_node(ids[1], IncidentEdgePolicy::Reject),
         ))
+        .into_result()
         .expect("remove missing selection candidate")
         .applied()
         .expect("remove applies")
@@ -153,6 +154,7 @@ fn weak_selection_filters_missing_and_duplicate_ids_and_sanitizes_retirement() {
             removed_version,
             TopologyEdit::new().remove_node(ids[0], IncidentEdgePolicy::Reject),
         ))
+        .into_result()
         .expect("retire selected node")
         .applied()
         .expect("remove applies");

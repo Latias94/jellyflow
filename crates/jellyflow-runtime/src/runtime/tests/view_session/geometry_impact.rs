@@ -77,7 +77,7 @@ fn layout_for(frame: &AdapterFrame, node: NodeId) -> NodeLayout {
 }
 
 fn applied_patch(runtime: &GraphRuntime, command: GraphCommand) -> RuntimePatch {
-    match runtime.execute(command).unwrap() {
+    match runtime.execute(command).into_result().unwrap() {
         GraphCommandOutcome::Applied(receipt) => receipt.patch().clone(),
         other => panic!("fixture command must apply: {other:?}"),
     }
@@ -172,14 +172,9 @@ fn unrelated_external_patch_publishes_only_unaffected_layout_and_counts_work() {
         .submit_feedback(collector.finish().unwrap())
         .unwrap();
 
-    assert_eq!(
-        receipt.operations()[0].layout_status(),
-        Some(LayoutNodeStatus::Published)
-    );
-    assert_eq!(
-        receipt.operations()[1].layout_status(),
-        Some(LayoutNodeStatus::Stale)
-    );
+    let layouts = receipt.layout_receipts().collect::<Vec<_>>();
+    assert_eq!(layouts[0].status().unwrap(), LayoutNodeStatus::Published);
+    assert_eq!(layouts[1].status().unwrap(), LayoutNodeStatus::Stale);
     assert_eq!(
         receipt.publication().unwrap().published_nodes(),
         &[nodes[0]]
@@ -202,29 +197,27 @@ fn same_frame_applied_command_stales_only_intersecting_candidate() {
     let collector = frame.collector();
     collector.layout(layout_for(&frame, nodes[0])).unwrap();
     collector.layout(layout_for(&frame, nodes[1])).unwrap();
-    collector
-        .command(GraphCommand::set_node_data(
-            frame.graph_version(),
-            nodes[0],
-            serde_json::json!({ "expanded": true }),
-        ))
-        .unwrap();
+    let command = GraphCommand::set_node_data(
+        frame.graph_version(),
+        nodes[0],
+        serde_json::json!({ "expanded": true }),
+    );
+    let command_identity = command.identity().clone();
+    collector.command(command).unwrap();
 
     let receipt = session
         .submit_feedback(collector.finish().unwrap())
         .unwrap();
 
-    assert_eq!(
-        receipt.operations()[0].layout_status(),
-        Some(LayoutNodeStatus::Stale)
-    );
-    assert_eq!(
-        receipt.operations()[1].layout_status(),
-        Some(LayoutNodeStatus::Published)
-    );
+    let layouts = receipt.layout_receipts().collect::<Vec<_>>();
+    assert_eq!(layouts[0].status().unwrap(), LayoutNodeStatus::Stale);
+    assert_eq!(layouts[1].status().unwrap(), LayoutNodeStatus::Published);
     assert!(matches!(
-        receipt.operations()[2].command_outcome(),
-        Some(Ok(GraphCommandOutcome::Applied(_)))
+        receipt
+            .command_completion(&command_identity)
+            .unwrap()
+            .result(),
+        Ok(GraphCommandOutcome::Applied(_))
     ));
     assert_eq!(
         receipt.publication().unwrap().published_nodes(),
@@ -268,25 +261,28 @@ fn same_frame_node_translation_rejects_old_layout_without_withdrawing_geometry()
 
     let frame = session.frame(request()).unwrap();
     let collector = frame.collector();
-    collector
-        .command(GraphCommand::set_node_position(
-            frame.graph_version(),
-            ids.source,
-            CanvasPoint { x: 80.0, y: 40.0 },
-        ))
-        .unwrap();
+    let command = GraphCommand::set_node_position(
+        frame.graph_version(),
+        ids.source,
+        CanvasPoint { x: 80.0, y: 40.0 },
+    );
+    let command_identity = command.identity().clone();
+    collector.command(command).unwrap();
     collector.layout(layout_for(&frame, ids.source)).unwrap();
     let receipt = session
         .submit_feedback(collector.finish().unwrap())
         .unwrap();
 
     assert!(matches!(
-        receipt.operations()[0].command_outcome(),
-        Some(Ok(GraphCommandOutcome::Applied(_)))
+        receipt
+            .command_completion(&command_identity)
+            .unwrap()
+            .result(),
+        Ok(GraphCommandOutcome::Applied(_))
     ));
     assert_eq!(
-        receipt.operations()[1].layout_status(),
-        Some(LayoutNodeStatus::Stale),
+        receipt.layout_receipts().next().unwrap().status().unwrap(),
+        LayoutNodeStatus::Stale,
         "the measurement belongs to the pre-command frame and must still be rejected",
     );
     assert!(receipt.publication().is_none());
@@ -322,33 +318,34 @@ fn noop_rejected_and_conflicting_commands_do_not_create_geometry_impact() {
             nodes[0],
             serde_json::json!({ "advance": true }),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .unwrap();
     let session = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     let frame = session.frame(request()).unwrap();
     let collector = frame.collector();
-    collector
-        .command(GraphCommand::set_node_data(
-            frame.graph_version(),
-            nodes[0],
-            serde_json::json!({ "advance": true }),
-        ))
-        .unwrap();
-    collector
-        .command(GraphCommand::set_node_data(
-            frame.graph_version(),
-            NodeId::from_u128(0xffff),
-            serde_json::json!({ "missing": true }),
-        ))
-        .unwrap();
-    collector
-        .command(GraphCommand::set_node_data(
-            stale_version,
-            nodes[0],
-            serde_json::json!({ "conflict": true }),
-        ))
-        .unwrap();
+    let noop = GraphCommand::set_node_data(
+        frame.graph_version(),
+        nodes[0],
+        serde_json::json!({ "advance": true }),
+    );
+    let noop_identity = noop.identity().clone();
+    collector.command(noop).unwrap();
+    let rejected = GraphCommand::set_node_data(
+        frame.graph_version(),
+        NodeId::from_u128(0xffff),
+        serde_json::json!({ "missing": true }),
+    );
+    let rejected_identity = rejected.identity().clone();
+    collector.command(rejected).unwrap();
+    let conflicted = GraphCommand::set_node_data(
+        stale_version,
+        nodes[0],
+        serde_json::json!({ "conflict": true }),
+    );
+    let conflicted_identity = conflicted.identity().clone();
+    collector.command(conflicted).unwrap();
     collector.layout(layout_for(&frame, nodes[0])).unwrap();
 
     let receipt = session
@@ -356,20 +353,26 @@ fn noop_rejected_and_conflicting_commands_do_not_create_geometry_impact() {
         .unwrap();
 
     assert!(matches!(
-        receipt.operations()[0].command_outcome(),
-        Some(Ok(GraphCommandOutcome::Noop(_)))
+        receipt.command_completion(&noop_identity).unwrap().result(),
+        Ok(GraphCommandOutcome::Noop(_))
     ));
     assert!(matches!(
-        receipt.operations()[1].command_outcome(),
-        Some(Ok(GraphCommandOutcome::Rejected(_)))
+        receipt
+            .command_completion(&rejected_identity)
+            .unwrap()
+            .result(),
+        Ok(GraphCommandOutcome::Rejected(_))
     ));
     assert!(matches!(
-        receipt.operations()[2].command_outcome(),
-        Some(Ok(GraphCommandOutcome::Conflict(_)))
+        receipt
+            .command_completion(&conflicted_identity)
+            .unwrap()
+            .result(),
+        Ok(GraphCommandOutcome::Conflict(_))
     ));
     assert_eq!(
-        receipt.operations()[3].layout_status(),
-        Some(LayoutNodeStatus::Published)
+        receipt.layout_receipts().next().unwrap().status().unwrap(),
+        LayoutNodeStatus::Published
     );
     let stats = session.stats().unwrap();
     assert_eq!(stats.geometry_impact_patches_merged, 0);
@@ -405,8 +408,13 @@ fn multi_view_pending_impacts_are_scoped_per_candidate() {
         .submit_feedback(first_collector.finish().unwrap())
         .unwrap();
     assert_eq!(
-        first_receipt.operations()[0].layout_status(),
-        Some(LayoutNodeStatus::Stale)
+        first_receipt
+            .layout_receipts()
+            .next()
+            .unwrap()
+            .status()
+            .unwrap(),
+        LayoutNodeStatus::Stale
     );
 
     let second_collector = second_frame.collector();
@@ -417,8 +425,13 @@ fn multi_view_pending_impacts_are_scoped_per_candidate() {
         .submit_feedback(second_collector.finish().unwrap())
         .unwrap();
     assert_eq!(
-        second_receipt.operations()[0].layout_status(),
-        Some(LayoutNodeStatus::Published)
+        second_receipt
+            .layout_receipts()
+            .next()
+            .unwrap()
+            .status()
+            .unwrap(),
+        LayoutNodeStatus::Published
     );
     assert_eq!(first.stats().unwrap().geometry_impact_patches_merged, 1);
     assert_eq!(second.stats().unwrap().geometry_impact_patches_merged, 1);
@@ -440,6 +453,7 @@ fn ten_thousand_pending_single_node_patches_merge_each_affected_record_once() {
                 node,
                 serde_json::json!({ "revision": revision }),
             ))
+            .into_result()
             .unwrap();
         assert!(matches!(outcome, GraphCommandOutcome::Applied(_)));
     }
@@ -483,26 +497,29 @@ fn new_edge_route_is_removed_when_impacted_endpoint_layout_is_withdrawn() {
     let frame = session.frame(request()).unwrap();
     let collector = frame.collector();
     collector.layout(layout_for(&frame, ids.source)).unwrap();
-    collector
-        .command(GraphCommand::connect(
-            frame.graph_version(),
-            ids.edge,
-            ids.source_port,
-            ids.target_port,
-            NodeGraphConnectionMode::Strict,
-        ))
-        .unwrap();
+    let command = GraphCommand::connect(
+        frame.graph_version(),
+        ids.edge,
+        ids.source_port,
+        ids.target_port,
+        NodeGraphConnectionMode::Strict,
+    );
+    let command_identity = command.identity().clone();
+    collector.command(command).unwrap();
     let receipt = session
         .submit_feedback(collector.finish().unwrap())
         .unwrap();
 
     assert_eq!(
-        receipt.operations()[0].layout_status(),
-        Some(LayoutNodeStatus::Stale)
+        receipt.layout_receipts().next().unwrap().status().unwrap(),
+        LayoutNodeStatus::Stale
     );
     assert!(matches!(
-        receipt.operations()[1].command_outcome(),
-        Some(Ok(GraphCommandOutcome::Applied(_)))
+        receipt
+            .command_completion(&command_identity)
+            .unwrap()
+            .result(),
+        Ok(GraphCommandOutcome::Applied(_))
     ));
     let geometry = session.geometry_snapshot().unwrap();
     assert!(geometry.port(ids.source_port).is_none());

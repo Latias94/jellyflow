@@ -64,6 +64,7 @@ fn runtime_snapshot_contains_owned_graph_facts_without_view_state() {
             ids[0],
             serde_json::json!({ "value": 1 }),
         ))
+        .into_result()
         .unwrap();
     let after = runtime.snapshot().expect("updated snapshot");
 

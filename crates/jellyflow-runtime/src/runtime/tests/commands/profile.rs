@@ -102,6 +102,7 @@ fn profile_type_compatibility_is_shared_by_document_evaluation_and_execution() {
 
     runtime
         .execute(GraphCommand::connection(evaluation.version(), edit))
+        .into_result()
         .unwrap()
         .applied()
         .expect("execution uses the same custom compatibility");
@@ -199,6 +200,7 @@ fn symbol_type_changes_revalidate_profile_types_atomically() {
             runtime.snapshot().unwrap().version(),
             SymbolEdit::new().update(symbol_id, compatible),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("compatible symbol update applies");
@@ -362,6 +364,7 @@ fn stable_port_type_changes_revalidate_existing_edges_against_final_topology() {
                 IncidentEdgePolicy::Cascade,
             ),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("cascade removes the now-incompatible edge");
@@ -395,6 +398,7 @@ fn stable_port_type_changes_revalidate_existing_edges_against_final_topology() {
                 .replace_node_ports(ids.source, source_ports, IncidentEdgePolicy::Reject)
                 .replace_node_ports(ids.target, target_ports, IncidentEdgePolicy::Reject),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("coordinated endpoint type update validates the final topology");
@@ -579,6 +583,7 @@ fn cascade_type_revalidation_keeps_policy_after_an_empty_first_drain() {
                 IncidentEdgePolicy::Cascade,
             ),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("cascade policy removes the indirectly incompatible edge");
@@ -690,6 +695,7 @@ fn connection_commands_use_profile_type_resolution() {
             ids.target_port,
             NodeGraphConnectionMode::Strict,
         ))
+        .into_result()
         .unwrap();
 
     let rejection = outcome.rejection().expect("profile types reject");
@@ -724,11 +730,13 @@ fn connection_evaluation_and_execution_share_revisioned_semantics() {
             ids.source,
             serde_json::json!({ "changed": true }),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("intervening command applies");
     let stale = runtime
         .execute(GraphCommand::connection(evaluation.version(), edit))
+        .into_result()
         .unwrap();
     assert!(stale.conflict().is_some());
     assert!(runtime.snapshot().unwrap().graph().edge(&edge).is_none());
@@ -736,6 +744,7 @@ fn connection_evaluation_and_execution_share_revisioned_semantics() {
     let refreshed = runtime.evaluate_connection(edit).unwrap();
     runtime
         .execute(GraphCommand::connection(refreshed.version(), edit))
+        .into_result()
         .unwrap()
         .applied()
         .expect("refreshed connection applies");
@@ -794,6 +803,7 @@ fn connection_evaluation_and_execution_observe_the_same_pure_profile_policy() {
 
     let outcome = runtime
         .execute(GraphCommand::connection(evaluation.version(), edit))
+        .into_result()
         .unwrap();
     let rejection = outcome.rejection().expect("execution rejects identically");
     assert_eq!(
@@ -844,6 +854,7 @@ fn profile_cycle_policy_rejects_only_the_cycle_closing_connection() {
                     IncidentEdgePolicy::Reject,
                 ),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("ports apply");
@@ -855,6 +866,7 @@ fn profile_cycle_policy_rejects_only_the_cycle_closing_connection() {
             b_in,
             NodeGraphConnectionMode::Strict,
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("acyclic connection applies");
@@ -869,6 +881,7 @@ fn profile_cycle_policy_rejects_only_the_cycle_closing_connection() {
             a_in,
             NodeGraphConnectionMode::Strict,
         ))
+        .into_result()
         .unwrap();
 
     let rejection = outcome.rejection().expect("cycle closes and rejects");
@@ -898,6 +911,7 @@ fn history_replay_does_not_run_profile_concretization_again() {
             nodes[0],
             CanvasPoint { x: 10.0, y: 20.0 },
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("profiled command applies");
@@ -952,6 +966,7 @@ fn profile_rejected_undo_preserves_graph_history_stats_and_notifications() {
             nodes[0],
             serde_json::json!({ "value": 1 }),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("seed command applies");
@@ -967,6 +982,7 @@ fn profile_rejected_undo_preserves_graph_history_stats_and_notifications() {
 
     let outcome = runtime
         .execute(GraphCommand::undo(before.version()))
+        .into_result()
         .unwrap();
     let rejection = outcome.rejection().expect("profile rejects undo replay");
 
@@ -1012,6 +1028,7 @@ fn panicking_profile_validation_does_not_consume_prepared_history() {
             nodes[0],
             serde_json::json!({ "value": 1 }),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("seed command applies");
@@ -1027,7 +1044,9 @@ fn panicking_profile_validation_does_not_consume_prepared_history() {
 
     armed.set(true);
     let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        runtime.execute(GraphCommand::undo(before.version()))
+        runtime
+            .execute(GraphCommand::undo(before.version()))
+            .into_result()
     }));
     assert!(panic.is_err());
     assert!(before.ptr_eq(&runtime.snapshot().unwrap()));
@@ -1074,6 +1093,7 @@ fn multi_round_profile_derivation_is_one_exact_history_entry() {
             )
             .with_label("update node and derived topology"),
         )
+        .into_result()
         .unwrap()
         .applied()
         .expect("profiled command applies");
@@ -1188,6 +1208,7 @@ fn profile_validation_rejection_after_derivation_has_zero_runtime_side_effects()
             nodes[0],
             CanvasPoint { x: 10.0, y: 20.0 },
         ))
+        .into_result()
         .unwrap();
 
     let rejection = outcome.rejection().expect("profile rejects derived graph");
@@ -1228,6 +1249,7 @@ fn non_convergent_profile_has_zero_runtime_side_effects() {
             nodes[0],
             CanvasPoint { x: 10.0, y: 20.0 },
         ))
+        .into_result()
         .unwrap();
 
     assert!(outcome.rejection().is_some());

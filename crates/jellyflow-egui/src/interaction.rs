@@ -2,13 +2,13 @@ use std::collections::VecDeque;
 
 use egui::{Context, Event, Id, Key, PointerButton, Pos2, Rect, Response};
 use jellyflow_core::{EdgeId, NodeGraphConnectionMode, PortId};
-use jellyflow_runtime::commands::GraphCommand;
+use jellyflow_runtime::commands::{CommandExecutionCompletion, GraphCommand};
 use jellyflow_runtime::geometry::{HandlePosition, ViewPoint, ViewSize};
 use jellyflow_runtime::graph::{NodeLifetimeKey, PortInstanceKey};
 use jellyflow_runtime::interaction::{
     CanvasInteractionConfig, CanvasInteractionEffect, CanvasInteractionError,
     CanvasInteractionPhase, CanvasInteractionPresentation, CanvasInteractionQuery,
-    CanvasInteractionSession, CanvasInteractionUpdate, CanvasPressTarget, CommandSettlement,
+    CanvasInteractionSession, CanvasInteractionUpdate, CanvasPressTarget,
     ConnectionInteractionStart, ConnectionSearchRequest, ConnectionSearchSelection,
     InteractionDamage, InteractionGraphSubmission, InteractionGraphSubmissionBindError,
     InteractionOwner, InteractionTickDemand, InteractionTicketId, SelectionMode,
@@ -511,14 +511,49 @@ impl EguiCanvasInteraction {
         Ok(finish_output(ctx, output))
     }
 
-    pub fn settle(
+    pub fn complete_submission(
         &mut self,
         ctx: &Context,
         ticket: InteractionTicketId,
-        settlement: CommandSettlement,
+        completion: CommandExecutionCompletion,
+    ) -> Result<EguiInteractionOutput, EguiInteractionError> {
+        let update = self.session.complete_submission(ticket, completion)?;
+        self.finish_submission_update(ctx, update)
+    }
+
+    pub fn complete_submission_without_command(
+        &mut self,
+        ctx: &Context,
+        ticket: InteractionTicketId,
+    ) -> Result<EguiInteractionOutput, EguiInteractionError> {
+        let update = self.session.complete_submission_without_command(ticket)?;
+        self.finish_submission_update(ctx, update)
+    }
+
+    pub fn submission_not_dispatched(
+        &mut self,
+        ctx: &Context,
+        ticket: InteractionTicketId,
+    ) -> Result<EguiInteractionOutput, EguiInteractionError> {
+        let update = self.session.submission_not_dispatched(ticket)?;
+        self.finish_submission_update(ctx, update)
+    }
+
+    pub fn submission_outcome_unknown(
+        &mut self,
+        ctx: &Context,
+        ticket: InteractionTicketId,
+    ) -> Result<EguiInteractionOutput, EguiInteractionError> {
+        let update = self.session.submission_outcome_unknown(ticket)?;
+        self.finish_submission_update(ctx, update)
+    }
+
+    fn finish_submission_update(
+        &mut self,
+        ctx: &Context,
+        update: CanvasInteractionUpdate,
     ) -> Result<EguiInteractionOutput, EguiInteractionError> {
         let mut output = self.drain_frame_output();
-        let update = self.session.settle(ticket, settlement)?;
         self.process_update(update, &mut output)?;
         self.discard_pending_work_if_terminal();
         self.sync_tracked_response(ctx, &mut output);
@@ -530,9 +565,9 @@ impl EguiCanvasInteraction {
     /// A successful return is the transport-acceptance linearization point: cancellation,
     /// closure, view retirement, or a successor ticket can revoke the submission before this
     /// call, but not after it. The caller must execute or enqueue the returned command
-    /// immediately, then report its receipt through [`Self::settle`].
+    /// immediately, then report its completion through [`Self::complete_submission`].
     pub fn bind_submission(
-        &self,
+        &mut self,
         submission: InteractionGraphSubmission,
     ) -> Result<Option<GraphCommand>, EguiInteractionError> {
         Ok(self.session.bind_submission(submission)?)

@@ -99,6 +99,7 @@ fn connect_command_commits_and_replays_one_stable_edge() {
             ids.target_port,
             NodeGraphConnectionMode::Strict,
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("connect applies");
@@ -131,6 +132,7 @@ fn strict_connect_normalizes_reversed_input_output_arguments() {
             ids.alternate_source_port,
             NodeGraphConnectionMode::Strict,
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("reversed arguments normalize");
@@ -162,6 +164,7 @@ fn loose_connect_preserves_same_direction_argument_order() {
             ids.alternate_source_port,
             NodeGraphConnectionMode::Loose,
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("loose same-direction connection applies");
@@ -249,6 +252,7 @@ fn connect_replaces_occupied_single_input_as_one_history_entry() {
             ids.target_port,
             NodeGraphConnectionMode::Strict,
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("single-input replacement applies");
@@ -326,6 +330,7 @@ fn disconnect_and_reconnect_are_revisioned_exact_history_commands() {
             ids.alternate_source_port,
             NodeGraphConnectionMode::Strict,
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("reconnect applies");
@@ -339,6 +344,7 @@ fn disconnect_and_reconnect_are_revisioned_exact_history_commands() {
             runtime.snapshot().unwrap().version(),
             ids.edge,
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("disconnect applies");
@@ -392,6 +398,7 @@ fn reconnect_rejects_an_existing_connection_without_side_effects() {
             ids.target_port,
             NodeGraphConnectionMode::Strict,
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("duplicate candidate setup applies");
@@ -451,6 +458,7 @@ fn reconnect_to_single_target_removes_competing_edge_and_retains_identity() {
             ids.target_port,
             NodeGraphConnectionMode::Strict,
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("single target reconnect applies");
@@ -502,6 +510,7 @@ fn runtime_policy_keeps_reconnect_and_disconnect_evaluation_equal_to_commit() {
             ids.alternate_source_port,
             NodeGraphConnectionMode::Strict,
         ))
+        .into_result()
         .unwrap();
     assert_eq!(
         reconnect_outcome.rejection().unwrap().diagnostics()[0].key,
@@ -521,6 +530,7 @@ fn runtime_policy_keeps_reconnect_and_disconnect_evaluation_equal_to_commit() {
             disconnect_evaluation.version(),
             ids.edge,
         ))
+        .into_result()
         .unwrap();
     assert_eq!(
         disconnect_outcome.rejection().unwrap().diagnostics()[0].key,
@@ -546,6 +556,7 @@ fn connection_rule_rejections_preserve_diagnostics_and_runtime_state() {
             ids.target_port,
             NodeGraphConnectionMode::Strict,
         ))
+        .into_result()
         .unwrap();
     assert_eq!(
         duplicate_id.rejection().unwrap().diagnostics()[0].key,
@@ -561,6 +572,7 @@ fn connection_rule_rejections_preserve_diagnostics_and_runtime_state() {
             ids.alternate_source_port,
             NodeGraphConnectionMode::Strict,
         ))
+        .into_result()
         .unwrap();
     assert_eq!(
         wrong_direction.rejection().unwrap().diagnostics()[0].key,
@@ -658,6 +670,7 @@ fn reconnect_uses_the_same_type_compatibility_rule_as_connect() {
             ids.alternate_source_port,
             NodeGraphConnectionMode::Strict,
         ))
+        .into_result()
         .unwrap();
 
     let rejection = outcome.rejection().expect("typed reconnect rejects");

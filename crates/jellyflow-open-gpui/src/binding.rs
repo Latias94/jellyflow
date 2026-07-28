@@ -1159,10 +1159,12 @@ mod tests {
                 frame.graph_version(),
                 TopologyEdit::new().remove_node(mount_node_id(), IncidentEdgePolicy::Reject),
             ))
+            .into_result()
             .expect("remove mounted node");
         let removed_version = removed.applied().expect("node removal applies").version();
         runtime
             .execute(GraphCommand::undo(removed_version))
+            .into_result()
             .expect("restore mounted node");
         assert!(matches!(
             live_context.ensure_current(),
@@ -1218,10 +1220,12 @@ mod tests {
                     IncidentEdgePolicy::Reject,
                 ),
             ))
+            .into_result()
             .expect("remove mounted port");
         let removed_version = removed.applied().expect("port removal applies").version();
         let restored = runtime
             .execute(GraphCommand::undo(removed_version))
+            .into_result()
             .expect("restore mounted port");
         let restored_revision = restored
             .applied()

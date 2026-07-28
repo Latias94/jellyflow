@@ -388,6 +388,7 @@ impl Render for StaleContentMeasuredNode {
                     NodeId::from_u128(10),
                     serde_json::json!({ "height": 244.0 }),
                 ))
+                .into_result()
                 .expect("stale fixture updates the same node");
         }
         let binding = self.binding.read(cx);
@@ -448,6 +449,7 @@ impl Render for MeasuredPortsNode {
                     NodeId::from_u128(10),
                     serde_json::json!({ "label": "updated elsewhere" }),
                 ))
+                .into_result()
                 .unwrap();
         }
         let binding = self.binding.read(cx);
@@ -1023,9 +1025,8 @@ fn incomplete_layout_keeps_command_and_authoritative_route_until_atomic_refresh(
     assert_eq!(
         poll_command_ticket(&mut ticket)
             .expect("same-frame command ticket")
-            .applied()
-            .expect("same-frame command applied")
-            .revision(),
+            .applied_revision()
+            .expect("same-frame command applied"),
         1
     );
     assert_command_ticket_pending(&mut ticket);

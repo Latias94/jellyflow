@@ -563,12 +563,14 @@ fn published_route_reconnect_rejects_an_edge_id_restored_by_undo() {
     let initial = runtime.snapshot().unwrap();
     runtime
         .execute(GraphCommand::disconnect(initial.version(), ids.edge))
+        .into_result()
         .unwrap()
         .applied()
         .expect("edge retirement applies");
     let retired = runtime.snapshot().unwrap();
     runtime
         .execute(GraphCommand::undo(retired.version()))
+        .into_result()
         .unwrap()
         .applied()
         .expect("undo restores the edge id");
@@ -667,12 +669,14 @@ fn hovered_edge_instance_does_not_alias_an_edge_id_restored_by_undo() {
     let initial = runtime.snapshot().unwrap();
     runtime
         .execute(GraphCommand::disconnect(initial.version(), ids.edge))
+        .into_result()
         .unwrap()
         .applied()
         .expect("edge retirement applies");
     let retired = runtime.snapshot().unwrap();
     runtime
         .execute(GraphCommand::undo(retired.version()))
+        .into_result()
         .unwrap()
         .applied()
         .expect("undo restores the edge id");
@@ -766,6 +770,7 @@ fn runtime_owned_connection_probe_resolves_against_latest_graph_revision() {
             ids.source,
             serde_json::json!({ "receipt_epoch": 1 }),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("unrelated graph mutation advances the revision");
@@ -1171,6 +1176,8 @@ fn complete_port_outcomes_control_hits_routes_culling_and_retirement() {
             session.graph_snapshot().unwrap().version(),
             TopologyEdit::new().remove_node(ids.node, IncidentEdgePolicy::Cascade),
         ))
+        .unwrap()
+        .into_result()
         .unwrap();
     let geometry = session.geometry_snapshot().unwrap();
     assert!(geometry.node(ids.node).is_none());
@@ -1550,9 +1557,8 @@ fn valid_subset_is_published_atomically_with_complete_port_coverage() {
         .submit_feedback(collector.finish().unwrap())
         .unwrap();
     let statuses = receipt
-        .operations()
-        .iter()
-        .filter_map(|operation| operation.layout_status())
+        .layout_receipts()
+        .map(|operation| operation.status().unwrap())
         .collect::<Vec<_>>();
     assert_eq!(
         statuses,
@@ -1804,9 +1810,8 @@ fn invalid_port_candidates_do_not_block_the_valid_subset() {
             .unwrap();
 
         let statuses = receipt
-            .operations()
-            .iter()
-            .filter_map(|operation| operation.layout_status())
+            .layout_receipts()
+            .map(|operation| operation.status().unwrap())
             .collect::<Vec<_>>();
         assert_eq!(statuses, vec![expected_status, LayoutNodeStatus::Published]);
         let publication = receipt.publication().unwrap();
@@ -1877,9 +1882,8 @@ fn duplicate_node_candidates_reject_the_entire_node_and_withdraw_old_hits() {
 
     assert_eq!(
         receipt
-            .operations()
-            .iter()
-            .filter_map(|operation| operation.layout_status())
+            .layout_receipts()
+            .map(|operation| operation.status().unwrap())
             .collect::<Vec<_>>(),
         vec![
             LayoutNodeStatus::DuplicateNode,
@@ -1934,6 +1938,8 @@ fn node_data_layout_refresh_preserves_last_valid_route_until_atomic_replacement(
             ids.source,
             serde_json::json!({ "expanded": true }),
         ))
+        .unwrap()
+        .into_result()
         .unwrap();
 
     let pending = session.geometry_snapshot().unwrap();
@@ -1970,8 +1976,8 @@ fn node_data_layout_refresh_preserves_last_valid_route_until_atomic_replacement(
         .unwrap();
 
     assert_eq!(
-        receipt.operations()[0].layout_status(),
-        Some(LayoutNodeStatus::Published),
+        receipt.layout_receipts().next().unwrap().status().unwrap(),
+        LayoutNodeStatus::Published,
     );
     let after = session.geometry_snapshot().unwrap();
     assert_eq!(
@@ -2033,8 +2039,8 @@ fn stale_node_target_withdraws_old_port_hits_and_routes() {
         .unwrap();
 
     assert_eq!(
-        receipt.operations()[0].layout_status(),
-        Some(LayoutNodeStatus::Stale),
+        receipt.layout_receipts().next().unwrap().status().unwrap(),
+        LayoutNodeStatus::Stale,
     );
     assert!(receipt.request_next_frame());
     assert_eq!(
@@ -2343,8 +2349,8 @@ fn culling_preserves_root_admission_but_withdraws_ports_and_routes() {
         .submit_feedback(culled_collector.finish().unwrap())
         .unwrap();
     assert_eq!(
-        receipt.operations()[0].layout_status(),
-        Some(LayoutNodeStatus::Culled)
+        receipt.layout_receipts().next().unwrap().status().unwrap(),
+        LayoutNodeStatus::Culled
     );
     assert!(receipt.publication().is_none());
     assert!(
@@ -2557,6 +2563,8 @@ fn edge_only_reconnect_disconnect_and_restore_each_advance_geometry_revision_onc
             NodeGraphConnectionMode::Strict,
         ))
         .unwrap()
+        .into_result()
+        .unwrap()
         .applied()
         .expect("reconnect applies");
     assert!(matches!(
@@ -2581,6 +2589,8 @@ fn edge_only_reconnect_disconnect_and_restore_each_advance_geometry_revision_onc
             session.graph_snapshot().unwrap().version(),
             ids.edge,
         ))
+        .unwrap()
+        .into_result()
         .unwrap()
         .applied()
         .expect("disconnect applies");
@@ -2607,6 +2617,8 @@ fn edge_only_reconnect_disconnect_and_restore_each_advance_geometry_revision_onc
         .execute(GraphCommand::undo(
             session.graph_snapshot().unwrap().version(),
         ))
+        .unwrap()
+        .into_result()
         .unwrap();
     let restored = session.geometry_snapshot().unwrap();
     assert_eq!(restored.layout_revision(), 4);
@@ -2718,8 +2730,13 @@ fn command_before_layout_withdraws_frame_routes_after_reconnect_and_disconnect()
         .submit_feedback(collector.finish().unwrap())
         .unwrap();
     assert_eq!(
-        reconnect_receipt.operations()[1].layout_status(),
-        Some(LayoutNodeStatus::Stale)
+        reconnect_receipt
+            .layout_receipts()
+            .next()
+            .unwrap()
+            .status()
+            .unwrap(),
+        LayoutNodeStatus::Stale
     );
     let reconnected = session.geometry_snapshot().unwrap();
     assert!(reconnected.port(ids.source_port).is_none());
@@ -2750,8 +2767,13 @@ fn command_before_layout_withdraws_frame_routes_after_reconnect_and_disconnect()
         .submit_feedback(collector.finish().unwrap())
         .unwrap();
     assert_eq!(
-        disconnect_receipt.operations()[1].layout_status(),
-        Some(LayoutNodeStatus::Stale)
+        disconnect_receipt
+            .layout_receipts()
+            .next()
+            .unwrap()
+            .status()
+            .unwrap(),
+        LayoutNodeStatus::Stale
     );
     let disconnected = session.geometry_snapshot().unwrap();
     assert!(disconnected.port(ids.alternate_source_port).is_none());
@@ -2829,8 +2851,8 @@ fn renderer_event_reentrant_frame_supersedes_the_outer_frame_without_losing_the_
         .submit_feedback(collector.finish().unwrap())
         .unwrap();
     assert_eq!(
-        receipt.operations()[0].layout_status(),
-        Some(LayoutNodeStatus::Published)
+        receipt.layout_receipts().next().unwrap().status().unwrap(),
+        LayoutNodeStatus::Published
     );
 }
 

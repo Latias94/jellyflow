@@ -81,11 +81,13 @@ fn panicking_before_middleware_is_restored_and_preserves_uncommitted_state() {
     let history_before = runtime.history_state().unwrap();
 
     let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        runtime.execute(GraphCommand::set_node_data(
-            before.version(),
-            ids[0],
-            serde_json::json!({ "value": 1 }),
-        ))
+        runtime
+            .execute(GraphCommand::set_node_data(
+                before.version(),
+                ids[0],
+                serde_json::json!({ "value": 1 }),
+            ))
+            .into_result()
     }));
 
     assert!(panic.is_err());
@@ -98,6 +100,7 @@ fn panicking_before_middleware_is_restored_and_preserves_uncommitted_state() {
             ids[0],
             serde_json::json!({ "value": 2 }),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("command after middleware panic applies");
@@ -150,6 +153,7 @@ fn close_before_middleware_panic_after_prior_commit_still_terminalizes() {
             ids[0],
             serde_json::json!({ "step": 1 }),
         ))
+        .into_result()
         .expect("seed command")
         .applied()
         .expect("seed applies")
@@ -267,11 +271,13 @@ fn panicking_after_middleware_is_restored_and_preserves_committed_state() {
     let initial_version = runtime.snapshot().expect("initial snapshot").version();
 
     let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        runtime.execute(GraphCommand::set_node_data(
-            initial_version,
-            ids[0],
-            serde_json::json!({ "value": 1 }),
-        ))
+        runtime
+            .execute(GraphCommand::set_node_data(
+                initial_version,
+                ids[0],
+                serde_json::json!({ "value": 1 }),
+            ))
+            .into_result()
     }));
 
     assert!(panic.is_err());
@@ -304,6 +310,7 @@ fn panicking_after_middleware_is_restored_and_preserves_committed_state() {
             ids[0],
             serde_json::json!({ "value": 2 }),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("command after middleware panic applies");
@@ -386,6 +393,7 @@ fn close_after_middleware_panic_fans_out_committed_patch_and_terminalizes_view()
             ids[0],
             serde_json::json!({ "step": 1 }),
         ))
+        .into_result()
         .expect("seed command")
         .applied()
         .expect("seed applies")
@@ -471,6 +479,7 @@ fn graph_runtime_middleware_rewrites_and_observes_authoritative_commits() {
             )
             .with_label("move node"),
         )
+        .into_result()
         .unwrap()
         .applied()
         .expect("accepted command")
@@ -513,11 +522,13 @@ fn graph_runtime_middleware_rejection_has_zero_side_effects() {
         .with_middleware(RejectMiddleware);
     let before = runtime.snapshot().unwrap();
 
-    let result = runtime.execute(GraphCommand::set_node_data(
-        before.version(),
-        ids[0],
-        serde_json::json!({ "value": 1 }),
-    ));
+    let result = runtime
+        .execute(GraphCommand::set_node_data(
+            before.version(),
+            ids[0],
+            serde_json::json!({ "value": 1 }),
+        ))
+        .into_result();
 
     assert!(result.unwrap().rejection().is_some());
     assert!(runtime.snapshot().unwrap().ptr_eq(&before));
@@ -562,6 +573,7 @@ fn stale_and_rule_rejected_commands_do_not_reach_middleware() {
             ids[0],
             serde_json::json!({ "value": 1 }),
         ))
+        .into_result()
         .unwrap();
     assert!(stale.conflict().is_some());
 
@@ -573,6 +585,7 @@ fn stale_and_rule_rejected_commands_do_not_reach_middleware() {
             jellyflow_core::core::PortId::from_u128(502),
             NodeGraphConnectionMode::Strict,
         ))
+        .into_result()
         .unwrap();
     assert!(invalid.rejection().is_some());
     assert_eq!(before_calls.get(), 0);
@@ -643,18 +656,21 @@ fn graph_runtime_middleware_observes_undo_and_redo_commands() {
             GraphCommand::set_node_data(initial_version, ids[0], serde_json::json!({ "value": 1 }))
                 .with_label("seed"),
         )
+        .into_result()
         .unwrap()
         .applied()
         .expect("seed applies")
         .version();
     let undone_version = runtime
         .execute(GraphCommand::undo(seeded_version))
+        .into_result()
         .unwrap()
         .applied()
         .expect("undo applies")
         .version();
     runtime
         .execute(GraphCommand::redo(undone_version))
+        .into_result()
         .unwrap()
         .applied()
         .expect("redo applies");
@@ -695,6 +711,7 @@ fn assert_history_middleware_rejection(rejected_label: &'static str) {
             ids[0],
             serde_json::json!({ "value": 1 }),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("seed applies")
@@ -702,6 +719,7 @@ fn assert_history_middleware_rejection(rejected_label: &'static str) {
     if rejected_label == "redo" {
         runtime
             .execute(GraphCommand::undo(seeded_version))
+            .into_result()
             .unwrap()
             .applied()
             .expect("undo prepares redo history");
@@ -721,7 +739,7 @@ fn assert_history_middleware_rejection(rejected_label: &'static str) {
         "redo" => GraphCommand::redo(version),
         _ => unreachable!("test only covers history commands"),
     };
-    let outcome = runtime.execute(command).unwrap();
+    let outcome = runtime.execute(command).into_result().unwrap();
     let rejection = outcome
         .rejection()
         .expect("middleware rejects history command");

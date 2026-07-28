@@ -25,21 +25,41 @@ use jellyflow_core::core::{
     NodeId, NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKey, PortKind,
 };
 use jellyflow_core::interaction::NodeGraphConnectionMode;
-use jellyflow_runtime::commands::{GraphCommand, IncidentEdgePolicy, TopologyEdit};
+use jellyflow_runtime::commands::{
+    CommandExecutionCompletion, GraphCommand, IncidentEdgePolicy, TopologyEdit,
+};
 use jellyflow_runtime::geometry::{HandlePosition, ViewPoint, ViewRect, ViewSize};
-use jellyflow_runtime::graph::{EdgeEndpoint, GraphRuntime};
+use jellyflow_runtime::graph::{
+    EdgeEndpoint, GraphRuntime, GraphRuntimeMiddleware, GraphRuntimeMiddlewareSnapshot,
+};
 use jellyflow_runtime::interaction::{
     CanvasInteractionConfig, CanvasInteractionEffect, CanvasInteractionError,
     CanvasInteractionPhase, CanvasInteractionQuery, CanvasInteractionSession,
-    CanvasInteractionUpdate, CanvasPressTarget, CommandSettlement, ConnectionGestureBinding,
-    ConnectionProbe, InteractionDamage, InteractionGraphSubmission, InteractionOwner,
-    InteractionTerminalReason, InteractionTicketId, SelectionMode,
+    CanvasInteractionUpdate, CanvasPressTarget, ConnectionGestureBinding, ConnectionProbe,
+    InteractionDamage, InteractionGraphSubmission, InteractionOwner, InteractionTerminalReason,
+    InteractionTicketId, SelectionMode,
 };
+use jellyflow_runtime::profile::ApplyPipelineError;
 use jellyflow_runtime::schema::{NodeCatalog, NodeCreation, NodeKindSpec, NodePortSpec};
 use jellyflow_runtime::view::{
     FrameRequest, GeometrySnapshot, RendererStamp, ViewCloseReason, ViewSession, ViewSessionOptions,
 };
 use jellyflow_runtime::viewport::{ViewportPointerSample, ViewportTransform};
+
+struct RejectCanonicalCommand;
+
+impl GraphRuntimeMiddleware for RejectCanonicalCommand {
+    fn before_command(
+        &mut self,
+        _snapshot: GraphRuntimeMiddlewareSnapshot,
+        _command: &GraphCommand,
+    ) -> Result<(), ApplyPipelineError> {
+        Err(ApplyPipelineError::Rejected {
+            message: "canonical runtime command rejected".to_owned(),
+            diagnostics: Vec::new(),
+        })
+    }
+}
 
 #[test]
 fn canonical_trace_vocabulary_is_deterministic_and_covers_terminal_receipts() {
@@ -437,6 +457,7 @@ fn paged_connection_queries_restart_after_viewport_layout_and_graph_changes() {
             harness.ids.invalid_node,
             serde_json::json!({ "query_epoch": 1 }),
         ))
+        .into_result()
         .unwrap();
     publish_trace_geometry(&harness.view, harness.ids, changed_anchors);
     let restarted_revalidation = session.resolve_query(revalidation_resume_query).unwrap();
@@ -580,6 +601,16 @@ impl TraceHarness {
         let runtime = GraphRuntime::builder(Default::default())
             .build(builder.build().unwrap())
             .unwrap();
+        let runtime = match scenario_settlement(scenario) {
+            Some(TraceReceipt::Rejected) => runtime.with_middleware(RejectCanonicalCommand),
+            Some(
+                TraceReceipt::Applied
+                | TraceReceipt::Noop
+                | TraceReceipt::Conflict
+                | TraceReceipt::TransportFailure,
+            )
+            | None => runtime,
+        };
         let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
         publish_trace_geometry(&view, ids, anchors);
         let baseline_source_position = runtime
@@ -657,6 +688,7 @@ impl TraceHarness {
                         self.ids.invalid_node,
                         serde_json::json!({ "external_prefix": true }),
                     ))
+                    .into_result()
                     .expect("the unrelated prefix command executes")
                     .applied()
                     .expect("the unrelated prefix command mutates the graph");
@@ -710,19 +742,23 @@ impl TraceHarness {
                     .submission
                     .take()
                     .expect("trace captured one graph submission");
-                if receipt == TraceReceipt::Applied {
-                    let command = self
-                        .session
-                        .bind_submission(submission)
-                        .expect("trace mutation binds")
-                        .expect("applied trace mutation is not a noop");
-                    self.runtime
-                        .execute(command)
-                        .expect("trace command executes")
-                        .applied()
-                        .expect("applied settlement installs the mutation");
+                match receipt {
+                    TraceReceipt::Noop => panic!(
+                        "canonical mutation scenarios do not synthesize no-command settlements"
+                    ),
+                    TraceReceipt::TransportFailure => {
+                        drop(submission);
+                        self.session
+                            .submission_not_dispatched(ticket)
+                            .expect("undispatched submission is reported");
+                    }
+                    TraceReceipt::Applied | TraceReceipt::Rejected | TraceReceipt::Conflict => {
+                        let completion = self.dispatch_submission(receipt, submission);
+                        self.session
+                            .complete_submission(ticket, completion)
+                            .expect("command completion settles the exact submission");
+                    }
                 }
-                self.session.settle(ticket, settlement(receipt)).unwrap();
                 match receipt {
                     TraceReceipt::Applied | TraceReceipt::Noop => TraceEffect::None,
                     TraceReceipt::Rejected
@@ -764,6 +800,7 @@ impl TraceHarness {
                         TopologyEdit::new()
                             .remove_node(self.ids.source_node, IncidentEdgePolicy::Reject),
                     ))
+                    .into_result()
                     .unwrap()
                     .applied()
                     .expect("canonical source retirement applies");
@@ -780,6 +817,44 @@ impl TraceHarness {
                 TraceEffect::ReleaseNativeOwnership
             }
         }
+    }
+
+    fn dispatch_submission(
+        &mut self,
+        requested: TraceReceipt,
+        submission: InteractionGraphSubmission,
+    ) -> CommandExecutionCompletion {
+        let command = self
+            .session
+            .bind_submission(submission)
+            .expect("runtime transport binds the emitted mutation")
+            .expect("canonical emitted mutation is not a no-op");
+        match requested {
+            TraceReceipt::Conflict => self.execute_external_revision("conflict"),
+            TraceReceipt::Applied | TraceReceipt::Rejected => {}
+            TraceReceipt::Noop | TraceReceipt::TransportFailure => {
+                unreachable!("non-dispatch receipts are handled before command binding")
+            }
+        }
+        self.runtime.execute(command)
+    }
+
+    fn execute_external_revision(&mut self, reason: &str) {
+        let snapshot = self
+            .runtime
+            .snapshot()
+            .expect("external runtime transport snapshot");
+        self.runtime
+            .execute(GraphCommand::set_node_data(
+                snapshot.version(),
+                self.ids.invalid_node,
+                serde_json::json!({ "external": reason }),
+            ))
+            .into_result()
+            .expect("external runtime transport command executes")
+            .applied()
+            .expect("external runtime transport command applies");
+        self.excluded_revision_delta = self.excluded_revision_delta.saturating_add(1);
     }
 
     fn press(&mut self, target: TraceTarget) -> TraceEffect {
@@ -1377,13 +1452,27 @@ fn drive_query_pages(
     }
 }
 
-fn settlement(receipt: TraceReceipt) -> CommandSettlement {
-    match receipt {
-        TraceReceipt::Applied => CommandSettlement::Applied,
-        TraceReceipt::Noop => CommandSettlement::Noop,
-        TraceReceipt::Rejected => CommandSettlement::Rejected,
-        TraceReceipt::Conflict => CommandSettlement::Conflict,
-        TraceReceipt::TransportFailure => CommandSettlement::TransportFailure,
+fn scenario_settlement(id: TraceScenarioId) -> Option<TraceReceipt> {
+    match id {
+        TraceScenarioId::NewConnection(settlement)
+        | TraceScenarioId::ReconnectSource(settlement)
+        | TraceScenarioId::ReconnectTarget(settlement)
+        | TraceScenarioId::CreateFromWire(settlement)
+        | TraceScenarioId::NodeDrag(settlement) => Some(settlement),
+        TraceScenarioId::NewConnectionPrefixWait
+        | TraceScenarioId::ReconnectSourcePrefixWait
+        | TraceScenarioId::ReconnectTargetPrefixWait
+        | TraceScenarioId::CreateFromWirePrefixWait
+        | TraceScenarioId::NodeDragPrefixWait => Some(TraceReceipt::Applied),
+        TraceScenarioId::NodePressBelowThreshold
+        | TraceScenarioId::NativeControl
+        | TraceScenarioId::EdgePick
+        | TraceScenarioId::CaptureLost
+        | TraceScenarioId::OwnerReplaced
+        | TraceScenarioId::Escape
+        | TraceScenarioId::OutsideClick
+        | TraceScenarioId::SourceRetired
+        | TraceScenarioId::HostClosed => None,
     }
 }
 
@@ -1397,7 +1486,9 @@ fn trace_terminal(reason: InteractionTerminalReason) -> TraceTerminal {
         InteractionTerminalReason::Cancelled => TraceTerminal::Cancelled,
         InteractionTerminalReason::OwnerRetired => TraceTerminal::OwnerRetired,
         InteractionTerminalReason::ViewClosed => TraceTerminal::HostClosed,
-        reason @ (InteractionTerminalReason::BudgetExhausted
+        reason @ (InteractionTerminalReason::ExecutionFailed
+        | InteractionTerminalReason::Uncertain
+        | InteractionTerminalReason::BudgetExhausted
         | InteractionTerminalReason::GeometryIndeterminate
         | InteractionTerminalReason::IdentityExhausted) => {
             panic!("canonical trace reached unsupported terminal reason {reason:?}")

@@ -146,9 +146,9 @@ impl Render for ProductNode {
                             let invalidate_binding = command_binding.clone();
                             let task = cx.spawn(async move |cx| {
                                 let _task_activity = task_activity;
-                                let applied = ticket
-                                    .await
-                                    .is_ok_and(|outcome| outcome.applied().is_some());
+                                let applied = ticket.await.is_ok_and(|completion| {
+                                    completion.applied_revision().is_some()
+                                });
                                 if applied {
                                     let _ = invalidate_binding
                                         .update(cx, |binding, cx| binding.invalidate_layout(cx));
@@ -286,8 +286,7 @@ fn build_product_registry(state: Rc<ProductNodeState>) -> OpenGpuiNodeRegistry {
     let mut registry = OpenGpuiNodeRegistry::builder();
     let policy = OpenGpuiNodeRegistrationPolicy::default().with_size_policy(
         OpenGpuiNodeSizePolicy::ContentHeight(
-            OpenGpuiContentHeightPolicy::new(108.0, 160.0)
-                .expect("external content-height policy"),
+            OpenGpuiContentHeightPolicy::new(108.0, 160.0).expect("external content-height policy"),
         ),
     );
     registry.register_with_policy(RENDERER, policy, move |binding, _window, cx| {

@@ -462,9 +462,9 @@ fn take_command_observation(
         observations.is_empty(),
         "one click must resolve exactly one command"
     );
-    let outcome = observation.result.expect("native command ticket resolves");
-    outcome
-        .applied()
+    let completion = observation.result.expect("native command ticket resolves");
+    completion
+        .applied_revision()
         .expect("native command receipt is applied");
     let mut withdrawals = withdrawals.borrow_mut();
     let geometry_withdrawn = withdrawals

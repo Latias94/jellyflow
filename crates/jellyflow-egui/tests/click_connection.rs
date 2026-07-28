@@ -6,7 +6,7 @@ use jellyflow_core::{
 use jellyflow_egui::EguiCanvasInteraction;
 use jellyflow_runtime::graph::GraphRuntime;
 use jellyflow_runtime::interaction::{
-    CanvasInteractionConfig, CanvasInteractionEffect, CanvasInteractionPhase, CommandSettlement,
+    CanvasInteractionConfig, CanvasInteractionEffect, CanvasInteractionPhase,
 };
 use jellyflow_runtime::view::ViewSessionOptions;
 
@@ -64,13 +64,10 @@ fn egui_non_drag_port_activation_uses_runtime_source_target_authority() {
         .bind_submission(submission)
         .unwrap()
         .expect("fresh connection command");
-    runtime
-        .execute(command)
-        .unwrap()
-        .applied()
-        .expect("connection applies");
+    let completion = runtime.execute(command);
+    assert!(completion.applied_revision().is_some());
     interaction
-        .settle(&ctx, ticket, CommandSettlement::Applied)
+        .complete_submission(&ctx, ticket, completion)
         .unwrap();
 
     let graph = runtime.snapshot().unwrap();

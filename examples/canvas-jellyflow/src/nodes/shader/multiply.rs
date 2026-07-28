@@ -861,12 +861,15 @@ mod tests {
             field.mark_uncertain(receipt, "host dropped"),
             Ok(RetainedFieldSettlement::Uncertain { .. })
         ));
-        let outcome = runtime
-            .execute(command)
-            .expect("apply uncertain factor command");
+        let completion = runtime.execute(command);
 
         assert!(matches!(
-            field.observe(outcome.version(), 2.0),
+            field.observe(
+                completion
+                    .version()
+                    .expect("applied factor completion carries a version"),
+                2.0
+            ),
             Ok(RetainedFieldUpdate::UncertainResolved {
                 submitted_value_is_authoritative: true,
                 ..
@@ -885,14 +888,19 @@ mod tests {
             receipt,
             command,
         } = pending_factor_with_newer_local_value();
-        let outcome = runtime.execute(command).expect("apply pending factor");
+        let completion = runtime.execute(command);
 
         assert!(matches!(
-            field.observe(outcome.version(), 2.0),
+            field.observe(
+                completion
+                    .version()
+                    .expect("applied factor completion carries a version"),
+                2.0
+            ),
             Ok(RetainedFieldUpdate::SnapshotFirst { .. })
         ));
         assert!(matches!(
-            field.settle_command(receipt, outcome),
+            field.settle_command(receipt, completion),
             Ok(RetainedFieldSettlement::Acknowledged {
                 local_changed_after_submission: true,
                 ..
@@ -910,11 +918,13 @@ mod tests {
             receipt,
             command,
         } = pending_factor_with_newer_local_value();
-        let outcome = runtime.execute(command).expect("apply pending factor");
-        let committed_version = outcome.version();
+        let completion = runtime.execute(command);
+        let committed_version = completion
+            .version()
+            .expect("applied factor completion carries a version");
 
         assert!(matches!(
-            field.settle_command(receipt, outcome),
+            field.settle_command(receipt, completion),
             Ok(RetainedFieldSettlement::AwaitingSnapshot { .. })
         ));
         assert!(matches!(
@@ -1069,8 +1079,7 @@ mod tests {
 
         runtime
             .execute(GraphCommand::undo(snapshot.version()))
-            .expect("undo latest factor command")
-            .applied()
+            .applied_revision()
             .expect("latest factor undo applies");
         draw_pending_factor_host(cx);
         assert_eq!(
@@ -1146,6 +1155,7 @@ mod tests {
                 pending_factor_node_id(),
                 remote,
             ))
+            .applied_revision()
             .expect("apply remote shader factor");
         draw_pending_factor_host(cx);
 

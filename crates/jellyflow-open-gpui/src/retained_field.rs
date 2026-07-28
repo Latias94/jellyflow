@@ -10,9 +10,9 @@ use std::task::{Context as TaskContext, Poll};
 use futures_util::FutureExt;
 use jellyflow_core::NodeId;
 use jellyflow_runtime::{
-    commands::GraphCommand, commands::GraphCommandIdentity, commands::GraphCommandOutcome,
-    graph::GraphRevision, graph::GraphVersion, graph::RuntimeProvenance, view::NodeInstanceKey,
-    view::ViewCloseReason,
+    commands::CommandExecutionCompletion, commands::CommandExecutionKind, commands::GraphCommand,
+    commands::GraphCommandIdentity, graph::GraphRevision, graph::GraphVersion,
+    graph::RuntimeProvenance, view::NodeInstanceKey, view::ViewCloseReason,
 };
 use open_gpui::{App, Task};
 
@@ -753,13 +753,33 @@ where
         if !self.is_pending_attempt(attempt) {
             return RetainedFieldSettlement::Ignored { attempt };
         }
-        match result {
-            Ok(GraphCommandOutcome::Applied(receipt)) => {
-                self.record_receipt(attempt, receipt.revision())
+        let completion = match result {
+            Ok(completion) => completion,
+            Err(error) => {
+                return self.record_uncertain(
+                    attempt,
+                    format!(
+                        "field command outcome is uncertain: {error}; wait for authoritative refresh"
+                    ),
+                );
             }
-            Ok(GraphCommandOutcome::Noop(noop)) => {
+        };
+        match completion.kind() {
+            CommandExecutionKind::Applied => match completion.applied_revision() {
+                Some(revision) => self.record_receipt(attempt, revision),
+                None => self.record_uncertain(
+                    attempt,
+                    "field command outcome is uncertain: applied completion omitted its revision; wait for authoritative refresh",
+                ),
+            },
+            CommandExecutionKind::Noop => {
                 self.draft.reject_submission(attempt.sequence);
-                let minimum_revision = noop.revision();
+                let Some(minimum_revision) = completion.observed_revision() else {
+                    return self.record_uncertain(
+                        attempt,
+                        "field command outcome is uncertain: noop completion omitted its observed revision; wait for authoritative refresh",
+                    );
+                };
                 let message = format!(
                     "field command made no authoritative change at revision {minimum_revision}; refresh before retry"
                 );
@@ -774,9 +794,14 @@ where
                     message,
                 }
             }
-            Ok(GraphCommandOutcome::Conflict(conflict)) => {
+            CommandExecutionKind::Conflict => {
                 self.draft.reject_submission(attempt.sequence);
-                let minimum_revision = conflict.current().revision();
+                let Some(minimum_revision) = completion.observed_revision() else {
+                    return self.record_uncertain(
+                        attempt,
+                        "field command outcome is uncertain: conflict completion omitted its observed revision; wait for authoritative refresh",
+                    );
+                };
                 let message = format!(
                     "field command conflicted at revision {minimum_revision}; refresh before retry"
                 );
@@ -791,10 +816,13 @@ where
                     message,
                 }
             }
-            Ok(GraphCommandOutcome::Rejected(rejection)) => {
+            CommandExecutionKind::Rejected => {
                 self.draft.reject_submission(attempt.sequence);
                 let minimum_revision = self.draft.remote_revision();
-                let message = format!("field command was rejected: {}", rejection.message());
+                let diagnostic = completion
+                    .diagnostic_message()
+                    .unwrap_or_else(|| "no diagnostic was provided".to_owned());
+                let message = format!("field command was rejected: {diagnostic}");
                 self.attempt_state = RetainedFieldAttemptState::RefreshRequired {
                     attempt: Some(attempt),
                     minimum_revision,
@@ -806,22 +834,43 @@ where
                     message,
                 }
             }
-            Err(error) => {
-                let expected_revision = self
-                    .draft
-                    .pending_expected_revision()
-                    .unwrap_or(self.draft.remote_revision());
-                let message = format!(
-                    "field command outcome is uncertain: {error}; wait for authoritative refresh"
-                );
-                self.attempt_state = RetainedFieldAttemptState::Uncertain {
-                    attempt,
-                    expected_revision,
+            CommandExecutionKind::Failed => {
+                self.draft.reject_submission(attempt.sequence);
+                let minimum_revision = self.draft.remote_revision();
+                let diagnostic = completion
+                    .diagnostic_message()
+                    .unwrap_or_else(|| "no diagnostic was provided".to_owned());
+                let message = format!("field command execution failed: {diagnostic}");
+                self.attempt_state = RetainedFieldAttemptState::RefreshRequired {
+                    attempt: Some(attempt),
+                    minimum_revision,
                 };
                 self.notice = Some(message.clone());
-                RetainedFieldSettlement::Uncertain { attempt, message }
+                RetainedFieldSettlement::RefreshRequired {
+                    attempt,
+                    minimum_revision,
+                    message,
+                }
             }
         }
+    }
+
+    fn record_uncertain(
+        &mut self,
+        attempt: RetainedFieldAttempt,
+        message: impl Into<String>,
+    ) -> RetainedFieldSettlement {
+        let expected_revision = self
+            .draft
+            .pending_expected_revision()
+            .unwrap_or(self.draft.remote_revision());
+        let message = message.into();
+        self.attempt_state = RetainedFieldAttemptState::Uncertain {
+            attempt,
+            expected_revision,
+        };
+        self.notice = Some(message.clone());
+        RetainedFieldSettlement::Uncertain { attempt, message }
     }
 
     fn record_receipt(
@@ -908,17 +957,7 @@ where
         if !self.is_pending_attempt(attempt) {
             return Err(RetainedFieldError::AttemptMismatch { attempt });
         }
-        let expected_revision = self
-            .draft
-            .pending_expected_revision()
-            .unwrap_or(self.draft.remote_revision());
-        let message = message.into();
-        self.attempt_state = RetainedFieldAttemptState::Uncertain {
-            attempt,
-            expected_revision,
-        };
-        self.notice = Some(message.clone());
-        Ok(RetainedFieldSettlement::Uncertain { attempt, message })
+        Ok(self.record_uncertain(attempt, message))
     }
 
     /// Resolves an uncertain command only from a snapshot strictly newer than its expectation.
@@ -1216,7 +1255,7 @@ where
     pub fn settle_command(
         &mut self,
         receipt: ApplicationRetainedFieldDispatchReceipt,
-        outcome: GraphCommandOutcome,
+        completion: CommandExecutionCompletion,
     ) -> Result<RetainedFieldSettlement, RetainedFieldError> {
         if !self.state.field.is_pending_attempt(receipt.attempt) {
             return Ok(RetainedFieldSettlement::Ignored {
@@ -1224,10 +1263,10 @@ where
             });
         }
         self.validate_receipt(&receipt)?;
-        self.validate_outcome(&receipt, &outcome)?;
+        self.validate_completion(&receipt, &completion)?;
         Ok(self
             .state
-            .transition(|field| field.settle_ticket(receipt.attempt, Ok(outcome))))
+            .transition(|field| field.settle_ticket(receipt.attempt, Ok(completion))))
     }
 
     pub fn mark_uncertain(
@@ -1305,30 +1344,37 @@ where
         Ok(())
     }
 
-    fn validate_outcome(
+    fn validate_completion(
         &self,
         receipt: &ApplicationRetainedFieldDispatchReceipt,
-        outcome: &GraphCommandOutcome,
+        completion: &CommandExecutionCompletion,
     ) -> Result<(), RetainedFieldError> {
-        self.ensure_authority(outcome.version())?;
-        if outcome.identity() != &receipt.command_identity {
-            return Err(RetainedFieldError::OutcomeCommandMismatch);
+        if let Some(version) = completion.version() {
+            self.ensure_authority(version)?;
+        }
+        if completion.identity() != &receipt.command_identity {
+            return Err(RetainedFieldError::CompletionCommandMismatch);
         }
 
         let expected = receipt.expected_version;
-        let actual = outcome.version();
-        let version_is_valid = match outcome {
-            GraphCommandOutcome::Applied(_) => expected
+        let Some(actual) = completion.version() else {
+            return if completion.kind() == CommandExecutionKind::Failed {
+                Ok(())
+            } else {
+                Err(RetainedFieldError::OutcomeMissingVersion)
+            };
+        };
+        let version_is_valid = match completion.kind() {
+            CommandExecutionKind::Applied => expected
                 .revision()
                 .checked_add(1)
                 .is_some_and(|revision| actual.revision() == revision),
-            GraphCommandOutcome::Noop(_) | GraphCommandOutcome::Rejected(_) => actual == expected,
-            GraphCommandOutcome::Conflict(conflict) => {
-                conflict.expected_version() == expected && actual != expected
-            }
+            CommandExecutionKind::Noop | CommandExecutionKind::Rejected => actual == expected,
+            CommandExecutionKind::Conflict => actual != expected,
+            CommandExecutionKind::Failed => true,
         };
         if !version_is_valid {
-            return Err(RetainedFieldError::OutcomeVersionMismatch { expected, actual });
+            return Err(RetainedFieldError::CompletionVersionMismatch { expected, actual });
         }
         Ok(())
     }
@@ -2186,12 +2232,14 @@ pub enum RetainedFieldError {
         expected: GraphVersion,
         actual: GraphVersion,
     },
-    #[error("retained field outcome belongs to a different graph command")]
-    OutcomeCommandMismatch,
+    #[error("retained field completion belongs to a different graph command")]
+    CompletionCommandMismatch,
+    #[error("retained field command completion omitted its authoritative graph version")]
+    OutcomeMissingVersion,
     #[error(
-        "retained field command outcome version {actual:?} is invalid for expected version {expected:?}"
+        "retained field command completion version {actual:?} is invalid for expected version {expected:?}"
     )]
-    OutcomeVersionMismatch {
+    CompletionVersionMismatch {
         expected: GraphVersion,
         actual: GraphVersion,
     },
@@ -2366,9 +2414,7 @@ mod tests {
         let first_receipt = first_intent
             .bind_command(&first_command)
             .expect("bind first field command");
-        let first_outcome = runtime
-            .execute(first_command)
-            .expect("issue first field rejection");
+        let first_completion = runtime.execute(first_command);
 
         let mut second = ApplicationRetainedField::new(version, "second remote".to_owned());
         second.edit("second local".to_owned());
@@ -2377,7 +2423,7 @@ mod tests {
         assert_eq!(first_attempt.get(), second_attempt.get());
         assert_ne!(first_attempt, second_attempt);
         assert!(matches!(
-            second.settle_command(first_receipt, first_outcome),
+            second.settle_command(first_receipt, first_completion),
             Ok(RetainedFieldSettlement::Ignored {
                 attempt,
             }) if attempt == first_attempt
@@ -2491,9 +2537,7 @@ mod tests {
     #[test]
     fn transport_error_keeps_attempt_and_blocks_duplicate_submission() {
         let (mut field, intent) = dirty_field();
-        let error = crate::command_journal::OpenGpuiCommandTicketError::MissingReceipt {
-            operation_index: 0,
-        };
+        let error = crate::command_journal::OpenGpuiCommandTicketError::HostDropped;
 
         let settlement = field.settle_ticket(intent.attempt(), Err(error));
         assert!(matches!(
@@ -2715,13 +2759,12 @@ mod tests {
             .snapshot()
             .expect("read retained-field graph version")
             .version();
-        runtime
-            .execute(GraphCommand::set_node_data(
-                current_version,
-                field.instance().node(),
-                serde_json::json!("fresh"),
-            ))
-            .expect("advance graph snapshot");
+        let completion = runtime.execute(GraphCommand::set_node_data(
+            current_version,
+            field.instance().node(),
+            serde_json::json!("fresh"),
+        ));
+        assert_eq!(completion.kind(), CommandExecutionKind::Applied);
 
         for error in [
             field

@@ -169,11 +169,13 @@ fn subscriber_panics_do_not_truncate_committed_patch_fanout() {
     .unwrap();
 
     let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        runtime.execute(GraphCommand::set_node_data(
-            runtime.snapshot().unwrap().version(),
-            ids[0],
-            serde_json::json!({ "value": 1 }),
-        ))
+        runtime
+            .execute(GraphCommand::set_node_data(
+                runtime.snapshot().unwrap().version(),
+                ids[0],
+                serde_json::json!({ "value": 1 }),
+            ))
+            .into_result()
     }))
     .expect_err("the first subscriber panic remains observable");
 
@@ -368,11 +370,13 @@ fn panicking_reentrant_callback_can_unsubscribe_and_close_without_truncating_lat
     .unwrap();
 
     let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        runtime.execute(GraphCommand::set_node_data(
-            runtime.snapshot().unwrap().version(),
-            ids[0],
-            serde_json::json!({ "value": 1 }),
-        ))
+        runtime
+            .execute(GraphCommand::set_node_data(
+                runtime.snapshot().unwrap().version(),
+                ids[0],
+                serde_json::json!({ "value": 1 }),
+            ))
+            .into_result()
     }))
     .expect_err("the reentrant subscriber panic remains observable");
 
@@ -402,6 +406,7 @@ fn document_replacement_fans_out_one_reset_patch_and_retires_every_old_incarnati
             ids[0],
             serde_json::json!({ "before_reset": true }),
         ))
+        .into_result()
         .unwrap();
     assert_eq!(runtime.history_state().unwrap().undo_len(), 1);
 
@@ -463,6 +468,7 @@ fn foreign_catalog_document_replacement_has_zero_side_effects() {
             ids[0],
             serde_json::json!({ "retained": true }),
         ))
+        .into_result()
         .unwrap();
     let view = runtime.attach_view(Default::default()).unwrap();
     let view_events = Rc::new(Cell::new(0));
@@ -549,6 +555,7 @@ fn one_node_change_has_bounded_four_view_fanout_in_ten_thousand_node_graph() {
             ids[4_321],
             serde_json::json!({ "value": 42 }),
         ))
+        .into_result()
         .expect("single-node command");
     let receipt = outcome.applied().expect("single-node command applies");
     assert_eq!(receipt.revision(), 1);
@@ -617,6 +624,7 @@ fn one_retirement_uses_exact_tombstones_across_four_ten_thousand_item_draw_order
             runtime.snapshot().unwrap().version(),
             TopologyEdit::new().remove_node(retired, IncidentEdgePolicy::Reject),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("retirement applies");
@@ -657,6 +665,7 @@ fn unselected_retirement_skips_full_selection_sanitation_in_four_large_views() {
             runtime.snapshot().unwrap().version(),
             TopologyEdit::new().remove_node(retired, IncidentEdgePolicy::Reject),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("unselected retirement applies");
@@ -685,6 +694,7 @@ fn retirements_outside_explicit_draw_order_do_not_allocate_tombstones() {
                 runtime.snapshot().unwrap().version(),
                 TopologyEdit::new().remove_node(node, IncidentEdgePolicy::Reject),
             ))
+            .into_result()
             .unwrap()
             .applied()
             .expect("retirement applies");
@@ -716,6 +726,7 @@ fn undoing_retirement_restores_explicit_draw_order_without_a_stale_tombstone() {
             runtime.snapshot().unwrap().version(),
             TopologyEdit::new().remove_node(node, IncidentEdgePolicy::Reject),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("retirement applies");
@@ -724,6 +735,7 @@ fn undoing_retirement_restores_explicit_draw_order_without_a_stale_tombstone() {
 
     runtime
         .execute(GraphCommand::undo(runtime.snapshot().unwrap().version()))
+        .into_result()
         .unwrap()
         .applied()
         .expect("undo applies");

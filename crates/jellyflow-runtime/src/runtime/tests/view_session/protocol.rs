@@ -101,13 +101,13 @@ fn foreign_and_replayed_feedback_have_zero_side_effects() {
         ))
         .unwrap();
     let collector = frame.collector();
-    collector
-        .command(GraphCommand::set_node_data(
-            frame.graph_version(),
-            nodes[0],
-            serde_json::json!({ "value": 1 }),
-        ))
-        .unwrap();
+    let command = GraphCommand::set_node_data(
+        frame.graph_version(),
+        nodes[0],
+        serde_json::json!({ "value": 1 }),
+    );
+    let command_identity = command.identity().clone();
+    collector.command(command).unwrap();
     collector.layout(layout_for(&frame)).unwrap();
     let feedback = collector.finish().unwrap();
 
@@ -124,7 +124,9 @@ fn foreign_and_replayed_feedback_have_zero_side_effects() {
     let receipt = first
         .submit_feedback(feedback.duplicate_for_test())
         .unwrap();
-    assert_eq!(receipt.operations().len(), 2);
+    assert!(receipt.command_completion(&command_identity).is_ok());
+    assert_eq!(receipt.command_completions().count(), 1);
+    assert_eq!(receipt.layout_receipts().count(), 1);
     assert_eq!(runtime.snapshot().unwrap().revision(), 1);
     let after_first = first.stats().unwrap();
 
@@ -206,8 +208,8 @@ fn cross_runtime_feedback_is_rejected_before_consuming_the_local_frame() {
         .submit_feedback(second_collector.finish().unwrap())
         .unwrap();
     assert_eq!(
-        receipt.operations()[0].layout_status(),
-        Some(LayoutNodeStatus::Published)
+        receipt.layout_receipts().next().unwrap().status().unwrap(),
+        LayoutNodeStatus::Published
     );
     assert!(second.geometry_snapshot().unwrap().node(nodes[0]).is_some());
 }
@@ -248,8 +250,8 @@ fn cross_runtime_layout_target_cannot_publish_through_a_local_collector() {
         .submit_feedback(second_collector.finish().unwrap())
         .unwrap();
     assert_eq!(
-        receipt.operations()[0].layout_status(),
-        Some(LayoutNodeStatus::Stale)
+        receipt.layout_receipts().next().unwrap().status().unwrap(),
+        LayoutNodeStatus::Stale
     );
     assert!(receipt.publication().is_none());
     assert!(second.geometry_snapshot().unwrap().node(nodes[0]).is_none());
@@ -309,7 +311,7 @@ fn closed_session_rejects_originating_feedback_with_zero_side_effects() {
         close.reason(),
         crate::runtime::view_session::ViewCloseReason::HostClosed
     );
-    assert!(close.receipts().is_empty());
+    assert!(close.command_completions().next().is_none());
     assert_eq!(session.layout_revision_for_test(), 0);
     assert!(session.retired_geometry_is_empty_for_test());
     assert_eq!(runtime.snapshot().unwrap().revision(), 0);
@@ -418,15 +420,12 @@ fn layout_targets_cannot_cross_frame_boundaries() {
         .submit_feedback(collector.finish().unwrap())
         .unwrap();
 
-    assert!(matches!(
-        receipt.operations(),
-        [
-            crate::runtime::adapter_protocol::FeedbackOperationReceipt::Layout {
-                status: LayoutNodeStatus::Stale,
-                ..
-            }
-        ]
-    ));
+    assert_eq!(receipt.command_completions().count(), 0);
+    assert_eq!(receipt.layout_receipts().count(), 1);
+    assert_eq!(
+        receipt.layout_receipts().next().unwrap().status().unwrap(),
+        LayoutNodeStatus::Stale
+    );
     assert!(receipt.request_next_frame());
     assert!(receipt.publication().is_none());
     assert!(
@@ -459,11 +458,15 @@ fn delete_then_undo_assigns_a_new_incarnation_and_never_revives_old_targets() {
             TopologyEdit::new().remove_node(nodes[0], IncidentEdgePolicy::Reject),
         ))
         .unwrap()
+        .into_result()
+        .unwrap()
         .applied()
         .expect("remove applies")
         .version();
     session
         .execute(GraphCommand::undo(removed_version))
+        .unwrap()
+        .into_result()
         .unwrap();
 
     let restored = session
@@ -481,8 +484,8 @@ fn delete_then_undo_assigns_a_new_incarnation_and_never_revives_old_targets() {
         .unwrap();
 
     assert_eq!(
-        receipt.operations()[0].layout_status(),
-        Some(LayoutNodeStatus::Stale)
+        receipt.layout_receipts().next().unwrap().status().unwrap(),
+        LayoutNodeStatus::Stale
     );
     assert!(receipt.publication().is_none());
     assert!(
@@ -594,28 +597,30 @@ fn commands_own_graph_freshness_while_transform_and_environment_precede_executio
         ))
         .unwrap();
     let stale_graph = frame.collector();
-    stale_graph
-        .command(GraphCommand::set_node_data(
-            frame.graph_version(),
-            nodes[0],
-            serde_json::json!({ "should_not_apply": true }),
-        ))
-        .unwrap();
+    let command = GraphCommand::set_node_data(
+        frame.graph_version(),
+        nodes[0],
+        serde_json::json!({ "should_not_apply": true }),
+    );
+    let command_identity = command.identity().clone();
+    stale_graph.command(command).unwrap();
     runtime
         .execute(GraphCommand::set_node_data(
             frame.graph_version(),
             nodes[0],
             serde_json::json!({ "revision": 1 }),
         ))
+        .into_result()
         .unwrap();
     let receipt = session
         .submit_feedback(stale_graph.finish().unwrap())
         .unwrap();
     assert!(matches!(
-        receipt.operations()[0].command_outcome(),
-        Some(Ok(crate::runtime::commands::GraphCommandOutcome::Conflict(
-            _
-        )))
+        receipt
+            .command_completion(&command_identity)
+            .unwrap()
+            .result(),
+        Ok(crate::runtime::commands::GraphCommandOutcome::Conflict(_))
     ));
     assert_eq!(runtime.snapshot().unwrap().revision(), 1);
 
@@ -776,8 +781,8 @@ fn document_replacement_retires_frames_targets_and_geometry() {
         .submit_feedback(current_collector.finish().unwrap())
         .unwrap();
     assert_eq!(
-        receipt.operations()[0].layout_status(),
-        Some(LayoutNodeStatus::Stale)
+        receipt.layout_receipts().next().unwrap().status().unwrap(),
+        LayoutNodeStatus::Stale
     );
     assert!(
         session
@@ -1037,6 +1042,8 @@ fn frame_order_rank_survives_hard_retirement_and_rebuilds_on_document_reset() {
             TopologyEdit::new().remove_node(nodes[2], IncidentEdgePolicy::Reject),
         ))
         .unwrap()
+        .into_result()
+        .unwrap()
         .applied()
         .expect("remove applies")
         .version();
@@ -1047,6 +1054,8 @@ fn frame_order_rank_survives_hard_retirement_and_rebuilds_on_document_reset() {
 
     session
         .execute(GraphCommand::undo(removed_version))
+        .unwrap()
+        .into_result()
         .unwrap();
     assert_eq!(
         ids(&session.frame(request()).unwrap()),

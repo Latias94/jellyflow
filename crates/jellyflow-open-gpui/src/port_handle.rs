@@ -2063,6 +2063,7 @@ mod tests {
                     IncidentEdgePolicy::Reject,
                 ),
             ))
+            .into_result()
             .unwrap()
             .applied()
             .expect("same-ID port replacement applies");

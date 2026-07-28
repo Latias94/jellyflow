@@ -20,19 +20,15 @@ use jellyflow_runtime::adapter::conformance::{
     ConformanceViewStatus as TraceViewStatus, NormalizedObservation, canonical_scenarios,
     compare_observations,
 };
-use jellyflow_runtime::commands::{
-    GraphCommand, GraphCommandOutcome, IncidentEdgePolicy, TopologyEdit,
-};
+use jellyflow_runtime::commands::{GraphCommand, IncidentEdgePolicy, TopologyEdit};
 use jellyflow_runtime::geometry::{HandlePosition, ViewPoint, ViewRect, ViewSize};
 use jellyflow_runtime::graph::{
-    EdgeEndpoint, GraphRuntime, GraphRuntimeError, GraphRuntimeMiddleware,
-    GraphRuntimeMiddlewareSnapshot,
+    EdgeEndpoint, GraphRuntime, GraphRuntimeMiddleware, GraphRuntimeMiddlewareSnapshot,
 };
 use jellyflow_runtime::interaction::{
     CanvasInteractionConfig, CanvasInteractionEffect, CanvasInteractionPhase, CanvasPressFallback,
-    CanvasPressTarget, CommandSettlement, ConnectionGestureBinding, ConnectionProbe,
-    ConnectionSearchRequest, InteractionGraphSubmission, InteractionTerminalReason,
-    InteractionTicketId, SelectionMode,
+    CanvasPressTarget, ConnectionGestureBinding, ConnectionProbe, ConnectionSearchRequest,
+    InteractionGraphSubmission, InteractionTerminalReason, InteractionTicketId, SelectionMode,
 };
 use jellyflow_runtime::profile::ApplyPipelineError;
 use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec, NodePortSpec};
@@ -279,7 +275,8 @@ impl EguiTraceRunner {
                         TopologyEdit::new()
                             .remove_node(self.state().ids.source_node, IncidentEdgePolicy::Reject),
                     ))
-                    .unwrap()
+                    .into_result()
+                    .expect("canonical egui source retirement executes")
                     .applied()
                     .expect("canonical egui source retirement applies");
                 self.excluded_revision_delta = self.excluded_revision_delta.saturating_add(1);
@@ -403,18 +400,35 @@ impl EguiTraceRunner {
             .submission
             .take()
             .expect("trace captured one graph submission");
-        let settlement = self.dispatch_submission(receipt, submission);
         let ctx = self.harness.ctx.clone();
-        let state = self.harness.state_mut();
-        state
-            .interaction
-            .settle(&ctx, ticket, settlement)
-            .expect("receipt settles");
-        match settlement {
-            CommandSettlement::Applied | CommandSettlement::Noop => TraceEffect::None,
-            CommandSettlement::Rejected
-            | CommandSettlement::Conflict
-            | CommandSettlement::TransportFailure => TraceEffect::RestorePresentation,
+        match receipt {
+            TraceReceipt::Noop => {
+                panic!("canonical mutation scenarios do not synthesize no-command settlements")
+            }
+            TraceReceipt::TransportFailure => {
+                drop(submission);
+                self.harness
+                    .state_mut()
+                    .interaction
+                    .submission_not_dispatched(&ctx, ticket)
+                    .expect("undispatched submission is reported");
+                TraceEffect::RestorePresentation
+            }
+            TraceReceipt::Applied | TraceReceipt::Rejected | TraceReceipt::Conflict => {
+                let completion = self.dispatch_submission(receipt, submission);
+                self.harness
+                    .state_mut()
+                    .interaction
+                    .complete_submission(&ctx, ticket, completion)
+                    .expect("command completion settles the exact submission");
+                match receipt {
+                    TraceReceipt::Applied => TraceEffect::None,
+                    TraceReceipt::Rejected | TraceReceipt::Conflict => {
+                        TraceEffect::RestorePresentation
+                    }
+                    TraceReceipt::Noop | TraceReceipt::TransportFailure => unreachable!(),
+                }
+            }
         }
     }
 
@@ -422,46 +436,24 @@ impl EguiTraceRunner {
         &mut self,
         requested: TraceReceipt,
         submission: InteractionGraphSubmission,
-    ) -> CommandSettlement {
-        let snapshot = self
-            .state()
-            .runtime
-            .snapshot()
-            .expect("fresh egui transport snapshot");
+    ) -> jellyflow_runtime::commands::CommandExecutionCompletion {
         let emitted = self
-            .state()
+            .state_mut()
             .interaction
             .bind_submission(submission)
             .expect("egui transport binds the emitted mutation")
             .expect("canonical emitted mutation is not a no-op");
-        if requested == TraceReceipt::TransportFailure {
-            let (sender, receiver) = std::sync::mpsc::channel::<GraphCommandOutcome>();
-            drop(sender);
-            return receiver
-                .recv()
-                .map_or(CommandSettlement::TransportFailure, |_| {
-                    panic!("a disconnected transport cannot produce a receipt")
-                });
-        }
         let command = match requested {
-            TraceReceipt::Noop => GraphCommand::set_node_data(
-                snapshot.version(),
-                self.state().ids.source_node,
-                snapshot
-                    .graph()
-                    .node(&self.state().ids.source_node)
-                    .expect("canonical source node")
-                    .data
-                    .clone(),
-            ),
             TraceReceipt::Conflict => {
                 self.execute_external_revision("conflict");
                 emitted
             }
             TraceReceipt::Applied | TraceReceipt::Rejected => emitted,
-            TraceReceipt::TransportFailure => unreachable!("handled before command dispatch"),
+            TraceReceipt::Noop | TraceReceipt::TransportFailure => {
+                unreachable!("non-dispatch receipts are handled before command binding")
+            }
         };
-        command_settlement(self.state().runtime.execute(command))
+        self.state().runtime.execute(command)
     }
 
     fn drain_prefix(&mut self) -> TraceEffect {
@@ -510,6 +502,7 @@ impl EguiTraceRunner {
         self.state()
             .runtime
             .execute(command)
+            .into_result()
             .expect("external egui transport command executes")
             .applied()
             .expect("external egui transport command applies");
@@ -1167,18 +1160,6 @@ fn paint_native_evidence(ui: &Ui, state: &EguiTraceState) {
     }
 }
 
-fn command_settlement(
-    outcome: Result<GraphCommandOutcome, GraphRuntimeError>,
-) -> CommandSettlement {
-    match outcome {
-        Ok(GraphCommandOutcome::Applied(_)) => CommandSettlement::Applied,
-        Ok(GraphCommandOutcome::Noop(_)) => CommandSettlement::Noop,
-        Ok(GraphCommandOutcome::Rejected(_)) => CommandSettlement::Rejected,
-        Ok(GraphCommandOutcome::Conflict(_)) => CommandSettlement::Conflict,
-        Err(_) => CommandSettlement::TransportFailure,
-    }
-}
-
 fn scenario_settlement(id: TraceScenarioId) -> Option<TraceReceipt> {
     match id {
         TraceScenarioId::NewConnection(settlement)
@@ -1213,7 +1194,9 @@ fn trace_terminal(reason: InteractionTerminalReason) -> TraceTerminal {
         InteractionTerminalReason::Cancelled => TraceTerminal::Cancelled,
         InteractionTerminalReason::OwnerRetired => TraceTerminal::OwnerRetired,
         InteractionTerminalReason::ViewClosed => TraceTerminal::HostClosed,
-        reason @ (InteractionTerminalReason::BudgetExhausted
+        reason @ (InteractionTerminalReason::ExecutionFailed
+        | InteractionTerminalReason::Uncertain
+        | InteractionTerminalReason::BudgetExhausted
         | InteractionTerminalReason::GeometryIndeterminate
         | InteractionTerminalReason::IdentityExhausted) => {
             panic!("canonical egui trace reached unsupported terminal reason {reason:?}")

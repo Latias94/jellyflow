@@ -94,7 +94,7 @@ fn assert_rejected_without_side_effects(
         .subscribe(move |_| callback_count.set(callback_count.get() + 1))
         .unwrap();
 
-    let outcome = runtime.execute(command).unwrap();
+    let outcome = runtime.execute(command).into_result().unwrap();
 
     let rejection = outcome.rejection().expect("command is rejected");
     assert_eq!(rejection.diagnostics()[0].key, expected_key);
@@ -170,6 +170,7 @@ fn undo(runtime: &GraphRuntime) {
     let version = runtime.snapshot().unwrap().version();
     runtime
         .execute(GraphCommand::undo(version))
+        .into_result()
         .unwrap()
         .applied()
         .expect("undo applies");
@@ -179,6 +180,7 @@ fn redo(runtime: &GraphRuntime) {
     let version = runtime.snapshot().unwrap().version();
     runtime
         .execute(GraphCommand::redo(version))
+        .into_result()
         .unwrap()
         .applied()
         .expect("redo applies");

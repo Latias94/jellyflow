@@ -7,7 +7,8 @@ use jellyflow_open_gpui::retained_field::{
 };
 use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec};
 use jellyflow_runtime::{
-    commands::GraphCommand, commands::GraphCommandOutcome, graph::GraphRuntime, graph::GraphVersion,
+    commands::CommandExecutionCompletion, commands::CommandExecutionKind, commands::GraphCommand,
+    graph::GraphRuntime, graph::GraphVersion,
 };
 
 const KIND: &str = "test.revisioned-field";
@@ -193,11 +194,11 @@ fn receipt_first_waits_for_a_matching_authoritative_snapshot() {
         GraphCommand::set_node_data(version, node_id(), "submitted".into())
     });
     let attempt = receipt.attempt();
-    let outcome = runtime.execute(command).expect("applied field command");
-    let committed_version = outcome.version();
+    let completion = runtime.execute(command);
+    let committed_version = completion.version().expect("applied field command version");
 
     assert_eq!(
-        settle(&mut field, receipt, outcome),
+        settle(&mut field, receipt, completion),
         RetainedFieldSettlement::AwaitingSnapshot {
             attempt,
             committed_revision: committed_version.revision(),
@@ -230,8 +231,8 @@ fn snapshot_first_stays_dirty_until_its_matching_receipt_arrives() {
         GraphCommand::set_node_data(version, node_id(), "submitted".into())
     });
     let attempt = receipt.attempt();
-    let outcome = runtime.execute(command).expect("applied field command");
-    let committed_version = outcome.version();
+    let completion = runtime.execute(command);
+    let committed_version = completion.version().expect("applied field command version");
 
     assert_eq!(
         observe(&mut field, committed_version, "submitted"),
@@ -251,7 +252,7 @@ fn snapshot_first_stays_dirty_until_its_matching_receipt_arrives() {
     assert_eq!(field.phase(), RetainedFieldPhase::Dirty);
 
     assert_eq!(
-        settle(&mut field, receipt, outcome),
+        settle(&mut field, receipt, completion),
         RetainedFieldSettlement::Acknowledged {
             attempt,
             revision: committed_version.revision(),
@@ -266,12 +267,12 @@ fn noop_requires_refresh_and_preserves_the_unsaved_value() {
     let (runtime, mut field, receipt, command) =
         planned_field(|version| GraphCommand::set_node_data(version, node_id(), "base".into()));
     let attempt = receipt.attempt();
-    let outcome = runtime.execute(command).expect("noop field command");
-    assert!(matches!(outcome, GraphCommandOutcome::Noop(_)));
-    let committed_version = outcome.version();
+    let completion = runtime.execute(command);
+    assert_eq!(completion.kind(), CommandExecutionKind::Noop);
+    let committed_version = completion.version().expect("noop field command version");
 
     assert_eq!(
-        settle(&mut field, receipt, outcome),
+        settle(&mut field, receipt, completion),
         RetainedFieldSettlement::RefreshRequired {
             attempt,
             minimum_revision: committed_version.revision(),
@@ -297,11 +298,11 @@ fn acknowledgement_preserves_an_edit_made_after_submission() {
     });
     let attempt = receipt.attempt();
     field.edit(String::from("newer local"));
-    let outcome = runtime.execute(command).expect("applied field command");
-    let committed_version = outcome.version();
+    let completion = runtime.execute(command);
+    let committed_version = completion.version().expect("applied field command version");
 
     assert!(matches!(
-        field.settle_command(receipt, outcome),
+        field.settle_command(receipt, completion),
         Ok(RetainedFieldSettlement::AwaitingSnapshot { .. })
     ));
     assert_eq!(
@@ -318,19 +319,17 @@ fn acknowledgement_preserves_an_edit_made_after_submission() {
 }
 
 #[test]
-fn conflict_and_rejection_outcomes_require_an_authoritative_refresh() {
+fn conflict_and_rejection_completions_require_an_authoritative_refresh() {
     let (conflict_runtime, mut conflicted, conflict_receipt, conflict_command) =
         planned_field(|version| {
             GraphCommand::set_node_data(version, node_id(), "submitted".into())
         });
     let conflict_attempt = conflict_receipt.attempt();
     let current = advance_runtime(&conflict_runtime, "other writer");
-    let conflict_outcome = conflict_runtime
-        .execute(conflict_command)
-        .expect("conflicting field command");
-    assert!(matches!(conflict_outcome, GraphCommandOutcome::Conflict(_)));
+    let conflict_completion = conflict_runtime.execute(conflict_command);
+    assert_eq!(conflict_completion.kind(), CommandExecutionKind::Conflict);
     let settlement = conflicted
-        .settle_command(conflict_receipt, conflict_outcome)
+        .settle_command(conflict_receipt, conflict_completion)
         .expect("matching conflict outcome");
     assert!(matches!(
         settlement,
@@ -363,12 +362,10 @@ fn conflict_and_rejection_outcomes_require_an_authoritative_refresh() {
             GraphCommand::set_node_data(version, NodeId::from_u128(999), "submitted".into())
         });
     let rejected_attempt = rejected_receipt.attempt();
-    let rejected_outcome = rejected_runtime
-        .execute(rejected_command)
-        .expect("rejected field command");
-    assert!(matches!(rejected_outcome, GraphCommandOutcome::Rejected(_)));
+    let rejected_completion = rejected_runtime.execute(rejected_command);
+    assert_eq!(rejected_completion.kind(), CommandExecutionKind::Rejected);
     let settlement = rejected
-        .settle_command(rejected_receipt, rejected_outcome)
+        .settle_command(rejected_receipt, rejected_completion)
         .expect("matching rejected outcome");
     assert!(matches!(
         settlement,
@@ -473,23 +470,21 @@ fn explicit_fresh_resolution_preserves_a_continued_local_edit() {
 }
 
 #[test]
-fn foreign_same_revision_outcome_cannot_settle_a_bound_command() {
+fn foreign_same_revision_completion_cannot_settle_a_bound_command() {
     let (owner, mut field, receipt, command) = planned_field(|version| {
         GraphCommand::set_node_data(version, node_id(), "submitted".into())
     });
     let attempt = receipt.attempt();
     let foreign = runtime_with_value("base");
-    let foreign_outcome = foreign
-        .execute(GraphCommand::set_node_data(
-            version(&foreign),
-            node_id(),
-            "submitted".into(),
-        ))
-        .expect("foreign applied outcome");
+    let foreign_completion = foreign.execute(GraphCommand::set_node_data(
+        version(&foreign),
+        node_id(),
+        "submitted".into(),
+    ));
 
-    assert_eq!(foreign_outcome.version().revision(), 1);
+    assert_eq!(foreign_completion.observed_revision(), Some(1));
     assert!(matches!(
-        field.settle_command(receipt.clone(), foreign_outcome),
+        field.settle_command(receipt.clone(), foreign_completion),
         Err(RetainedFieldError::ForeignRuntimeAuthority { .. })
     ));
     assert_eq!(
@@ -497,9 +492,9 @@ fn foreign_same_revision_outcome_cannot_settle_a_bound_command() {
         RetainedFieldAttemptState::Pending { attempt }
     );
 
-    let owner_outcome = owner.execute(command).expect("owner applied outcome");
+    let owner_completion = owner.execute(command);
     assert!(matches!(
-        field.settle_command(receipt, owner_outcome),
+        field.settle_command(receipt, owner_completion),
         Ok(RetainedFieldSettlement::AwaitingSnapshot { .. })
     ));
 }
@@ -512,41 +507,71 @@ fn same_runtime_same_version_noop_and_rejection_cannot_cross_command_identity() 
     let attempt = receipt.attempt();
     let expected = receipt.expected_version();
 
-    let wrong_noop = runtime
-        .execute(GraphCommand::set_node_data(
-            expected,
-            node_id(),
-            "base".into(),
-        ))
-        .expect("same-version noop");
-    assert!(matches!(wrong_noop, GraphCommandOutcome::Noop(_)));
+    let wrong_noop = runtime.execute(GraphCommand::set_node_data(
+        expected,
+        node_id(),
+        "base".into(),
+    ));
+    assert_eq!(wrong_noop.kind(), CommandExecutionKind::Noop);
     assert!(matches!(
         field.settle_command(receipt.clone(), wrong_noop),
-        Err(RetainedFieldError::OutcomeCommandMismatch)
+        Err(RetainedFieldError::CompletionCommandMismatch)
     ));
 
-    let wrong_rejection = runtime
-        .execute(GraphCommand::set_node_data(
-            expected,
-            NodeId::from_u128(999),
-            "submitted".into(),
-        ))
-        .expect("same-version rejection");
-    assert!(matches!(wrong_rejection, GraphCommandOutcome::Rejected(_)));
+    let wrong_rejection = runtime.execute(GraphCommand::set_node_data(
+        expected,
+        NodeId::from_u128(999),
+        "submitted".into(),
+    ));
+    assert_eq!(wrong_rejection.kind(), CommandExecutionKind::Rejected);
     assert!(matches!(
         field.settle_command(receipt.clone(), wrong_rejection),
-        Err(RetainedFieldError::OutcomeCommandMismatch)
+        Err(RetainedFieldError::CompletionCommandMismatch)
     ));
     assert_eq!(
         field.attempt_state(),
         RetainedFieldAttemptState::Pending { attempt }
     );
 
-    let matching = runtime.execute(command).expect("matching command outcome");
+    let matching = runtime.execute(command);
     assert!(matches!(
         field.settle_command(receipt, matching),
         Ok(RetainedFieldSettlement::AwaitingSnapshot { .. })
     ));
+}
+
+#[test]
+fn identity_matched_execution_failure_is_definitive_not_transport_uncertainty() {
+    let (owner, mut field, receipt, command) = planned_field(|version| {
+        GraphCommand::set_node_data(version, node_id(), "submitted".into())
+    });
+    let attempt = receipt.attempt();
+    let expected = receipt.expected_version();
+    let foreign = runtime_with_value("foreign");
+
+    let completion = foreign.execute(command);
+    assert_eq!(completion.kind(), CommandExecutionKind::Failed);
+    assert_eq!(completion.version(), None);
+    let settlement = field
+        .settle_command(receipt, completion)
+        .expect("identity-matched execution failure");
+
+    assert!(matches!(
+        settlement,
+        RetainedFieldSettlement::RefreshRequired {
+            attempt: actual_attempt,
+            minimum_revision,
+            ..
+        } if actual_attempt == attempt && minimum_revision == expected.revision()
+    ));
+    assert!(matches!(
+        field.attempt_state(),
+        RetainedFieldAttemptState::RefreshRequired {
+            attempt: Some(actual_attempt),
+            minimum_revision,
+        } if actual_attempt == attempt && minimum_revision == expected.revision()
+    ));
+    assert_eq!(version(&owner), expected);
 }
 
 fn conflicting_field() -> (GraphRuntime, ApplicationRetainedField<String>) {
@@ -592,10 +617,10 @@ fn observe(
 fn settle(
     field: &mut ApplicationRetainedField<String>,
     receipt: ApplicationRetainedFieldDispatchReceipt,
-    outcome: GraphCommandOutcome,
+    completion: CommandExecutionCompletion,
 ) -> RetainedFieldSettlement {
     field
-        .settle_command(receipt, outcome)
+        .settle_command(receipt, completion)
         .expect("matching field command outcome")
 }
 
@@ -604,15 +629,13 @@ fn version(runtime: &GraphRuntime) -> GraphVersion {
 }
 
 fn advance_runtime(runtime: &GraphRuntime, value: &str) -> GraphVersion {
-    let outcome = runtime
-        .execute(GraphCommand::set_node_data(
-            version(runtime),
-            node_id(),
-            value.into(),
-        ))
-        .expect("advance graph runtime");
-    assert!(matches!(outcome, GraphCommandOutcome::Applied(_)));
-    outcome.version()
+    let completion = runtime.execute(GraphCommand::set_node_data(
+        version(runtime),
+        node_id(),
+        value.into(),
+    ));
+    assert_eq!(completion.kind(), CommandExecutionKind::Applied);
+    completion.version().expect("advanced graph version")
 }
 
 fn runtime_with_value(value: &str) -> GraphRuntime {

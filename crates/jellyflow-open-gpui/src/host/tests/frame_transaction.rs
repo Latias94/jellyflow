@@ -26,7 +26,7 @@ fn frame_transaction_schedule_and_submit_are_one_shot() {
         OpenGpuiFrameTransactionSubmission::Submitted(_)
     ));
     first
-        .take_command_settlement()
+        .take_command_batch_result()
         .expect("first submission settles its batch");
     assert_command_ticket_pending_at(&mut ticket, "while its outcome is retained by the host");
     let completed = journal.take_deferred_completions();
@@ -40,7 +40,7 @@ fn frame_transaction_schedule_and_submit_are_one_shot() {
         OpenGpuiFrameTransactionSubmission::Failed(OpenGpuiFrameTransactionError::AlreadyConsumed)
     ));
     repeated
-        .take_command_settlement()
+        .take_command_batch_result()
         .expect("repeated submission has no batch failure");
     assert!(journal.take_deferred_completions().is_empty());
     assert_eq!(runtime.snapshot().expect("unchanged graph").revision(), 1);
@@ -50,9 +50,8 @@ fn frame_transaction_schedule_and_submit_are_one_shot() {
     assert_eq!(
         poll_command_ticket(&mut ticket)
             .expect("submitted command ticket")
-            .applied()
-            .expect("submitted command applied")
-            .revision(),
+            .applied_revision()
+            .expect("submitted command applied"),
         1
     );
     assert_command_ticket_pending_at(&mut ticket, "after its only terminal result was consumed");
@@ -183,9 +182,8 @@ fn unwind_after_frame_state_take_terminalizes_batch_and_allows_retry() {
     assert_eq!(
         poll_command_ticket(&mut retry)
             .expect("retry command ticket")
-            .applied()
-            .expect("retry command applied")
-            .revision(),
+            .applied_revision()
+            .expect("retry command applied"),
         1
     );
     assert_eq!(journal.capacity_usage(), (0, 0, 0));
@@ -214,9 +212,8 @@ fn unwind_after_feedback_submission_terminalizes_batch_and_allows_retry() {
     assert_eq!(
         poll_command_ticket(&mut retry)
             .expect("retry command ticket")
-            .applied()
-            .expect("retry command applied")
-            .revision(),
+            .applied_revision()
+            .expect("retry command applied"),
         2
     );
     assert_eq!(journal.capacity_usage(), (0, 0, 0));
@@ -250,7 +247,7 @@ fn superseding_retained_frame_transaction_settles_batch_once(cx: &mut open_gpui:
             )
         ));
         repeated
-            .take_command_settlement()
+            .take_command_batch_result()
             .expect("superseded transaction has no remaining batch");
     });
 }
@@ -273,9 +270,8 @@ fn closing_retained_frame_transaction_executes_and_settles_batch_once(
     assert_eq!(
         poll_command_ticket(&mut ticket)
             .expect("close command ticket")
-            .applied()
-            .expect("close command applied")
-            .revision(),
+            .applied_revision()
+            .expect("close command applied"),
         1
     );
     assert_command_ticket_pending_at(&mut ticket, "after close settled it once");
@@ -300,7 +296,7 @@ fn closing_retained_frame_transaction_executes_and_settles_batch_once(
             )
         ));
         repeated
-            .take_command_settlement()
+            .take_command_batch_result()
             .expect("closed transaction has no remaining batch");
     });
 }
@@ -338,9 +334,8 @@ fn unwind_after_runtime_submission_settles_ticket_and_keeps_host_usable(
     assert_eq!(
         poll_command_ticket(&mut submitted)
             .expect("submitted command ticket")
-            .applied()
-            .expect("command committed before the injected unwind")
-            .revision(),
+            .applied_revision()
+            .expect("command committed before the injected unwind"),
         1
     );
     assert_command_ticket_pending_at(&mut submitted, "after unwind settled it once");
@@ -374,9 +369,8 @@ fn unwind_after_runtime_submission_settles_ticket_and_keeps_host_usable(
     assert_eq!(
         poll_command_ticket(&mut retry)
             .expect("retry command ticket")
-            .applied()
-            .expect("retry command applied")
-            .revision(),
+            .applied_revision()
+            .expect("retry command applied"),
         2
     );
     assert_eq!(
@@ -479,7 +473,7 @@ fn submit_command_transaction(
         OpenGpuiFrameTransactionSubmission::Submitted(_)
     ));
     result
-        .take_command_settlement()
+        .take_command_batch_result()
         .expect("retry transaction settles its batch");
     resolve_binding_commands(journal.take_deferred_completions());
     ticket

@@ -575,6 +575,7 @@ fn topology_changes_version_only_affected_incident_snapshots() {
             ids.source,
             serde_json::json!({ "value": 1 }),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("payload update applies");
@@ -595,6 +596,7 @@ fn topology_changes_version_only_affected_incident_snapshots() {
             ids.alternate_source_port,
             NodeGraphConnectionMode::Strict,
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("reconnect applies");
@@ -622,6 +624,7 @@ fn topology_changes_version_only_affected_incident_snapshots() {
             runtime.snapshot().unwrap().version(),
             ids.edge,
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("disconnect applies");
@@ -658,6 +661,7 @@ fn topology_changes_version_only_affected_incident_snapshots() {
             ids.target_port,
             NodeGraphConnectionMode::Strict,
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("connect applies");
@@ -692,6 +696,7 @@ fn topology_changes_version_only_affected_incident_snapshots() {
                 IncidentEdgePolicy::Cascade,
             ),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("port replacement applies");
@@ -860,6 +865,7 @@ fn frame_binding_revisions_advance_only_for_affected_nodes() {
             changed,
             serde_json::json!({ "value": 42 }),
         ))
+        .into_result()
         .unwrap();
 
     let after = session.frame(request()).unwrap();
@@ -976,6 +982,7 @@ fn symbol_changes_advance_only_referrer_bindings_and_notifications() {
             runtime.snapshot().unwrap().version(),
             SymbolEdit::new().update(symbol_id, changed),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("symbol update applies");
@@ -1026,6 +1033,7 @@ fn replacement_binding_revision_belongs_to_the_new_node_incarnation() {
             runtime.snapshot().unwrap().version(),
             TopologyEdit::new().remove_node(nodes[0], IncidentEdgePolicy::Reject),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .unwrap();
@@ -1034,6 +1042,7 @@ fn replacement_binding_revision_belongs_to_the_new_node_incarnation() {
             runtime.snapshot().unwrap().version(),
             TopologyEdit::new().add_node(nodes[0], replacement, []),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .unwrap();
@@ -1510,6 +1519,8 @@ fn ten_thousand_selected_edges_do_not_rebuild_membership_on_geometry_hot_paths()
             serde_json::json!({ "value": 1 }),
         ))
         .unwrap()
+        .into_result()
+        .unwrap()
         .applied()
         .expect("unrelated payload patch applies");
     assert!(session.invalidate_node_layout(&hub_instance).unwrap());
@@ -1553,6 +1564,8 @@ fn one_edge_remove_and_restore_in_ten_thousand_edges_has_bounded_identity_copy_w
     session
         .execute(GraphCommand::disconnect(before.version(), removed))
         .unwrap()
+        .into_result()
+        .unwrap()
         .applied()
         .expect("disconnect applies");
     let identity_entry_clones = edge_incarnation_entry_clone_count_for_test();
@@ -1572,6 +1585,8 @@ fn one_edge_remove_and_restore_in_ten_thousand_edges_has_bounded_identity_copy_w
     reset_edge_incarnation_entry_clone_count_for_test();
     session
         .execute(GraphCommand::undo(after.version()))
+        .unwrap()
+        .into_result()
         .unwrap()
         .applied()
         .expect("undo restores the edge");
@@ -1644,6 +1659,7 @@ fn one_port_remove_and_restore_in_ten_thousand_ports_has_bounded_identity_copy_w
             before.version(),
             TopologyEdit::new().replace_node_ports(node_id, desired, IncidentEdgePolicy::Reject),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("port removal applies");
@@ -1659,6 +1675,7 @@ fn one_port_remove_and_restore_in_ten_thousand_ports_has_bounded_identity_copy_w
     reset_port_incarnation_entry_clone_count_for_test();
     runtime
         .execute(GraphCommand::undo(after.version()))
+        .into_result()
         .unwrap()
         .applied()
         .expect("undo restores the port");
@@ -1859,6 +1876,8 @@ fn admission_index_applies_graph_patches_without_a_full_rebuild() {
                 y: 0.0,
             },
         ))
+        .unwrap()
+        .into_result()
         .unwrap();
 
     let moved = session.frame(request_at(499_980.0)).unwrap();
@@ -1900,6 +1919,8 @@ fn one_node_change_structurally_shares_ten_thousand_node_geometry_snapshots() {
                 y: previous_position.y + 11.0,
             },
         ))
+        .unwrap()
+        .into_result()
         .unwrap();
 
     let after_patch = session.stats().unwrap();

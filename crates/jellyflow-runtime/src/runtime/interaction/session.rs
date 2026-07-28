@@ -9,6 +9,9 @@ use jellyflow_core::interaction::NodeGraphConnectionMode;
 
 use crate::rules::{Diagnostic, EdgeEndpoint};
 use crate::runtime::adapter_protocol::{PublishedEdgeRoute, ViewDelta, ViewPoint, ViewSize};
+use crate::runtime::commands::{
+    CommandExecutionCompletion, CommandExecutionKind, GraphCommandIdentity,
+};
 use crate::runtime::geometry::{EdgeEndpointPosition, HandlePosition};
 use crate::runtime::graph_runtime::{
     CreateFromWireCandidates, CreateFromWireQueryError, EdgeInstanceKey, GraphRuntimePolicy,
@@ -1076,6 +1079,8 @@ pub enum InteractionGraphSubmissionBindError {
     },
     #[error("the interaction view cannot validate graph submission authority")]
     ViewUnavailable,
+    #[error("the interaction graph submission is missing or was already bound")]
+    SubmissionAlreadyBound,
     #[error("the interaction session belongs to another runtime or view generation")]
     ForeignInteractionFacts,
     #[error(transparent)]
@@ -1088,14 +1093,6 @@ pub enum CanvasInteractionEffect {
         submission: InteractionGraphSubmission,
     },
     Search(ConnectionSearchRequest),
-}
-
-impl CanvasInteractionEffect {
-    fn submit_graph(ticket: InteractionTicketId, mutation: FreshGraphMutation) -> Self {
-        Self::SubmitGraph {
-            submission: InteractionGraphSubmission::new(ticket, mutation),
-        }
-    }
 }
 
 /// One runtime-owned, single-page query continuation.
@@ -1315,15 +1312,6 @@ impl CanvasInteractionUpdate {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CommandSettlement {
-    Applied,
-    Noop,
-    Rejected,
-    Conflict,
-    TransportFailure,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum CanvasInteractionError {
     #[error("canvas interaction configuration is invalid")]
@@ -1345,6 +1333,12 @@ pub enum CanvasInteractionError {
         expected: InteractionSessionId,
         actual: InteractionSessionId,
     },
+    #[error("the interaction submission has not been bound to a graph command")]
+    SubmissionNotBound,
+    #[error("the interaction completion protocol does not match the submission binding state")]
+    SubmissionCompletionStateMismatch,
+    #[error("the command completion identity does not match the bound interaction submission")]
+    CommandCompletionIdentityMismatch,
     #[error("interaction query {query:?} has no runtime receipt")]
     MissingInteractionQueryReceipt { query: InteractionQueryId },
     #[error("interaction query receipt belongs to {actual:?}, expected {expected:?}")]
@@ -1400,6 +1394,7 @@ pub struct CanvasInteractionSession {
     pending_edge_pick: Option<PendingHoverEdgePick>,
     hovered_edge: Option<EdgeInstanceKey>,
     terminal: Option<InteractionTerminalReason>,
+    submission_binding: Option<SubmissionBinding>,
     closed: bool,
     #[cfg(test)]
     test_authority_bypass: bool,
@@ -1407,6 +1402,17 @@ pub struct CanvasInteractionSession {
     test_viewport: ViewportSnapshot,
     #[cfg(test)]
     selection_commit_failure: Option<CanvasInteractionError>,
+}
+
+struct SubmissionBinding {
+    ticket: InteractionTicketId,
+    phase: SubmissionBindingPhase,
+}
+
+enum SubmissionBindingPhase {
+    Pending,
+    NoCommand,
+    Command(GraphCommandIdentity),
 }
 
 impl std::fmt::Debug for CanvasInteractionSession {
@@ -1661,6 +1667,7 @@ impl CanvasInteractionSession {
             pending_edge_pick: None,
             hovered_edge: None,
             terminal: None,
+            submission_binding: None,
             closed: false,
             #[cfg(test)]
             test_authority_bypass: false,
@@ -1689,6 +1696,23 @@ impl CanvasInteractionSession {
         )?;
         session.test_authority_bypass = true;
         Ok(session)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn bind_completion_for_test(
+        &mut self,
+        ticket: InteractionTicketId,
+        completion: &CommandExecutionCompletion,
+    ) {
+        assert_eq!(
+            interaction_state_submission_ticket(&self.state),
+            Some(ticket),
+            "test completion must bind the current interaction ticket"
+        );
+        self.submission_binding = Some(SubmissionBinding {
+            ticket,
+            phase: SubmissionBindingPhase::Command(completion.identity().clone()),
+        });
     }
 
     pub fn view(&self) -> ViewId {
@@ -2245,10 +2269,7 @@ impl CanvasInteractionSession {
         self.pending_edge_pick = None;
         let mut update =
             CanvasInteractionUpdate::default().with_damage(InteractionDamage::node_drag());
-        update.effects.push(CanvasInteractionEffect::submit_graph(
-            ticket,
-            FreshGraphMutation::move_nodes(intent),
-        ));
+        self.push_graph_mutation(&mut update, ticket, FreshGraphMutation::move_nodes(intent));
         self.state =
             InteractionState::Committing(CommitInteraction::NodeMove(NodeMoveCommitInteraction {
                 generation,
@@ -2480,14 +2501,15 @@ impl CanvasInteractionSession {
         };
         let mut update =
             CanvasInteractionUpdate::default().with_damage(InteractionDamage::connection());
-        update.effects.push(CanvasInteractionEffect::submit_graph(
+        self.push_graph_mutation(
+            &mut update,
             ticket,
             FreshGraphMutation::connection(
                 start.binding.clone(),
                 ConnectionCommitTarget::existing(target.instance()),
                 evaluation.version(),
             ),
-        ));
+        );
         self.state = InteractionState::Committing(CommitInteraction::KeyboardConnection(
             KeyboardConnectionCommitInteraction {
                 generation,
@@ -2502,7 +2524,7 @@ impl CanvasInteractionSession {
     /// Activates create-from-wire search without synthesizing a pointer drag.
     ///
     /// Keyboard and accessibility adapters use this path after resolving a real graph port. The
-    /// resulting search owns the same generation, presentation, effects, and settlement behavior
+    /// resulting search owns the same generation, presentation, effects, and completion behavior
     /// as a pointer release on empty canvas.
     pub fn activate_connection_search(
         &mut self,
@@ -2577,7 +2599,7 @@ impl CanvasInteractionSession {
         Ok(self.finalize_update(update))
     }
 
-    /// Requests deletion through the authoritative interaction and command-settlement pipeline.
+    /// Requests deletion through the authoritative interaction and command-completion pipeline.
     ///
     /// A route whose effective policy denies deletion is a no-op and allocates no ticket. Once
     /// admitted, the mutation binds to a fresh graph snapshot before enqueueing; a retired edge
@@ -2629,10 +2651,7 @@ impl CanvasInteractionSession {
             self.hovered_edge = None;
         }
         let mut update = CanvasInteractionUpdate::default().with_damage(edge_action_damage());
-        update.effects.push(CanvasInteractionEffect::submit_graph(
-            ticket,
-            FreshGraphMutation::delete_edge(intent),
-        ));
+        self.push_graph_mutation(&mut update, ticket, FreshGraphMutation::delete_edge(intent));
         self.state = InteractionState::Committing(CommitInteraction::EdgeDelete(
             EdgeDeleteCommitInteraction {
                 generation,
@@ -2687,10 +2706,11 @@ impl CanvasInteractionSession {
             self.hovered_edge = None;
         }
         let mut update = CanvasInteractionUpdate::default().with_damage(selection_delete_damage());
-        update.effects.push(CanvasInteractionEffect::submit_graph(
+        self.push_graph_mutation(
+            &mut update,
             ticket,
             FreshGraphMutation::delete_selection(intent),
-        ));
+        );
         self.state = InteractionState::Committing(CommitInteraction::SelectionDelete(
             SelectionDeleteCommitInteraction { generation, ticket },
         ));
@@ -3739,14 +3759,15 @@ impl CanvasInteractionSession {
                                 commit.target =
                                     ConnectionCommitTarget::existing(target.identity().instance());
                                 commit.freshness = ConnectionCommitFreshness::Revalidated;
-                                update.effects.push(CanvasInteractionEffect::submit_graph(
+                                self.push_graph_mutation(
+                                    &mut update,
                                     commit.ticket,
                                     FreshGraphMutation::connection(
                                         commit.start.binding.clone(),
                                         commit.target.clone(),
                                         version,
                                     ),
-                                ));
+                                );
                                 InteractionState::Committing(CommitInteraction::Connection(commit))
                             }
                             invalid @ (ConnectionProbe::None | ConnectionProbe::Invalid { .. }) => {
@@ -3980,9 +4001,9 @@ impl CanvasInteractionSession {
     ///
     /// Before this call succeeds, cancellation, close, ticket supersession, view retirement, and
     /// entity replacement revoke the submission. After it succeeds, the adapter owns the returned
-    /// command and must enqueue or execute it immediately before reporting its settlement.
+    /// command and must enqueue or execute it immediately before reporting its completion.
     pub fn bind_submission(
-        &self,
+        &mut self,
         submission: InteractionGraphSubmission,
     ) -> Result<Option<crate::runtime::commands::GraphCommand>, InteractionGraphSubmissionBindError>
     {
@@ -4002,6 +4023,15 @@ impl CanvasInteractionSession {
         if current != Some(ticket) {
             return Err(InteractionGraphSubmissionBindError::Superseded { ticket, current });
         }
+        if !matches!(
+            self.submission_binding.as_ref(),
+            Some(SubmissionBinding {
+                ticket: bound_ticket,
+                phase: SubmissionBindingPhase::Pending,
+            }) if *bound_ticket == ticket
+        ) {
+            return Err(InteractionGraphSubmissionBindError::SubmissionAlreadyBound);
+        }
         let actual = self
             .bound_view
             .provenance()
@@ -4013,25 +4043,127 @@ impl CanvasInteractionSession {
             .bound_view
             .graph_snapshot()
             .map_err(|_| InteractionGraphSubmissionBindError::ViewUnavailable)?;
-        submission
+        let command = submission
             .mutation
             .into_command(&snapshot)
-            .map_err(Into::into)
+            .map_err(InteractionGraphSubmissionBindError::from)?;
+        let phase = command
+            .as_ref()
+            .map_or(SubmissionBindingPhase::NoCommand, |command| {
+                SubmissionBindingPhase::Command(command.identity().clone())
+            });
+        self.submission_binding = Some(SubmissionBinding { ticket, phase });
+        Ok(command)
     }
 
-    pub fn settle(
+    pub fn complete_submission(
         &mut self,
         ticket: InteractionTicketId,
-        settlement: CommandSettlement,
+        completion: CommandExecutionCompletion,
     ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
-        if self.callback_authority(
+        if self.submission_callback_is_stale(ticket)? {
+            return Ok(self.finalize_update(CanvasInteractionUpdate::default()));
+        }
+        match self.submission_binding.as_ref() {
+            Some(SubmissionBinding {
+                ticket: bound_ticket,
+                phase: SubmissionBindingPhase::Command(expected),
+            }) if *bound_ticket == ticket && expected == completion.identity() => {}
+            Some(SubmissionBinding {
+                ticket: bound_ticket,
+                phase: SubmissionBindingPhase::Command(_),
+            }) if *bound_ticket == ticket => {
+                return Err(CanvasInteractionError::CommandCompletionIdentityMismatch);
+            }
+            Some(SubmissionBinding {
+                ticket: bound_ticket,
+                phase: SubmissionBindingPhase::Pending | SubmissionBindingPhase::NoCommand,
+            }) if *bound_ticket == ticket => {
+                return Err(CanvasInteractionError::SubmissionCompletionStateMismatch);
+            }
+            Some(_) | None => return Err(CanvasInteractionError::SubmissionNotBound),
+        }
+        self.submission_binding = None;
+        let kind = completion.kind();
+        self.complete_submission_with_terminal(ticket, completion_terminal(kind))
+    }
+
+    pub fn complete_submission_without_command(
+        &mut self,
+        ticket: InteractionTicketId,
+    ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
+        if self.submission_callback_is_stale(ticket)? {
+            return Ok(self.finalize_update(CanvasInteractionUpdate::default()));
+        }
+        if !matches!(
+            self.submission_binding.as_ref(),
+            Some(SubmissionBinding {
+                ticket: bound_ticket,
+                phase: SubmissionBindingPhase::NoCommand,
+            }) if *bound_ticket == ticket
+        ) {
+            return Err(CanvasInteractionError::SubmissionCompletionStateMismatch);
+        }
+        self.submission_binding = None;
+        self.complete_submission_with_terminal(ticket, InteractionTerminalReason::Noop)
+    }
+
+    pub fn submission_not_dispatched(
+        &mut self,
+        ticket: InteractionTicketId,
+    ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
+        if self.submission_callback_is_stale(ticket)? {
+            return Ok(self.finalize_update(CanvasInteractionUpdate::default()));
+        }
+        if !matches!(
+            self.submission_binding.as_ref(),
+            Some(SubmissionBinding {
+                ticket: bound_ticket,
+                phase: SubmissionBindingPhase::Pending | SubmissionBindingPhase::Command(_),
+            }) if *bound_ticket == ticket
+        ) {
+            return Err(CanvasInteractionError::SubmissionCompletionStateMismatch);
+        }
+        self.submission_binding = None;
+        self.complete_submission_with_terminal(ticket, InteractionTerminalReason::TransportFailure)
+    }
+
+    pub fn submission_outcome_unknown(
+        &mut self,
+        ticket: InteractionTicketId,
+    ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
+        if self.submission_callback_is_stale(ticket)? {
+            return Ok(self.finalize_update(CanvasInteractionUpdate::default()));
+        }
+        if !matches!(
+            self.submission_binding.as_ref(),
+            Some(SubmissionBinding {
+                ticket: bound_ticket,
+                phase: SubmissionBindingPhase::Command(_),
+            }) if *bound_ticket == ticket
+        ) {
+            return Err(CanvasInteractionError::SubmissionCompletionStateMismatch);
+        }
+        self.submission_binding = None;
+        self.complete_submission_with_terminal(ticket, InteractionTerminalReason::Uncertain)
+    }
+
+    fn submission_callback_is_stale(
+        &self,
+        ticket: InteractionTicketId,
+    ) -> Result<bool, CanvasInteractionError> {
+        Ok(self.callback_authority(
             ticket.session(),
             None,
             interaction_state_submission_ticket(&self.state) == Some(ticket),
-        )? == CallbackAuthority::Stale
-        {
-            return Ok(self.finalize_update(CanvasInteractionUpdate::default()));
-        }
+        )? == CallbackAuthority::Stale)
+    }
+
+    fn complete_submission_with_terminal(
+        &mut self,
+        ticket: InteractionTicketId,
+        terminal: InteractionTerminalReason,
+    ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
         let state = std::mem::take(&mut self.state);
         let mut update = CanvasInteractionUpdate::default();
         self.state = match state {
@@ -4039,33 +4171,33 @@ impl CanvasInteractionSession {
                 if commit.ticket == ticket =>
             {
                 update.damage.merge(InteractionDamage::connection());
-                self.finish_connection_commit(commit, settlement)
+                self.finish_connection_commit(commit, terminal)
             }
             InteractionState::Committing(CommitInteraction::KeyboardConnection(commit))
                 if commit.ticket == ticket =>
             {
-                self.terminal = Some(settlement_terminal(settlement));
+                self.terminal = Some(terminal);
                 update.damage.merge(InteractionDamage::connection());
                 InteractionState::Idle
             }
             InteractionState::Committing(CommitInteraction::NodeMove(commit))
                 if commit.ticket == ticket =>
             {
-                self.terminal = Some(settlement_terminal(settlement));
+                self.terminal = Some(terminal);
                 update.damage.merge(InteractionDamage::node_drag());
                 InteractionState::Idle
             }
             InteractionState::Committing(CommitInteraction::EdgeDelete(commit))
                 if commit.ticket == ticket =>
             {
-                self.terminal = Some(settlement_terminal(settlement));
+                self.terminal = Some(terminal);
                 update.damage.merge(edge_action_damage());
                 InteractionState::Idle
             }
             InteractionState::Committing(CommitInteraction::SelectionDelete(commit))
                 if commit.ticket == ticket =>
             {
-                self.terminal = Some(settlement_terminal(settlement));
+                self.terminal = Some(terminal);
                 update.damage.merge(selection_delete_damage());
                 InteractionState::Idle
             }
@@ -4098,9 +4230,7 @@ impl CanvasInteractionSession {
 
         let mut update = self.reconcile_graph()?;
         if interaction_state_submission_ticket(&self.state) == Some(ticket) {
-            update
-                .effects
-                .push(CanvasInteractionEffect::SubmitGraph { submission });
+            self.push_graph_submission(&mut update, submission);
         }
         Ok(update)
     }
@@ -4187,14 +4317,15 @@ impl CanvasInteractionSession {
         }
         let mut update =
             CanvasInteractionUpdate::default().with_damage(InteractionDamage::connection());
-        update.effects.push(CanvasInteractionEffect::submit_graph(
+        self.push_graph_mutation(
+            &mut update,
             ticket,
             FreshGraphMutation::connection(
                 start.binding,
                 ConnectionCommitTarget::existing(target.instance()),
                 evaluation.version(),
             ),
-        ));
+        );
         Ok(self.finalize_update(update))
     }
 
@@ -4280,14 +4411,15 @@ impl CanvasInteractionSession {
                         );
                     } else {
                         commit.freshness = ConnectionCommitFreshness::Revalidated;
-                        update.effects.push(CanvasInteractionEffect::submit_graph(
+                        self.push_graph_mutation(
+                            &mut update,
                             ticket,
                             FreshGraphMutation::connection(
                                 commit.start.binding.clone(),
                                 commit.target.clone(),
                                 snapshot.version(),
                             ),
-                        ));
+                        );
                     }
                 }
                 InteractionState::Committing(CommitInteraction::Connection(commit))
@@ -4501,6 +4633,7 @@ impl CanvasInteractionSession {
         let mut update = update.with_damage(damage);
         self.commit_update_selection(&mut update)?;
         self.pending_edge_pick = None;
+        self.submission_binding = None;
         self.state = InteractionState::Idle;
         self.terminal = Some(InteractionTerminalReason::Cancelled);
         Ok(self.finalize_update(update))
@@ -4533,6 +4666,7 @@ impl CanvasInteractionSession {
             return self.finalize_update(update);
         }
         let damage = damage_for_state(&self.state);
+        self.submission_binding = None;
         self.state = InteractionState::Idle;
         self.terminal = Some(InteractionTerminalReason::OwnerRetired);
         self.finalize_update(update.with_damage(damage))
@@ -4590,6 +4724,7 @@ impl CanvasInteractionSession {
         }
 
         let damage = damage_for_state(&self.state);
+        self.submission_binding = None;
         self.state = InteractionState::Idle;
         self.terminal = Some(InteractionTerminalReason::OwnerRetired);
         Ok(self.finalize_update(update.with_damage(damage)))
@@ -4602,6 +4737,7 @@ impl CanvasInteractionSession {
         let damage = damage_for_state(&self.state);
         self.pending_edge_pick = None;
         self.hovered_edge = None;
+        self.submission_binding = None;
         self.state = InteractionState::Idle;
         self.closed = true;
         self.terminal = Some(InteractionTerminalReason::ViewClosed);
@@ -4891,7 +5027,30 @@ impl CanvasInteractionSession {
         Ok(Some(update))
     }
 
-    fn finalize_update(&self, mut update: CanvasInteractionUpdate) -> CanvasInteractionUpdate {
+    fn push_graph_mutation(
+        &mut self,
+        update: &mut CanvasInteractionUpdate,
+        ticket: InteractionTicketId,
+        mutation: FreshGraphMutation,
+    ) {
+        self.push_graph_submission(update, InteractionGraphSubmission::new(ticket, mutation));
+    }
+
+    fn push_graph_submission(
+        &mut self,
+        update: &mut CanvasInteractionUpdate,
+        submission: InteractionGraphSubmission,
+    ) {
+        self.submission_binding = Some(SubmissionBinding {
+            ticket: submission.ticket(),
+            phase: SubmissionBindingPhase::Pending,
+        });
+        update
+            .effects
+            .push(CanvasInteractionEffect::SubmitGraph { submission });
+    }
+
+    fn finalize_update(&mut self, mut update: CanvasInteractionUpdate) -> CanvasInteractionUpdate {
         update.tick_demand = self.tick_demand();
         update
     }
@@ -5308,10 +5467,7 @@ impl CanvasInteractionSession {
             self.terminal = Some(InteractionTerminalReason::IdentityExhausted);
             return InteractionState::Idle;
         };
-        update.effects.push(CanvasInteractionEffect::submit_graph(
-            ticket,
-            FreshGraphMutation::move_nodes(intent),
-        ));
+        self.push_graph_mutation(update, ticket, FreshGraphMutation::move_nodes(intent));
         InteractionState::Committing(CommitInteraction::NodeMove(NodeMoveCommitInteraction {
             generation: drag.generation,
             cohort: drag.cohort,
@@ -5424,14 +5580,15 @@ impl CanvasInteractionSession {
             self.terminal = Some(InteractionTerminalReason::IdentityExhausted);
             return InteractionState::Idle;
         };
-        update.effects.push(CanvasInteractionEffect::submit_graph(
+        self.push_graph_mutation(
+            update,
             ticket,
             FreshGraphMutation::connection(
                 start.binding.clone(),
                 target.clone(),
                 validated_version,
             ),
-        ));
+        );
         InteractionState::Committing(CommitInteraction::Connection(Box::new(
             ConnectionCommitInteraction {
                 generation,
@@ -5451,18 +5608,16 @@ impl CanvasInteractionSession {
     fn finish_connection_commit(
         &mut self,
         commit: Box<ConnectionCommitInteraction>,
-        settlement: CommandSettlement,
+        terminal: InteractionTerminalReason,
     ) -> InteractionState {
-        match settlement {
-            CommandSettlement::Applied | CommandSettlement::Noop => {
-                self.terminal = Some(settlement_terminal(settlement));
-                InteractionState::Idle
-            }
-            CommandSettlement::Rejected
-            | CommandSettlement::Conflict
-            | CommandSettlement::TransportFailure => {
-                self.reject_connection_commit(commit, settlement_terminal(settlement))
-            }
+        if matches!(
+            terminal,
+            InteractionTerminalReason::Applied | InteractionTerminalReason::Noop
+        ) {
+            self.terminal = Some(terminal);
+            InteractionState::Idle
+        } else {
+            self.reject_connection_commit(commit, terminal)
         }
     }
 
@@ -5661,13 +5816,13 @@ fn connection_search_request(
     }
 }
 
-fn settlement_terminal(settlement: CommandSettlement) -> InteractionTerminalReason {
-    match settlement {
-        CommandSettlement::Applied => InteractionTerminalReason::Applied,
-        CommandSettlement::Noop => InteractionTerminalReason::Noop,
-        CommandSettlement::Rejected => InteractionTerminalReason::Rejected,
-        CommandSettlement::Conflict => InteractionTerminalReason::Conflict,
-        CommandSettlement::TransportFailure => InteractionTerminalReason::TransportFailure,
+fn completion_terminal(kind: CommandExecutionKind) -> InteractionTerminalReason {
+    match kind {
+        CommandExecutionKind::Applied => InteractionTerminalReason::Applied,
+        CommandExecutionKind::Noop => InteractionTerminalReason::Noop,
+        CommandExecutionKind::Rejected => InteractionTerminalReason::Rejected,
+        CommandExecutionKind::Conflict => InteractionTerminalReason::Conflict,
+        CommandExecutionKind::Failed => InteractionTerminalReason::ExecutionFailed,
     }
 }
 

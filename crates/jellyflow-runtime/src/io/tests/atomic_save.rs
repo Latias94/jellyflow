@@ -260,6 +260,7 @@ fn parent_directory_sync_failure_recovers_without_mutating_the_live_runtime() {
                 },
             ),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("live runtime mutation applies");

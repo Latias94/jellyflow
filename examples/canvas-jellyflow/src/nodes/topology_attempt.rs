@@ -13,7 +13,7 @@ use jellyflow_open_gpui::authoring::{
     OpenGpuiCommandTicket, OpenGpuiCommandTicketResult, OpenGpuiNodeAuthoring,
     OpenGpuiNodeAuthoringError,
 };
-use jellyflow_runtime::commands::{GraphCommand, GraphCommandOutcome};
+use jellyflow_runtime::commands::{CommandExecutionKind, GraphCommand};
 use jellyflow_runtime::graph::GraphRevision;
 use jellyflow_runtime::view::{NodeInstanceKey, ViewCloseReason};
 use open_gpui::{Context, Task};
@@ -959,21 +959,41 @@ impl<I: Clone> TopologyAttempt<I> {
         result: OpenGpuiCommandTicketResult,
     ) -> TopologyTransitionEffect {
         let settlement = match result {
-            Ok(GraphCommandOutcome::Applied(receipt)) => {
-                TicketSettlement::Applied(receipt.revision())
-            }
-            Ok(GraphCommandOutcome::Noop(noop)) => TicketSettlement::Noop(noop.revision()),
-            Ok(GraphCommandOutcome::Conflict(conflict)) => TicketSettlement::Conflict {
-                revision: conflict.current().revision(),
-                diagnostic: format!(
-                    "topology changed at revision {}; refresh before retry",
-                    conflict.current().revision()
+            Ok(completion) => match completion.kind() {
+                CommandExecutionKind::Applied => TicketSettlement::Applied(
+                    completion
+                        .applied_revision()
+                        .expect("applied command completion carries a revision"),
                 ),
+                CommandExecutionKind::Noop => TicketSettlement::Noop(
+                    completion
+                        .observed_revision()
+                        .expect("noop command completion carries a revision"),
+                ),
+                CommandExecutionKind::Conflict => {
+                    let revision = completion
+                        .observed_revision()
+                        .expect("conflict command completion carries a revision");
+                    TicketSettlement::Conflict {
+                        revision,
+                        diagnostic: format!(
+                            "topology changed at revision {revision}; refresh before retry"
+                        ),
+                    }
+                }
+                CommandExecutionKind::Rejected => TicketSettlement::Rejected(format!(
+                    "topology edit was rejected: {}",
+                    completion
+                        .diagnostic_message()
+                        .unwrap_or_else(|| "command rejected".to_owned())
+                )),
+                CommandExecutionKind::Failed => TicketSettlement::Uncertain(format!(
+                    "topology edit outcome is uncertain: {}; inspect the refreshed graph before retry",
+                    completion
+                        .diagnostic_message()
+                        .unwrap_or_else(|| "command execution failed".to_owned())
+                )),
             },
-            Ok(GraphCommandOutcome::Rejected(rejection)) => TicketSettlement::Rejected(format!(
-                "topology edit was rejected: {}",
-                rejection.message()
-            )),
             Err(error) => TicketSettlement::Uncertain(format!(
                 "topology edit outcome is uncertain: {error}; inspect the refreshed graph before retry"
             )),

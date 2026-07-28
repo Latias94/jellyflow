@@ -363,6 +363,7 @@ fn authoring_rejects_mismatched_and_stale_commands_before_journal_admission(
             port_id(),
             serde_json::json!("newer graph"),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("direct command advances the graph");
@@ -850,8 +851,10 @@ fn assert_live_replacement(
         .update(|_, cx| authoring.enqueue(command, cx))
         .expect("replacement binding enqueues");
     draw(cx);
-    let outcome = poll_command_ticket(&mut ticket).expect("replacement ticket resolves");
-    outcome.applied().expect("replacement command applies");
+    let completion = poll_command_ticket(&mut ticket).expect("replacement ticket resolves");
+    completion
+        .applied_revision()
+        .expect("replacement command applies");
     assert_eq!(runtime.snapshot().unwrap().revision(), 1);
 }
 

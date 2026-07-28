@@ -4,10 +4,9 @@ use std::rc::Rc;
 
 use jellyflow_core::NodeId;
 use jellyflow_runtime::{
-    commands::GraphCommand, commands::GraphCommandOutcome, commands::NodeGeometryEdit,
-    interaction::CommandSettlement, view::FeedbackCollector, view::FeedbackCollectorError,
-    view::FeedbackOperationReceipt, view::FeedbackReceipt, view::FeedbackSubmissionError,
-    view::LayoutNodeStatus, view::ViewSession,
+    commands::CommandExecutionKind, commands::GraphCommand, commands::NodeGeometryEdit,
+    view::FeedbackCollector, view::FeedbackCollectorError, view::FeedbackReceipt,
+    view::FeedbackSubmissionError, view::LayoutNodeStatus, view::ViewSession,
 };
 use open_gpui::{Context, Task};
 
@@ -148,7 +147,7 @@ impl OpenGpuiFrameTransaction {
                 submission: OpenGpuiFrameTransactionSubmission::Failed(
                     OpenGpuiFrameTransactionError::AlreadyConsumed,
                 ),
-                command_settlement: Ok(()),
+                command_batch_result: Ok(()),
                 measurement_errors: Vec::new(),
                 command_pairing_error: None,
             };
@@ -178,7 +177,7 @@ impl OpenGpuiFrameTransaction {
                 });
                 return OpenGpuiFrameTransactionResult {
                     submission: OpenGpuiFrameTransactionSubmission::Failed(error),
-                    command_settlement: retain_command_completions(&self.commands, commands),
+                    command_batch_result: retain_command_completions(&self.commands, commands),
                     measurement_errors,
                     command_pairing_error: None,
                 };
@@ -197,28 +196,35 @@ impl OpenGpuiFrameTransaction {
                     state.complete_commands(&self.commands, receipt);
                 OpenGpuiFrameTransactionResult {
                     submission: OpenGpuiFrameTransactionSubmission::Submitted(disposition),
-                    command_settlement: retain_command_completions(&self.commands, commands),
+                    command_batch_result: retain_command_completions(&self.commands, commands),
                     measurement_errors,
                     command_pairing_error,
                 }
             }
-            Ok(Err(error)) => {
+            Ok(Err(mut error)) => {
+                let post_admission = error.take_post_admission_receipt();
                 let error = Rc::new(error);
-                let commands = state.fail_commands(&self.commands, || {
-                    OpenGpuiCommandTicketError::FeedbackSubmission(Rc::clone(&error))
-                });
+                let (commands, command_pairing_error) = match post_admission {
+                    Some(receipt) => state.complete_commands(&self.commands, receipt),
+                    None => (
+                        state.fail_commands(&self.commands, || {
+                            OpenGpuiCommandTicketError::FeedbackSubmission(Rc::clone(&error))
+                        }),
+                        None,
+                    ),
+                };
                 OpenGpuiFrameTransactionResult {
                     submission: OpenGpuiFrameTransactionSubmission::Failed(
                         OpenGpuiFrameTransactionError::Submission(error),
                     ),
-                    command_settlement: retain_command_completions(&self.commands, commands),
+                    command_batch_result: retain_command_completions(&self.commands, commands),
                     measurement_errors,
-                    command_pairing_error: None,
+                    command_pairing_error,
                 }
             }
             Err(payload) => OpenGpuiFrameTransactionResult {
                 submission: OpenGpuiFrameTransactionSubmission::Panicked(payload),
-                command_settlement: retain_command_completions(
+                command_batch_result: retain_command_completions(
                     &self.commands,
                     state.fail_commands(&self.commands, || {
                         OpenGpuiCommandTicketError::FeedbackOutcomeUnknown
@@ -278,10 +284,8 @@ impl OpenGpuiFrameTransactionState {
             Ok(completed) => (Ok(completed), None),
             Err(error) => {
                 let message = format!("failed to pair native command receipts: {error}");
-                let completed =
-                    commands.fail_batch(batch, || OpenGpuiCommandTicketError::FramePreparation {
-                        message: message.clone(),
-                    });
+                let completed = commands
+                    .fail_batch(batch, || OpenGpuiCommandTicketError::FeedbackOutcomeUnknown);
                 (completed, Some(message))
             }
         }
@@ -314,14 +318,16 @@ impl Drop for OpenGpuiFrameTransaction {
 
 pub(super) struct OpenGpuiFrameTransactionResult {
     pub(super) submission: OpenGpuiFrameTransactionSubmission,
-    command_settlement: Result<(), OpenGpuiCommandBatchStateError>,
+    command_batch_result: Result<(), OpenGpuiCommandBatchStateError>,
     pub(super) measurement_errors: Vec<OpenGpuiMeasurementError>,
     pub(super) command_pairing_error: Option<String>,
 }
 
 impl OpenGpuiFrameTransactionResult {
-    pub(super) fn take_command_settlement(&mut self) -> Result<(), OpenGpuiCommandBatchStateError> {
-        std::mem::replace(&mut self.command_settlement, Ok(()))
+    pub(super) fn take_command_batch_result(
+        &mut self,
+    ) -> Result<(), OpenGpuiCommandBatchStateError> {
+        std::mem::replace(&mut self.command_batch_result, Ok(()))
     }
 }
 
@@ -356,16 +362,18 @@ fn frame_receipt_disposition(receipt: &FeedbackReceipt) -> OpenGpuiFrameReceiptD
         accepted_content_nodes: BTreeSet::new(),
         rejected_layouts: Vec::new(),
     };
-    for operation in receipt.operations() {
-        let FeedbackOperationReceipt::Layout { node, status } = operation else {
+    for layout in receipt.layout_receipts() {
+        let Some(status) = layout.status() else {
             continue;
         };
-        match layout_receipt_action(*status) {
+        match layout_receipt_action(status) {
             LayoutReceiptAction::Benign => {
-                disposition.accepted_content_nodes.insert(*node);
+                disposition.accepted_content_nodes.insert(layout.node());
             }
             LayoutReceiptAction::Refresh => {}
-            LayoutReceiptAction::Reject => disposition.rejected_layouts.push((*node, *status)),
+            LayoutReceiptAction::Reject => {
+                disposition.rejected_layouts.push((layout.node(), status));
+            }
         }
     }
     disposition
@@ -760,29 +768,22 @@ impl OpenGpuiSceneHost {
                 }
                 OpenGpuiCommandOrigin::Interaction { ticket } => {
                     if let Ok(result) = command.into_detached_result() {
-                        let (settlement, applied_revision) = match &result {
-                            Ok(GraphCommandOutcome::Applied(receipt)) => {
-                                (CommandSettlement::Applied, Some(receipt.revision()))
-                            }
-                            Ok(GraphCommandOutcome::Noop(_)) => (CommandSettlement::Noop, None),
-                            Ok(GraphCommandOutcome::Rejected(rejection)) => {
-                                self.record_command_diagnostic(rejection.message().to_owned());
-                                (CommandSettlement::Rejected, None)
-                            }
-                            Ok(GraphCommandOutcome::Conflict(conflict)) => {
-                                self.record_command_diagnostic(format!(
-                                    "interaction expected graph version {:?} but current version is {:?}",
-                                    conflict.expected_version(),
-                                    conflict.current_version()
-                                ));
-                                (CommandSettlement::Conflict, None)
+                        match result {
+                            Ok(completion) => {
+                                if let Some(message) = completion.diagnostic_message() {
+                                    self.record_command_diagnostic(message);
+                                }
+                                self.settle_interaction_command(ticket, completion);
                             }
                             Err(error) => {
                                 self.record_command_diagnostic(error.to_string());
-                                (CommandSettlement::TransportFailure, None)
+                                if error.outcome_unknown() {
+                                    self.interaction_submission_outcome_unknown(ticket);
+                                } else {
+                                    self.interaction_submission_not_dispatched(ticket);
+                                }
                             }
-                        };
-                        self.settle_interaction_command(ticket, settlement, applied_revision);
+                        }
                     }
                 }
                 OpenGpuiCommandOrigin::NodeSizes { tickets } => {
@@ -794,20 +795,21 @@ impl OpenGpuiSceneHost {
                         continue;
                     };
                     let settlement = match result {
-                        Ok(GraphCommandOutcome::Applied(_)) | Ok(GraphCommandOutcome::Noop(_)) => {
-                            OpenGpuiNodeSizeSettlement::Applied
-                        }
-                        Ok(GraphCommandOutcome::Rejected(rejection)) => {
-                            self.record_command_diagnostic(rejection.message().to_owned());
-                            OpenGpuiNodeSizeSettlement::Rejected
-                        }
-                        Ok(GraphCommandOutcome::Conflict(conflict)) => {
-                            self.record_command_diagnostic(format!(
-                                "content size expected graph version {:?} but current version is {:?}",
-                                conflict.expected_version(),
-                                conflict.current_version()
-                            ));
-                            OpenGpuiNodeSizeSettlement::Conflict
+                        Ok(completion) => {
+                            if let Some(message) = completion.diagnostic_message() {
+                                self.record_command_diagnostic(message);
+                            }
+                            match completion.kind() {
+                                CommandExecutionKind::Applied | CommandExecutionKind::Noop => {
+                                    OpenGpuiNodeSizeSettlement::Applied
+                                }
+                                CommandExecutionKind::Conflict => {
+                                    OpenGpuiNodeSizeSettlement::Conflict
+                                }
+                                CommandExecutionKind::Rejected | CommandExecutionKind::Failed => {
+                                    OpenGpuiNodeSizeSettlement::Rejected
+                                }
+                            }
                         }
                         Err(error) => {
                             self.record_command_diagnostic(error.to_string());

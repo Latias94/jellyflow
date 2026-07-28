@@ -362,6 +362,7 @@ fn protected_nodes_ignore_zero_required_budget_then_resume_ordinary_culling(
                 .version(),
             TopologyEdit::new().remove_node(node_id(), IncidentEdgePolicy::Reject),
         ))
+        .into_result()
         .unwrap();
     cx.run_until_parked();
 
@@ -379,6 +380,7 @@ fn protected_nodes_ignore_zero_required_budget_then_resume_ordinary_culling(
                 .version(),
             TopologyEdit::new().add_node(node_id(), node(), []),
         ))
+        .into_result()
         .unwrap();
     attached.set(true);
     cx.update_entity(&scene, |_, cx| cx.notify());
@@ -454,6 +456,7 @@ fn coalesced_reincarnation_hard_retires_active_node_without_waiting_for_draw(
                 .version(),
             TopologyEdit::new().remove_node(node_id(), IncidentEdgePolicy::Reject),
         ))
+        .into_result()
         .unwrap();
     let removed_version = runtime
         .snapshot()
@@ -461,6 +464,7 @@ fn coalesced_reincarnation_hard_retires_active_node_without_waiting_for_draw(
         .version();
     runtime
         .execute(GraphCommand::undo(removed_version))
+        .into_result()
         .unwrap();
     cx.run_until_parked();
 
@@ -872,6 +876,7 @@ fn thousand_lifecycle_cycles_return_native_resources_to_baseline(
                     .version(),
                 TopologyEdit::new().remove_node(node_id(), IncidentEdgePolicy::Reject),
             ))
+            .into_result()
             .unwrap();
         draw(cx);
         assert!(cx.update(|window, _| window.captured_hitbox()).is_none());
@@ -901,6 +906,7 @@ fn thousand_lifecycle_cycles_return_native_resources_to_baseline(
                     [TopologyPort::new(cycle_port_id(), cycle_port())],
                 ),
             ))
+            .into_result()
             .unwrap();
         draw(cx);
         assert_eq!(primary_mounts.get(), cycle.saturating_mul(2) + 2);

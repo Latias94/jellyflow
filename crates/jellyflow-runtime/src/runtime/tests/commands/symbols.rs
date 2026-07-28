@@ -66,6 +66,7 @@ fn one_symbol_edit_adds_updates_and_removes_with_exact_undo_redo() {
             )
             .with_label("edit blackboard"),
         )
+        .into_result()
         .unwrap();
 
     let receipt = outcome.applied().expect("symbol edit applies");
@@ -124,6 +125,7 @@ fn identical_symbol_replacement_is_a_noop() {
             before.version(),
             SymbolEdit::new().update(id, existing),
         ))
+        .into_result()
         .unwrap();
     let GraphCommandOutcome::Noop(noop) = outcome else {
         panic!("identical replacement must be a no-op");
@@ -273,6 +275,7 @@ fn referenced_symbol_removal_is_rejected_and_node_data_updates_refresh_the_index
             node_id,
             symbol_ref_node_data(second),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("reference retarget applies");
@@ -281,6 +284,7 @@ fn referenced_symbol_removal_is_rejected_and_node_data_updates_refresh_the_index
             runtime.snapshot().unwrap().version(),
             SymbolEdit::new().remove(first),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("unreferenced symbol can be removed");
@@ -319,6 +323,7 @@ fn symbol_ref_index_tracks_topology_adds_and_removals() {
             runtime.snapshot().unwrap().version(),
             TopologyEdit::new().add_node(node_id, node, []),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("symbol ref node addition applies");
@@ -335,6 +340,7 @@ fn symbol_ref_index_tracks_topology_adds_and_removals() {
             runtime.snapshot().unwrap().version(),
             TopologyEdit::new().remove_node(node_id, IncidentEdgePolicy::Reject),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("symbol ref node removal applies");
@@ -343,6 +349,7 @@ fn symbol_ref_index_tracks_topology_adds_and_removals() {
             runtime.snapshot().unwrap().version(),
             SymbolEdit::new().remove(symbol_id),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("symbol can be removed after its referrer");
@@ -375,6 +382,7 @@ fn stale_symbol_command_conflict_declares_symbols_and_current_referrers() {
             node_id,
             CanvasPoint { x: 42.0, y: 8.0 },
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("winning command applies");
@@ -386,6 +394,7 @@ fn stale_symbol_command_conflict_declares_symbols_and_current_referrers() {
             stale_version,
             SymbolEdit::new().remove(symbol_id),
         ))
+        .into_result()
         .unwrap();
     let conflict = outcome.conflict().expect("symbol command is stale");
 

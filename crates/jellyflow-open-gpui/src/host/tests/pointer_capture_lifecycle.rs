@@ -431,6 +431,7 @@ fn retiring_a_node_releases_its_rebound_pointer_capture(cx: &mut open_gpui::Test
                 .version(),
             TopologyEdit::new().remove_node(NodeId::from_u128(10), IncidentEdgePolicy::Reject),
         ))
+        .into_result()
         .expect("remove captured node")
         .applied()
         .expect("captured node removal applies");

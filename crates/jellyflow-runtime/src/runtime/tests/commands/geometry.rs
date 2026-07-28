@@ -24,6 +24,7 @@ fn batch_geometry_is_one_atomic_history_boundary() {
                     .with_size(Some(second_size)),
             ],
         ))
+        .into_result()
         .unwrap();
     let receipt = outcome.applied().expect("batch geometry applies");
 
@@ -76,6 +77,7 @@ fn batch_geometry_conflict_names_every_affected_node_without_mutation() {
             nodes[2],
             serde_json::json!({ "winner": true }),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("winning command applies");
@@ -90,6 +92,7 @@ fn batch_geometry_conflict_names_every_affected_node_without_mutation() {
                 NodeGeometryEdit::new(nodes[1]).with_position(CanvasPoint { x: 40.0, y: 50.0 }),
             ],
         ))
+        .into_result()
         .unwrap();
     let conflict = outcome.conflict().expect("stale batch conflicts");
 
@@ -144,7 +147,7 @@ fn empty_or_unchanged_batch_geometry_is_a_zero_side_effect_noop() {
                 .with_size(original.size)],
         ),
     ] {
-        let outcome = runtime.execute(command).unwrap();
+        let outcome = runtime.execute(command).into_result().unwrap();
         assert!(matches!(outcome, GraphCommandOutcome::Noop(_)));
         assert_eq!(runtime.snapshot().unwrap().revision(), 0);
         assert_eq!(runtime.history_state().unwrap().undo_len(), 0);
@@ -171,6 +174,7 @@ fn derived_geometry_advances_revision_without_polluting_user_history() {
             )
             .without_history(),
         )
+        .into_result()
         .unwrap()
         .applied()
         .expect("derived geometry applies");
@@ -201,6 +205,7 @@ fn batch_geometry_planning_reads_only_declared_nodes_at_scale() {
                 NodeGeometryEdit::new(nodes[9_999]).with_position(CanvasPoint { x: 5.0, y: 6.0 }),
             ],
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("geometry batch applies");

@@ -9,7 +9,9 @@ use jellyflow_core::{
     PortKey, PortKind,
 };
 use jellyflow_egui::{EguiNativeFrameError, EguiNativeFrameHost, EguiNativeFrameOutcome};
-use jellyflow_runtime::commands::{GraphCommand, IncidentEdgePolicy, TopologyEdit, TopologyPort};
+use jellyflow_runtime::commands::{
+    CommandExecutionKind, GraphCommand, IncidentEdgePolicy, TopologyEdit, TopologyPort,
+};
 use jellyflow_runtime::geometry::{HandlePosition, ViewPoint};
 use jellyflow_runtime::graph::{GraphRevision, GraphRuntime, HistoryState};
 use jellyflow_runtime::interaction::{
@@ -17,9 +19,8 @@ use jellyflow_runtime::interaction::{
 };
 use jellyflow_runtime::view::{
     ConnectionProbeQuery, ConnectionProbeQueryOutcome, ConnectionProbeTargeting,
-    FeedbackOperationReceipt, FeedbackSubmissionError, FrameRequest, LayoutNodeStatus,
-    PublishedPortOutcome, RendererStamp, ViewCloseReason, ViewSession, ViewSessionError,
-    ViewSessionEvent, ViewSessionOptions,
+    FeedbackSubmissionError, FrameRequest, LayoutNodeStatus, PublishedPortOutcome, RendererStamp,
+    ViewCloseReason, ViewSession, ViewSessionError, ViewSessionEvent, ViewSessionOptions,
 };
 use jellyflow_runtime::viewport::ViewportTransform;
 
@@ -112,7 +113,11 @@ fn complete_real_response_layout_is_accepted() {
     assert_eq!(state.child_ui_id, state.root_id);
     assert_eq!(state.ui_widget_id, state.native_widget_id);
     assert_eq!(
-        outcome.receipt().operations()[0].layout_status(),
+        outcome
+            .receipt()
+            .layout_receipts()
+            .next()
+            .and_then(|receipt| receipt.status()),
         Some(LayoutNodeStatus::Published),
     );
 
@@ -627,47 +632,26 @@ fn same_frame_node_commands_preserve_callback_order_and_reject_a_stale_followup(
     harness.step();
 
     let state = harness.state();
-    let operations = state
-        .outcome
-        .as_ref()
-        .expect("ordered outcome")
-        .receipt()
-        .operations();
-    assert!(
-        matches!(
-            operations,
-            [
-                FeedbackOperationReceipt::Command { .. },
-                FeedbackOperationReceipt::Command { .. },
-                FeedbackOperationReceipt::Layout {
-                    status: LayoutNodeStatus::Stale,
-                    ..
-                },
-                FeedbackOperationReceipt::Layout {
-                    status: LayoutNodeStatus::Unchanged,
-                    ..
-                },
-            ]
-        ),
-        "unexpected ordered feedback operations: {operations:#?}"
+    let receipt = state.outcome.as_ref().expect("ordered outcome").receipt();
+    assert_eq!(
+        receipt
+            .command_completions()
+            .map(|completion| completion.kind())
+            .collect::<Vec<_>>(),
+        [
+            CommandExecutionKind::Applied,
+            CommandExecutionKind::Conflict
+        ]
     );
-    assert!(
-        operations[0]
-            .command_outcome()
-            .expect("first command receipt")
-            .as_ref()
-            .expect("first command executes")
-            .applied()
-            .is_some()
-    );
-    assert!(
-        operations[1]
-            .command_outcome()
-            .expect("second command receipt")
-            .as_ref()
-            .expect("second command executes")
-            .conflict()
-            .is_some()
+    assert_eq!(
+        receipt
+            .layout_receipts()
+            .map(|receipt| receipt.status())
+            .collect::<Vec<_>>(),
+        [
+            Some(LayoutNodeStatus::Stale),
+            Some(LayoutNodeStatus::Unchanged),
+        ]
     );
     let graph = state.host.view().graph_snapshot().expect("ordered graph");
     assert_eq!(graph.revision(), 1);
@@ -1020,6 +1004,8 @@ fn runtime_patch_retires_deleted_egui_state_without_another_frame() {
                 .version(),
             TopologyEdit::new().remove_node(node, IncidentEdgePolicy::Reject),
         ))
+        .expect("view accepts delete")
+        .into_result()
         .expect("delete executes")
         .applied()
         .expect("delete applies");
@@ -1100,6 +1086,8 @@ fn render_delete_during_render(ui: &mut Ui, state: &mut DeleteDuringRenderState)
                         native.graph_version(),
                         TopologyEdit::new().remove_node(*node, IncidentEdgePolicy::Reject),
                     ))
+                    .expect("view accepts delete during render")
+                    .into_result()
                     .expect("delete executes during render")
                     .applied()
                     .expect("delete applies during render");
@@ -1123,22 +1111,15 @@ fn delete_during_render_stales_only_the_retired_node_and_publishes_its_peer() {
     let outcome = first_result
         .as_ref()
         .expect("local geometry impact keeps the frame submittable");
-    assert!(
-        matches!(
-            outcome.receipt().operations(),
-            [
-                FeedbackOperationReceipt::Layout {
-                    node,
-                    status: LayoutNodeStatus::Stale,
-                },
-                FeedbackOperationReceipt::Layout {
-                    status: LayoutNodeStatus::Published,
-                    ..
-                }
-            ] if *node == state.node
-        ),
+    let layouts = outcome.receipt().layout_receipts().collect::<Vec<_>>();
+    assert_eq!(
+        layouts.len(),
+        2,
         "unexpected delete-during-render result: {first_result:?}"
     );
+    assert_eq!(layouts[0].node(), state.node);
+    assert_eq!(layouts[0].status(), Some(LayoutNodeStatus::Stale));
+    assert_eq!(layouts[1].status(), Some(LayoutNodeStatus::Published));
     let publication = outcome
         .receipt()
         .publication()
@@ -1409,12 +1390,7 @@ fn render_dynamic_port(ui: &mut Ui, state: &mut DynamicPortState) {
             root.response
         })
         .expect("native frame submits");
-    if outcome
-        .receipt()
-        .operations()
-        .iter()
-        .any(|operation| operation.command_outcome().is_some())
-    {
+    if outcome.receipt().command_completions().next().is_some() {
         state.command_outcome = Some(outcome);
     }
 }
@@ -1443,25 +1419,21 @@ fn native_text_state_survives_dynamic_real_port_command_before_layout() {
         .command_outcome
         .as_ref()
         .expect("command frame outcome");
-    let operations = command_frame.receipt().operations();
-    assert!(matches!(
-        operations,
-        [
-            FeedbackOperationReceipt::Command { .. },
-            FeedbackOperationReceipt::Layout {
-                status: LayoutNodeStatus::Stale,
-                ..
-            }
-        ]
-    ));
-    assert!(
-        operations[0]
-            .command_outcome()
-            .expect("command receipt")
-            .as_ref()
-            .expect("command executes")
-            .applied()
-            .is_some()
+    assert_eq!(
+        command_frame
+            .receipt()
+            .command_completions()
+            .map(|completion| completion.kind())
+            .collect::<Vec<_>>(),
+        [CommandExecutionKind::Applied]
+    );
+    assert_eq!(
+        command_frame
+            .receipt()
+            .layout_receipts()
+            .map(|receipt| receipt.status())
+            .collect::<Vec<_>>(),
+        [Some(LayoutNodeStatus::Stale)]
     );
     assert_eq!(state.prompt, "hello");
     assert_eq!(
@@ -1602,7 +1574,11 @@ fn missing_real_port_publishes_unavailable_without_fabricated_geometry() {
     let state = harness.state();
     let outcome = state.outcome.as_ref().expect("incomplete frame outcome");
     assert_eq!(
-        outcome.receipt().operations()[0].layout_status(),
+        outcome
+            .receipt()
+            .layout_receipts()
+            .next()
+            .and_then(|receipt| receipt.status()),
         Some(LayoutNodeStatus::Published),
     );
     let geometry = state.host.view().geometry_snapshot().expect("geometry");
@@ -1732,6 +1708,8 @@ fn hard_retirement_clears_exact_egui_state_across_replacement_readd_and_close() 
             revision,
             TopologyEdit::new().remove_node(node, IncidentEdgePolicy::Reject),
         ))
+        .expect("view accepts delete")
+        .into_result()
         .expect("delete executes")
         .applied()
         .expect("delete applies");
@@ -1768,6 +1746,8 @@ fn hard_retirement_clears_exact_egui_state_across_replacement_readd_and_close() 
                 [TopologyPort::new(port, output_port(node, "re-added"))],
             ),
         ))
+        .expect("view accepts re-add")
+        .into_result()
         .expect("re-add executes")
         .applied()
         .expect("re-add applies");

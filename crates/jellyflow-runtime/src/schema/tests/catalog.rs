@@ -330,13 +330,17 @@ fn catalog_creation_can_only_publish_through_a_revisioned_graph_command() {
             [PortId::from_u128(4)],
         )
         .unwrap();
-    let prefix = runtime.execute(prefix.into_command(stale_version)).unwrap();
+    let prefix = runtime
+        .execute(prefix.into_command(stale_version))
+        .into_result()
+        .unwrap();
     let current_version = prefix
         .applied()
         .expect("prefix advances the authoritative graph")
         .version();
     let stale = runtime
         .execute(stale_creation.into_command(stale_version))
+        .into_result()
         .unwrap();
 
     assert!(stale.conflict().is_some());
@@ -347,6 +351,7 @@ fn catalog_creation_can_only_publish_through_a_revisioned_graph_command() {
         .unwrap();
     let applied = runtime
         .execute(creation.into_command(current_version))
+        .into_result()
         .unwrap();
 
     assert!(applied.applied().is_some());
@@ -551,6 +556,7 @@ fn runtime_create_from_wire_query_is_revisioned_and_builds_one_atomic_command() 
             source_node,
             json!({ "changed": true }),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .unwrap();
@@ -581,7 +587,7 @@ fn runtime_create_from_wire_query_is_revisioned_and_builds_one_atomic_command() 
             )),
     );
     let history_before = runtime.history_state().unwrap();
-    let stale = runtime.execute(command).unwrap();
+    let stale = runtime.execute(command).into_result().unwrap();
     assert!(stale.conflict().is_some());
     assert_eq!(runtime.history_state().unwrap(), history_before);
     let snapshot = runtime.snapshot().unwrap();
@@ -611,6 +617,7 @@ fn runtime_create_from_wire_query_is_revisioned_and_builds_one_atomic_command() 
                     NodeGraphConnectionMode::Strict,
                 )),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("node and edge commit atomically");
@@ -654,10 +661,12 @@ fn runtime_create_from_wire_query_uses_current_profile_and_source_policy() {
             snapshot.version(),
             TopologyEdit::new().remove_node(source_node, IncidentEdgePolicy::Cascade),
         ))
+        .into_result()
         .unwrap();
     let removed_version = removed.applied().unwrap().version();
     runtime
         .execute(GraphCommand::undo(removed_version))
+        .into_result()
         .unwrap()
         .applied()
         .unwrap();

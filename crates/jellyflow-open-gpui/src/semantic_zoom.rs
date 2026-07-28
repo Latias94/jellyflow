@@ -1122,6 +1122,7 @@ mod tests {
                 [NodeGeometryEdit::new(test_node_id())
                     .with_position(CanvasPoint { x: 60.0, y: 40.0 })],
             ))
+            .into_result()
             .expect("geometry command")
             .applied()
             .expect("geometry change applies");
@@ -1191,6 +1192,7 @@ mod tests {
                     IncidentEdgePolicy::Reject,
                 ),
             ))
+            .into_result()
             .expect("same-ID port replacement command")
             .applied()
             .expect("same-ID port replacement applies");

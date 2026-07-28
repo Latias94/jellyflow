@@ -316,8 +316,17 @@ fn explicit_close_drains_final_command_once_then_retires_native_state(
         .unwrap();
 
     assert_eq!(outcome.reason(), ViewCloseReason::HostClosed);
-    assert_eq!(outcome.receipts().len(), 1);
-    assert!(outcome.receipts()[0].patch().is_some());
+    assert_eq!(outcome.command_completions().count(), 1);
+    assert!(
+        outcome
+            .command_completions()
+            .next()
+            .expect("close command completion")
+            .result()
+            .expect("close command executes")
+            .applied()
+            .is_some()
+    );
     assert_eq!(runtime.snapshot().unwrap().revision(), 1);
     assert_eq!(runtime.history_state().unwrap().undo_len(), 1);
     assert_eq!(revocations.get(), 1);
@@ -437,6 +446,7 @@ fn nonterminal_retirement_panic_does_not_stop_the_lifecycle_bridge(
                 .version(),
             TopologyEdit::new().remove_node(NodeId::from_u128(10), IncidentEdgePolicy::Reject),
         ))
+        .into_result()
         .unwrap();
     cx.run_until_parked();
     assert_eq!(&*revocations.borrow(), &[NodeId::from_u128(10)]);
@@ -456,6 +466,7 @@ fn nonterminal_retirement_panic_does_not_stop_the_lifecycle_bridge(
                 .version(),
             TopologyEdit::new().remove_node(NodeId::from_u128(20), IncidentEdgePolicy::Reject),
         ))
+        .into_result()
         .unwrap();
     cx.run_until_parked();
 
@@ -502,6 +513,7 @@ fn stale_parked_reconciliation_finishes_every_retirement_before_propagating_a_pa
                 .remove_node(NodeId::from_u128(10), IncidentEdgePolicy::Reject)
                 .remove_node(NodeId::from_u128(20), IncidentEdgePolicy::Reject),
         ))
+        .into_result()
         .unwrap();
     let panic = catch_unwind(AssertUnwindSafe(|| draw_once(cx)));
 

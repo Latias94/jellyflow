@@ -174,7 +174,7 @@ fn graph_runtime_and_view_session_are_the_public_adapter_seam() {
     let receipt = view
         .submit_feedback(collector.finish().expect("feedback"))
         .expect("submit");
-    assert_eq!(receipt.operations().len(), 1);
+    assert_eq!(receipt.layout_receipts().count(), 1);
     assert!(receipt.publication().is_some());
     assert_eq!(view.geometry_snapshot().unwrap().layout_revision(), 1);
     let _visible_routes = VisibleRouteQuery::new(
@@ -217,6 +217,7 @@ fn graph_runtime_and_view_session_are_the_public_adapter_seam() {
     let version = runtime.snapshot().expect("snapshot").version();
     let outcome = runtime
         .execute(GraphCommand::topology(version, TopologyEdit::new()))
+        .into_result()
         .expect("noop command");
     assert!(outcome.applied().is_none());
 }
@@ -293,6 +294,7 @@ fn graph_profile_keeps_type_policy_and_structured_connection_diagnostics_public(
 
     let outcome = runtime
         .execute(GraphCommand::connection(evaluation.version(), edit))
+        .into_result()
         .expect("connection command");
     let rejection = outcome.rejection().expect("profile rejection");
     assert_eq!(
@@ -398,6 +400,7 @@ fn semantic_catalog_and_viewport_planning_are_framework_neutral() {
     let version = runtime.snapshot().expect("snapshot").version();
     runtime
         .execute(creation.into_command(version))
+        .into_result()
         .expect("creation command")
         .applied()
         .expect("creation applies");

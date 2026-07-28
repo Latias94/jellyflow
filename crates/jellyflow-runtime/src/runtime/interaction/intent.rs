@@ -381,8 +381,6 @@ pub enum FreshGraphMutationBindError {
     ReconnectEdgeRetired { edge: EdgeId },
     #[error("edge deletion facts for {edge:?} belong to another runtime")]
     EdgeDeleteForeignRuntime { edge: EdgeId },
-    #[error("edge {edge:?} was retired before deletion binding")]
-    EdgeDeleteRetired { edge: EdgeId },
     #[error(
         "edge {edge:?} was replaced before deletion binding (expected {expected:?}, current {current:?})"
     )]
@@ -467,7 +465,7 @@ impl EdgeDeletionIntent {
             return Err(FreshGraphMutationBindError::EdgeDeleteForeignRuntime { edge });
         }
         match snapshot.edge_instance_key(edge) {
-            None => return Err(FreshGraphMutationBindError::EdgeDeleteRetired { edge }),
+            None => return Ok(None),
             Some(current) if current != self.instance => {
                 return Err(FreshGraphMutationBindError::EdgeDeleteReplaced {
                     edge,
@@ -935,6 +933,7 @@ mod tests {
                 node,
                 CanvasPoint { x: 20.0, y: 30.0 },
             ))
+            .into_result()
             .unwrap();
         let fresh = runtime.snapshot().unwrap();
 
@@ -943,7 +942,7 @@ mod tests {
             .unwrap()
             .expect("one movable node");
         assert_eq!(command.expected_version(), fresh.version());
-        runtime.execute(command).unwrap();
+        runtime.execute(command).into_result().unwrap();
 
         assert_eq!(
             runtime.snapshot().unwrap().graph().node(&node).unwrap().pos,
@@ -974,7 +973,7 @@ mod tests {
             .into_command(&admitted)
             .unwrap()
             .expect("complete cohort binds");
-        let outcome = runtime.execute(command).unwrap();
+        let outcome = runtime.execute(command).into_result().unwrap();
         let receipt = outcome
             .applied()
             .expect("one atomic geometry command applies");
@@ -1046,6 +1045,7 @@ mod tests {
                 admitted.version(),
                 TopologyEdit::new().remove_node(node, IncidentEdgePolicy::Reject),
             ))
+            .into_result()
             .unwrap()
             .applied()
             .expect("node retirement applies");
@@ -1061,6 +1061,7 @@ mod tests {
 
         runtime
             .execute(GraphCommand::undo(retired.version()))
+            .into_result()
             .unwrap()
             .applied()
             .expect("undo restores graph data under a fresh node lifetime");
@@ -1079,7 +1080,7 @@ mod tests {
     }
 
     #[test]
-    fn edge_deletion_binds_once_and_rejects_retired_or_replaced_lifetimes() {
+    fn edge_deletion_binds_once_treats_retired_as_satisfied_and_rejects_replacement() {
         let source_node = NodeId::from_u128(1);
         let source_port = PortId::from_u128(1);
         let target_node = NodeId::from_u128(2);
@@ -1110,6 +1111,7 @@ mod tests {
                 source_node,
                 serde_json::json!({ "revision": 1 }),
             ))
+            .into_result()
             .unwrap();
 
         let admitted = runtime.snapshot().unwrap();
@@ -1125,19 +1127,21 @@ mod tests {
         assert_eq!(command.label(), Some("Delete edge"));
         runtime
             .execute(command)
+            .into_result()
             .unwrap()
             .applied()
             .expect("edge deletion applies");
         assert!(runtime.snapshot().unwrap().graph().edge(&edge).is_none());
 
-        assert!(matches!(
+        assert!(
             FreshGraphMutation::delete_edge(intent)
-                .into_command(&runtime.snapshot().unwrap()),
-            Err(FreshGraphMutationBindError::EdgeDeleteRetired { edge: retired })
-                if retired == edge
-        ));
+                .into_command(&runtime.snapshot().unwrap())
+                .unwrap()
+                .is_none()
+        );
         runtime
             .execute(GraphCommand::undo(runtime.snapshot().unwrap().version()))
+            .into_result()
             .unwrap()
             .applied()
             .expect("one undo restores the deleted edge");
@@ -1182,6 +1186,7 @@ mod tests {
                 source_node,
                 serde_json::json!({ "advanced": true }),
             ))
+            .into_result()
             .unwrap()
             .applied()
             .expect("unrelated command advances the graph version");
@@ -1312,6 +1317,7 @@ mod tests {
 
         runtime
             .execute(GraphCommand::disconnect(initial.version(), edge))
+            .into_result()
             .unwrap()
             .applied()
             .expect("edge retirement applies");
@@ -1320,6 +1326,7 @@ mod tests {
 
         runtime
             .execute(GraphCommand::undo(retired.version()))
+            .into_result()
             .unwrap()
             .applied()
             .expect("undo restores the edge id");
@@ -1387,6 +1394,7 @@ mod tests {
                 source_node,
                 serde_json::json!({ "unrelated": true }),
             ))
+            .into_result()
             .unwrap()
             .applied()
             .expect("unrelated mutation applies");
@@ -1461,6 +1469,7 @@ mod tests {
         assert_eq!(command.expected_version(), snapshot.version());
         let applied_version = runtime
             .execute(command)
+            .into_result()
             .unwrap()
             .applied()
             .expect("create-from-wire applies")
@@ -1472,6 +1481,7 @@ mod tests {
 
         runtime
             .execute(GraphCommand::undo(applied_version))
+            .into_result()
             .unwrap()
             .applied()
             .expect("one undo reverts the atomic command");
@@ -1545,6 +1555,7 @@ mod tests {
             .expect("atomic reconnect-from-wire command");
         let applied_version = runtime
             .execute(command)
+            .into_result()
             .unwrap()
             .applied()
             .expect("reconnect-from-wire applies")
@@ -1557,6 +1568,7 @@ mod tests {
 
         runtime
             .execute(GraphCommand::undo(applied_version))
+            .into_result()
             .unwrap()
             .applied()
             .expect("one undo restores reconnect-from-wire");

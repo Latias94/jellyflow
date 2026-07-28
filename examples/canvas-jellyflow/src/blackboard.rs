@@ -10,7 +10,7 @@ use jellyflow_open_gpui::retained_field::{
     ApplicationRetainedField, ApplicationRetainedFieldDispatchReceipt,
     ApplicationRetainedFieldResolution, RetainedFieldConflictChoice, RetainedFieldPhase,
 };
-use jellyflow_runtime::commands::{GraphCommand, GraphCommandOutcome, SymbolEdit};
+use jellyflow_runtime::commands::{CommandExecutionCompletion, GraphCommand, SymbolEdit};
 use jellyflow_runtime::graph::{
     FactChange, GraphRuntime, GraphRuntimeEvent, GraphSnapshot, RuntimeFactKey, RuntimePatchKind,
 };
@@ -166,8 +166,10 @@ pub trait BlackboardSource {
 
     fn snapshot(&self) -> Result<BlackboardSourceSnapshot, BlackboardSourceError>;
 
-    fn execute(&self, command: GraphCommand)
-    -> Result<GraphCommandOutcome, BlackboardCommandError>;
+    fn execute(
+        &self,
+        command: GraphCommand,
+    ) -> Result<CommandExecutionCompletion, BlackboardCommandError>;
 }
 
 /// Production Blackboard source backed by one authoritative graph runtime.
@@ -211,10 +213,8 @@ impl BlackboardSource for GraphRuntimeBlackboardSource {
     fn execute(
         &self,
         command: GraphCommand,
-    ) -> Result<GraphCommandOutcome, BlackboardCommandError> {
-        self.runtime
-            .execute(command)
-            .map_err(|error| BlackboardCommandError::new(error.to_string()))
+    ) -> Result<CommandExecutionCompletion, BlackboardCommandError> {
+        Ok(self.runtime.execute(command))
     }
 }
 
@@ -497,8 +497,8 @@ impl NativeBlackboard {
         let planned = self.plan_name_submission(symbol);
         match planned {
             Ok((receipt, command)) => {
-                let outcome = self.execute_source(command);
-                self.handle_submission_outcome(symbol, receipt, outcome);
+                let completion = self.execute_source(command);
+                self.handle_submission_completion(symbol, receipt, completion);
             }
             Err(BlackboardPlanError::Resource) => {}
             Err(BlackboardPlanError::Draft(message)) => {
@@ -583,20 +583,20 @@ impl NativeBlackboard {
         Ok((receipt, command))
     }
 
-    fn handle_submission_outcome(
+    fn handle_submission_completion(
         &mut self,
         symbol: SymbolId,
         receipt: ApplicationRetainedFieldDispatchReceipt,
-        outcome: Result<GraphCommandOutcome, BlackboardCommandError>,
+        completion: Result<CommandExecutionCompletion, BlackboardCommandError>,
     ) {
-        match outcome {
-            Ok(outcome) => self.settle_submission(symbol, receipt, outcome),
+        match completion {
+            Ok(completion) => self.settle_submission(symbol, receipt, completion),
             Err(error) => {
                 let result = self.drafts.get_mut(&symbol).map(|field| {
                     field.mark_uncertain(
                         receipt,
                         format!(
-                            "symbol command outcome is uncertain: {error}; wait for an authoritative refresh"
+                            "symbol command completion is uncertain: {error}; wait for an authoritative refresh"
                         ),
                     )
                 });
@@ -613,14 +613,14 @@ impl NativeBlackboard {
         &mut self,
         symbol: SymbolId,
         receipt: ApplicationRetainedFieldDispatchReceipt,
-        outcome: GraphCommandOutcome,
+        completion: CommandExecutionCompletion,
     ) {
         let Some(field) = self.drafts.get_mut(&symbol) else {
             return;
         };
-        if let Err(error) = field.settle_command(receipt, outcome) {
+        if let Err(error) = field.settle_command(receipt, completion) {
             self.draft_diagnostic = Some(format!(
-                "blackboard rejected an unbound command outcome: {error}"
+                "blackboard rejected an unbound command completion: {error}"
             ));
             return;
         }
@@ -697,7 +697,7 @@ impl NativeBlackboard {
     fn execute_source(
         &self,
         command: GraphCommand,
-    ) -> Result<GraphCommandOutcome, BlackboardCommandError> {
+    ) -> Result<CommandExecutionCompletion, BlackboardCommandError> {
         catch_unwind(AssertUnwindSafe(|| self.source.execute(command))).unwrap_or_else(|_| {
             Err(BlackboardCommandError::new(
                 "blackboard source command panicked",

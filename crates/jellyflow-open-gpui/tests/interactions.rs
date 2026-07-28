@@ -491,6 +491,7 @@ fn removing_a_captured_dynamic_port_cancels_capture_after_the_topology_patch(
                 IncidentEdgePolicy::Cascade,
             ),
         ))
+        .into_result()
         .expect("remove dynamic port")
         .applied()
         .expect("dynamic port removal applies");
@@ -572,6 +573,7 @@ fn removing_a_keyboard_activated_dynamic_port_cancels_keyboard_connection(
                 IncidentEdgePolicy::Cascade,
             ),
         ))
+        .into_result()
         .expect("remove dynamic port")
         .applied()
         .expect("dynamic port removal applies");
@@ -798,6 +800,7 @@ fn hard_retirement_cancels_capture_and_suppresses_late_pointer_events(
                 .version(),
             TopologyEdit::new().remove_node(node_id(), IncidentEdgePolicy::Reject),
         ))
+        .into_result()
         .unwrap();
     cx.run_until_parked();
 
@@ -848,6 +851,7 @@ fn hard_retirement_does_not_steal_focus_acquired_after_drag_started(
                 .version(),
             TopologyEdit::new().remove_node(node_id(), IncidentEdgePolicy::Reject),
         ))
+        .into_result()
         .unwrap();
     cx.run_until_parked();
     draw(cx);

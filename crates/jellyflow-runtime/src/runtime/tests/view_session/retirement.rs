@@ -40,6 +40,7 @@ fn removing_a_selected_measured_node_retires_only_affected_view_facts() {
             version,
             TopologyEdit::new().remove_node(ids[0], IncidentEdgePolicy::Reject),
         ))
+        .into_result()
         .expect("remove command")
         .applied()
         .expect("remove applies");
@@ -92,6 +93,7 @@ fn authoritative_remove_and_readd_retires_old_geometry_and_node_subscription() {
             version,
             TopologyEdit::new().remove_node(ids[0], IncidentEdgePolicy::Reject),
         ))
+        .into_result()
         .expect("remove command")
         .applied()
         .expect("remove applies");
@@ -101,6 +103,7 @@ fn authoritative_remove_and_readd_retires_old_geometry_and_node_subscription() {
             version,
             TopologyEdit::new().add_node(ids[0], replacement, []),
         ))
+        .into_result()
         .expect("add replacement command")
         .applied()
         .expect("replacement applies");
@@ -130,6 +133,7 @@ fn removing_a_node_withdraws_its_geometry_and_invalidates_only_its_incident_rout
             version,
             TopologyEdit::new().remove_node(ids.source, IncidentEdgePolicy::Cascade),
         ))
+        .into_result()
         .expect("remove command")
         .applied()
         .expect("remove applies");
@@ -170,6 +174,7 @@ fn changing_node_size_withdraws_old_geometry_and_invalidates_only_incident_route
                 height: 140.0,
             }),
         ))
+        .into_result()
         .expect("resize command")
         .applied()
         .expect("resize applies");
@@ -219,6 +224,7 @@ fn reconnecting_an_edge_notifies_nodes_at_both_old_and_new_endpoints() {
             ids.alternate_source_port,
             NodeGraphConnectionMode::Strict,
         ))
+        .into_result()
         .expect("reconnect edge");
     let patch = outcome.applied().expect("reconnect applies").patch();
 
@@ -264,6 +270,7 @@ fn cascading_binding_removal_notifies_the_surviving_endpoint_node() {
             version,
             TopologyEdit::new().remove_node(ids[0], IncidentEdgePolicy::Reject),
         ))
+        .into_result()
         .expect("remove command")
         .applied()
         .expect("remove applies");

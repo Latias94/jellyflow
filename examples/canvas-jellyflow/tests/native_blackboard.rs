@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use jellyflow_core::types::TypeDesc;
 use jellyflow_core::{GraphBuilder, GraphId, Symbol, SymbolId};
-use jellyflow_runtime::commands::GraphCommand;
+use jellyflow_runtime::commands::{CommandExecutionCompletion, GraphCommand};
 use jellyflow_runtime::graph::GraphRuntime;
 use open_gpui::{AppContext, ScrollDelta, ScrollWheelEvent, TouchPhase, point};
 use open_gpui_canvas_jellyflow::blackboard::{
@@ -369,8 +369,7 @@ fn native_blackboard_edits_graph_symbols_with_stable_identity_and_exact_undo(
 
     runtime
         .execute(GraphCommand::undo(edited.version()))
-        .expect("undo symbol edit")
-        .applied()
+        .applied_revision()
         .expect("undo applies");
     let undone = runtime.snapshot().expect("undone snapshot");
     assert_eq!(
@@ -418,8 +417,7 @@ fn stale_blackboard_draft_requires_an_explicit_reapply_before_overwriting_remote
             jellyflow_runtime::commands::SymbolEdit::new()
                 .update(symbol_id, symbol("remote winner")),
         ))
-        .expect("remote symbol command")
-        .applied()
+        .applied_revision()
         .expect("remote symbol edit applies");
     draw(cx);
 
@@ -444,8 +442,7 @@ fn stale_blackboard_draft_requires_an_explicit_reapply_before_overwriting_remote
 
     runtime
         .execute(GraphCommand::undo(reapplied.version()))
-        .expect("undo explicit reapply")
-        .applied()
+        .applied_revision()
         .expect("undo applies");
     assert_eq!(
         runtime
@@ -496,8 +493,7 @@ fn unrelated_graph_revision_advances_blackboard_draft_without_a_false_conflict(
             jellyflow_runtime::commands::SymbolEdit::new()
                 .update(unrelated, symbol("changed elsewhere")),
         ))
-        .expect("unrelated symbol command")
-        .applied()
+        .applied_revision()
         .expect("unrelated symbol edit applies");
     draw(cx);
 
@@ -553,8 +549,7 @@ fn accepting_remote_blackboard_value_clears_conflict_without_writing_the_graph(
             remote_version,
             jellyflow_runtime::commands::SymbolEdit::new().update(symbol_id, symbol("remote")),
         ))
-        .expect("remote symbol command")
-        .applied()
+        .applied_revision()
         .expect("remote symbol edit applies");
     draw(cx);
 
@@ -676,8 +671,7 @@ fn coalesced_remove_and_readd_does_not_restore_the_removed_symbol_draft(
             removal_version,
             jellyflow_runtime::commands::SymbolEdit::new().remove(reincarnated),
         ))
-        .expect("remove edited symbol")
-        .applied()
+        .applied_revision()
         .expect("edited symbol removal applies");
 
     let recreation_version = runtime.snapshot().expect("recreation snapshot").version();
@@ -686,8 +680,7 @@ fn coalesced_remove_and_readd_does_not_restore_the_removed_symbol_draft(
             recreation_version,
             jellyflow_runtime::commands::SymbolEdit::new().add(reincarnated, symbol("fresh")),
         ))
-        .expect("recreate symbol identity")
-        .applied()
+        .applied_revision()
         .expect("symbol recreation applies");
     draw(cx);
 
@@ -826,10 +819,8 @@ impl BlackboardSource for ControlledBlackboardSource {
     fn execute(
         &self,
         command: GraphCommand,
-    ) -> Result<jellyflow_runtime::commands::GraphCommandOutcome, BlackboardCommandError> {
-        self.runtime
-            .execute(command)
-            .map_err(|error| BlackboardCommandError::new(error.to_string()))
+    ) -> Result<CommandExecutionCompletion, BlackboardCommandError> {
+        Ok(self.runtime.execute(command))
     }
 }
 
@@ -917,10 +908,8 @@ impl BlackboardSource for FaultInjectingBlackboardSource {
     fn execute(
         &self,
         command: GraphCommand,
-    ) -> Result<jellyflow_runtime::commands::GraphCommandOutcome, BlackboardCommandError> {
-        self.runtime
-            .execute(command)
-            .map_err(|error| BlackboardCommandError::new(error.to_string()))
+    ) -> Result<CommandExecutionCompletion, BlackboardCommandError> {
+        Ok(self.runtime.execute(command))
     }
 }
 
@@ -980,12 +969,10 @@ impl BlackboardSource for UncertainCommitBlackboardSource {
     fn execute(
         &self,
         command: GraphCommand,
-    ) -> Result<jellyflow_runtime::commands::GraphCommandOutcome, BlackboardCommandError> {
+    ) -> Result<CommandExecutionCompletion, BlackboardCommandError> {
         self.execute_calls
             .set(self.execute_calls.get().saturating_add(1));
-        self.runtime
-            .execute(command)
-            .map_err(|error| BlackboardCommandError::new(error.to_string()))?;
+        let _completion = self.runtime.execute(command);
         Err(BlackboardCommandError::new(
             "transport failed after dispatch",
         ))

@@ -18,13 +18,16 @@ use jellyflow_runtime::commands::{
     GraphCommand, IncidentEdgePolicy, NodeGeometryEdit, TopologyEdit,
 };
 use jellyflow_runtime::geometry::{HandlePosition, ViewPoint, ViewRect, ViewSize};
-use jellyflow_runtime::graph::{EdgeEndpoint, GraphRuntime};
+use jellyflow_runtime::graph::{
+    EdgeEndpoint, GraphRuntime, GraphRuntimeMiddleware, GraphRuntimeMiddlewareSnapshot,
+};
 use jellyflow_runtime::interaction::{
     CanvasInteractionConfig, CanvasInteractionEffect, CanvasInteractionPhase,
     CanvasInteractionPresentation, CanvasInteractionSession, CanvasInteractionUpdate,
-    CanvasPressTarget, CommandSettlement, ConnectionGestureBinding, InteractionGraphSubmission,
-    InteractionOwner, InteractionTerminalReason, SelectionMode,
+    CanvasPressTarget, ConnectionGestureBinding, InteractionGraphSubmission, InteractionOwner,
+    InteractionTerminalReason, SelectionMode,
 };
+use jellyflow_runtime::profile::ApplyPipelineError;
 use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec, NodePortSpec};
 use jellyflow_runtime::view::{
     FrameRequest, GeometrySnapshot, RendererStamp, ViewCloseReason, ViewSession, ViewSessionOptions,
@@ -36,6 +39,21 @@ const CREATED_NODE_KIND: &str = "external.created-target";
 const CREATED_PORT_KEY: &str = "input";
 
 fn main() {}
+
+struct RejectConformanceCommand;
+
+impl GraphRuntimeMiddleware for RejectConformanceCommand {
+    fn before_command(
+        &mut self,
+        _snapshot: GraphRuntimeMiddlewareSnapshot,
+        _command: &GraphCommand,
+    ) -> Result<(), ApplyPipelineError> {
+        Err(ApplyPipelineError::Rejected {
+            message: "external conformance command rejected".to_owned(),
+            diagnostics: Vec::new(),
+        })
+    }
+}
 
 #[derive(Clone, Copy)]
 struct FixtureIds {
@@ -504,27 +522,56 @@ impl RuntimeInteractionBridge {
         &mut self,
         settlement: ConformanceSettlement,
         view: &ViewSession,
+        runtime: &GraphRuntime,
+        excluded_revision_delta: &mut u64,
     ) -> ConformanceEffect {
         let submission = self
             .submission
             .take()
             .expect("one graph submission is pending");
         let ticket = submission.ticket();
-        if settlement == ConformanceSettlement::Applied {
-            let command = self
-                .session
-                .bind_submission(submission)
-                .expect("external mutation remains fresh")
-                .expect("external mutation is not a no-op");
-            view.execute(command)
-                .expect("external transport executes")
-                .applied()
-                .expect("external applied settlement mutates the graph");
-        }
-        let update = self
-            .session
-            .settle(ticket, command_settlement(settlement))
-            .expect("external command receipt settles");
+        let update = match settlement {
+            ConformanceSettlement::Noop => {
+                panic!("canonical mutation scenarios do not synthesize no-command settlements")
+            }
+            ConformanceSettlement::TransportFailure => {
+                drop(submission);
+                self.session
+                    .submission_not_dispatched(ticket)
+                    .expect("external undispatched submission settles")
+            }
+            ConformanceSettlement::Applied
+            | ConformanceSettlement::Rejected
+            | ConformanceSettlement::Conflict => {
+                let command = self
+                    .session
+                    .bind_submission(submission)
+                    .expect("external mutation remains fresh")
+                    .expect("external mutation is not a no-op");
+                if settlement == ConformanceSettlement::Conflict {
+                    let snapshot = runtime
+                        .snapshot()
+                        .expect("external conflict snapshot remains available");
+                    runtime
+                        .execute(GraphCommand::set_node_geometry(
+                            snapshot.version(),
+                            [NodeGeometryEdit::new(FixtureIds::new().invalid_node)
+                                .with_position(CanvasPoint { x: 241.0, y: 96.0 })],
+                        ))
+                        .into_result()
+                        .expect("external conflict prefix executes")
+                        .applied()
+                        .expect("external conflict prefix mutates the graph");
+                    *excluded_revision_delta = excluded_revision_delta.saturating_add(1);
+                }
+                let completion = view
+                    .execute(command)
+                    .expect("external command transport remains available");
+                self.session
+                    .complete_submission(ticket, completion)
+                    .expect("external command completion settles")
+            }
+        };
         let effect = self.process_update(update);
         if effect != ConformanceEffect::None {
             return effect;
@@ -652,6 +699,18 @@ impl MinimalNativeHost {
         let runtime = GraphRuntime::builder(fixture_catalog())
             .build(fixture_graph(ids, anchors))
             .expect("external conformance runtime starts");
+        let runtime = match scenario_settlement(scenario) {
+            Some(ConformanceSettlement::Rejected) => {
+                runtime.with_middleware(RejectConformanceCommand)
+            }
+            Some(
+                ConformanceSettlement::Applied
+                | ConformanceSettlement::Noop
+                | ConformanceSettlement::Conflict
+                | ConformanceSettlement::TransportFailure,
+            )
+            | None => runtime,
+        };
         let baseline_revision = runtime
             .snapshot()
             .expect("external baseline snapshot")
@@ -746,7 +805,12 @@ impl MinimalNativeHost {
             RawNativeEvent::Advance => ConformanceEffect::None,
             RawNativeEvent::CommandSettled(settlement) => {
                 assert!(!self.prefix_held, "settlement cannot bypass its prefix");
-                self.bridge.settle(settlement, &self.view)
+                self.bridge.settle(
+                    settlement,
+                    &self.view,
+                    &self.runtime,
+                    &mut self.excluded_revision_delta,
+                )
             }
             RawNativeEvent::CaptureLost => {
                 self.surface.lose_capture();
@@ -799,6 +863,7 @@ impl MinimalNativeHost {
                     }),
                 ],
             ))
+            .into_result()
             .expect("external prefix command executes")
             .applied()
             .expect("external prefix mutates the graph");
@@ -820,6 +885,7 @@ impl MinimalNativeHost {
                 snapshot.version(),
                 TopologyEdit::new().remove_node(self.ids.source_node, IncidentEdgePolicy::Reject),
             ))
+            .into_result()
             .expect("external source retirement executes")
             .applied()
             .expect("external source retirement applies");
@@ -1152,7 +1218,9 @@ fn normalized_terminal(reason: InteractionTerminalReason) -> ConformanceTerminal
         InteractionTerminalReason::Cancelled => ConformanceTerminal::Cancelled,
         InteractionTerminalReason::OwnerRetired => ConformanceTerminal::OwnerRetired,
         InteractionTerminalReason::ViewClosed => ConformanceTerminal::HostClosed,
-        InteractionTerminalReason::BudgetExhausted
+        InteractionTerminalReason::ExecutionFailed
+        | InteractionTerminalReason::Uncertain
+        | InteractionTerminalReason::BudgetExhausted
         | InteractionTerminalReason::GeometryIndeterminate
         | InteractionTerminalReason::IdentityExhausted => {
             panic!("unexpected external terminal reason: {reason:?}")
@@ -1170,13 +1238,27 @@ fn normalized_intent(binding: ConnectionGestureBinding) -> ConformanceIntent {
     }
 }
 
-fn command_settlement(settlement: ConformanceSettlement) -> CommandSettlement {
-    match settlement {
-        ConformanceSettlement::Applied => CommandSettlement::Applied,
-        ConformanceSettlement::Noop => CommandSettlement::Noop,
-        ConformanceSettlement::Rejected => CommandSettlement::Rejected,
-        ConformanceSettlement::Conflict => CommandSettlement::Conflict,
-        ConformanceSettlement::TransportFailure => CommandSettlement::TransportFailure,
+fn scenario_settlement(scenario: ConformanceScenarioId) -> Option<ConformanceSettlement> {
+    match scenario {
+        ConformanceScenarioId::NewConnection(settlement)
+        | ConformanceScenarioId::ReconnectSource(settlement)
+        | ConformanceScenarioId::ReconnectTarget(settlement)
+        | ConformanceScenarioId::CreateFromWire(settlement)
+        | ConformanceScenarioId::NodeDrag(settlement) => Some(settlement),
+        ConformanceScenarioId::NewConnectionPrefixWait
+        | ConformanceScenarioId::ReconnectSourcePrefixWait
+        | ConformanceScenarioId::ReconnectTargetPrefixWait
+        | ConformanceScenarioId::CreateFromWirePrefixWait
+        | ConformanceScenarioId::NodeDragPrefixWait
+        | ConformanceScenarioId::NodePressBelowThreshold
+        | ConformanceScenarioId::NativeControl
+        | ConformanceScenarioId::EdgePick
+        | ConformanceScenarioId::CaptureLost
+        | ConformanceScenarioId::OwnerReplaced
+        | ConformanceScenarioId::Escape
+        | ConformanceScenarioId::OutsideClick
+        | ConformanceScenarioId::SourceRetired
+        | ConformanceScenarioId::HostClosed => None,
     }
 }
 

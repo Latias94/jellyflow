@@ -9,7 +9,7 @@ use jellyflow_egui::{
 };
 use jellyflow_runtime::graph::GraphRuntime;
 use jellyflow_runtime::interaction::{
-    CanvasInteractionConfig, CanvasInteractionEffect, CanvasPressTarget, CommandSettlement,
+    CanvasInteractionConfig, CanvasInteractionEffect, CanvasPressTarget,
     InteractionGraphSubmission, InteractionGraphSubmissionBindError, InteractionTicketId,
 };
 use jellyflow_runtime::view::ViewSessionOptions;
@@ -32,15 +32,11 @@ fn delete_and_backspace_submit_one_atomic_mixed_selection_command() {
             .expect("selection intent binds to its fresh revision")
             .expect("mixed selection emits one topology command");
         assert_eq!(command.label(), Some("Delete selection"));
-        state
-            .runtime
-            .execute(command)
-            .expect("selection command executes")
-            .applied()
-            .expect("selection command applies atomically");
+        let completion = state.runtime.execute(command);
+        assert!(completion.applied_revision().is_some());
         let SelectionDeleteState { interaction, .. } = state;
         interaction
-            .settle(&ctx, ticket, CommandSettlement::Applied)
+            .complete_submission(&ctx, ticket, completion)
             .expect("adapter observes the command receipt");
 
         let state = harness.state();

@@ -6,7 +6,9 @@ use jellyflow_core::{
 };
 use jellyflow_open_gpui::host::OpenGpuiSceneHost;
 use jellyflow_open_gpui::registry::OpenGpuiNodeRegistry;
-use jellyflow_runtime::commands::{GraphCommand, IncidentEdgePolicy, TopologyEdit, TopologyPort};
+use jellyflow_runtime::commands::{
+    CommandExecutionKind, GraphCommand, IncidentEdgePolicy, TopologyEdit, TopologyPort,
+};
 use jellyflow_runtime::graph::{GraphRuntime, GraphRuntimeError};
 use jellyflow_runtime::io::GraphFile;
 use jellyflow_runtime::view::ViewSessionOptions;
@@ -699,8 +701,7 @@ fn native_condition_up_and_remove_buttons_preserve_atomic_topology_history(
 
     runtime
         .execute(GraphCommand::undo(after_up.version()))
-        .unwrap()
-        .applied()
+        .applied_revision()
         .expect("Up undo applies");
     draw(cx);
     let undone_up = runtime.snapshot().unwrap();
@@ -710,8 +711,7 @@ fn native_condition_up_and_remove_buttons_preserve_atomic_topology_history(
 
     runtime
         .execute(GraphCommand::redo(undone_up.version()))
-        .unwrap()
-        .applied()
+        .applied_revision()
         .expect("Up redo applies");
     draw(cx);
     let redone_up = runtime.snapshot().unwrap();
@@ -769,8 +769,7 @@ fn native_condition_up_and_remove_buttons_preserve_atomic_topology_history(
 
     runtime
         .execute(GraphCommand::undo(after_remove.version()))
-        .unwrap()
-        .applied()
+        .applied_revision()
         .expect("Remove undo applies");
     draw(cx);
     let undone_remove = runtime.snapshot().unwrap();
@@ -788,8 +787,7 @@ fn native_condition_up_and_remove_buttons_preserve_atomic_topology_history(
 
     runtime
         .execute(GraphCommand::redo(undone_remove.version()))
-        .unwrap()
-        .applied()
+        .applied_revision()
         .expect("Remove redo applies");
     draw(cx);
     assert_eq!(
@@ -996,7 +994,7 @@ fn stale_condition_add_waits_for_refresh_and_explicit_retry_without_render_resub
             remote_view
                 .execute(remote_add)
                 .unwrap()
-                .applied()
+                .applied_revision()
                 .expect("remote add applies before the queued native command");
         })
     });
@@ -1250,8 +1248,7 @@ fn model_overlay_lease_protects_culling_and_releases_on_every_close_path(
             version,
             TopologyEdit::new().remove_node(llm, IncidentEdgePolicy::Cascade),
         ))
-        .unwrap()
-        .applied()
+        .applied_revision()
         .expect("LLM retirement applies");
     draw(cx);
 
@@ -1468,7 +1465,10 @@ fn condition_topology_transaction_rolls_back_data_when_port_replacement_is_rejec
             ),
     );
 
-    assert!(runtime.execute(invalid).unwrap().rejection().is_some());
+    assert_eq!(
+        runtime.execute(invalid).kind(),
+        CommandExecutionKind::Rejected
+    );
     let after = runtime.snapshot().unwrap();
     assert_eq!(after.revision(), before.revision());
     assert_eq!(frozen_graph_value(after.graph()), before_graph);
@@ -1499,8 +1499,7 @@ fn condition_case_actions_are_atomic_stable_and_exactly_undoable() {
     .unwrap();
     runtime
         .execute(add)
-        .unwrap()
-        .applied()
+        .applied_revision()
         .expect("add applies");
     assert_eq!(runtime.snapshot().unwrap().revision(), 1);
     assert_eq!(runtime.history_state().unwrap().undo_len(), 1);
@@ -1536,8 +1535,7 @@ fn condition_case_actions_are_atomic_stable_and_exactly_undoable() {
     .unwrap();
     runtime
         .execute(reorder)
-        .unwrap()
-        .applied()
+        .applied_revision()
         .expect("reorder applies");
     assert_eq!(runtime.snapshot().unwrap().revision(), 2);
     assert_eq!(runtime.history_state().unwrap().undo_len(), 2);
@@ -1559,8 +1557,7 @@ fn condition_case_actions_are_atomic_stable_and_exactly_undoable() {
     .unwrap();
     runtime
         .execute(remove)
-        .unwrap()
-        .applied()
+        .applied_revision()
         .expect("connected branch removal cascades");
     let after_remove = runtime.snapshot().unwrap();
     let after_remove_graph = frozen_graph_value(after_remove.graph());
@@ -1591,8 +1588,7 @@ fn condition_case_actions_are_atomic_stable_and_exactly_undoable() {
 
     runtime
         .execute(GraphCommand::undo(after_remove.version()))
-        .unwrap()
-        .applied()
+        .applied_revision()
         .expect("remove undo applies");
     assert_eq!(
         frozen_graph_value(runtime.snapshot().unwrap().graph()),
@@ -1603,8 +1599,7 @@ fn condition_case_actions_are_atomic_stable_and_exactly_undoable() {
     let undo_version = runtime.snapshot().unwrap().version();
     runtime
         .execute(GraphCommand::redo(undo_version))
-        .unwrap()
-        .applied()
+        .applied_revision()
         .expect("remove redo applies");
     assert_eq!(
         frozen_graph_value(runtime.snapshot().unwrap().graph()),
@@ -1650,18 +1645,19 @@ fn stale_view_replans_case_intent_without_overwriting_remote_addition() {
     view_b
         .execute(remote_add)
         .unwrap()
-        .applied()
+        .applied_revision()
         .expect("remote add applies");
 
     let stale = view_a.execute(stale_reorder).unwrap();
-    let conflict = stale.conflict().expect("old view conflicts structurally");
-    assert_eq!(conflict.expected_revision(), 0);
-    assert_eq!(conflict.current().revision(), 1);
-    assert!(conflict.footprint().nodes.contains(&condition));
+    assert_eq!(stale.kind(), CommandExecutionKind::Conflict);
+    assert_eq!(stale.observed_revision(), Some(1));
     assert_eq!(runtime.history_state().unwrap().undo_len(), 1);
+    let current = view_a
+        .graph_snapshot()
+        .expect("conflicting view refreshes to the current graph");
 
     let recovered = plan_condition_case_action(
-        conflict.current(),
+        &current,
         condition,
         reorder_intent,
         IncidentEdgePolicy::Reject,
@@ -1670,7 +1666,7 @@ fn stale_view_replans_case_intent_without_overwriting_remote_addition() {
     view_a
         .execute(recovered)
         .unwrap()
-        .applied()
+        .applied_revision()
         .expect("replanned intent applies");
     let final_snapshot = view_a.graph_snapshot().unwrap();
     let final_branches = condition_cases(&final_snapshot, condition).unwrap();
@@ -1973,7 +1969,7 @@ fn apply_remote_prompt(view: &jellyflow_runtime::view::ViewSession, value: &str)
     data["prompt"] = value.into();
     view.execute(GraphCommand::set_node_data(snapshot.version(), llm, data))
         .unwrap()
-        .applied()
+        .applied_revision()
         .expect("remote prompt update applies");
 }
 
@@ -1984,7 +1980,7 @@ fn apply_remote_model(view: &jellyflow_runtime::view::ViewSession, value: &str) 
     data["model"] = value.into();
     view.execute(GraphCommand::set_node_data(snapshot.version(), llm, data))
         .unwrap()
-        .applied()
+        .applied_revision()
         .expect("remote model update applies");
 }
 

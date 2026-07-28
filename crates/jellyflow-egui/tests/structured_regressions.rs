@@ -146,10 +146,11 @@ fn assert_structured_native_evidence(state: &StructuredState) {
     let outcome = state.outcome.as_ref().expect("structured outcome");
     assert!(outcome.diagnostics().is_empty());
     assert_eq!(outcome.rendered_instances().len(), state.nodes.len());
-    assert_eq!(outcome.receipt().operations().len(), state.nodes.len());
-    assert!(outcome.receipt().operations().iter().all(|operation| {
+    let layout_receipts = outcome.receipt().layout_receipts().collect::<Vec<_>>();
+    assert_eq!(layout_receipts.len(), state.nodes.len());
+    assert!(layout_receipts.iter().all(|receipt| {
         matches!(
-            operation.layout_status(),
+            receipt.status(),
             Some(LayoutNodeStatus::Published | LayoutNodeStatus::Unchanged),
         )
     }));

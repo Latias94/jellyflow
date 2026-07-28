@@ -1333,10 +1333,12 @@ mod tests {
             receipt,
             command,
         } = pending_prompt_submission("before", "local");
-        let outcome = runtime.execute(command).expect("apply prompt command");
-        let committed_version = outcome.version();
+        let completion = runtime.execute(command);
+        let committed_version = completion
+            .version()
+            .expect("applied prompt completion carries a version");
         assert!(matches!(
-            field.settle_command(receipt, outcome),
+            field.settle_command(receipt, completion),
             Ok(
                 jellyflow_open_gpui::retained_field::RetainedFieldSettlement::AwaitingSnapshot { .. }
             )
@@ -1360,13 +1362,18 @@ mod tests {
             receipt,
             command,
         } = pending_prompt_submission("before", "local");
-        let outcome = runtime.execute(command).expect("apply prompt command");
+        let completion = runtime.execute(command);
         assert!(matches!(
-            field.observe(outcome.version(), String::from("local")),
+            field.observe(
+                completion
+                    .version()
+                    .expect("applied prompt completion carries a version"),
+                String::from("local")
+            ),
             Ok(RetainedFieldUpdate::SnapshotFirst { .. })
         ));
         assert!(matches!(
-            field.settle_command(receipt, outcome),
+            field.settle_command(receipt, completion),
             Ok(jellyflow_open_gpui::retained_field::RetainedFieldSettlement::Acknowledged { .. })
         ));
         assert_eq!(field.phase(), RetainedFieldPhase::Clean);
@@ -1678,8 +1685,8 @@ mod tests {
     fn advance_prompt(runtime: &GraphRuntime, value: &str) -> GraphVersion {
         runtime
             .execute(prompt_command(runtime, value))
-            .expect("apply workflow prompt command")
             .version()
+            .expect("applied workflow prompt completion carries a version")
     }
 
     #[open_gpui::test]
@@ -1947,7 +1954,7 @@ mod tests {
             data,
         ))
         .expect("execute remote saturated workflow field update")
-        .applied()
+        .applied_revision()
         .expect("remote saturated workflow field update applies");
     }
 

@@ -6,10 +6,11 @@ use std::rc::{Rc, Weak};
 use std::task::{Context, Poll, Waker};
 
 use jellyflow_runtime::{
-    commands::GraphCommand, commands::GraphCommandOutcome, graph::GraphRuntimeError,
+    commands::CommandCompletionCorrelationError, commands::CommandExecutionCompletion,
+    commands::CommandExecutionCompletions, commands::GraphCommand, commands::GraphCommandIdentity,
     view::FeedbackCollector, view::FeedbackCollectorError, view::FeedbackReceipt,
     view::FeedbackSubmissionError, view::NodeInstanceKey, view::ViewCloseReason,
-    view::ViewCloseReceipt, view::ViewSessionError,
+    view::ViewSessionError,
 };
 use open_gpui::{App, EntityId};
 
@@ -58,15 +59,19 @@ pub enum OpenGpuiCommandTicketError {
     FeedbackOutcomeUnknown,
     #[error("native command session failed")]
     Session(#[from] ViewSessionError),
-    #[error("native close command failed")]
-    Runtime(#[from] GraphRuntimeError),
-    #[error("native command receipt is missing at operation index {operation_index}")]
-    MissingReceipt { operation_index: usize },
-    #[error("feedback operation {operation_index} is not a command receipt")]
-    WrongReceiptKind { operation_index: usize },
 }
 
-pub type OpenGpuiCommandTicketResult = Result<GraphCommandOutcome, OpenGpuiCommandTicketError>;
+impl OpenGpuiCommandTicketError {
+    pub(crate) fn outcome_unknown(&self) -> bool {
+        matches!(
+            self,
+            Self::ClosePanicked { .. } | Self::FeedbackOutcomeUnknown
+        )
+    }
+}
+
+pub type OpenGpuiCommandTicketResult =
+    Result<CommandExecutionCompletion, OpenGpuiCommandTicketError>;
 
 /// Terminal reason why a captured command prefix cannot be followed by another mutation.
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
@@ -1001,23 +1006,36 @@ impl OpenGpuiCommandJournal {
     pub(crate) fn complete_submitted(
         &self,
         batch: &OpenGpuiCommandBatch,
-        receipt: FeedbackReceipt,
+        mut receipt: FeedbackReceipt,
     ) -> Result<Vec<OpenGpuiCompletedCommand>, OpenGpuiCommandBatchStateError> {
+        let expected = self.batch_command_identities(batch.id, InFlightPhase::Submitted)?;
+        let completions = receipt.take_exact_command_completions(&expected)?;
         let entries = self.take_batch(batch.id, Some(InFlightPhase::Submitted))?;
-        let mut operations = receipt.into_operations().into_iter();
         Ok(entries
             .into_iter()
-            .enumerate()
-            .map(|(operation_index, entry)| {
-                let result = match operations.next() {
-                    Some(operation) => operation.into_command_outcome().map_or_else(
-                        || Err(OpenGpuiCommandTicketError::WrongReceiptKind { operation_index }),
-                        |outcome| outcome.map_err(OpenGpuiCommandTicketError::Session),
-                    ),
-                    None => Err(OpenGpuiCommandTicketError::MissingReceipt { operation_index }),
-                };
-                OpenGpuiCompletedCommand::new(entry, result)
-            })
+            .zip(completions)
+            .map(|(entry, completion)| OpenGpuiCompletedCommand::new(entry, Ok(completion)))
+            .collect())
+    }
+
+    fn batch_command_identities(
+        &self,
+        batch_id: u64,
+        phase: InFlightPhase,
+    ) -> Result<Vec<GraphCommandIdentity>, OpenGpuiCommandBatchStateError> {
+        let state = self
+            .state
+            .try_borrow()
+            .map_err(|_| OpenGpuiCommandBatchStateError::Busy)?;
+        let batch = state
+            .in_flight
+            .as_ref()
+            .filter(|batch| batch.id == batch_id && batch.phase == phase)
+            .ok_or(OpenGpuiCommandBatchStateError::UnknownBatch)?;
+        Ok(batch
+            .entries
+            .iter()
+            .map(|entry| entry.command.identity().clone())
             .collect())
     }
 
@@ -1140,9 +1158,21 @@ impl OpenGpuiCommandJournal {
         &self,
         drain: OpenGpuiCommandCloseDrain,
         reason: ViewCloseReason,
-        receipts: Vec<ViewCloseReceipt>,
+        completions: Vec<CommandExecutionCompletion>,
     ) -> Result<Vec<OpenGpuiCompletedCommand>, OpenGpuiCommandCloseError> {
         self.drain_deferred_abandonments();
+        {
+            let state = self
+                .state
+                .try_borrow()
+                .map_err(|_| OpenGpuiCommandCloseError::Busy)?;
+            if state.status != JournalStatus::Closing {
+                return Err(OpenGpuiCommandCloseError::InvalidState);
+            }
+        }
+        let identities = drain.command_identities();
+        let mut completions = CommandExecutionCompletions::try_from_ordered(completions)?;
+        let completions = completions.take_exact(&identities)?;
         let (entries, barriers) = {
             let mut state = self
                 .state
@@ -1159,21 +1189,10 @@ impl OpenGpuiCommandJournal {
             barriers,
             Err(OpenGpuiCommandPrefixBarrierError::HostClosed { reason }),
         );
-        let mut receipts = receipts.into_iter();
         let completed = entries
             .into_iter()
-            .enumerate()
-            .map(|(operation_index, entry)| {
-                let result = receipts.next().map_or_else(
-                    || Err(OpenGpuiCommandTicketError::MissingReceipt { operation_index }),
-                    |receipt| {
-                        receipt
-                            .into_command_result()
-                            .map_err(OpenGpuiCommandTicketError::Runtime)
-                    },
-                );
-                OpenGpuiCompletedCommand::new(entry, result)
-            })
+            .zip(completions)
+            .map(|(entry, completion)| OpenGpuiCompletedCommand::new(entry, Ok(completion)))
             .collect();
         Ok(completed)
     }
@@ -1411,6 +1430,8 @@ pub(crate) enum OpenGpuiCommandBatchStateError {
     UnknownBatch,
     #[error("native command batch was already submitted")]
     AlreadySubmitted,
+    #[error(transparent)]
+    Correlation(#[from] CommandCompletionCorrelationError),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -1427,6 +1448,8 @@ pub(crate) enum OpenGpuiCommandCloseError {
     BatchSubmitting,
     #[error("native command journal close state is invalid")]
     InvalidState,
+    #[error(transparent)]
+    Correlation(#[from] CommandCompletionCorrelationError),
 }
 
 pub(crate) struct OpenGpuiCommandCloseDrain {
@@ -1435,11 +1458,13 @@ pub(crate) struct OpenGpuiCommandCloseDrain {
 }
 
 impl OpenGpuiCommandCloseDrain {
-    pub(crate) fn len(&self) -> usize {
+    pub(crate) fn command_identities(&self) -> Vec<GraphCommandIdentity> {
         self.collected
-            .as_ref()
-            .map_or(0, |batch| batch.entries.len())
-            .saturating_add(self.queued.len())
+            .iter()
+            .flat_map(|batch| batch.entries.iter())
+            .chain(self.queued.iter())
+            .map(|entry| entry.command.identity().clone())
+            .collect()
     }
 
     pub(crate) fn combined_request(
@@ -1543,9 +1568,10 @@ mod tests {
     };
     use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec};
     use jellyflow_runtime::{
-        geometry::ViewPoint, geometry::ViewRect, geometry::ViewSize, graph::GraphRuntime,
-        graph::GraphVersion, view::AdapterFrame, view::FrameRequest, view::RendererStamp,
-        view::ViewCloseRequest, view::ViewSession, view::ViewSessionOptions,
+        commands::CommandExecutionKind, geometry::ViewPoint, geometry::ViewRect,
+        geometry::ViewSize, graph::GraphRuntime, graph::GraphVersion, view::AdapterFrame,
+        view::FrameRequest, view::RendererStamp, view::ViewCloseRequest, view::ViewSession,
+        view::ViewSessionOptions,
     };
 
     use super::*;
@@ -1669,7 +1695,7 @@ mod tests {
         assert!(
             ready_ticket(&mut retry_ticket)
                 .expect("retry ticket transport")
-                .applied()
+                .applied_revision()
                 .is_some()
         );
         assert_eq!(journal.capacity_usage(), (0, 0, 0));
@@ -1708,7 +1734,7 @@ mod tests {
         assert!(
             ready_ticket(&mut retry_ticket)
                 .expect("retry ticket transport")
-                .applied()
+                .applied_revision()
                 .is_some()
         );
         assert_eq!(journal.capacity_usage(), (0, 0, 0));
@@ -1754,7 +1780,7 @@ mod tests {
     }
 
     #[test]
-    fn submitted_receipts_resolve_each_ticket_by_exact_operation_index() {
+    fn submitted_receipts_resolve_each_ticket_by_exact_command_identity() {
         let (_runtime, view) = runtime_and_view();
         let journal = OpenGpuiCommandJournal::new();
         let mut applied_ticket = journal
@@ -1778,9 +1804,9 @@ mod tests {
         resolve_completed(completed);
 
         let applied = ready_ticket(&mut applied_ticket).expect("first ticket transport");
-        assert!(applied.applied().is_some());
+        assert!(applied.applied_revision().is_some());
         let conflict = ready_ticket(&mut conflict_ticket).expect("second ticket transport");
-        assert!(conflict.conflict().is_some());
+        assert_eq!(conflict.kind(), CommandExecutionKind::Conflict);
     }
 
     #[test]
@@ -1807,14 +1833,14 @@ mod tests {
         assert!(
             ready_ticket(&mut ticket)
                 .expect("dropped resolution preserves the command result")
-                .applied()
+                .applied_revision()
                 .is_some()
         );
         assert!(matches!(poll_ticket(&mut ticket), Poll::Pending));
     }
 
     #[test]
-    fn wrong_receipt_kind_fails_only_the_ticket_at_that_operation_index() {
+    fn interleaved_layout_does_not_shift_command_completion_identity() {
         let (_runtime, view) = runtime_and_view();
         let frame = command_frame(&view);
         let journal = OpenGpuiCommandJournal::new();
@@ -1841,7 +1867,7 @@ mod tests {
                     .finish()
                     .expect("build valid layout prefix"),
             )
-            .expect("inject a different valid receipt kind");
+            .expect("interleave a valid layout before the commands");
         let batch = journal
             .collect_next_batch(&collector)
             .expect("collect commands")
@@ -1852,18 +1878,20 @@ mod tests {
             .expect("submit feedback");
         let completed = journal
             .complete_submitted(&batch, receipt)
-            .expect("complete malformed receipt sequence");
+            .expect("complete keyed command receipts");
         resolve_completed(completed);
 
-        assert!(matches!(
-            ready_ticket(&mut first_ticket),
-            Err(OpenGpuiCommandTicketError::WrongReceiptKind { operation_index: 0 })
-        ));
         assert!(
-            ready_ticket(&mut second_ticket)
-                .expect("unaffected ticket transport")
-                .applied()
+            ready_ticket(&mut first_ticket)
+                .expect("first ticket transport")
+                .applied_revision()
                 .is_some()
+        );
+        assert_eq!(
+            ready_ticket(&mut second_ticket)
+                .expect("second ticket transport")
+                .kind(),
+            CommandExecutionKind::Conflict
         );
     }
 
@@ -1900,7 +1928,7 @@ mod tests {
         assert!(
             ready_ticket(&mut suffix)
                 .expect("suffix transport")
-                .applied()
+                .applied_revision()
                 .is_some()
         );
         assert!(!journal.has_pending());
@@ -1925,7 +1953,7 @@ mod tests {
         assert!(
             ready_ticket(&mut suffix)
                 .expect("suffix transport")
-                .applied()
+                .applied_revision()
                 .is_some()
         );
         assert!(!journal.has_pending());
@@ -2009,11 +2037,11 @@ mod tests {
             .expect("fill reserved prefix slot");
 
         resolve_completed(submit_next_batch(&journal, &view));
-        assert!(
+        assert_eq!(
             ready_ticket(&mut suffix_ticket)
                 .expect("suffix command transport")
-                .conflict()
-                .is_some()
+                .kind(),
+            CommandExecutionKind::Conflict
         );
         assert_eq!(
             view.graph_snapshot()
@@ -2073,17 +2101,17 @@ mod tests {
         assert!(
             ready_ticket(&mut first_ticket)
                 .expect("first prefix transport")
-                .applied()
+                .applied_revision()
                 .is_some()
         );
         assert!(matches!(poll_prefix_barrier(&mut barrier), Poll::Pending));
 
         resolve_completed(submit_next_batch(&journal, &view));
-        assert!(
+        assert_eq!(
             ready_ticket(&mut second_ticket)
                 .expect("second prefix transport")
-                .conflict()
-                .is_some()
+                .kind(),
+            CommandExecutionKind::Conflict
         );
         let permit = ready_prefix_permit(&mut barrier);
         assert!(matches!(poll_ticket(&mut suffix_ticket), Poll::Pending));
@@ -2095,14 +2123,14 @@ mod tests {
         assert!(
             ready_ticket(&mut priority_ticket)
                 .expect("priority transport")
-                .applied()
+                .applied_revision()
                 .is_some()
         );
-        assert!(
+        assert_eq!(
             ready_ticket(&mut suffix_ticket)
                 .expect("suffix transport")
-                .conflict()
-                .is_some()
+                .kind(),
+            CommandExecutionKind::Conflict
         );
     }
 
@@ -2149,11 +2177,11 @@ mod tests {
             .enqueue_detached(command(&view, 2), OpenGpuiCommandOrigin::Binding)
             .expect("fill first reservation");
         resolve_completed(submit_next_batch(&journal, &view));
-        assert!(
+        assert_eq!(
             ready_ticket(&mut suffix_ticket)
                 .expect("first suffix transport")
-                .conflict()
-                .is_some()
+                .kind(),
+            CommandExecutionKind::Conflict
         );
         let second_permit = ready_prefix_permit(&mut second_barrier);
         assert!(matches!(poll_ticket(&mut final_ticket), Poll::Pending));
@@ -2166,11 +2194,11 @@ mod tests {
 
         second_permit.abandon();
         resolve_completed(submit_next_batch(&journal, &view));
-        assert!(
+        assert_eq!(
             ready_ticket(&mut final_ticket)
                 .expect("final suffix transport")
-                .conflict()
-                .is_some()
+                .kind(),
+            CommandExecutionKind::Conflict
         );
         assert!(!journal.has_pending());
     }
@@ -2199,7 +2227,7 @@ mod tests {
         assert!(
             ready_ticket(&mut suffix_ticket)
                 .expect("suffix transport")
-                .applied()
+                .applied_revision()
                 .is_some()
         );
         assert!(!journal.has_pending());
@@ -2326,8 +2354,8 @@ mod tests {
             .expect("stale follow-up command");
         resolve_completed(submit_next_batch(&journal, &view));
 
-        let outcome = ready_ticket(&mut stale_ticket).expect("stale command transport");
-        assert!(outcome.conflict().is_some());
+        let completion = ready_ticket(&mut stale_ticket).expect("stale command transport");
+        assert_eq!(completion.kind(), CommandExecutionKind::Conflict);
         assert!(!journal.has_pending());
         let snapshot = runtime.snapshot().expect("snapshot after conflict");
         assert_eq!(snapshot.revision(), 1);
@@ -2365,14 +2393,16 @@ mod tests {
 
         resolve_completed(submit_next_batch(&journal, &view));
 
-        assert!(matches!(
-            ready_ticket(&mut rejected_ticket).expect("rejected command transport"),
-            GraphCommandOutcome::Rejected(_)
-        ));
+        assert_eq!(
+            ready_ticket(&mut rejected_ticket)
+                .expect("rejected command transport")
+                .kind(),
+            CommandExecutionKind::Rejected
+        );
         assert!(
             ready_ticket(&mut suffix_ticket)
                 .expect("suffix transport")
-                .applied()
+                .applied_revision()
                 .is_some()
         );
         assert!(!journal.has_pending());
@@ -2395,40 +2425,41 @@ mod tests {
             .enqueue(command_at(close_version, 2), OpenGpuiCommandOrigin::Binding)
             .expect("queued ticket");
         let drain = journal.begin_close().expect("begin close drain");
-        let journal_count = drain.len();
-        assert_eq!(journal_count, 2);
-        let request = drain
-            .combined_request(&ViewCloseRequest::new().with_command(command_at(close_version, 3)));
-        let outcome = view.close_with_request(request).expect("close view");
+        let journal_identities = drain.command_identities();
+        assert_eq!(journal_identities.len(), 2);
+        let caller_command = command_at(close_version, 3);
+        let caller_identity = caller_command.identity().clone();
+        let request = drain.combined_request(&ViewCloseRequest::new().with_command(caller_command));
+        let mut outcome = view.close_with_request(request).expect("close view");
         let reason = outcome.reason();
-        let (journal_receipts, caller_outcome) = outcome.split_receipt_prefix(journal_count);
+        let mut journal_completions = outcome
+            .take_command_completions(&journal_identities)
+            .expect("take journal completions by identity");
+        journal_completions.reverse();
         let completed = journal
-            .finish_close(drain, reason, journal_receipts)
+            .finish_close(drain, reason, journal_completions)
             .expect("finish journal close");
         resolve_completed(completed);
 
         assert_eq!(
             ready_ticket(&mut collected_ticket)
                 .expect("collected command transport")
-                .applied()
-                .expect("collected command applied")
-                .revision(),
+                .applied_revision()
+                .expect("collected command applied"),
             1
         );
-        assert!(
+        assert_eq!(
             ready_ticket(&mut queued_ticket)
                 .expect("queued command transport")
-                .conflict()
-                .is_some()
+                .kind(),
+            CommandExecutionKind::Conflict
         );
-        let (_, caller_receipts) = caller_outcome.into_parts();
-        assert_eq!(caller_receipts.len(), 1);
+        let caller_completion = outcome
+            .take_command_completion(&caller_identity)
+            .expect("take caller completion by identity");
         assert!(
-            caller_receipts
-                .into_iter()
-                .next()
-                .expect("caller receipt")
-                .into_command_result()
+            caller_completion
+                .into_result()
                 .expect("caller command transport")
                 .conflict()
                 .is_some()

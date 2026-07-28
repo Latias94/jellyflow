@@ -81,18 +81,6 @@ impl GraphRuntimeMiddleware for RejectCanonicalCommand {
     }
 }
 
-struct PanicCanonicalCommand;
-
-impl GraphRuntimeMiddleware for PanicCanonicalCommand {
-    fn before_command(
-        &mut self,
-        _snapshot: GraphRuntimeMiddlewareSnapshot,
-        _command: &GraphCommand,
-    ) -> Result<(), ApplyPipelineError> {
-        panic!("canonical command transport failure")
-    }
-}
-
 impl Render for CanonicalNode {
     fn render(
         &mut self,
@@ -198,9 +186,6 @@ impl CanonicalDriver {
         let runtime = match scenario_settlement(scenario.id) {
             Some(ConformanceSettlement::Rejected) => {
                 runtime.with_middleware(RejectCanonicalCommand)
-            }
-            Some(ConformanceSettlement::TransportFailure) => {
-                runtime.with_middleware(PanicCanonicalCommand)
             }
             _ => runtime,
         };
@@ -333,8 +318,10 @@ impl CanonicalDriver {
                 self.prepare_injected_receipt(cx);
             }
             ConformanceAction::Settle(settlement) => {
+                if settlement == ConformanceSettlement::TransportFailure {
+                    self.settle_not_dispatched(cx);
+                }
                 self.settle_retained_frames(cx);
-                let _ = settlement;
             }
             ConformanceAction::LoseCapture => self.lose_capture(cx),
             ConformanceAction::ReplaceOwner => self.replace_owner(cx),
@@ -569,10 +556,10 @@ impl CanonicalDriver {
         let Some(settlement) = scenario_settlement(self.id) else {
             return;
         };
-        if !matches!(
-            settlement,
-            ConformanceSettlement::Noop | ConformanceSettlement::Conflict
-        ) {
+        if settlement == ConformanceSettlement::Noop {
+            panic!("canonical mutation scenarios do not synthesize no-command settlements");
+        }
+        if settlement != ConformanceSettlement::Conflict {
             return;
         }
 
@@ -582,50 +569,58 @@ impl CanonicalDriver {
                 "a native release must reach the command prefix boundary"
             );
             let presentation = host.interaction_presentation();
-            let ticket = presentation
+            presentation
                 .connection()
                 .and_then(|connection| connection.ticket())
                 .or_else(|| presentation.node_drag().and_then(|drag| drag.ticket()))
-                .expect("pending canonical interaction ticket");
-            host.discard_pending_interaction_submission();
-            ticket
+                .expect("pending canonical interaction ticket")
         });
         let snapshot = self.runtime.snapshot().expect("receipt injection snapshot");
         let expected_version = snapshot.version();
         let command = match settlement {
-            ConformanceSettlement::Noop => GraphCommand::set_node_data(
-                expected_version,
-                source_node(),
-                snapshot
-                    .graph()
-                    .node(&source_node())
-                    .expect("canonical source")
-                    .data
-                    .clone(),
-            ),
             ConformanceSettlement::Conflict => {
+                let (bound_ticket, command) = cx.update_entity(&self.host, |host, _| {
+                    host.bind_pending_interaction_submission_for_execution()
+                        .expect("canonical conflict binds the real pending submission")
+                });
+                assert_eq!(bound_ticket, ticket);
                 self.runtime
                     .execute(GraphCommand::set_node_data(
                         expected_version,
                         invalid_node(),
                         serde_json::json!({ "external": "conflict" }),
                     ))
+                    .into_result()
                     .expect("external conflict command")
                     .applied()
                     .expect("external conflict setup applies");
                 self.excluded_revision_delta = self.excluded_revision_delta.saturating_add(1);
-                GraphCommand::set_node_data(
-                    expected_version,
-                    source_node(),
-                    serde_json::json!({ "stale": true }),
-                )
+                command.expect("canonical conflict mutation is not a no-op")
             }
-            _ => unreachable!("only injected settlements reach this branch"),
+            _ => unreachable!("only conflict reaches command injection"),
         };
         cx.update_entity(&self.host, |host, _| {
             host.commands
                 .enqueue_detached(command, OpenGpuiCommandOrigin::Interaction { ticket })
                 .expect("inject canonical command receipt");
+        });
+    }
+
+    fn settle_not_dispatched(&self, cx: &mut open_gpui::VisualTestContext) {
+        let ticket = cx.update_entity(&self.host, |host, _| {
+            assert!(
+                host.interaction_owner.test_has_pending_submission(),
+                "a native release must remain pending before an undispatched settlement"
+            );
+            let presentation = host.interaction_presentation();
+            presentation
+                .connection()
+                .and_then(|connection| connection.ticket())
+                .or_else(|| presentation.node_drag().and_then(|drag| drag.ticket()))
+                .expect("pending canonical interaction ticket")
+        });
+        cx.update_entity(&self.host, |host, _| {
+            host.interaction_submission_not_dispatched(ticket);
         });
     }
 
@@ -640,6 +635,7 @@ impl CanonicalDriver {
                 version,
                 TopologyEdit::new().remove_node(source_node(), IncidentEdgePolicy::Reject),
             ))
+            .into_result()
             .expect("retire canonical source")
             .applied()
             .expect("source retirement applies");

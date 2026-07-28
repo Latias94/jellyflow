@@ -5,7 +5,7 @@ use crate::runtime::commands::{GraphCommand, IncidentEdgePolicy, TopologyEdit};
 use crate::runtime::graph_runtime::GraphRuntime;
 use crate::runtime::interaction::{
     CanvasInteractionConfig, CanvasInteractionEffect, CanvasInteractionError,
-    CanvasInteractionPhase, CanvasInteractionSession, CommandSettlement, InteractionTerminalReason,
+    CanvasInteractionPhase, CanvasInteractionSession, InteractionTerminalReason,
 };
 use crate::runtime::tests::fixtures::{current_port_instance, keyboard_connection_port_by_id};
 use crate::runtime::view_session::{ViewSessionError, ViewSessionOptions};
@@ -69,13 +69,14 @@ fn keyboard_connection_uses_exact_ports_and_the_fresh_connection_mutation_pipeli
         .bind_submission(submission)
         .expect("fresh binding")
         .expect("accepted connection command");
-    runtime
-        .execute(command)
+    let completion = runtime.execute(command);
+    completion
+        .result()
         .expect("keyboard connection execution")
         .applied()
         .expect("keyboard connection applies");
     session
-        .settle(ticket, CommandSettlement::Applied)
+        .complete_submission(ticket, completion)
         .expect("keyboard settlement");
 
     let graph = runtime.snapshot().expect("connected graph");
@@ -173,11 +174,13 @@ fn keyboard_port_capability_is_stale_after_same_id_replacement() {
             before.version(),
             TopologyEdit::new().remove_node(ids.alternate_source, IncidentEdgePolicy::Reject),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("source retirement applies");
     runtime
         .execute(GraphCommand::undo(runtime.snapshot().unwrap().version()))
+        .into_result()
         .unwrap()
         .applied()
         .expect("source replacement applies");

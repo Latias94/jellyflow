@@ -338,13 +338,9 @@ fn keyboard_nudge_uses_one_shared_extent_feasible_delta_and_one_command() {
         .bind_submission(submission)
         .unwrap()
         .expect("shared feasible move remains non-zero");
-    runtime.execute(command).unwrap().applied().unwrap();
-    session
-        .settle(
-            ticket,
-            crate::runtime::interaction::CommandSettlement::Applied,
-        )
-        .unwrap();
+    let completion = runtime.execute(command);
+    assert!(completion.result().unwrap().applied().is_some());
+    session.complete_submission(ticket, completion).unwrap();
 
     let moved = runtime.snapshot().unwrap();
     assert_eq!(moved.graph().node(&first).unwrap().pos.x, 110.0);
@@ -496,13 +492,9 @@ fn apply_nudge(runtime: &GraphRuntime, session: &mut CanvasInteractionSession, a
         .bind_submission(submission)
         .unwrap()
         .expect("nudge command");
-    runtime.execute(command).unwrap().applied().unwrap();
-    session
-        .settle(
-            ticket,
-            crate::runtime::interaction::CommandSettlement::Applied,
-        )
-        .unwrap();
+    let completion = runtime.execute(command);
+    assert!(completion.result().unwrap().applied().is_some());
+    session.complete_submission(ticket, completion).unwrap();
 }
 
 fn pointer_sample(
@@ -520,12 +512,14 @@ fn replace_node_by_undo(runtime: &GraphRuntime, node: NodeId) {
             before.version(),
             TopologyEdit::new().remove_node(node, IncidentEdgePolicy::Reject),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("node removal applies");
     let retired = runtime.snapshot().unwrap();
     runtime
         .execute(GraphCommand::undo(retired.version()))
+        .into_result()
         .unwrap()
         .applied()
         .expect("undo restores a successor node");

@@ -21,6 +21,7 @@ fn graph_runtime_applies_profiled_commands() {
             node,
             CanvasPoint { x: 10.0, y: 20.0 },
         ))
+        .into_result()
         .expect("command execution")
         .applied()
         .expect("profiled command applies");
@@ -55,6 +56,7 @@ fn graph_runtime_profile_rejection_leaves_state_unchanged() {
             node,
             CanvasPoint { x: 10.0, y: 20.0 },
         ))
+        .into_result()
         .expect("command execution");
 
     assert_eq!(

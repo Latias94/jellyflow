@@ -32,6 +32,7 @@ fn runtime_document_subscription_is_owned_and_unsubscribable() {
                 ids[0],
                 serde_json::json!({ "value": value }),
             ))
+            .into_result()
             .unwrap();
         if value == 1 {
             assert!(runtime.unsubscribe(token));
@@ -73,6 +74,7 @@ fn runtime_subscription_token_cannot_unsubscribe_another_runtime() {
             ids_b[0],
             serde_json::json!({ "value": 1 }),
         ))
+        .into_result()
         .expect("runtime B mutation");
 
     assert_eq!(calls.get(), 1);
@@ -111,6 +113,7 @@ fn view_subscription_token_cannot_unsubscribe_another_view() {
             ids[0],
             serde_json::json!({ "value": 1 }),
         ))
+        .into_result()
         .expect("shared mutation");
 
     assert_eq!(calls.get(), 1);
@@ -156,6 +159,7 @@ fn history_clear_is_rejected_inside_a_patch_batch_and_published_when_run_afterwa
             ids[0],
             serde_json::json!({ "value": 1 }),
         ))
+        .into_result()
         .unwrap();
 
     assert!(matches!(
@@ -203,6 +207,7 @@ fn callbacks_can_query_and_self_unsubscribe_without_borrow_panics() {
                 ids[0],
                 serde_json::json!({ "value": value }),
             ))
+            .into_result()
             .unwrap();
     }
 
@@ -238,11 +243,13 @@ fn mutation_from_a_notification_is_rejected_structurally_and_later_commits_still
             if patch.to_revision() != 1 {
                 return;
             }
-            let result = callback_runtime.execute(GraphCommand::set_node_data(
-                callback_runtime.snapshot().unwrap().version(),
-                nested_node,
-                serde_json::json!({ "nested": true }),
-            ));
+            let result = callback_runtime
+                .execute(GraphCommand::set_node_data(
+                    callback_runtime.snapshot().unwrap().version(),
+                    nested_node,
+                    serde_json::json!({ "nested": true }),
+                ))
+                .into_result();
             *callback_rejection.borrow_mut() = result.err();
         })
         .unwrap();
@@ -263,6 +270,7 @@ fn mutation_from_a_notification_is_rejected_structurally_and_later_commits_still
             outer_node,
             serde_json::json!({ "outer": true }),
         ))
+        .into_result()
         .unwrap();
 
     assert!(matches!(
@@ -279,6 +287,7 @@ fn mutation_from_a_notification_is_rejected_structurally_and_later_commits_still
             nested_node,
             serde_json::json!({ "later": true }),
         ))
+        .into_result()
         .unwrap();
     assert_eq!(runtime.snapshot().unwrap().revision(), 2);
 }

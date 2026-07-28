@@ -24,7 +24,8 @@ use crate::io::{
 };
 use crate::runtime::adapter_protocol::{AdapterEnvironment, ViewPoint};
 use crate::runtime::commands::{
-    ConnectionEdit, ConnectionEvaluation, GraphCommand, GraphCommandOutcome,
+    CommandCompletionCorrelationError, CommandExecutionCompletion, CommandExecutionCompletions,
+    ConnectionEdit, ConnectionEvaluation, GraphCommand, GraphCommandIdentity,
 };
 use crate::runtime::graph_runtime::{
     CreateFromWireCandidates, CreateFromWireQueryError, EdgeInstanceKey, FactChangeMask,
@@ -348,78 +349,69 @@ impl ViewCloseRequest {
     pub fn commands(&self) -> &[GraphCommand] {
         &self.commands
     }
-}
 
-#[derive(Debug)]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "boxing the public success payload would break exhaustive receipt consumers for a terminal close path"
-)]
-pub enum ViewCloseReceipt {
-    Command { outcome: GraphCommandOutcome },
-    CommandFailed { error: GraphRuntimeError },
-}
-
-impl ViewCloseReceipt {
-    pub fn patch(&self) -> Option<&RuntimePatch> {
-        match self {
-            Self::Command { outcome } => outcome.applied().map(|receipt| receipt.patch()),
-            Self::CommandFailed { .. } => None,
+    pub(crate) fn validate_unique_identities(&self) -> Result<(), ViewSessionError> {
+        let mut identities = HashSet::with_capacity(self.commands.len());
+        for command in &self.commands {
+            let identity = command.identity().clone();
+            if !identities.insert(identity.clone()) {
+                return Err(ViewSessionError::DuplicateCommandIdentity { identity });
+            }
         }
-    }
-
-    pub fn command_outcome(&self) -> Option<&GraphCommandOutcome> {
-        match self {
-            Self::Command { outcome } => Some(outcome),
-            Self::CommandFailed { .. } => None,
-        }
-    }
-
-    pub fn command_error(&self) -> Option<&GraphRuntimeError> {
-        match self {
-            Self::CommandFailed { error } => Some(error),
-            Self::Command { .. } => None,
-        }
-    }
-
-    /// Consumes this close receipt into its exact command result.
-    pub fn into_command_result(self) -> Result<GraphCommandOutcome, GraphRuntimeError> {
-        match self {
-            Self::Command { outcome } => Ok(outcome),
-            Self::CommandFailed { error } => Err(error),
-        }
+        Ok(())
     }
 }
 
 #[derive(Debug)]
 pub struct ViewCloseOutcome {
     reason: ViewCloseReason,
-    receipts: Vec<ViewCloseReceipt>,
+    command_completions: CommandExecutionCompletions,
 }
 
 impl ViewCloseOutcome {
-    pub(crate) fn new(reason: ViewCloseReason, receipts: Vec<ViewCloseReceipt>) -> Self {
-        Self { reason, receipts }
+    pub(crate) fn new(
+        reason: ViewCloseReason,
+        completions: Vec<CommandExecutionCompletion>,
+    ) -> Self {
+        Self {
+            reason,
+            command_completions: CommandExecutionCompletions::from_prevalidated_ordered(
+                completions,
+            ),
+        }
     }
 
     pub fn reason(&self) -> ViewCloseReason {
         self.reason
     }
 
-    pub fn receipts(&self) -> &[ViewCloseReceipt] {
-        &self.receipts
+    pub fn command_completions(&self) -> impl Iterator<Item = &CommandExecutionCompletion> {
+        self.command_completions.iter()
     }
 
-    /// Consumes the close outcome while preserving final-command receipt order.
-    pub fn into_parts(self) -> (ViewCloseReason, Vec<ViewCloseReceipt>) {
-        (self.reason, self.receipts)
+    pub fn command_completion(
+        &self,
+        identity: &GraphCommandIdentity,
+    ) -> Result<&CommandExecutionCompletion, CommandCompletionCorrelationError> {
+        self.command_completions.get(identity)
     }
 
-    /// Splits an adapter-owned command prefix from caller-owned final-command receipts.
-    pub fn split_receipt_prefix(mut self, count: usize) -> (Vec<ViewCloseReceipt>, Self) {
-        let remaining = self.receipts.split_off(count.min(self.receipts.len()));
-        let prefix = std::mem::replace(&mut self.receipts, remaining);
-        (prefix, self)
+    pub fn take_command_completion(
+        &mut self,
+        identity: &GraphCommandIdentity,
+    ) -> Result<CommandExecutionCompletion, CommandCompletionCorrelationError> {
+        self.command_completions.take(identity)
+    }
+
+    pub fn take_command_completions(
+        &mut self,
+        expected: &[GraphCommandIdentity],
+    ) -> Result<Vec<CommandExecutionCompletion>, CommandCompletionCorrelationError> {
+        self.command_completions.take_all(expected)
+    }
+
+    pub fn into_parts(self) -> (ViewCloseReason, CommandExecutionCompletions) {
+        (self.reason, self.command_completions)
     }
 }
 
@@ -433,6 +425,10 @@ pub enum ViewSessionError {
     Closing,
     #[error("view subscription identity allocator is exhausted")]
     IdentityExhausted,
+    #[error("a close request contains the same command identity more than once: {identity:?}")]
+    DuplicateCommandIdentity { identity: GraphCommandIdentity },
+    #[error(transparent)]
+    CommandCorrelation(#[from] CommandCompletionCorrelationError),
     #[error("view session viewport is invalid")]
     InvalidViewport,
     #[error("viewport intent does not resolve to a valid transform")]
@@ -1152,8 +1148,11 @@ impl ViewSession {
     }
 
     /// Executes one revision-checked graph command through this session's runtime capability.
-    pub fn execute(&self, command: GraphCommand) -> Result<GraphCommandOutcome, ViewSessionError> {
-        self.runtime()?.execute_command(command).map_err(Into::into)
+    pub fn execute(
+        &self,
+        command: GraphCommand,
+    ) -> Result<CommandExecutionCompletion, ViewSessionError> {
+        Ok(self.runtime()?.execute_command(command))
     }
 
     pub fn evaluate_connection(
@@ -1265,6 +1264,7 @@ impl ViewSession {
         if let Some(reason) = self.close_reason() {
             return Err(ViewSessionError::Closed { reason });
         }
+        request.validate_unique_identities()?;
         let runtime = self.runtime()?;
         if request.commands().is_empty() {
             let (terminalized, callback_panic) =
@@ -1660,9 +1660,12 @@ impl WeakViewSession {
     }
 
     /// Executes one revision-checked graph command without reviving a closed view capability.
-    pub fn execute(&self, command: GraphCommand) -> Result<GraphCommandOutcome, ViewSessionError> {
+    pub fn execute(
+        &self,
+        command: GraphCommand,
+    ) -> Result<CommandExecutionCompletion, ViewSessionError> {
         let (_, runtime) = self.open_capability()?;
-        runtime.execute_command(command).map_err(Into::into)
+        Ok(runtime.execute_command(command))
     }
 
     pub fn evaluate_connection(

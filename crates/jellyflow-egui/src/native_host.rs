@@ -1014,6 +1014,7 @@ mod tests {
                 runtime.snapshot().expect("retirement snapshot").version(),
                 TopologyEdit::new().remove_node(nodes[0], IncidentEdgePolicy::Reject),
             ))
+            .into_result()
             .expect("retirement executes")
             .applied()
             .expect("retirement applies");

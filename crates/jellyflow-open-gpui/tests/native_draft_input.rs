@@ -175,6 +175,7 @@ fn focused_composing_draft_survives_real_undo_and_redo_until_remote_is_accepted(
             node_id(),
             "committed".into(),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("seed command applies");
@@ -185,6 +186,7 @@ fn focused_composing_draft_survives_real_undo_and_redo_until_remote_is_accepted(
 
     runtime
         .execute(GraphCommand::undo(runtime.snapshot().unwrap().version()))
+        .into_result()
         .unwrap()
         .applied()
         .expect("undo applies");
@@ -207,6 +209,7 @@ fn focused_composing_draft_survives_real_undo_and_redo_until_remote_is_accepted(
 
     runtime
         .execute(GraphCommand::redo(runtime.snapshot().unwrap().version()))
+        .into_result()
         .unwrap()
         .applied()
         .expect("redo applies");
@@ -245,6 +248,7 @@ fn focused_composing_draft_survives_real_undo_and_redo_until_remote_is_accepted(
             runtime.snapshot().unwrap().version(),
             TopologyEdit::new().remove_node(node_id(), IncidentEdgePolicy::Reject),
         ))
+        .into_result()
         .unwrap();
     draw(cx);
     assert!(activity.is_revoked());
@@ -267,6 +271,7 @@ fn composing_conflict_reapplies_only_after_explicit_unmark_and_revision_checked_
             node_id(),
             "remote branch".into(),
         ))
+        .into_result()
         .unwrap();
     draw(cx);
 
@@ -438,6 +443,7 @@ fn focused_native_input_survives_culling_then_blurs_parks_and_hard_retires(
             runtime.snapshot().unwrap().version(),
             TopologyEdit::new().remove_node(node_id(), IncidentEdgePolicy::Reject),
         ))
+        .into_result()
         .unwrap();
     draw(cx);
 

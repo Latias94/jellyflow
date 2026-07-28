@@ -14,8 +14,8 @@ pub mod conformance;
 
 pub use coordinates::{ViewDelta, ViewPoint, ViewRect, ViewSize, side_anchor};
 pub use feedback::{
-    FeedbackCollector, FeedbackCollectorError, FeedbackOperationReceipt, FeedbackReceipt,
-    FeedbackSubmissionError, FrameFeedback, FrameMaterializationError, LayoutNodeStatus,
+    FeedbackCollector, FeedbackCollectorError, FeedbackReceipt, FeedbackSubmissionError,
+    FrameFeedback, FrameMaterializationError, LayoutNodeStatus, LayoutOperationReceipt,
     LayoutPublicationReceipt, NodeLayout, NodeLayoutBuilder, NodeLayoutBuilderError,
     PortLayoutOutcome, RenderedPortLayout, StaleFrameReason,
 };

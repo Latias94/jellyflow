@@ -27,8 +27,8 @@ use rpds::RedBlackTreeMapSync;
 use crate::io::ViewSelectionSeed;
 use crate::profile::{ApplyPipelineError, GraphProfile, validate_profile_document};
 use crate::runtime::commands::{
-    ConnectionEdit, ConnectionEvaluation, GraphCommand, GraphCommandOutcome, GraphCommandReceipt,
-    plan_graph_command,
+    CommandExecutionCompletion, ConnectionEdit, ConnectionEvaluation, GraphCommand,
+    GraphCommandOutcome, GraphCommandReceipt, plan_graph_command,
 };
 use crate::runtime::middleware::GraphRuntimeMiddleware;
 use crate::runtime::unwind::{PanicCollector, PanicPayload, resume, suppress};
@@ -37,8 +37,8 @@ use crate::schema::{CanonicalGraph, NodeCatalog, NodeCatalogMigrationError};
 pub use crate::runtime::policy::GraphRuntimePolicy;
 
 use crate::runtime::view_session::{
-    AttachViewError, ViewCloseOutcome, ViewCloseReason, ViewCloseReceipt, ViewCloseRequest,
-    ViewGeneration, ViewId, ViewSession, ViewSessionError, ViewSessionOptions, ViewShared,
+    AttachViewError, ViewCloseOutcome, ViewCloseReason, ViewCloseRequest, ViewGeneration, ViewId,
+    ViewSession, ViewSessionError, ViewSessionOptions, ViewShared,
 };
 
 use self::execution::collect_live_sessions;
@@ -1005,7 +1005,7 @@ impl GraphRuntime {
     }
 
     /// Executes one revision-checked graph command through the authoritative runtime.
-    pub fn execute(&self, command: GraphCommand) -> Result<GraphCommandOutcome, GraphRuntimeError> {
+    pub fn execute(&self, command: GraphCommand) -> CommandExecutionCompletion {
         self.shared.execute_command(command)
     }
 
@@ -1362,6 +1362,17 @@ impl RuntimeShared {
     pub(crate) fn execute_command(
         self: &Rc<Self>,
         command: GraphCommand,
+    ) -> CommandExecutionCompletion {
+        let identity = command.identity().clone();
+        match self.try_execute_command(command) {
+            Ok(outcome) => CommandExecutionCompletion::from_outcome(outcome),
+            Err(error) => CommandExecutionCompletion::from_error(identity, error),
+        }
+    }
+
+    fn try_execute_command(
+        self: &Rc<Self>,
+        command: GraphCommand,
     ) -> Result<GraphCommandOutcome, GraphRuntimeError> {
         self.ensure_command_runtime(&command)?;
         let guard = MutationGuard::acquire(self)?;
@@ -1515,7 +1526,7 @@ impl RuntimeShared {
     ) -> Result<ViewCloseOutcome, ViewSessionError> {
         let guard = MutationGuard::acquire(self)?;
         view.begin_close()?;
-        let mut receipts = Vec::with_capacity(request.commands().len());
+        let mut completions = Vec::with_capacity(request.commands().len());
         let mut notifications = Vec::new();
         let mut panics = PanicCollector::default();
         for command in request.commands() {
@@ -1531,19 +1542,24 @@ impl RuntimeShared {
             };
             match result {
                 Ok(CommandFinalization::Uncommitted(outcome)) => {
-                    receipts.push(ViewCloseReceipt::Command { outcome });
+                    completions.push(CommandExecutionCompletion::from_outcome(outcome));
                 }
                 Ok(CommandFinalization::Committed {
                     outcome,
                     middleware_panic: command_panic,
                 }) => {
-                    receipts.push(ViewCloseReceipt::Command { outcome });
+                    completions.push(CommandExecutionCompletion::from_outcome(outcome));
                     if command_panic.is_some() {
                         panics.record(command_panic);
                         break;
                     }
                 }
-                Err(error) => receipts.push(ViewCloseReceipt::CommandFailed { error }),
+                Err(error) => {
+                    completions.push(CommandExecutionCompletion::from_error(
+                        command.identity().clone(),
+                        error,
+                    ));
+                }
             }
         }
         let (_, terminal_panic) = view.terminalize(ViewCloseReason::HostClosed);
@@ -1555,7 +1571,10 @@ impl RuntimeShared {
         drop(guard);
         panics.record(self.drain_notifications());
         panics.resume();
-        Ok(ViewCloseOutcome::new(ViewCloseReason::HostClosed, receipts))
+        Ok(ViewCloseOutcome::new(
+            ViewCloseReason::HostClosed,
+            completions,
+        ))
     }
 
     fn execute_command_deferred(

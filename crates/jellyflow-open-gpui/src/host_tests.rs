@@ -769,6 +769,7 @@ fn retired_dynamic_port_handle_reports_prepaint_error_with_node_identity(
                 IncidentEdgePolicy::Reject,
             ),
         ))
+        .into_result()
         .expect("replace source ports")
         .applied()
         .expect("port replacement applies");
@@ -1582,10 +1583,12 @@ fn retired_edge_actions_cannot_target_a_same_id_successor(cx: &mut open_gpui::Te
                 .version(),
             edge,
         ))
+        .into_result()
         .expect("remove edge");
     let removed_version = removed.applied().expect("edge removal applies").version();
     runtime
         .execute(GraphCommand::undo(removed_version))
+        .into_result()
         .expect("restore edge")
         .applied()
         .expect("edge restoration applies");
@@ -1687,10 +1690,12 @@ fn retired_node_action_cannot_select_a_same_id_successor(cx: &mut open_gpui::Tes
                 .version(),
             TopologyEdit::new().remove_node(node, IncidentEdgePolicy::Cascade),
         ))
+        .into_result()
         .expect("remove node");
     let removed_version = removed.applied().expect("node removal applies").version();
     runtime
         .execute(GraphCommand::undo(removed_version))
+        .into_result()
         .expect("restore node")
         .applied()
         .expect("node restoration applies");
@@ -2171,6 +2176,7 @@ fn removing_the_authoritative_edge_retires_an_active_reconnect_without_a_blank_f
         .version();
     runtime
         .execute(GraphCommand::disconnect(version, edge))
+        .into_result()
         .expect("external edge removal")
         .applied()
         .expect("disconnect applies");
@@ -2350,6 +2356,7 @@ fn dynamic_port_reconciliation_preserves_order_index_and_retained_capabilities(
                 IncidentEdgePolicy::Reject,
             ),
         ))
+        .into_result()
         .expect("replace many-port topology")
         .applied()
         .expect("many-port topology applies");
@@ -2467,10 +2474,12 @@ fn coalesced_port_reincarnation_replaces_its_native_focus_handle(
                 IncidentEdgePolicy::Reject,
             ),
         ))
+        .into_result()
         .expect("remove port");
     let removed_version = removed.applied().expect("port removal applies").version();
     let restored = runtime
         .execute(GraphCommand::undo(removed_version))
+        .into_result()
         .expect("restore port");
     let restored_revision = restored
         .applied()
@@ -2686,13 +2695,13 @@ fn node_drag_cohort_materializes_never_mounted_and_parked_peers_until_applied_fr
             .expect("node drag submits one graph mutation")
     });
     let command = cx
-        .read_entity(&host, |host, _| {
+        .update_entity(&host, |host, _| {
             host.interaction_owner.bind_submission(submission)
         })
         .expect("fresh drag cohort")
         .expect("non-zero drag mutation");
-    let outcome = runtime.execute(command).expect("execute node drag");
-    let applied_revision = outcome.applied().expect("node drag applies").revision();
+    let completion = runtime.execute(command);
+    let applied_revision = completion.applied_revision().expect("node drag applies");
     let visible_lifetime = runtime
         .snapshot()
         .expect("applied snapshot")
@@ -2701,11 +2710,7 @@ fn node_drag_cohort_materializes_never_mounted_and_parked_peers_until_applied_fr
 
     cx.update_entity(&host, |host, cx| {
         host.interaction_owner
-            .settle(
-                ticket,
-                jellyflow_runtime::interaction::CommandSettlement::Applied,
-                Some(applied_revision),
-            )
+            .complete_submission(ticket, completion)
             .expect("settle node drag receipt");
         assert!(host.interaction_owner.has_node_drag_residency());
         assert!(
@@ -3701,6 +3706,7 @@ fn assert_graph_root_selection_delete(cx: &mut open_gpui::TestAppContext, key: &
 
     runtime
         .execute(GraphCommand::undo(deleted.version()))
+        .into_result()
         .expect("undo selection delete")
         .applied()
         .expect("selection delete undo applies");
@@ -5783,6 +5789,7 @@ fn coalesced_remove_undo_and_payload_patch_revoke_the_retired_incarnation_withou
                 .version(),
             TopologyEdit::new().remove_node(NodeId::from_u128(10), IncidentEdgePolicy::Reject),
         ))
+        .into_result()
         .expect("remove node")
         .applied()
         .expect("remove applies")
@@ -5796,6 +5803,7 @@ fn coalesced_remove_undo_and_payload_patch_revoke_the_retired_incarnation_withou
                 .expect("snapshot before restoring node")
                 .version(),
         ))
+        .into_result()
         .expect("undo remove")
         .applied()
         .expect("undo applies")
@@ -5811,6 +5819,7 @@ fn coalesced_remove_undo_and_payload_patch_revoke_the_retired_incarnation_withou
             NodeId::from_u128(10),
             serde_json::json!({ "prompt": "reincarnated" }),
         ))
+        .into_result()
         .expect("patch reincarnated payload")
         .applied()
         .expect("payload patch applies")
@@ -6090,6 +6099,7 @@ fn output_connection_drag_keeps_press_time_anchor_when_current_geometry_moves(
             NodeId::from_u128(10),
             CanvasPoint { x: 120.0, y: 120.0 },
         ))
+        .into_result()
         .expect("move source from another runtime capability")
         .applied()
         .expect("source move applied");
@@ -6482,6 +6492,7 @@ fn deferred_release_from_a_retired_instance_cannot_target_reused_node_and_port_i
             before.version(),
             TopologyEdit::new().remove_node(source_id, IncidentEdgePolicy::Reject),
         ))
+        .into_result()
         .expect("remove old incarnation")
         .applied()
         .expect("remove applied")
@@ -6491,6 +6502,7 @@ fn deferred_release_from_a_retired_instance_cannot_target_reused_node_and_port_i
             removed,
             TopologyEdit::new().add_node(source_id, source, ports),
         ))
+        .into_result()
         .expect("re-add same IDs")
         .applied()
         .expect("re-add applied");
@@ -6807,9 +6819,8 @@ fn window_close_resolves_queued_ticket_only_after_the_host_borrow_is_released(
     assert_eq!(
         poll_command_ticket(&mut ticket)
             .expect("ticket transport")
-            .applied()
-            .expect("queued close command applied")
-            .revision(),
+            .applied_revision()
+            .expect("queued close command applied"),
         1
     );
 }
@@ -6874,9 +6885,8 @@ fn window_close_revocation_panic_finishes_window_cleanup_and_does_not_strand_tic
     assert_eq!(
         poll_command_ticket(&mut ticket)
             .expect("ticket transport")
-            .applied()
-            .expect("queued close command applied")
-            .revision(),
+            .applied_revision()
+            .expect("queued close command applied"),
         1
     );
     assert_eq!(runtime.snapshot().expect("closed runtime").revision(), 1);
@@ -7170,7 +7180,7 @@ fn scene_preparation_failure_after_collection_fails_the_batch_and_reopens_capaci
     assert!(
         poll_command_ticket(&mut retry)
             .expect("retry ticket transport")
-            .applied()
+            .applied_revision()
             .is_some()
     );
 }
@@ -7330,9 +7340,8 @@ fn assert_ordinary_feedback_panic_isolated(
     assert_eq!(
         poll_command_ticket(&mut retry)
             .expect("retry ticket transport")
-            .applied()
-            .expect("retry command applied")
-            .revision(),
+            .applied_revision()
+            .expect("retry command applied"),
         revision_after_panic + 1
     );
 
@@ -8297,6 +8306,7 @@ fn create_from_wire_query_and_selection_add_one_node_and_edge_atomically(
 
     runtime
         .execute(GraphCommand::undo(snapshot.version()))
+        .into_result()
         .expect("undo command")
         .applied()
         .expect("undo applied");
@@ -8363,6 +8373,7 @@ fn create_from_wire_selection_rebinds_after_an_unrelated_revision(
             NodeId::from_u128(10),
             serde_json::json!({"changed": true}),
         ))
+        .into_result()
         .expect("intervening command")
         .applied()
         .expect("intervening command applied");
@@ -8637,14 +8648,14 @@ fn node_size_updates_after_a_captured_prefix_wait_for_their_own_barrier(
     assert!(
         poll_command_ticket(&mut prefix_ticket)
             .expect("prefix ticket transport")
-            .applied()
+            .applied_revision()
             .is_some()
     );
-    assert!(
+    assert_eq!(
         poll_command_ticket(&mut suffix_ticket)
             .expect("suffix ticket transport")
-            .conflict()
-            .is_some()
+            .kind(),
+        jellyflow_runtime::commands::CommandExecutionKind::Conflict
     );
     let snapshot = runtime.snapshot().expect("ordered node-size graph");
     assert_eq!(snapshot.revision(), 2);
@@ -8890,6 +8901,7 @@ fn occupied_input_replacement_is_atomic_and_one_undo_restores_the_old_edge(
 
     runtime
         .execute(GraphCommand::undo(replaced.version()))
+        .into_result()
         .expect("undo replacement")
         .applied()
         .expect("undo applied");
@@ -9109,6 +9121,7 @@ fn explicit_input_reconnect_retains_edge_identity_and_undo_restores_the_endpoint
 
     runtime
         .execute(GraphCommand::undo(reconnected.version()))
+        .into_result()
         .expect("undo reconnect")
         .applied()
         .expect("undo applied");

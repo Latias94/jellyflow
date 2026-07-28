@@ -106,6 +106,7 @@ fn one_node_change_updates_only_its_binding_across_four_views_at_scale(
             changed,
             serde_json::json!({ "value": 42 }),
         ))
+        .into_result()
         .unwrap();
     cx.run_until_parked();
 

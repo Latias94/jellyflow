@@ -25,12 +25,11 @@ pub use session::{
     AlignmentSnapConfig, CanvasInteractionConfig, CanvasInteractionDispatch,
     CanvasInteractionEffect, CanvasInteractionError, CanvasInteractionQuery,
     CanvasInteractionSession, CanvasInteractionUpdate, CanvasPressFallback, CanvasPressTarget,
-    CommandSettlement, ConnectionInteractionStart, ConnectionSearchRequest,
-    ConnectionSearchSelection, InteractionDamage, InteractionGeneration,
-    InteractionGraphSubmission, InteractionGraphSubmissionBindError, InteractionOwner,
-    InteractionQueryId, InteractionSessionId, InteractionTickDemand, InteractionTicketId,
-    KeyboardConnectionFeedback, KeyboardConnectionPort, NodeDragStart, NodeNudgeDirection,
-    SelectionMode,
+    ConnectionInteractionStart, ConnectionSearchRequest, ConnectionSearchSelection,
+    InteractionDamage, InteractionGeneration, InteractionGraphSubmission,
+    InteractionGraphSubmissionBindError, InteractionOwner, InteractionQueryId,
+    InteractionSessionId, InteractionTickDemand, InteractionTicketId, KeyboardConnectionFeedback,
+    KeyboardConnectionPort, NodeDragStart, NodeNudgeDirection, SelectionMode,
 };
 
 #[cfg(test)]

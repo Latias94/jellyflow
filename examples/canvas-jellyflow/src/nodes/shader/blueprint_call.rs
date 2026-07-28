@@ -1404,7 +1404,7 @@ fn type_label(ty: &TypeDesc) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use jellyflow_runtime::commands::GraphCommandOutcome;
+    use jellyflow_runtime::commands::CommandExecutionKind;
     use jellyflow_runtime::graph::GraphRuntime;
 
     use super::*;
@@ -1537,22 +1537,18 @@ mod tests {
             0,
         );
 
-        assert!(matches!(
-            runtime
-                .execute(GraphCommand::undo(added.version()))
-                .unwrap(),
-            GraphCommandOutcome::Applied(_)
-        ));
+        assert_eq!(
+            runtime.execute(GraphCommand::undo(added.version())).kind(),
+            CommandExecutionKind::Applied
+        );
         let undone = runtime.snapshot().unwrap();
         assert!(blueprint_pins(&undone, test_node_id()).unwrap().is_empty());
         assert!(undone.graph().port(&pin.port_id()).is_none());
 
-        assert!(matches!(
-            runtime
-                .execute(GraphCommand::redo(undone.version()))
-                .unwrap(),
-            GraphCommandOutcome::Applied(_)
-        ));
+        assert_eq!(
+            runtime.execute(GraphCommand::redo(undone.version())).kind(),
+            CommandExecutionKind::Applied
+        );
         let redone = runtime.snapshot().unwrap();
         assert_eq!(
             blueprint_pins(&redone, test_node_id()).unwrap(),
@@ -1611,10 +1607,10 @@ mod tests {
     fn apply(runtime: &GraphRuntime, action: BlueprintPinAction, policy: IncidentEdgePolicy) {
         let snapshot = runtime.snapshot().unwrap();
         let command = plan_blueprint_pin_action(&snapshot, test_node_id(), action, policy).unwrap();
-        assert!(matches!(
-            runtime.execute(command).unwrap(),
-            GraphCommandOutcome::Applied(_)
-        ));
+        assert_eq!(
+            runtime.execute(command).kind(),
+            CommandExecutionKind::Applied
+        );
     }
 
     fn test_node_id() -> NodeId {

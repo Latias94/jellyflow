@@ -1,16 +1,17 @@
 //! Owned frame materialization and one-shot feedback submission.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
 
 use jellyflow_core::core::{CanvasRect, NodeId, PortId};
 
 use crate::runtime::adapter_protocol::{
-    AdapterEnvironment, AdapterFrame, FeedbackOperation, FeedbackOperationReceipt, FeedbackReceipt,
-    FeedbackSubmissionError, FrameBoundsSource, FrameFeedback, FrameMaterializationError,
-    FrameMaterializationOverflow, FrameNode, FramePort, FrameRequest, FrameToken, NodeInstanceKey,
+    AdapterEnvironment, AdapterFrame, FeedbackOperation, FeedbackReceipt, FeedbackSubmissionError,
+    FrameBoundsSource, FrameFeedback, FrameMaterializationError, FrameMaterializationOverflow,
+    FrameNode, FramePort, FrameRequest, FrameToken, LayoutOperationReceipt, NodeInstanceKey,
     NodeLayout, NodeLayoutTarget, RendererStamp, StaleFrameReason,
 };
+use crate::runtime::commands::CommandExecutionCompletion;
 use crate::runtime::geometry::CanvasBounds;
 use crate::runtime::graph_runtime::{
     DocumentEpoch, GeometryImpact, GraphRevision, GraphSnapshot, IncidentEdgeSnapshot,
@@ -81,7 +82,7 @@ fn merge_patch_impact(
 }
 
 pub(super) struct PendingLayout {
-    pub(super) operation_index: usize,
+    pub(super) receipt_index: usize,
     pub(super) layout: NodeLayout,
 }
 
@@ -592,6 +593,16 @@ impl ViewSession {
         &self,
         feedback: FrameFeedback,
     ) -> Result<FeedbackReceipt, FeedbackSubmissionError> {
+        let mut command_identities = HashSet::new();
+        for operation in &feedback.operations {
+            let FeedbackOperation::Command(command) = operation else {
+                continue;
+            };
+            let identity = command.identity().clone();
+            if !command_identities.insert(identity.clone()) {
+                return Err(FeedbackSubmissionError::DuplicateCommandIdentity { identity });
+            }
+        }
         let runtime = self.runtime()?;
         let before = runtime.snapshot().map_err(ViewSessionError::from)?;
         let pending = self.consume_frame(&feedback.token, &before)?;
@@ -604,16 +615,15 @@ impl ViewSession {
             let mut impact_patches_merged = 0_u64;
             let mut impact_records_merged = 0_u64;
             let mut impact_global_fallbacks = 0_u64;
-            let mut receipts = (0..feedback.operations.len())
-                .map(|_| None)
-                .collect::<Vec<_>>();
+            let mut command_completions = Vec::<CommandExecutionCompletion>::new();
+            let mut layout_receipts = Vec::<LayoutOperationReceipt>::new();
             let mut layouts = Vec::new();
 
-            for (operation_index, operation) in feedback.operations.into_iter().enumerate() {
+            for operation in feedback.operations {
                 match operation {
                     FeedbackOperation::Command(command) => {
-                        let outcome = self.execute(command);
-                        if let Ok(outcome) = &outcome
+                        let completion = runtime.execute_command(command);
+                        if let Ok(outcome) = completion.result()
                             && let Some(applied) = outcome.applied()
                         {
                             let (fallback, records_merged) = merge_patch_impact(
@@ -628,22 +638,23 @@ impl ViewSession {
                                 impact_records_merged.saturating_add(records_merged);
                             impact_patches_merged = impact_patches_merged.saturating_add(1);
                         }
-                        receipts[operation_index] = Some(FeedbackOperationReceipt::Command {
-                            outcome: Box::new(outcome),
-                        });
+                        command_completions.push(completion);
                     }
                     FeedbackOperation::Layout(layout) => {
+                        let receipt_index = layout_receipts.len();
+                        layout_receipts.push(LayoutOperationReceipt::pending(layout.node()));
                         layouts.push(PendingLayout {
-                            operation_index,
+                            receipt_index,
                             layout,
                         });
                     }
                 }
             }
 
-            let (publication, feedback_incident_work) = if layouts.is_empty() {
-                (None, IncidentSnapshotWork::default())
-            } else {
+            let layout_result = (|| -> Result<_, ViewSessionError> {
+                if layouts.is_empty() {
+                    return Ok((None, IncidentSnapshotWork::default()));
+                }
                 let current = runtime.snapshot().map_err(ViewSessionError::from)?;
                 let layout_nodes = layouts
                     .iter()
@@ -671,26 +682,32 @@ impl ViewSession {
                     || state.viewport_revision != pending.viewport_revision
                     || state.environment != pending.environment
                     || state.last_issued_frame > token.sequence;
-                publish_layouts(
+                Ok(publish_layouts(
                     &mut state,
                     &current,
                     &pending,
                     &current_node_facts,
                     &geometry_impact,
                     layouts,
-                    &mut receipts,
+                    &mut layout_receipts,
                     global_stale,
-                )
+                ))
+            })();
+            let (publication, incident_work, mut post_admission_error) = match layout_result {
+                Ok((publication, work)) => (publication, work, None),
+                Err(error) => (None, IncidentSnapshotWork::default(), Some(error)),
             };
-            runtime
-                .record_feedback_incident_snapshot_work(feedback_incident_work)
-                .map_err(ViewSessionError::from)?;
-
-            let operations = receipts
-                .into_iter()
-                .map(|receipt| receipt.expect("every feedback operation has a receipt"))
-                .collect::<Vec<_>>();
-            Ok::<_, FeedbackSubmissionError>((operations, publication))
+            if post_admission_error.is_none()
+                && let Err(error) = runtime.record_feedback_incident_snapshot_work(incident_work)
+            {
+                post_admission_error = Some(error.into());
+            }
+            let receipt = FeedbackReceipt::from_prevalidated_parts(
+                command_completions,
+                layout_receipts,
+                publication,
+            );
+            Ok::<_, FeedbackSubmissionError>((receipt, post_admission_error))
         }));
         let mut callback_panics = PanicCollector::default();
         let submission = match submission {
@@ -702,14 +719,23 @@ impl ViewSession {
         };
         callback_panics.record(notification_batch.finish());
         let submission = submission.map(|submission| {
-            submission.map(|(operations, publication)| {
-                if let Some(publication) = &publication {
+            submission.and_then(|(receipt, post_admission_error)| {
+                if let Some(publication) = receipt.publication() {
                     let mut nodes = publication.published_nodes().to_vec();
                     nodes.extend_from_slice(publication.withdrawn_nodes());
                     callback_panics
                         .record(self.publish_layout_event(publication.layout_revision(), nodes));
                 }
-                FeedbackReceipt::new(operations, publication)
+                match post_admission_error {
+                    Some(source) if !command_identities.is_empty() => {
+                        Err(FeedbackSubmissionError::AfterCommandAdmission {
+                            source,
+                            receipt: Some(Box::new(receipt)),
+                        })
+                    }
+                    Some(source) => Err(FeedbackSubmissionError::Session(source)),
+                    None => Ok(receipt),
+                }
             })
         });
         callback_panics.record(view_event_batch.finish());

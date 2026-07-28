@@ -13,7 +13,9 @@ use jellyflow_core::{
 };
 use jellyflow_open_gpui::host::OpenGpuiSceneHost;
 use jellyflow_open_gpui::registry::{OpenGpuiNodeRegistry, OpenGpuiRendererRegistrationStatus};
-use jellyflow_runtime::commands::{ConnectionEdit, GraphCommand, IncidentEdgePolicy, TopologyEdit};
+use jellyflow_runtime::commands::{
+    CommandExecutionKind, ConnectionEdit, GraphCommand, IncidentEdgePolicy, TopologyEdit,
+};
 use jellyflow_runtime::graph::{
     CreateFromWireCandidates, Diagnostic, DiagnosticTarget, GraphRuntime, GraphRuntimeError,
 };
@@ -215,8 +217,7 @@ fn connected_input_hides_and_restores_retained_inline_state_across_history(
             )
             .with_label("connect shader input"),
         )
-        .expect("connect command")
-        .applied()
+        .applied_revision()
         .expect("connect applies");
     draw(cx);
 
@@ -242,8 +243,7 @@ fn connected_input_hides_and_restores_retained_inline_state_across_history(
             )
             .with_label("disconnect shader input"),
         )
-        .expect("disconnect command")
-        .applied()
+        .applied_revision()
         .expect("disconnect applies");
     draw(cx);
 
@@ -263,8 +263,7 @@ fn connected_input_hides_and_restores_retained_inline_state_across_history(
     let disconnected = runtime.snapshot().expect("disconnected shader snapshot");
     runtime
         .execute(GraphCommand::undo(disconnected.version()))
-        .expect("undo command")
-        .applied()
+        .applied_revision()
         .expect("undo applies");
     draw(cx);
     assert!(
@@ -283,8 +282,7 @@ fn connected_input_hides_and_restores_retained_inline_state_across_history(
     let undone = runtime.snapshot().expect("undone shader snapshot");
     runtime
         .execute(GraphCommand::redo(undone.version()))
-        .expect("redo command")
-        .applied()
+        .applied_revision()
         .expect("redo applies");
     draw(cx);
     assert!(
@@ -374,8 +372,7 @@ fn shader_wire_drop_filters_native_search_and_commits_one_atomic_topology_comman
 
     runtime
         .execute(GraphCommand::undo(snapshot.version()))
-        .expect("undo atomic create-from-wire")
-        .applied()
+        .applied_revision()
         .expect("undo applies");
     let undone = runtime.snapshot().expect("undone shader topology");
     assert_eq!(undone.graph().nodes().len(), 2);
@@ -811,8 +808,7 @@ fn shader_native_search_rebinds_a_stale_candidate_before_one_atomic_commit(
             node_id(),
             serde_json::json!({"changed": true}),
         ))
-        .expect("intervening shader edit")
-        .applied()
+        .applied_revision()
         .expect("intervening shader edit applies");
 
     cx.simulate_click(candidate.center(), Default::default());
@@ -1557,8 +1553,7 @@ fn occupied_shader_input_search_reconnects_atomically_and_undo_restores_the_edge
 
     runtime
         .execute(GraphCommand::undo(reconnected.version()))
-        .expect("undo reconnect search")
-        .applied()
+        .applied_revision()
         .expect("undo reconnect search applies");
     let undone = runtime.snapshot().expect("undone reconnect search");
     assert_eq!(undone.graph().nodes().len(), 2);
@@ -1592,8 +1587,7 @@ fn occupied_shader_reconnect_search_rebinds_stale_candidate_atomically(
             node_id(),
             serde_json::json!({"changed": true}),
         ))
-        .expect("intervening reconnect edit")
-        .applied()
+        .applied_revision()
         .expect("intervening reconnect edit applies");
     let history_after_intervening = runtime.history_state().unwrap();
 
@@ -1825,8 +1819,7 @@ fn typed_shader_catalog_ports_accept_compatible_and_reject_incompatible_commands
             typed_target_input_id(),
             NodeGraphConnectionMode::Strict,
         ))
-        .expect("compatible command")
-        .applied()
+        .applied_revision()
         .expect("float output connects to float input");
 
     let incompatible = native_runtime(two_catalog_shader_nodes(TypeDesc::String))
@@ -1834,19 +1827,15 @@ fn typed_shader_catalog_ports_accept_compatible_and_reject_incompatible_commands
     let before = incompatible
         .snapshot()
         .expect("before incompatible command");
-    let outcome = incompatible
-        .execute(GraphCommand::connect(
-            before.version(),
-            typed_edge_id(),
-            typed_source_output_id(),
-            typed_target_input_id(),
-            NodeGraphConnectionMode::Strict,
-        ))
-        .expect("typed rejection outcome");
-    assert_eq!(
-        outcome.rejection().expect("type mismatch").diagnostics()[0].key,
-        "connect.type_mismatch"
-    );
+    let completion = incompatible.execute(GraphCommand::connect(
+        before.version(),
+        typed_edge_id(),
+        typed_source_output_id(),
+        typed_target_input_id(),
+        NodeGraphConnectionMode::Strict,
+    ));
+    assert_eq!(completion.kind(), CommandExecutionKind::Rejected);
+    assert!(completion.diagnostic_message().is_some());
     assert!(before.ptr_eq(&incompatible.snapshot().expect("unchanged graph")));
     assert_eq!(incompatible.history_state().unwrap().undo_len(), 0);
 }
@@ -1867,30 +1856,21 @@ fn shader_profile_rejects_only_the_data_connection_that_closes_a_cycle() {
             typed_target_input_id(),
             NodeGraphConnectionMode::Strict,
         ))
-        .expect("acyclic connection outcome")
-        .applied()
+        .applied_revision()
         .expect("acyclic shader connection applies");
     let before = runtime.snapshot().expect("before cycle-closing command");
     let history_before = runtime.history_state().expect("before shader history");
 
-    let outcome = runtime
-        .execute(GraphCommand::connect(
-            before.version(),
-            EdgeId::from_u128(0x6131),
-            typed_target_output_id(),
-            typed_source_input_a_id(),
-            NodeGraphConnectionMode::Strict,
-        ))
-        .expect("cycle rejection outcome");
+    let completion = runtime.execute(GraphCommand::connect(
+        before.version(),
+        EdgeId::from_u128(0x6131),
+        typed_target_output_id(),
+        typed_source_input_a_id(),
+        NodeGraphConnectionMode::Strict,
+    ));
 
-    assert_eq!(
-        outcome
-            .rejection()
-            .expect("data cycle rejection")
-            .diagnostics()[0]
-            .key,
-        "connect.cycle"
-    );
+    assert_eq!(completion.kind(), CommandExecutionKind::Rejected);
+    assert!(completion.diagnostic_message().is_some());
     assert!(before.ptr_eq(&runtime.snapshot().expect("unchanged shader graph")));
     assert_eq!(runtime.history_state().unwrap(), history_before);
 }
@@ -1911,8 +1891,7 @@ fn blueprint_dynamic_pin_keeps_its_port_id_through_one_step_undo_and_redo() {
 
     runtime
         .execute(command)
-        .expect("add dynamic pin")
-        .applied()
+        .applied_revision()
         .expect("dynamic pin applies");
     let added = runtime.snapshot().expect("added pin snapshot");
     let added_node = added.graph().node(&blueprint_node_id()).unwrap();
@@ -1930,8 +1909,7 @@ fn blueprint_dynamic_pin_keeps_its_port_id_through_one_step_undo_and_redo() {
 
     runtime
         .execute(GraphCommand::undo(added.version()))
-        .expect("undo dynamic pin")
-        .applied()
+        .applied_revision()
         .expect("undo applies");
     let undone = runtime.snapshot().expect("undone snapshot");
     assert!(undone.graph().port(&dynamic_pin_id()).is_none());
@@ -1946,8 +1924,7 @@ fn blueprint_dynamic_pin_keeps_its_port_id_through_one_step_undo_and_redo() {
 
     runtime
         .execute(GraphCommand::redo(undone.version()))
-        .expect("redo dynamic pin")
-        .applied()
+        .applied_revision()
         .expect("redo applies");
     let redone = runtime.snapshot().expect("redone snapshot");
     assert_eq!(
@@ -1983,8 +1960,7 @@ fn blueprint_connected_pin_reorder_and_remove_are_one_atomic_history_step() {
             roughness.port_id(),
             NodeGraphConnectionMode::Strict,
         ))
-        .unwrap()
-        .applied()
+        .applied_revision()
         .expect("connect dynamic blueprint pin");
     apply_blueprint_pin_action(
         &runtime,
@@ -2018,7 +1994,10 @@ fn blueprint_connected_pin_reorder_and_remove_are_one_atomic_history_step() {
         IncidentEdgePolicy::Reject,
     )
     .unwrap();
-    assert!(runtime.execute(reject).unwrap().rejection().is_some());
+    assert_eq!(
+        runtime.execute(reject).kind(),
+        CommandExecutionKind::Rejected
+    );
     let after_reject = runtime.snapshot().unwrap();
     assert!(connected.ptr_eq(&after_reject));
     assert_eq!(runtime.history_state().unwrap(), history_before_reject);
@@ -2034,8 +2013,7 @@ fn blueprint_connected_pin_reorder_and_remove_are_one_atomic_history_step() {
     .unwrap();
     runtime
         .execute(cascade)
-        .unwrap()
-        .applied()
+        .applied_revision()
         .expect("cascade dynamic pin removal");
     let removed = runtime.snapshot().unwrap();
     assert_eq!(
@@ -2047,8 +2025,7 @@ fn blueprint_connected_pin_reorder_and_remove_are_one_atomic_history_step() {
 
     runtime
         .execute(GraphCommand::undo(removed.version()))
-        .unwrap()
-        .applied()
+        .applied_revision()
         .expect("undo atomic pin removal");
     let restored = runtime.snapshot().unwrap();
     assert_eq!(
@@ -2066,8 +2043,7 @@ fn blueprint_connected_pin_reorder_and_remove_are_one_atomic_history_step() {
 
     runtime
         .execute(GraphCommand::redo(restored.version()))
-        .unwrap()
-        .applied()
+        .applied_revision()
         .expect("redo atomic pin removal");
     let redone = runtime.snapshot().unwrap();
     assert_eq!(
@@ -2408,8 +2384,7 @@ fn blueprint_add_input_fills_a_sparse_name_without_replacing_stable_ports(
 
     runtime
         .execute(GraphCommand::undo(added.version()))
-        .expect("undo sparse pin fill")
-        .applied()
+        .applied_revision()
         .expect("sparse pin undo applies");
     let undone = runtime.snapshot().expect("undone sparse pin fill");
     assert!(undone.graph().port(&added_input_1).is_none());
@@ -2417,8 +2392,7 @@ fn blueprint_add_input_fills_a_sparse_name_without_replacing_stable_ports(
 
     runtime
         .execute(GraphCommand::redo(undone.version()))
-        .expect("redo sparse pin fill")
-        .applied()
+        .applied_revision()
         .expect("sparse pin redo applies");
     let redone = runtime.snapshot().expect("redone sparse pin fill");
     assert_eq!(
@@ -2921,8 +2895,7 @@ fn connect_shader_fixture_edge(runtime: &GraphRuntime) {
             input_a_id(),
             NodeGraphConnectionMode::Strict,
         ))
-        .expect("connect occupied shader input")
-        .applied()
+        .applied_revision()
         .expect("occupied shader input connection applies");
 }
 
@@ -3304,8 +3277,7 @@ fn apply_blueprint_pin_action(runtime: &GraphRuntime, action: BlueprintPinAction
     .expect("blueprint pin action command");
     runtime
         .execute(command)
-        .expect("execute blueprint pin action")
-        .applied()
+        .applied_revision()
         .expect("blueprint pin action applies");
 }
 

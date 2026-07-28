@@ -1906,7 +1906,7 @@ impl OpenGpuiSceneHost {
         if let Some(error) = result.command_pairing_error.take() {
             self.record_feedback_failure(None, error);
         }
-        resolutions.extend(self.settle_retained_command_batch(result.take_command_settlement()));
+        resolutions.extend(self.settle_retained_command_batch(result.take_command_batch_result()));
         match result.submission {
             OpenGpuiFrameTransactionSubmission::Submitted(disposition) => {
                 self.stats.feedback_submissions = self.stats.feedback_submissions.saturating_add(1);

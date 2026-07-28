@@ -674,8 +674,14 @@ fn connection_candidate_failure(
                 Some(InteractionTerminalReason::Noop) => "input_connection_drag_noop",
                 Some(InteractionTerminalReason::Rejected) => "input_connection_drag_rejected",
                 Some(InteractionTerminalReason::Conflict) => "input_connection_drag_conflict",
+                Some(InteractionTerminalReason::ExecutionFailed) => {
+                    "input_connection_drag_execution_failed"
+                }
                 Some(InteractionTerminalReason::TransportFailure) => {
                     "input_connection_drag_transport_failure"
+                }
+                Some(InteractionTerminalReason::Uncertain) => {
+                    "input_connection_drag_outcome_unknown"
                 }
                 Some(InteractionTerminalReason::Cancelled) => "input_connection_drag_cancelled",
                 Some(InteractionTerminalReason::OwnerRetired) => {

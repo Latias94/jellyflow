@@ -367,7 +367,7 @@ impl OpenGpuiSceneHost {
         cx: &mut open_gpui::App,
     ) -> Result<ViewCloseOutcome, OpenGpuiSceneHostCloseError> {
         let drain = self.commands.begin_close().map_err(command_close_error)?;
-        let journal_count = drain.len();
+        let journal_identities = drain.command_identities();
         let request = drain.combined_request(&request);
         let close = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.view.close_with_request(request)
@@ -387,20 +387,30 @@ impl OpenGpuiSceneHost {
                 result.map_err(command_close_error)?;
                 Err(OpenGpuiSceneHostCloseError::PanicDuringClose)
             }
-            Ok(Ok(outcome)) => {
+            Ok(Ok(mut outcome)) => {
                 let reason = outcome.reason();
-                let (journal_receipts, caller_outcome) =
-                    outcome.split_receipt_prefix(journal_count);
+                let journal_completions =
+                    match outcome.take_command_completions(&journal_identities) {
+                        Ok(completions) => completions,
+                        Err(error) => {
+                            let completed = self
+                                .commands
+                                .finish_close_after_panic(drain, reason)
+                                .map_err(command_close_error)?;
+                            self.finish_window_close_cleanup(completed, reason, window, cx);
+                            return Err(command_close_error(error.into()));
+                        }
+                    };
                 let completed = self
                     .commands
-                    .finish_close(drain, reason, journal_receipts)
+                    .finish_close(drain, reason, journal_completions)
                     .map_err(command_close_error)?;
                 let cleanup_panicked =
                     self.finish_window_close_cleanup(completed, reason, window, cx);
                 if cleanup_panicked {
                     Err(OpenGpuiSceneHostCloseError::PanicDuringClose)
                 } else {
-                    Ok(caller_outcome)
+                    Ok(outcome)
                 }
             }
             Ok(Err(ViewSessionError::Closed { reason })) => {

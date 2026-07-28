@@ -69,6 +69,7 @@ fn prepare_mixed_history(runtime: &GraphRuntime, node: NodeId) {
             node,
             serde_json::json!({ "step": 1 }),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("first history seed applies")
@@ -79,12 +80,14 @@ fn prepare_mixed_history(runtime: &GraphRuntime, node: NodeId) {
             node,
             serde_json::json!({ "step": 2 }),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("second history seed applies")
         .version();
     runtime
         .execute(GraphCommand::undo(second))
+        .into_result()
         .unwrap()
         .applied()
         .expect("history seed undo applies");
@@ -97,6 +100,7 @@ fn prepare_mixed_history(runtime: &GraphRuntime, node: NodeId) {
 fn advance_with_redo(runtime: &GraphRuntime) {
     runtime
         .execute(GraphCommand::redo(runtime.snapshot().unwrap().version()))
+        .into_result()
         .unwrap()
         .applied()
         .expect("redo advances the runtime");
@@ -129,8 +133,15 @@ fn assert_foreign_command_has_zero_side_effects(
         ),
     }
     let command_provenance = command.expected_version().provenance();
-    let error = runtime
-        .execute(command)
+    let command_identity = command.identity().clone();
+    let completion = runtime.execute(command);
+    assert_eq!(completion.identity(), &command_identity);
+    assert_eq!(
+        completion.kind(),
+        crate::runtime::commands::CommandExecutionKind::Failed,
+    );
+    let error = completion
+        .into_result()
         .expect_err("foreign command must fail before conflict handling");
     let GraphRuntimeError::ForeignCommandRuntime {
         command: actual_command,
@@ -274,6 +285,7 @@ fn foreign_command_provenance_wins_over_stale_conflicts_without_side_effects() {
             ids.target,
             serde_json::json!({ "local": "still accepted" }),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("the target runtime remains usable after foreign rejections");

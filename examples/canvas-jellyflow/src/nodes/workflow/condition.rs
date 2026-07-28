@@ -1469,7 +1469,10 @@ mod tests {
             IncidentEdgePolicy::Reject,
         )
         .unwrap();
-        runtime.execute(add).unwrap().applied().unwrap();
+        runtime
+            .execute(add)
+            .applied_revision()
+            .expect("condition case addition applies");
         let after_add = runtime.snapshot().unwrap();
         assert_eq!(
             after_add.graph().node(&node_id).unwrap().ports.last(),
@@ -1486,7 +1489,10 @@ mod tests {
             IncidentEdgePolicy::Reject,
         )
         .unwrap();
-        runtime.execute(reorder).unwrap().applied().unwrap();
+        runtime
+            .execute(reorder)
+            .applied_revision()
+            .expect("condition case reorder applies");
         let after_reorder = runtime.snapshot().unwrap();
         assert_eq!(condition_cases(&after_reorder, node_id).unwrap()[0], added);
         assert_eq!(
@@ -1503,7 +1509,10 @@ mod tests {
             IncidentEdgePolicy::Reject,
         )
         .unwrap();
-        runtime.execute(remove).unwrap().applied().unwrap();
+        runtime
+            .execute(remove)
+            .applied_revision()
+            .expect("condition case removal applies");
         let after_remove = runtime.snapshot().unwrap();
         assert_eq!(
             condition_outputs(&after_remove, node_id)

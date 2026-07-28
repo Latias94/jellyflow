@@ -4,7 +4,10 @@ use std::rc::Rc;
 
 use jellyflow_core::core::{NodeId, PortId};
 
-use crate::runtime::commands::{GraphCommand, GraphCommandOutcome};
+use crate::runtime::commands::{
+    CommandCompletionCorrelationError, CommandExecutionCompletion, CommandExecutionCompletions,
+    GraphCommand, GraphCommandIdentity,
+};
 pub use crate::runtime::geometry::HandlePosition;
 use crate::runtime::view_session::{ViewId, ViewSessionError};
 
@@ -447,6 +450,51 @@ pub enum FeedbackSubmissionError {
         sequence: u64,
         reason: StaleFrameReason,
     },
+    #[error("feedback contains the same command identity more than once: {identity:?}")]
+    DuplicateCommandIdentity { identity: GraphCommandIdentity },
+    #[error("feedback failed after at least one command was admitted: {source}")]
+    AfterCommandAdmission {
+        source: ViewSessionError,
+        receipt: Option<Box<FeedbackReceipt>>,
+    },
+}
+
+impl FeedbackSubmissionError {
+    pub fn post_admission_receipt(&self) -> Option<&FeedbackReceipt> {
+        match self {
+            Self::AfterCommandAdmission { receipt, .. } => receipt.as_deref(),
+            Self::Session(_)
+            | Self::ForeignFrame { .. }
+            | Self::ReplayedFrame { .. }
+            | Self::FutureFrame { .. }
+            | Self::StaleFrame { .. }
+            | Self::DuplicateCommandIdentity { .. } => None,
+        }
+    }
+
+    pub fn into_post_admission_receipt(self) -> Option<FeedbackReceipt> {
+        match self {
+            Self::AfterCommandAdmission { receipt, .. } => receipt.map(|receipt| *receipt),
+            Self::Session(_)
+            | Self::ForeignFrame { .. }
+            | Self::ReplayedFrame { .. }
+            | Self::FutureFrame { .. }
+            | Self::StaleFrame { .. }
+            | Self::DuplicateCommandIdentity { .. } => None,
+        }
+    }
+
+    pub fn take_post_admission_receipt(&mut self) -> Option<FeedbackReceipt> {
+        match self {
+            Self::AfterCommandAdmission { receipt, .. } => receipt.take().map(|receipt| *receipt),
+            Self::Session(_)
+            | Self::ForeignFrame { .. }
+            | Self::ReplayedFrame { .. }
+            | Self::FutureFrame { .. }
+            | Self::StaleFrame { .. }
+            | Self::DuplicateCommandIdentity { .. } => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -464,38 +512,27 @@ pub enum LayoutNodeStatus {
     DuplicateNode,
 }
 
-#[derive(Debug)]
-pub enum FeedbackOperationReceipt {
-    Command {
-        outcome: Box<Result<GraphCommandOutcome, ViewSessionError>>,
-    },
-    Layout {
-        node: NodeId,
-        status: LayoutNodeStatus,
-    },
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LayoutOperationReceipt {
+    node: NodeId,
+    status: Option<LayoutNodeStatus>,
 }
 
-impl FeedbackOperationReceipt {
-    pub fn layout_status(&self) -> Option<LayoutNodeStatus> {
-        match self {
-            Self::Layout { status, .. } => Some(*status),
-            Self::Command { .. } => None,
-        }
+impl LayoutOperationReceipt {
+    pub(crate) fn pending(node: NodeId) -> Self {
+        Self { node, status: None }
     }
 
-    pub fn command_outcome(&self) -> Option<&Result<GraphCommandOutcome, ViewSessionError>> {
-        match self {
-            Self::Command { outcome } => Some(outcome),
-            Self::Layout { .. } => None,
-        }
+    pub(crate) fn set_status(&mut self, status: LayoutNodeStatus) {
+        self.status = Some(status);
     }
 
-    /// Consumes this receipt when it represents a command operation.
-    pub fn into_command_outcome(self) -> Option<Result<GraphCommandOutcome, ViewSessionError>> {
-        match self {
-            Self::Command { outcome } => Some(*outcome),
-            Self::Layout { .. } => None,
-        }
+    pub fn node(&self) -> NodeId {
+        self.node
+    }
+
+    pub fn status(&self) -> Option<LayoutNodeStatus> {
+        self.status
     }
 }
 
@@ -559,23 +596,60 @@ impl LayoutPublicationReceipt {
 
 #[derive(Debug)]
 pub struct FeedbackReceipt {
-    operations: Vec<FeedbackOperationReceipt>,
+    command_completions: CommandExecutionCompletions,
+    layouts: Vec<LayoutOperationReceipt>,
     publication: Option<LayoutPublicationReceipt>,
 }
 
 impl FeedbackReceipt {
-    pub(crate) fn new(
-        operations: Vec<FeedbackOperationReceipt>,
+    pub(crate) fn from_prevalidated_parts(
+        command_completions: Vec<CommandExecutionCompletion>,
+        layouts: Vec<LayoutOperationReceipt>,
         publication: Option<LayoutPublicationReceipt>,
     ) -> Self {
         Self {
-            operations,
+            command_completions: CommandExecutionCompletions::from_prevalidated_ordered(
+                command_completions,
+            ),
+            layouts,
             publication,
         }
     }
 
-    pub fn operations(&self) -> &[FeedbackOperationReceipt] {
-        &self.operations
+    pub fn command_completions(&self) -> impl Iterator<Item = &CommandExecutionCompletion> {
+        self.command_completions.iter()
+    }
+
+    pub fn command_completion(
+        &self,
+        identity: &GraphCommandIdentity,
+    ) -> Result<&CommandExecutionCompletion, CommandCompletionCorrelationError> {
+        self.command_completions.get(identity)
+    }
+
+    pub fn take_command_completion(
+        &mut self,
+        identity: &GraphCommandIdentity,
+    ) -> Result<CommandExecutionCompletion, CommandCompletionCorrelationError> {
+        self.command_completions.take(identity)
+    }
+
+    pub fn take_command_completions(
+        &mut self,
+        expected: &[GraphCommandIdentity],
+    ) -> Result<Vec<CommandExecutionCompletion>, CommandCompletionCorrelationError> {
+        self.command_completions.take_all(expected)
+    }
+
+    pub fn take_exact_command_completions(
+        &mut self,
+        expected: &[GraphCommandIdentity],
+    ) -> Result<Vec<CommandExecutionCompletion>, CommandCompletionCorrelationError> {
+        self.command_completions.take_exact(expected)
+    }
+
+    pub fn layout_receipts(&self) -> impl Iterator<Item = LayoutOperationReceipt> + '_ {
+        self.layouts.iter().copied()
     }
 
     pub fn publication(&self) -> Option<&LayoutPublicationReceipt> {
@@ -586,15 +660,9 @@ impl FeedbackReceipt {
         self.publication
             .as_ref()
             .is_some_and(|publication| publication.route_recomputations() > 0)
-            || self.operations.iter().any(|receipt| {
-                receipt
-                    .layout_status()
-                    .is_some_and(|status| matches!(status, LayoutNodeStatus::Stale))
-            })
-    }
-
-    /// Consumes this feedback receipt and preserves operation ordering.
-    pub fn into_operations(self) -> Vec<FeedbackOperationReceipt> {
-        self.operations
+            || self
+                .layouts
+                .iter()
+                .any(|receipt| matches!(receipt.status, None | Some(LayoutNodeStatus::Stale)))
     }
 }

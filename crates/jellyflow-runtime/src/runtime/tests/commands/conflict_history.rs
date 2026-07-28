@@ -14,6 +14,7 @@ fn stale_command_returns_current_snapshot_and_zero_side_effects() {
             nodes[0],
             serde_json::json!({ "value": 1 }),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("first command applies");
@@ -26,6 +27,7 @@ fn stale_command_returns_current_snapshot_and_zero_side_effects() {
             nodes[0],
             serde_json::json!({ "value": 2 }),
         ))
+        .into_result()
         .unwrap();
     let conflict = outcome.conflict().expect("stale command conflicts");
 
@@ -92,6 +94,7 @@ fn stale_topology_and_connection_conflicts_include_current_dependencies() {
             ids.target,
             serde_json::json!({ "winner": true }),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("winning command applies");
@@ -120,6 +123,7 @@ fn stale_topology_and_connection_conflicts_include_current_dependencies() {
                 IncidentEdgePolicy::Reject,
             ),
         ))
+        .into_result()
         .unwrap();
     let footprint = replace_conflict
         .conflict()
@@ -151,7 +155,7 @@ fn stale_topology_and_connection_conflicts_include_current_dependencies() {
             NodeGraphConnectionMode::Strict,
         ),
     ] {
-        let outcome = runtime.execute(command).unwrap();
+        let outcome = runtime.execute(command).into_result().unwrap();
         let footprint = outcome
             .conflict()
             .expect("connection command is stale")
@@ -187,6 +191,7 @@ fn stale_history_command_conflicts_without_consuming_history() {
             nodes[0],
             serde_json::json!({ "value": 1 }),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("seed command applies");
@@ -199,7 +204,10 @@ fn stale_history_command_conflicts_without_consuming_history() {
         .subscribe(move |_| callback_count.set(callback_count.get() + 1))
         .unwrap();
 
-    let outcome = runtime.execute(GraphCommand::undo(stale_version)).unwrap();
+    let outcome = runtime
+        .execute(GraphCommand::undo(stale_version))
+        .into_result()
+        .unwrap();
     let conflict = outcome.conflict().expect("stale undo conflicts");
 
     assert_eq!(conflict.expected_revision(), 0);
@@ -229,7 +237,7 @@ fn empty_history_commands_are_zero_side_effect_noops() {
         GraphCommand::undo(before.version()),
         GraphCommand::redo(before.version()),
     ] {
-        let outcome = runtime.execute(command).unwrap();
+        let outcome = runtime.execute(command).into_result().unwrap();
         let GraphCommandOutcome::Noop(noop) = outcome else {
             panic!("empty history command must be a no-op");
         };
@@ -312,6 +320,7 @@ fn failed_history_install_preserves_graph_history_stats_and_notifications() {
             runtime.snapshot().unwrap().version(),
             TopologyEdit::new().remove_node(nodes[0], IncidentEdgePolicy::Reject),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("node removal applies");
@@ -328,6 +337,7 @@ fn failed_history_install_preserves_graph_history_stats_and_notifications() {
 
     let error = runtime
         .execute(GraphCommand::undo(before.version()))
+        .into_result()
         .expect_err("incarnation allocation fails before history installation");
 
     assert!(matches!(error, GraphRuntimeError::IdentityExhausted));

@@ -9,8 +9,8 @@ use crate::runtime::graph_runtime::GraphRuntime;
 use crate::runtime::interaction::{
     CanvasInteractionConfig, CanvasInteractionEffect, CanvasInteractionError,
     CanvasInteractionPhase, CanvasInteractionSession, CanvasInteractionUpdate, CanvasPressTarget,
-    CommandSettlement, FreshGraphMutationBindError, InteractionGraphSubmission,
-    InteractionGraphSubmissionBindError, InteractionTicketId,
+    FreshGraphMutationBindError, InteractionGraphSubmission, InteractionGraphSubmissionBindError,
+    InteractionTicketId,
 };
 use crate::runtime::tests::fixtures::set_selection_by_id;
 use crate::runtime::view_session::ViewSessionOptions;
@@ -50,8 +50,9 @@ fn mixed_selection_delete_is_one_policy_filtered_topology_and_one_undo_boundary(
         .bind_submission(submission)
         .unwrap()
         .expect("non-empty selection command");
-    view.execute(command).unwrap().applied().unwrap();
-    session.settle(ticket, CommandSettlement::Applied).unwrap();
+    let completion = view.execute(command).unwrap();
+    assert!(completion.result().unwrap().applied().is_some());
+    session.complete_submission(ticket, completion).unwrap();
 
     let applied = view.graph_snapshot().unwrap();
     assert!(applied.graph().node(&fixture.deletable_node).is_none());
@@ -69,6 +70,8 @@ fn mixed_selection_delete_is_one_policy_filtered_topology_and_one_undo_boundary(
     assert_eq!(view.selection().unwrap().groups(), [fixture.group]);
 
     view.execute(GraphCommand::undo(applied.version()))
+        .unwrap()
+        .into_result()
         .unwrap()
         .applied()
         .unwrap();
@@ -141,19 +144,21 @@ fn empty_foreign_stale_and_active_selection_deletes_do_not_gain_authority() {
     let update = session.delete_selection().unwrap();
     let mut submissions = submit_effects(update);
     assert_eq!(submissions.len(), 1);
-    let (_, submission) = submissions.pop().unwrap();
+    let (ticket, submission) = submissions.pop().unwrap();
     let before_retirement = runtime.snapshot().unwrap();
     runtime
         .execute(GraphCommand::topology(
             before_retirement.version(),
             TopologyEdit::new().remove_node(fixture.deletable_node, IncidentEdgePolicy::Cascade),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .unwrap();
     let retired = runtime.snapshot().unwrap();
     runtime
         .execute(GraphCommand::undo(retired.version()))
+        .into_result()
         .unwrap()
         .applied()
         .unwrap();
@@ -164,6 +169,7 @@ fn empty_foreign_stale_and_active_selection_deletes_do_not_gain_authority() {
         ))
             if node == fixture.deletable_node
     ));
+    session.submission_not_dispatched(ticket).unwrap();
 
     first.close().unwrap();
     assert!(matches!(
@@ -191,7 +197,7 @@ fn selection_delete_binding_uses_the_session_runtime_even_when_graph_ids_match()
     let mut session =
         CanvasInteractionSession::attach(&first_view, CanvasInteractionConfig::default()).unwrap();
     let mut submissions = submit_effects(session.delete_selection().unwrap());
-    let (_, submission) = submissions.pop().expect("one admitted deletion");
+    let (ticket, submission) = submissions.pop().expect("one admitted deletion");
     assert!(submissions.is_empty());
 
     let before = second_runtime.snapshot().unwrap();
@@ -200,11 +206,13 @@ fn selection_delete_binding_uses_the_session_runtime_even_when_graph_ids_match()
         .bind_submission(submission)
         .expect("the session obtains its own authoritative snapshot")
         .expect("the selected node produces a deletion command");
-    first_runtime
-        .execute(command)
+    let completion = first_runtime.execute(command);
+    completion
+        .result()
         .expect("the command belongs to the session runtime")
         .applied()
         .expect("the session-owned command applies");
+    session.complete_submission(ticket, completion).unwrap();
     assert!(
         first_runtime
             .snapshot()

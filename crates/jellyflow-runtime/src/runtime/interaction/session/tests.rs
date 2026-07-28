@@ -7,6 +7,7 @@ use jellyflow_core::interaction::NodeGraphConnectionMode;
 
 use super::*;
 use crate::rules::EdgeEndpoint;
+use crate::runtime::commands::GraphCommand;
 use crate::runtime::geometry::{
     EdgeEndpointPosition, EdgePosition, HandlePosition, resolve_edge_route_path,
 };
@@ -861,14 +862,14 @@ fn direct_connection_reprobes_on_release_and_keeps_preview_until_terminal_receip
     assert_eq!(connection.ticket(), Some(ticket));
     assert_eq!(connection.preview_target(), CanvasPoint { x: 24.0, y: 8.0 });
 
-    session.settle(ticket, CommandSettlement::Rejected).unwrap();
+    complete_with_kind(&mut session, ticket, CommandExecutionKind::Rejected).unwrap();
     assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
     assert_eq!(
         session.presentation().terminal(),
         Some(InteractionTerminalReason::Rejected)
     );
 
-    let late = session.settle(ticket, CommandSettlement::Applied).unwrap();
+    let late = session.submission_outcome_unknown(ticket).unwrap();
     assert!(late.effects().is_empty());
     assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
 }
@@ -1663,7 +1664,7 @@ fn reconnect_suppresses_old_edge_through_commit_and_restores_it_after_conflict()
         Some(edge)
     );
 
-    session.settle(ticket, CommandSettlement::Conflict).unwrap();
+    complete_with_kind(&mut session, ticket, CommandExecutionKind::Conflict).unwrap();
     assert!(session.presentation().connection().is_none());
     assert_eq!(
         session.presentation().terminal(),
@@ -1833,7 +1834,7 @@ fn create_from_wire_refresh_reuses_atomic_topology_and_returns_to_search_on_conf
         .refresh_create_from_wire_commit_from_snapshot(ticket, &snapshot)
         .unwrap();
     assert!(duplicate.effects().is_empty());
-    session.settle(ticket, CommandSettlement::Conflict).unwrap();
+    complete_with_kind(&mut session, ticket, CommandExecutionKind::Conflict).unwrap();
     assert_eq!(
         session.presentation().phase(),
         CanvasInteractionPhase::ConnectionSearch
@@ -2116,7 +2117,7 @@ fn search_failure_retry_and_rejected_selection_keep_one_search_owner() {
         .select_search_result(search_selection(retry_request))
         .unwrap();
     let ticket = submit_ticket(&selected);
-    session.settle(ticket, CommandSettlement::Rejected).unwrap();
+    complete_with_kind(&mut session, ticket, CommandExecutionKind::Rejected).unwrap();
     assert_eq!(
         session.presentation().phase(),
         CanvasInteractionPhase::ConnectionSearch
@@ -2260,7 +2261,7 @@ fn interaction_identities_are_namespaced_per_canvas_session() {
     assert_eq!(second_ticket.0.sequence, 1);
     assert_ne!(first_ticket, second_ticket);
     assert!(matches!(
-        second_commit.settle(first_ticket, CommandSettlement::Applied),
+        second_commit.submission_not_dispatched(first_ticket),
         Err(CanvasInteractionError::ForeignInteractionSession { .. })
     ));
     assert_eq!(
@@ -2282,9 +2283,12 @@ fn interaction_identities_are_namespaced_per_canvas_session() {
         second_commit.presentation().connection().unwrap().ticket(),
         Some(second_ticket)
     );
-    second_commit
-        .settle(second_ticket, CommandSettlement::Rejected)
-        .unwrap();
+    complete_with_kind(
+        &mut second_commit,
+        second_ticket,
+        CommandExecutionKind::Rejected,
+    )
+    .unwrap();
     assert_eq!(
         second_commit.presentation().phase(),
         CanvasInteractionPhase::Idle
@@ -2336,8 +2340,7 @@ fn older_same_session_submission_is_superseded_by_the_current_ticket() {
     let (_runtime, view, mut session) = bound_test_session();
     let stale = bound_nudge_submission(&view, &mut session);
     let stale_ticket = stale.ticket();
-    session
-        .settle(stale_ticket, CommandSettlement::Rejected)
+    complete_with_kind(&mut session, stale_ticket, CommandExecutionKind::Rejected)
         .expect("first nudge settles before the successor");
     let current = bound_nudge_submission(&view, &mut session);
     let current_ticket = current.ticket();
@@ -2387,7 +2390,7 @@ fn foreign_submission_and_ticket_fail_before_an_unavailable_bound_view_is_touche
         }) if expected == target.id() && actual == resume_source.id()
     ));
     assert!(matches!(
-        target.settle(foreign_ticket, CommandSettlement::Applied),
+        target.submission_not_dispatched(foreign_ticket),
         Err(CanvasInteractionError::ForeignInteractionSession {
             expected,
             actual,
@@ -2484,7 +2487,7 @@ fn late_same_session_callbacks_keep_their_stale_semantics_while_the_view_is_busy
         assert!(query_update.effects().is_empty());
 
         let settle_update = settle_session
-            .settle(stale_ticket, CommandSettlement::Applied)
+            .submission_outcome_unknown(stale_ticket)
             .expect("stale settlement is a no-op");
         assert!(settle_update.queries().is_empty());
         assert!(settle_update.effects().is_empty());
@@ -2594,9 +2597,7 @@ fn old_prefix_ticket_does_not_reconcile_a_retired_current_owner() {
 
     let first_submission = begin_bound_search_submission(&mut session, &view, start.clone());
     let first_ticket = first_submission.ticket();
-    session
-        .settle(first_ticket, CommandSettlement::Applied)
-        .unwrap();
+    complete_with_kind(&mut session, first_ticket, CommandExecutionKind::Applied).unwrap();
     let current_submission = begin_bound_search_submission(&mut session, &view, start);
     let current_ticket = current_submission.ticket();
     assert_ne!(first_ticket, current_ticket);
@@ -2610,6 +2611,7 @@ fn old_prefix_ticket_does_not_reconcile_a_retired_current_owner() {
                 crate::runtime::commands::IncidentEdgePolicy::Reject,
             ),
         ))
+        .into_result()
         .expect("owner retirement command")
         .applied()
         .expect("owner retirement applies");
@@ -2674,6 +2676,7 @@ fn replaced_source_port_cannot_reuse_an_old_search_capability() {
                 crate::runtime::commands::IncidentEdgePolicy::Reject,
             ),
         ))
+        .into_result()
         .expect("source retirement command")
         .applied()
         .expect("source retirement applies");
@@ -2682,6 +2685,7 @@ fn replaced_source_port_cannot_reuse_an_old_search_capability() {
         .execute(crate::runtime::commands::GraphCommand::undo(
             retired.version(),
         ))
+        .into_result()
         .expect("source restore command")
         .applied()
         .expect("source restore applies");
@@ -3284,8 +3288,8 @@ fn node_drag_snaps_relative_intent_and_conflict_is_not_retried() {
     assert_eq!(intent.delta(), CanvasPoint { x: 10.0, y: 10.0 });
     assert!(effects.is_empty());
 
-    session.settle(ticket, CommandSettlement::Conflict).unwrap();
-    let late = session.settle(ticket, CommandSettlement::Applied).unwrap();
+    complete_with_kind(&mut session, ticket, CommandExecutionKind::Conflict).unwrap();
+    let late = session.submission_outcome_unknown(ticket).unwrap();
     assert!(late.effects().is_empty());
     assert_eq!(
         session.presentation().terminal(),
@@ -3574,7 +3578,7 @@ fn edge_delete_requires_authoritative_permission_and_owns_one_ticket_until_settl
         Err(CanvasInteractionError::AlreadyActive)
     ));
 
-    let settled = session.settle(ticket, CommandSettlement::Rejected).unwrap();
+    let settled = complete_with_kind(&mut session, ticket, CommandExecutionKind::Rejected).unwrap();
     assert!(settled.effects().is_empty());
     assert!(settled.damage().edges);
     assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
@@ -3582,7 +3586,7 @@ fn edge_delete_requires_authoritative_permission_and_owns_one_ticket_until_settl
         session.presentation().terminal(),
         Some(InteractionTerminalReason::Rejected)
     );
-    let late = session.settle(ticket, CommandSettlement::Applied).unwrap();
+    let late = session.submission_outcome_unknown(ticket).unwrap();
     assert!(late.effects().is_empty());
     assert_eq!(
         session.presentation().terminal(),
@@ -3668,14 +3672,31 @@ fn reconnect_start_resolves_graph_topology_and_endpoint_specific_route_facts() {
 #[test]
 fn retiring_an_edge_during_delete_preserves_the_ticket_for_fresh_bind_noop() {
     let edge = EdgeId::from_u128(24);
-    let route = published_edge_route(edge, true, EdgeReconnectable::Bool(true));
-    let mut session = test_session(CanvasInteractionConfig::default());
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(reconnect_graph(edge))
+        .expect("edge-delete runtime");
+    let view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("edge-delete view");
+    let snapshot = runtime.snapshot().expect("edge-delete snapshot");
+    let route =
+        published_edge_route_for_snapshot(&snapshot, edge, true, EdgeReconnectable::Bool(true));
+    let mut session = CanvasInteractionSession::attach(&view, CanvasInteractionConfig::default())
+        .expect("edge-delete interaction");
     let submitted = session
-        .delete_edge_at_version(&route, test_graph_version())
+        .delete_edge_at_version(&route, snapshot.version())
         .unwrap();
-    let ticket = submit_ticket(&submitted);
+    let submission = take_submission(submitted);
+    let ticket = submission.ticket();
 
-    let retired = session.owner_retired(InteractionOwner::Edge(edge_instance(edge)));
+    runtime
+        .execute(GraphCommand::disconnect(snapshot.version(), edge))
+        .into_result()
+        .expect("external edge retirement executes")
+        .applied()
+        .expect("external edge retirement applies");
+
+    let retired = session.owner_retired(InteractionOwner::Edge(route.instance()));
     assert!(retired.effects().is_empty());
     assert_eq!(
         session.presentation().phase(),
@@ -3683,7 +3704,8 @@ fn retiring_an_edge_during_delete_preserves_the_ticket_for_fresh_bind_noop() {
     );
     assert_eq!(session.presentation().active_edge(), Some(route.instance()));
 
-    session.settle(ticket, CommandSettlement::Noop).unwrap();
+    assert!(session.bind_submission(submission).unwrap().is_none());
+    session.complete_submission_without_command(ticket).unwrap();
     assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
     assert_eq!(
         session.presentation().terminal(),
@@ -3798,9 +3820,7 @@ fn every_node_drag_member_owns_the_armed_dragging_and_committing_phases() {
         committing.presentation().phase(),
         CanvasInteractionPhase::Idle
     );
-    let late = committing
-        .settle(ticket, CommandSettlement::Applied)
-        .unwrap();
+    let late = committing.submission_outcome_unknown(ticket).unwrap();
     assert!(late.effects().is_empty());
     assert_eq!(
         committing.presentation().terminal(),
@@ -3898,6 +3918,50 @@ fn bound_test_session() -> (GraphRuntime, ViewSession, CanvasInteractionSession)
     let session = CanvasInteractionSession::attach(&view, CanvasInteractionConfig::default())
         .expect("bound interaction session");
     (runtime, view, session)
+}
+
+fn complete_with_kind(
+    session: &mut CanvasInteractionSession,
+    ticket: InteractionTicketId,
+    expected_kind: CommandExecutionKind,
+) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
+    use crate::runtime::commands::GraphCommand;
+
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(prospective_graph())
+        .expect("completion fixture runtime");
+    let version = runtime
+        .snapshot()
+        .expect("completion fixture snapshot")
+        .version();
+    let command = match expected_kind {
+        CommandExecutionKind::Applied | CommandExecutionKind::Conflict => {
+            GraphCommand::set_node_position(version, source_node(), CanvasPoint { x: 1.0, y: 0.0 })
+        }
+        CommandExecutionKind::Noop => {
+            GraphCommand::set_node_position(version, source_node(), CanvasPoint::default())
+        }
+        CommandExecutionKind::Rejected => GraphCommand::set_node_position(
+            version,
+            NodeId::from_u128(u128::MAX),
+            CanvasPoint { x: 1.0, y: 0.0 },
+        ),
+        CommandExecutionKind::Failed => {
+            panic!("this interaction fixture does not request transport failures")
+        }
+    };
+    if expected_kind == CommandExecutionKind::Conflict {
+        let advance = runtime.execute(GraphCommand::set_node_position(
+            version,
+            source_node(),
+            CanvasPoint { x: 2.0, y: 0.0 },
+        ));
+        assert_eq!(advance.kind(), CommandExecutionKind::Applied);
+    }
+    let completion = runtime.execute(command);
+    assert_eq!(completion.kind(), expected_kind);
+    session.bind_completion_for_test(ticket, &completion);
+    session.complete_submission(ticket, completion)
 }
 
 fn bound_nudge_submission(

@@ -377,10 +377,9 @@ pub fn compare_observations(
 
 /// Returns every command settlement used by canonical mutation scenarios.
 #[must_use]
-pub const fn canonical_settlements() -> [ConformanceSettlement; 5] {
+pub const fn canonical_settlements() -> [ConformanceSettlement; 4] {
     [
         ConformanceSettlement::Applied,
-        ConformanceSettlement::Noop,
         ConformanceSettlement::Rejected,
         ConformanceSettlement::Conflict,
         ConformanceSettlement::TransportFailure,

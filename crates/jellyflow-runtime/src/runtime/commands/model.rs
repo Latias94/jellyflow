@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use crate::graph_kernel::GraphMutationFootprint;
@@ -35,7 +36,7 @@ struct GraphCommandIdentityMarker;
 pub struct GraphCommandIdentity(Arc<GraphCommandIdentityMarker>);
 
 impl GraphCommandIdentity {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self(Arc::new(GraphCommandIdentityMarker))
     }
 }
@@ -53,6 +54,12 @@ impl PartialEq for GraphCommandIdentity {
 }
 
 impl Eq for GraphCommandIdentity {}
+
+impl Hash for GraphCommandIdentity {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        std::ptr::hash(Arc::as_ptr(&self.0), state);
+    }
+}
 
 #[derive(Debug, Clone)]
 pub(super) enum GraphCommandAction {

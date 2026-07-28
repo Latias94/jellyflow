@@ -5,12 +5,14 @@ use jellyflow_core::{
     Port, PortCapacity, PortDirection, PortId, PortKey, PortKind,
 };
 use jellyflow_egui::{EguiNativeFrameHost, EguiNativeFrameOutcome};
-use jellyflow_runtime::commands::{GraphCommand, IncidentEdgePolicy, TopologyEdit, TopologyPort};
+use jellyflow_runtime::commands::{
+    CommandExecutionKind, GraphCommand, IncidentEdgePolicy, TopologyEdit, TopologyPort,
+};
 use jellyflow_runtime::geometry::HandlePosition;
 use jellyflow_runtime::graph::{GraphRuntime, GraphSnapshot};
 use jellyflow_runtime::view::{
-    AdapterEnvironment, FeedbackOperationReceipt, FrameBoundsSource, FrameRequest,
-    LayoutNodeStatus, RendererStamp, ViewSession, ViewSessionOptions,
+    AdapterEnvironment, FrameBoundsSource, FrameRequest, LayoutNodeStatus, RendererStamp,
+    ViewSession, ViewSessionOptions,
 };
 
 const TRACER_RENDERER_KEY: &str = "test.adapter-conformance.native";
@@ -349,25 +351,21 @@ fn native_vertical_tracer_normalizes_protocol_outcomes_without_widget_abstractio
 }
 
 fn normalized_operations(outcome: &EguiNativeFrameOutcome) -> Vec<NormalizedOperation> {
-    outcome
+    let mut operations = outcome
         .receipt()
-        .operations()
-        .iter()
-        .filter_map(|operation| match operation {
-            FeedbackOperationReceipt::Command { outcome }
-                if outcome
-                    .as_ref()
-                    .as_ref()
-                    .is_ok_and(|command| command.applied().is_some()) =>
-            {
-                Some(NormalizedOperation::CommandApplied)
-            }
-            FeedbackOperationReceipt::Layout { status, .. } => {
-                Some(NormalizedOperation::Layout(*status))
-            }
-            FeedbackOperationReceipt::Command { .. } => None,
+        .command_completions()
+        .filter_map(|completion| {
+            (completion.kind() == CommandExecutionKind::Applied)
+                .then_some(NormalizedOperation::CommandApplied)
         })
-        .collect()
+        .collect::<Vec<_>>();
+    operations.extend(
+        outcome
+            .receipt()
+            .layout_receipts()
+            .filter_map(|receipt| receipt.status().map(NormalizedOperation::Layout)),
+    );
+    operations
 }
 
 fn published_ports(host: &EguiNativeFrameHost, node: NodeId) -> Vec<PortId> {
@@ -494,7 +492,11 @@ fn unknown_kind_fallback_is_diagnostic_and_measures_every_opaque_real_port() {
         Some(FrameBoundsSource::ProtocolFallback)
     );
     assert!(matches!(
-        outcome.receipt().operations()[0].layout_status(),
+        outcome
+            .receipt()
+            .layout_receipts()
+            .next()
+            .and_then(|receipt| receipt.status()),
         Some(LayoutNodeStatus::Published | LayoutNodeStatus::Unchanged),
     ));
 

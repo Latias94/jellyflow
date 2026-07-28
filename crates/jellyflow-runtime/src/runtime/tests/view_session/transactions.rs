@@ -42,6 +42,7 @@ fn node_id_reuse_clears_selection_instead_of_selecting_the_successor() {
             admitted.version(),
             TopologyEdit::new().remove_node(ids[0], IncidentEdgePolicy::Reject),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("node retirement applies");
@@ -50,6 +51,7 @@ fn node_id_reuse_clears_selection_instead_of_selecting_the_successor() {
             runtime.snapshot().unwrap().version(),
             TopologyEdit::new().add_node(ids[0], replacement, []),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("same-ID node successor applies");
@@ -99,6 +101,7 @@ fn edge_id_reuse_clears_selection_and_route_paint_state() {
 
     runtime
         .execute(GraphCommand::disconnect(admitted.version(), ids.edge))
+        .into_result()
         .unwrap()
         .applied()
         .expect("edge retirement applies");
@@ -110,6 +113,7 @@ fn edge_id_reuse_clears_selection_and_route_paint_state() {
             ids.target_port,
             NodeGraphConnectionMode::Strict,
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("same-ID edge successor applies");
@@ -143,6 +147,7 @@ fn edge_id_reuse_clears_selection_and_route_paint_state() {
 
     runtime
         .execute(GraphCommand::undo(replaced.version()))
+        .into_result()
         .unwrap()
         .applied()
         .expect("undo restores graph data under another edge lifetime");
@@ -221,6 +226,7 @@ fn non_identity_edits_preserve_exact_live_selection() {
             ids.source,
             CanvasPoint { x: 12.0, y: 24.0 },
         ))
+        .into_result()
         .unwrap()
         .applied()
         .unwrap();
@@ -230,6 +236,7 @@ fn non_identity_edits_preserve_exact_live_selection() {
             ids.source,
             serde_json::json!({ "retains": "selection" }),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .unwrap();
@@ -264,12 +271,14 @@ fn document_reset_and_undo_never_restore_selection_by_id() {
             runtime.snapshot().unwrap().version(),
             TopologyEdit::new().remove_node(ids[0], IncidentEdgePolicy::Reject),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .unwrap();
     assert!(view.selection().unwrap().nodes().is_empty());
     runtime
         .execute(GraphCommand::undo(runtime.snapshot().unwrap().version()))
+        .into_result()
         .unwrap()
         .applied()
         .unwrap();
@@ -311,6 +320,7 @@ fn stale_baseline_can_restore_live_entities_but_not_revisionless_group_ids() {
             ids[0],
             CanvasPoint { x: 20.0, y: 30.0 },
         ))
+        .into_result()
         .unwrap()
         .applied()
         .unwrap();
@@ -375,6 +385,7 @@ fn revisioned_position_command_derives_and_undoes_the_authoritative_inverse() {
             ids[0],
             point,
         ))
+        .into_result()
         .expect("execute")
         .applied()
         .expect("position command applies");
@@ -394,6 +405,7 @@ fn revisioned_position_command_derives_and_undoes_the_authoritative_inverse() {
     let version = runtime.snapshot().unwrap().version();
     runtime
         .execute(GraphCommand::undo(version))
+        .into_result()
         .unwrap()
         .applied()
         .expect("undo applies");
@@ -438,6 +450,7 @@ fn non_finite_command_is_rejected_without_runtime_session_or_history_side_effect
                 y: 0.0,
             },
         ))
+        .into_result()
         .expect("invalid command returns a structured outcome");
 
     assert!(outcome.rejection().is_some());
@@ -487,6 +500,7 @@ fn net_noop_does_not_build_or_deliver_a_patch() {
             ids[0],
             CanvasPoint::default(),
         ))
+        .into_result()
         .unwrap();
 
     assert!(matches!(outcome, GraphCommandOutcome::Noop(_)));
@@ -523,12 +537,14 @@ fn node_binding_subscription_is_retired_before_reused_node_id_gets_a_new_incarna
             runtime.snapshot().unwrap().version(),
             TopologyEdit::new().remove_node(ids[0], IncidentEdgePolicy::Reject),
         ))
+        .into_result()
         .unwrap()
         .applied()
         .expect("remove applies");
     let version = runtime.snapshot().unwrap().version();
     runtime
         .execute(GraphCommand::undo(version))
+        .into_result()
         .unwrap()
         .applied()
         .expect("undo applies");
@@ -548,6 +564,7 @@ fn node_binding_subscription_is_retired_before_reused_node_id_gets_a_new_incarna
             ids[0],
             serde_json::json!({ "value": 1 }),
         ))
+        .into_result()
         .unwrap();
 
     assert_eq!(old_calls.get(), 0);

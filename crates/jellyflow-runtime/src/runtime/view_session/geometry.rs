@@ -7,7 +7,7 @@ use std::sync::Arc;
 use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize, Graph, Node, NodeId, NodeKindKey};
 
 use crate::runtime::adapter_protocol::{
-    FeedbackOperationReceipt, FrameRequest, GeometrySnapshot, LayoutNodeStatus,
+    FrameRequest, GeometrySnapshot, LayoutNodeStatus, LayoutOperationReceipt,
     LayoutPublicationReceipt, PortLayoutOutcome, PublishedNodeGeometry, PublishedPortGeometry,
     PublishedPortOutcome,
 };
@@ -997,7 +997,7 @@ pub(super) fn publish_layouts(
     current_node_facts: &BTreeMap<NodeId, AdapterNodeRuntimeFacts>,
     geometry_impact: &GeometryImpact,
     layouts: Vec<PendingLayout>,
-    receipts: &mut [Option<FeedbackOperationReceipt>],
+    receipts: &mut [LayoutOperationReceipt],
     global_stale: bool,
 ) -> (Option<LayoutPublicationReceipt>, IncidentSnapshotWork) {
     const GEOMETRY_EPSILON: f32 = 1.0 / 64.0;
@@ -1082,8 +1082,7 @@ pub(super) fn publish_layouts(
         {
             withdrawals.insert(node, expected.incident_edges.clone());
         }
-        receipts[pending_layout.operation_index] =
-            Some(FeedbackOperationReceipt::Layout { node, status });
+        receipts[pending_layout.receipt_index].set_status(status);
     }
     let withdrawals = withdrawals
         .into_iter()

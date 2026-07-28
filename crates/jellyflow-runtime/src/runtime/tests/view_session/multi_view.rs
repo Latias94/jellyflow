@@ -64,7 +64,9 @@ fn graph_commit_fans_out_one_shared_patch_while_view_facts_stay_isolated() {
             ids[0],
             CanvasPoint { x: 32.0, y: 48.0 },
         ))
-        .expect("shared graph commit");
+        .expect("shared graph commit")
+        .into_result()
+        .unwrap();
 
     assert_eq!(runtime.snapshot().unwrap().revision(), 1);
     assert_eq!(view_a.graph_snapshot().unwrap().revision(), 1);
