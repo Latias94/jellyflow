@@ -130,7 +130,7 @@ fn zero_page_grant_preserves_runtime_owned_work_for_a_later_frame() {
         .output
         .take()
         .expect("zero-grant drag output");
-    assert_eq!(deferred.resolved_query_count(), 0);
+    assert_eq!(deferred.attempted_query_page_count(), 0);
     assert!(deferred.renderer_work_pending());
     assert!(deferred.terminal_query_error().is_none());
     assert!(!deferred.damage().selection);
@@ -234,7 +234,7 @@ fn retired_marquee_response_discards_its_pending_page_without_partial_selection(
         .output
         .take()
         .expect("retired response output");
-    assert_eq!(retired.resolved_query_count(), 0);
+    assert_eq!(retired.attempted_query_page_count(), 0);
     assert!(!retired.renderer_work_pending());
     assert!(retired.terminal_query_error().is_none());
     assert!(retired.released_native_ownership());
@@ -376,7 +376,7 @@ fn escape_discards_pending_marquee_pages() {
         .output
         .take()
         .expect("escape cancellation output");
-    assert_eq!(cancelled.resolved_query_count(), 0);
+    assert_eq!(cancelled.attempted_query_page_count(), 0);
     assert!(!cancelled.renderer_work_pending());
     assert!(cancelled.terminal_query_error().is_none());
     assert!(cancelled.released_native_ownership());
@@ -388,7 +388,7 @@ fn escape_discards_pending_marquee_pages() {
         .output
         .take()
         .expect("frame after escape cancellation");
-    assert_eq!(following.resolved_query_count(), 0);
+    assert_eq!(following.attempted_query_page_count(), 0);
     assert!(!following.renderer_work_pending());
 }
 
@@ -411,7 +411,7 @@ fn explicit_cancel_discards_pending_marquee_pages() {
         .interaction
         .cancel(&ctx)
         .expect("explicitly cancel paged marquee");
-    assert_eq!(cancelled.resolved_query_count(), 0);
+    assert_eq!(cancelled.attempted_query_page_count(), 0);
     assert!(!cancelled.renderer_work_pending());
     assert!(cancelled.terminal_query_error().is_none());
     assert!(cancelled.released_native_ownership());
@@ -423,7 +423,7 @@ fn explicit_cancel_discards_pending_marquee_pages() {
         .output
         .take()
         .expect("frame after explicit cancellation");
-    assert_eq!(following.resolved_query_count(), 0);
+    assert_eq!(following.attempted_query_page_count(), 0);
     assert!(!following.renderer_work_pending());
 }
 
@@ -447,7 +447,7 @@ fn host_close_during_frame_discards_pending_marquee_pages() {
         .output
         .take()
         .expect("host-close output");
-    assert_eq!(closed.resolved_query_count(), 0);
+    assert_eq!(closed.attempted_query_page_count(), 0);
     assert!(!closed.renderer_work_pending());
     assert!(closed.terminal_query_error().is_none());
     assert!(closed.released_native_ownership());
@@ -472,7 +472,7 @@ fn begin_marquee_drag(harness: &mut Harness<'_, PagedMarqueeState>, destination:
 
 fn assert_query_page_continues(output: &EguiInteractionOutput) {
     assert_eq!(
-        output.resolved_query_count(),
+        output.attempted_query_page_count(),
         1,
         "the adapter must grant at most one runtime-owned query page per frame"
     );
@@ -492,7 +492,7 @@ fn drain_marquee_queries(harness: &mut Harness<'_, PagedMarqueeState>) -> usize 
             .take()
             .expect("marquee continuation frame output");
         assert!(
-            output.resolved_query_count() <= 1,
+            output.attempted_query_page_count() <= 1,
             "the adapter may grant at most one runtime-owned query page per frame"
         );
         assert!(output.terminal_query_error().is_none());
@@ -502,7 +502,7 @@ fn drain_marquee_queries(harness: &mut Harness<'_, PagedMarqueeState>) -> usize 
             assert_selection_is_empty_and_marquee_is_active(harness.state());
             continue;
         }
-        assert_eq!(output.resolved_query_count(), 1);
+        assert_eq!(output.attempted_query_page_count(), 1);
         assert!(!output.renderer_work_pending());
         assert!(output.damage().selection);
         return usize::from(output.damage().selection);

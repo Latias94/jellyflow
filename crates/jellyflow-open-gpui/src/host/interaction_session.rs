@@ -465,6 +465,7 @@ impl OpenGpuiNativeInteractionOwner {
     pub(super) fn cancel(&mut self) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
         let update = self.session.cancel();
         self.node_drag_residency = None;
+        self.stop_query_scheduling_if_idle();
         update
     }
 
@@ -478,6 +479,7 @@ impl OpenGpuiNativeInteractionOwner {
     pub(super) fn close_semantic(&mut self) -> CanvasInteractionUpdate {
         let update = self.session.close();
         self.node_drag_residency = None;
+        self.stop_query_scheduling_if_idle();
         update
     }
 
@@ -495,6 +497,7 @@ impl OpenGpuiNativeInteractionOwner {
         } else {
             self.reconcile_node_drag_residency();
         }
+        self.stop_query_scheduling_if_idle();
         update
     }
 
@@ -2492,7 +2495,43 @@ mod tests {
             .expect("pending edge pick owns a native callback");
 
         fixture.owner.cancel().expect("cancel pending edge pick");
-        fixture.owner.stop_query_scheduling_if_idle();
+
+        assert!(!fixture.owner.query_work_pending());
+        assert!(fixture.owner.query_frame_scheduled.is_none());
+        assert!(!fixture.owner.consume_query_frame_callback(stale));
+    }
+
+    #[test]
+    fn retired_query_owner_releases_its_native_callback_at_the_owner_boundary() {
+        let mut fixture = node_drag_fixture(2);
+        fixture
+            .owner
+            .set_config(CanvasInteractionConfig {
+                alignment_snap: jellyflow_runtime::interaction::AlignmentSnapConfig::new(6.0, 9.0),
+                query_entry_budget: 1,
+                ..CanvasInteractionConfig::default()
+            })
+            .expect("alignment query config");
+        arm_node_drag(&mut fixture, 1);
+        fixture
+            .owner
+            .move_to(pointer_sample(&fixture.view, 40.0, 24.0))
+            .expect("node drag queues alignment work");
+        assert!(fixture.owner.query_work_pending());
+        let (_, stale) = fixture
+            .owner
+            .prepare_query_frame_callback()
+            .expect("alignment work owns a native callback");
+        let lifetime = fixture
+            .runtime
+            .snapshot()
+            .expect("current graph snapshot")
+            .node_lifetime_key(fixture.nodes[0])
+            .expect("drag owner remains current");
+
+        fixture
+            .owner
+            .owner_retired(InteractionOwner::Node(lifetime));
 
         assert!(!fixture.owner.query_work_pending());
         assert!(fixture.owner.query_frame_scheduled.is_none());

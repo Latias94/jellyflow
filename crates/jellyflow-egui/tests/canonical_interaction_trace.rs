@@ -600,7 +600,7 @@ impl EguiTraceRunner {
             output.terminal_query_error().is_none(),
             "canonical egui queries must not terminate with an adapter-visible error"
         );
-        let resolved_query = output.resolved_query_count() != 0;
+        let attempted_query = output.attempted_query_page_count() != 0;
         let mut effects = output.take_effects().into_iter();
         if let Some(effect) = effects.next() {
             assert!(
@@ -628,10 +628,10 @@ impl EguiTraceRunner {
             }
         }
         let presentation = self.state().interaction.presentation();
-        if resolved_query && presentation.phase() == CanvasInteractionPhase::EdgeActive {
+        if attempted_query && presentation.phase() == CanvasInteractionPhase::EdgeActive {
             return TraceEffect::PickEdge;
         }
-        if query_is_probe && resolved_query && presentation.connection().is_some() {
+        if query_is_probe && attempted_query && presentation.connection().is_some() {
             return TraceEffect::ProbeConnection;
         }
         TraceEffect::None

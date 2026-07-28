@@ -338,6 +338,66 @@ fn runtime_owned_queries_are_session_local_single_slot_and_cancel_discards_work(
 }
 
 #[test]
+fn one_native_grant_advances_multiple_runtime_owned_query_pages() {
+    let harness = TraceHarness::new();
+    let config = CanvasInteractionConfig {
+        connection_acquire_radius_in_view: 1_000.0,
+        connection_release_radius_in_view: 1_000.0,
+        query_entry_budget: 1,
+        ..CanvasInteractionConfig::default()
+    };
+    let mut session = CanvasInteractionSession::attach(&harness.view, config).unwrap();
+    let drag_intent = harness
+        .view
+        .port_connection_drag_intent(port_instance(&harness.view, harness.ids.source_port))
+        .expect("source port drag facts");
+    let start = harness
+        .view
+        .connection_start_from_port_drag_intent(
+            drag_intent,
+            EdgeId::from_u128(0xA10),
+            NodeGraphConnectionMode::Strict,
+            CanvasPoint {
+                x: harness.anchors.source.x,
+                y: harness.anchors.source.y,
+            },
+            HandlePosition::Right,
+            HandlePosition::Left,
+            false,
+        )
+        .unwrap()
+        .unwrap();
+    let source = pointer_sample(&harness.view, harness.anchors.source);
+    let target = pointer_sample(&harness.view, harness.anchors.valid);
+    session
+        .press(CanvasPressTarget::Connection(start), source)
+        .unwrap();
+    assert!(session.move_to(target).unwrap().query_work_pending());
+
+    let (update, needs_tick, receipt, terminal_error) = session.advance_query_work(3).into_parts();
+
+    assert_eq!(receipt.pages_granted(), 3);
+    assert!(
+        receipt.pages_attempted() > 1,
+        "one native grant must advance more than one bounded page"
+    );
+    assert!(receipt.pages_attempted() <= receipt.pages_granted());
+    assert_eq!(
+        receipt.page_receipts().len(),
+        receipt.pages_attempted(),
+        "every successfully attempted page reports typed operation evidence"
+    );
+    assert!(
+        receipt
+            .page_receipts()
+            .iter()
+            .all(|page| matches!(page, CanvasInteractionQueryPageReceipt::ConnectionProbe(_)))
+    );
+    assert!(terminal_error.is_none());
+    assert_eq!(needs_tick, update.query_work_pending());
+}
+
+#[test]
 fn connection_commit_revalidation_resumes_real_view_query_before_resubmission() {
     let harness = TraceHarness::new();
     let config = CanvasInteractionConfig {

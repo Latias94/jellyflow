@@ -14,8 +14,9 @@ use crate::runtime::commands::{
 };
 use crate::runtime::geometry::{EdgeEndpointPosition, HandlePosition};
 use crate::runtime::graph_runtime::{
-    CreateFromWireCandidates, CreateFromWireQueryError, EdgeInstanceKey, GraphRuntimePolicy,
-    GraphSnapshot, GraphVersion, NodeLifetimeKey, PortConnectionDragIntent, PortInstanceKey,
+    CreateFromWireCandidates, CreateFromWireQueryError, EdgeInstanceKey, GraphRuntimeError,
+    GraphRuntimePolicy, GraphSnapshot, GraphVersion, NodeLifetimeKey, PortConnectionDragIntent,
+    PortInstanceKey,
 };
 use crate::runtime::unwind::{PanicPayload, resume};
 use crate::runtime::view_session::{
@@ -1394,6 +1395,11 @@ struct SubmissionBinding {
     phase: SubmissionBindingPhase,
 }
 
+struct SelectionCommitFailure {
+    error: CanvasInteractionError,
+    retryable: bool,
+}
+
 enum SubmissionBindingPhase {
     Pending,
     NoCommand,
@@ -2711,9 +2717,19 @@ impl CanvasInteractionSession {
         if !matches!(self.state, InteractionState::Idle) {
             return Err(CanvasInteractionError::AlreadyActive);
         }
+        self.clear_pending_edge_pick_work();
         let Some(id) = self.allocate_query() else {
             self.terminal = Some(InteractionTerminalReason::IdentityExhausted);
-            return Ok(self.finalize_update(CanvasInteractionUpdate::default()));
+            let damage = if self.hovered_edge.take().is_some() {
+                InteractionDamage {
+                    presentation: true,
+                    edges: true,
+                    ..InteractionDamage::default()
+                }
+            } else {
+                InteractionDamage::default()
+            };
+            return Ok(self.finalize_update(CanvasInteractionUpdate::default().with_damage(damage)));
         };
         self.pending_edge_pick = Some(PendingHoverEdgePick {
             id,
@@ -2755,7 +2771,7 @@ impl CanvasInteractionSession {
         }
     }
 
-    /// Reports whether runtime owns a pending interaction query continuation.
+    /// Reports whether runtime owns a pending query continuation or its required terminal cleanup.
     pub fn query_work_pending(&self) -> bool {
         self.query_work.is_pending()
     }
@@ -2764,7 +2780,8 @@ impl CanvasInteractionSession {
     ///
     /// A zero budget never accesses the bound view or mutates the continuation. Native adapters
     /// own when this method runs, while query identity, cursors, stale restarts, target locks, and
-    /// cleanup remain inside this session.
+    /// cleanup remain inside this session. A nonzero grant also retries terminal cleanup that was
+    /// deferred by a transient view borrow; cleanup retries are not counted as query pages.
     pub fn advance_query_work(&mut self, page_budget: usize) -> CanvasInteractionQueryAdvance {
         let mut update = CanvasInteractionUpdate::default();
         let mut receipt = CanvasInteractionQueryAdvanceReceipt {
@@ -2772,6 +2789,20 @@ impl CanvasInteractionSession {
             ..CanvasInteractionQueryAdvanceReceipt::default()
         };
         let mut terminal_error = self.ensure_session_open().err();
+
+        if terminal_error.is_none() && page_budget > 0 && self.query_work.cleanup_pending() {
+            let (cleanup_update, cleanup_error) = self.terminate_query_failure();
+            update.merge_internal(cleanup_update);
+            terminal_error = cleanup_error;
+            let update = self.finalize_update(update);
+            let needs_tick = update.query_work_pending();
+            return CanvasInteractionQueryAdvance {
+                update,
+                needs_tick,
+                receipt,
+                terminal_error,
+            };
+        }
 
         for _ in 0..page_budget {
             if terminal_error.is_some() {
@@ -2787,7 +2818,8 @@ impl CanvasInteractionSession {
                 Ok(page) => page,
                 Err(error) => {
                     self.query_work.clear();
-                    update.merge_internal(self.terminate_query_failure());
+                    let (cleanup_update, _) = self.terminate_query_failure();
+                    update.merge_internal(cleanup_update);
                     if failed_edge_pick {
                         self.clear_pending_edge_pick_work();
                         self.hovered_edge = None;
@@ -2817,7 +2849,9 @@ impl CanvasInteractionSession {
         }
     }
 
-    fn terminate_query_failure(&mut self) -> CanvasInteractionUpdate {
+    fn terminate_query_failure(
+        &mut self,
+    ) -> (CanvasInteractionUpdate, Option<CanvasInteractionError>) {
         let ticket = interaction_state_submission_ticket(&self.state);
         let pending_submission = ticket.filter(|ticket| {
             matches!(
@@ -2828,19 +2862,30 @@ impl CanvasInteractionSession {
                 }) if bound_ticket == ticket
             )
         });
-        let cleanup = match pending_submission {
-            Some(ticket) => self.submission_not_dispatched(ticket),
-            None => self.cancel(),
-        };
-        cleanup.unwrap_or_else(|_| {
-            let damage = damage_for_state(&self.state);
-            self.query_work.clear();
-            self.clear_pending_edge_pick_work();
-            self.submission_binding = None;
-            self.state = InteractionState::Idle;
-            self.terminal = Some(InteractionTerminalReason::Cancelled);
-            self.finalize_update(CanvasInteractionUpdate::default().with_damage(damage))
-        })
+        if let Some(ticket) = pending_submission {
+            return match self.submission_not_dispatched(ticket) {
+                Ok(update) => (update, None),
+                Err(error) => (self.force_terminate_query_failure(), Some(error)),
+            };
+        }
+        match self.cancel_with_selection_failure() {
+            Ok(update) => (update, None),
+            Err(failure) if failure.retryable => {
+                self.query_work.require_cleanup();
+                (CanvasInteractionUpdate::default(), Some(failure.error))
+            }
+            Err(failure) => (self.force_terminate_query_failure(), Some(failure.error)),
+        }
+    }
+
+    fn force_terminate_query_failure(&mut self) -> CanvasInteractionUpdate {
+        let damage = damage_for_state(&self.state);
+        self.query_work.clear();
+        self.clear_pending_edge_pick_work();
+        self.submission_binding = None;
+        self.state = InteractionState::Idle;
+        self.terminal = Some(InteractionTerminalReason::Cancelled);
+        CanvasInteractionUpdate::default().with_damage(damage)
     }
 
     fn resolve_query_page(
@@ -3370,9 +3415,8 @@ impl CanvasInteractionSession {
     /// Restarts one still-current paged query after its opaque view cursor becomes stale.
     ///
     /// The session retains the normalized request facts and allocates a new query identity before
-    /// emitting a first-page query. Adapters must call this only for a restartable stale-cursor
-    /// error reported by their view query transport. Late errors for superseded query identities
-    /// are ignored.
+    /// emitting a first-page query. Runtime invokes this only for a restartable stale-cursor error
+    /// reported by its bound view. Late errors for superseded query identities are ignored.
     fn restart_stale_query(
         &mut self,
         id: InteractionQueryId,
@@ -3546,12 +3590,12 @@ impl CanvasInteractionSession {
                         drag.target_lock = None;
                         drag.probe = ConnectionProbe::None;
                     }
-                    self.queue_connection_probe(&mut drag, &mut update);
-                    if drag.pending_query.is_none() {
+                    if !self.queue_connection_probe(&mut drag, &mut update) {
                         update.damage.merge(InteractionDamage::connection());
-                        return Ok(self.finalize_update(update));
+                        InteractionState::Idle
+                    } else {
+                        InteractionState::Connection(ConnectionInteraction::Dragging(drag))
                     }
-                    InteractionState::Connection(ConnectionInteraction::Dragging(drag))
                 }
             }
             InteractionState::Committing(CommitInteraction::Connection(mut commit)) if matches!(commit.freshness, ConnectionCommitFreshness::Probing(pending) if pending == id) => {
@@ -3656,9 +3700,12 @@ impl CanvasInteractionSession {
             InteractionState::Connection(ConnectionInteraction::Dragging(mut drag)) => {
                 drag.pointer = position;
                 drag.release_pending = false;
-                self.start_connection_probe(&mut drag, &mut update);
                 update.damage.merge(InteractionDamage::connection());
-                InteractionState::Connection(ConnectionInteraction::Dragging(drag))
+                if self.start_connection_probe(&mut drag, &mut update) {
+                    InteractionState::Connection(ConnectionInteraction::Dragging(drag))
+                } else {
+                    InteractionState::Idle
+                }
             }
             InteractionState::EdgePickPending(mut pending) => {
                 pending.pointer = position;
@@ -3726,9 +3773,12 @@ impl CanvasInteractionSession {
             InteractionState::Connection(ConnectionInteraction::Dragging(mut drag)) => {
                 drag.pointer = position;
                 drag.release_pending = true;
-                self.start_connection_probe(&mut drag, &mut update);
                 update.damage.merge(InteractionDamage::connection());
-                InteractionState::Connection(ConnectionInteraction::Dragging(drag))
+                if self.start_connection_probe(&mut drag, &mut update) {
+                    InteractionState::Connection(ConnectionInteraction::Dragging(drag))
+                } else {
+                    InteractionState::Idle
+                }
             }
             InteractionState::EdgePickPending(mut pending) => {
                 pending.pointer = position;
@@ -4705,9 +4755,12 @@ impl CanvasInteractionSession {
                 if !drag.release_pending =>
             {
                 drag.pointer = pointer;
-                self.start_connection_probe(&mut drag, update);
                 update.damage.merge(InteractionDamage::connection());
-                InteractionState::Connection(ConnectionInteraction::Dragging(drag))
+                if self.start_connection_probe(&mut drag, update) {
+                    InteractionState::Connection(ConnectionInteraction::Dragging(drag))
+                } else {
+                    InteractionState::Idle
+                }
             }
             InteractionState::Marquee(mut marquee) if !marquee.release_pending => {
                 marquee.pointer = pointer;
@@ -4724,6 +4777,13 @@ impl CanvasInteractionSession {
     }
 
     pub fn cancel(&mut self) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
+        self.cancel_with_selection_failure()
+            .map_err(|failure| failure.error)
+    }
+
+    fn cancel_with_selection_failure(
+        &mut self,
+    ) -> Result<CanvasInteractionUpdate, SelectionCommitFailure> {
         if matches!(self.state, InteractionState::Idle) {
             self.clear_pending_edge_pick_work();
             self.query_work.clear();
@@ -4740,7 +4800,7 @@ impl CanvasInteractionSession {
             damage.selection = true;
         }
         let mut update = update.with_damage(damage);
-        self.commit_update_selection(&mut update)?;
+        self.commit_update_selection_classified(&mut update)?;
         self.clear_pending_edge_pick_work();
         self.query_work.clear();
         self.submission_binding = None;
@@ -5178,12 +5238,23 @@ impl CanvasInteractionSession {
         &mut self,
         update: &mut CanvasInteractionUpdate,
     ) -> Result<(), CanvasInteractionError> {
+        self.commit_update_selection_classified(update)
+            .map_err(|failure| failure.error)
+    }
+
+    fn commit_update_selection_classified(
+        &mut self,
+        update: &mut CanvasInteractionUpdate,
+    ) -> Result<(), SelectionCommitFailure> {
         let Some(mutation) = update.pending_selection.as_ref().cloned() else {
             return Ok(());
         };
         #[cfg(test)]
         if let Some(error) = self.selection_commit_failure.take() {
-            return Err(error);
+            return Err(SelectionCommitFailure {
+                retryable: error == CanvasInteractionError::ViewUnavailable,
+                error,
+            });
         }
         #[cfg(test)]
         if self.test_authority_bypass {
@@ -5193,7 +5264,13 @@ impl CanvasInteractionSession {
         }
         self.bound_view
             .apply_selection_mutation(mutation)
-            .map_err(map_connection_binding_error)?;
+            .map_err(|error| SelectionCommitFailure {
+                retryable: matches!(
+                    error,
+                    ViewSessionError::Busy | ViewSessionError::Runtime(GraphRuntimeError::Busy)
+                ),
+                error: map_connection_binding_error(error),
+            })?;
         update.pending_selection = None;
         Ok(())
     }
@@ -5418,9 +5495,12 @@ impl CanvasInteractionSession {
                     stale_query_restarts: 0,
                     release_pending: false,
                 };
-                self.start_connection_probe(&mut drag, update);
                 update.damage.merge(InteractionDamage::connection());
-                InteractionState::Connection(ConnectionInteraction::Dragging(drag))
+                if self.start_connection_probe(&mut drag, update) {
+                    InteractionState::Connection(ConnectionInteraction::Dragging(drag))
+                } else {
+                    InteractionState::Idle
+                }
             }
         })
     }
@@ -5601,21 +5681,21 @@ impl CanvasInteractionSession {
         &mut self,
         drag: &mut ConnectionDragInteraction,
         update: &mut CanvasInteractionUpdate,
-    ) {
+    ) -> bool {
         drag.stale_query_restarts = 0;
-        self.queue_connection_probe(drag, update);
+        self.queue_connection_probe(drag, update)
     }
 
     fn queue_connection_probe(
         &mut self,
         drag: &mut ConnectionDragInteraction,
         _update: &mut CanvasInteractionUpdate,
-    ) {
+    ) -> bool {
         let Some(id) = self.allocate_query() else {
             drag.pending_query = None;
             self.query_work.clear();
             self.terminal = Some(InteractionTerminalReason::IdentityExhausted);
-            return;
+            return false;
         };
         drag.pending_query = Some(id);
         self.query_work
@@ -5630,6 +5710,7 @@ impl CanvasInteractionSession {
                 )
                 .bind_interaction(self.interaction_query_binding(id)),
             ));
+        true
     }
 
     fn finish_connection_release(

@@ -6,11 +6,13 @@ use super::session::{InteractionGeneration, InteractionQueryId};
 #[derive(Debug, Default)]
 pub(super) struct QueryWork {
     pending: Option<PendingInteractionQuery>,
+    cleanup_pending: bool,
 }
 
 impl QueryWork {
     pub(super) fn replace(&mut self, query: PendingInteractionQuery) {
         self.pending = Some(query);
+        self.cleanup_pending = false;
     }
 
     pub(super) fn take(&mut self) -> Option<PendingInteractionQuery> {
@@ -19,6 +21,7 @@ impl QueryWork {
 
     pub(super) fn clear(&mut self) {
         self.pending = None;
+        self.cleanup_pending = false;
     }
 
     pub(super) fn clear_if_id(&mut self, id: InteractionQueryId) {
@@ -28,7 +31,16 @@ impl QueryWork {
     }
 
     pub(super) fn is_pending(&self) -> bool {
-        self.pending.is_some()
+        self.pending.is_some() || self.cleanup_pending
+    }
+
+    pub(super) fn cleanup_pending(&self) -> bool {
+        self.cleanup_pending
+    }
+
+    pub(super) fn require_cleanup(&mut self) {
+        self.pending = None;
+        self.cleanup_pending = true;
     }
 
     #[cfg(test)]

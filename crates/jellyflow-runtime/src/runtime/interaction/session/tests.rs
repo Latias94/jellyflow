@@ -2486,6 +2486,192 @@ fn edge_pick_view_failure_clears_query_and_hover_with_terminal_damage() {
 }
 
 #[test]
+fn marquee_query_failure_retries_press_baseline_restore_exactly_once() {
+    let (runtime, view, mut session) = bound_test_session();
+    set_selection_by_id(&view, [source_node()], [], Vec::new()).expect("initial selection");
+    let baseline = view.selection_baseline().expect("press-time baseline");
+    let press = bound_position(&session, &view, 0.0, 0.0);
+    let moved = bound_position(&session, &view, 40.0, 32.0);
+    session
+        .press(
+            CanvasPressTarget::Marquee {
+                selection_mode: SelectionMode::Replace,
+                baseline,
+            },
+            press,
+        )
+        .expect("arm marquee");
+    let first_query = session.move_to(moved).expect("first marquee query");
+    let snapshot = runtime.snapshot().expect("marquee snapshot");
+    session
+        .resolve_node_intersection_current(
+            marquee_query_id(&session, &first_query),
+            NodeIntersectionQueryOutcome::Complete {
+                nodes: Vec::new(),
+                work: Default::default(),
+            },
+            Some(&snapshot),
+        )
+        .expect("publish first marquee selection");
+    assert!(view.selection().unwrap().nodes().is_empty());
+
+    let retry_position = bound_position(&session, &view, 44.0, 36.0);
+    assert!(
+        session
+            .move_to(retry_position)
+            .unwrap()
+            .query_work_pending()
+    );
+    let (failed, needs_tick, receipt, terminal_error) =
+        view.with_state_borrowed_for_test(|| session.advance_query_work(1).into_parts());
+    assert_eq!(receipt.pages_attempted(), 1);
+    assert_eq!(
+        terminal_error,
+        Some(CanvasInteractionError::ViewUnavailable)
+    );
+    assert!(needs_tick);
+    assert!(failed.query_work_pending());
+    assert_eq!(
+        session.presentation().phase(),
+        CanvasInteractionPhase::Marquee
+    );
+    assert!(view.selection().unwrap().nodes().is_empty());
+
+    let (restored, needs_tick, receipt, terminal_error) =
+        session.advance_query_work(1).into_parts();
+    assert_eq!(receipt.pages_attempted(), 0);
+    assert!(terminal_error.is_none());
+    assert!(!needs_tick);
+    assert!(!restored.query_work_pending());
+    assert!(restored.damage().selection);
+    assert_eq!(view.selection().unwrap().nodes(), [source_node()]);
+    assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
+
+    let settled = session.advance_query_work(1);
+    assert_eq!(settled.receipt().pages_attempted(), 0);
+    assert!(!settled.needs_tick());
+    assert_eq!(view.selection().unwrap().nodes(), [source_node()]);
+}
+
+#[test]
+fn connection_probe_identity_exhaustion_retires_move_and_release_paths() {
+    let mut move_session = test_session(CanvasInteractionConfig::default());
+    move_session
+        .press_for_test(connection_target(false), position(0.0, 0.0))
+        .expect("arm connection");
+    move_session.next_query = None;
+    let moved = move_session
+        .move_to(position(12.0, 4.0))
+        .expect("identity exhaustion is a terminal update");
+    assert!(!moved.query_work_pending());
+    assert_eq!(
+        move_session.presentation().phase(),
+        CanvasInteractionPhase::Idle
+    );
+    assert_eq!(
+        move_session.presentation().terminal(),
+        Some(InteractionTerminalReason::IdentityExhausted)
+    );
+    move_session
+        .press_for_test(CanvasPressTarget::Pan, position(0.0, 0.0))
+        .expect("terminal connection drag does not block the next interaction");
+
+    let mut release_session = test_session(CanvasInteractionConfig::default());
+    release_session
+        .press_for_test(connection_target(false), position(0.0, 0.0))
+        .expect("arm connection");
+    assert!(
+        release_session
+            .move_to(position(12.0, 4.0))
+            .unwrap()
+            .query_work_pending()
+    );
+    release_session.next_query = None;
+    let released = release_session
+        .release(position(20.0, 4.0))
+        .expect("release exhaustion is a terminal update");
+    assert!(!released.query_work_pending());
+    assert_eq!(
+        release_session.presentation().phase(),
+        CanvasInteractionPhase::Idle
+    );
+    assert_eq!(
+        release_session.presentation().terminal(),
+        Some(InteractionTerminalReason::IdentityExhausted)
+    );
+}
+
+#[test]
+fn edge_pick_identity_exhaustion_cannot_publish_superseded_hover_work() {
+    let mut session = test_session(CanvasInteractionConfig::default());
+    let first = session.request_edge_pick(position(2.0, 3.0)).unwrap();
+    let superseded = edge_query_id(&session, &first);
+    session.hovered_edge = Some(edge_instance(EdgeId::from_u128(77)));
+    session.next_query = None;
+
+    let failed = session.request_edge_pick(position(20.0, 30.0)).unwrap();
+    assert!(!failed.query_work_pending());
+    assert!(failed.damage().presentation);
+    assert!(failed.damage().edges);
+    assert!(session.pending_edge_pick.is_none());
+    assert!(session.presentation().hovered_edge().is_none());
+    assert_eq!(
+        session.presentation().terminal(),
+        Some(InteractionTerminalReason::IdentityExhausted)
+    );
+
+    let advanced = session.advance_query_work(1);
+    assert_eq!(advanced.receipt().pages_attempted(), 0);
+    assert!(!advanced.needs_tick());
+    assert!(
+        session
+            .resolve_edge_pick_for_test(
+                superseded,
+                EdgePickQueryOutcome::Complete {
+                    pick: None,
+                    work: EdgePickWork::default(),
+                },
+            )
+            .is_ok()
+    );
+    assert!(session.presentation().hovered_edge().is_none());
+}
+
+#[test]
+fn foreign_bound_view_terminates_runtime_owned_query_without_retry() {
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(prospective_graph())
+        .expect("foreign-query runtime");
+    let first = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("first view");
+    let second = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("second view");
+    let mut session = CanvasInteractionSession::attach(&first, CanvasInteractionConfig::default())
+        .expect("first-view interaction");
+    let issued = session
+        .request_edge_pick(bound_position(&session, &first, 2.0, 3.0))
+        .expect("issue first-view query");
+    assert!(issued.query_work_pending());
+    session.bound_view = second.downgrade();
+
+    let (update, needs_tick, receipt, terminal_error) = session.advance_query_work(1).into_parts();
+    assert_eq!(receipt.pages_attempted(), 1);
+    assert_eq!(
+        terminal_error,
+        Some(CanvasInteractionError::ForeignInteractionFacts)
+    );
+    assert!(!needs_tick);
+    assert!(!update.query_work_pending());
+    assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
+
+    let settled = session.advance_query_work(1);
+    assert_eq!(settled.receipt().pages_attempted(), 0);
+    assert!(!settled.needs_tick());
+}
+
+#[test]
 fn late_same_session_callbacks_keep_their_stale_semantics_while_the_view_is_busy() {
     let (_runtime, view, mut query_session) = bound_test_session();
     let issued = query_session

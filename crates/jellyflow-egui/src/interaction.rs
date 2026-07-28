@@ -25,7 +25,7 @@ const DEFAULT_QUERY_PAGES_PER_FRAME: usize = 1;
 #[derive(Debug, Default)]
 pub struct EguiInteractionOutput {
     effects: Vec<CanvasInteractionEffect>,
-    resolved_query_count: usize,
+    attempted_query_page_count: usize,
     terminal_query_error: Option<CanvasInteractionError>,
     damage: InteractionDamage,
     tick_demand: InteractionTickDemand,
@@ -47,8 +47,8 @@ impl EguiInteractionOutput {
     }
 
     /// Returns how many runtime-owned query pages were attempted during this output.
-    pub fn resolved_query_count(&self) -> usize {
-        self.resolved_query_count
+    pub fn attempted_query_page_count(&self) -> usize {
+        self.attempted_query_page_count
     }
 
     /// Returns a terminal query failure after its cleanup update has already been applied.
@@ -68,14 +68,14 @@ impl EguiInteractionOutput {
         self.released_native_ownership
     }
 
-    /// Returns whether runtime-owned query continuation work remains for a later frame.
+    /// Returns whether runtime-owned query continuation or terminal cleanup remains for a later frame.
     pub fn renderer_work_pending(&self) -> bool {
         self.renderer_work_pending
     }
 
     pub fn has_work(&self) -> bool {
         !self.effects.is_empty()
-            || self.resolved_query_count != 0
+            || self.attempted_query_page_count != 0
             || self.terminal_query_error.is_some()
             || self.damage != InteractionDamage::default()
             || self.tick_demand != InteractionTickDemand::None
@@ -85,9 +85,9 @@ impl EguiInteractionOutput {
 
     pub fn merge(&mut self, other: Self) {
         self.effects.extend(other.effects);
-        self.resolved_query_count = self
-            .resolved_query_count
-            .saturating_add(other.resolved_query_count);
+        self.attempted_query_page_count = self
+            .attempted_query_page_count
+            .saturating_add(other.attempted_query_page_count);
         if other.terminal_query_error.is_some() {
             self.terminal_query_error = other.terminal_query_error;
         }
@@ -694,8 +694,8 @@ impl EguiCanvasInteraction {
         self.collect_update(update, output);
         debug_assert_eq!(receipt.pages_granted(), pages_granted);
         *page_budget = (*page_budget).saturating_sub(receipt.pages_attempted());
-        output.resolved_query_count = output
-            .resolved_query_count
+        output.attempted_query_page_count = output
+            .attempted_query_page_count
             .saturating_add(receipt.pages_attempted());
         if terminal_error.is_some() {
             output.terminal_query_error = terminal_error;
