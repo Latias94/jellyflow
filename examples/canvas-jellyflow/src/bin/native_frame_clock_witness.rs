@@ -584,6 +584,10 @@ fn point_inside_surface(point: ViewPoint, surface: ViewSize) -> bool {
         && point.y <= surface.height
 }
 
+fn tick_ordinal(id: Option<u64>) -> u64 {
+    id.map_or(0, |id| id.saturating_add(1))
+}
+
 fn frame_observation(
     host: &Entity<OpenGpuiSceneHost>,
     view: &WeakViewSession,
@@ -593,25 +597,25 @@ fn frame_observation(
         .viewport_transform()
         .map_err(|error| format!("failed to observe viewport transform: {error}"))?;
     let host = host.read(cx);
-    let stats = host.stats();
+    let resources = host.resource_snapshot();
     Ok(FrameObservation {
         phase: host.interaction_presentation().phase(),
         pan_x: transform.pan.x,
         pan_y: transform.pan.y,
         zoom: transform.zoom,
-        callback_entries: stats.interaction_tick_callback_entries(),
-        callback_registrations: stats.interaction_tick_callback_registrations(),
-        frame_requests: stats.interaction_tick_frame_requests(),
-        callback_epoch: stats.interaction_callback_epoch(),
-        pending_queries: stats.interaction_pending_queries(),
-        pending_submission: stats.interaction_submission_pending(),
-        ready_prefixes: stats.interaction_ready_prefixes(),
-        tick_scheduled: stats.interaction_tick_scheduled(),
-        tick_frame_requested: stats.interaction_tick_frame_requested(),
-        query_frame_scheduled: stats.interaction_query_frame_scheduled(),
-        query_resolution_active: stats.interaction_query_resolution_active(),
-        native_tick_wake_active: stats.interaction_native_tick_wake_active(),
-        native_query_wake_active: stats.interaction_native_query_wake_active(),
+        callback_entries: tick_ordinal(resources.interaction_entered_tick_id()),
+        callback_registrations: tick_ordinal(resources.interaction_registered_tick_id()),
+        frame_requests: tick_ordinal(resources.interaction_requested_tick_id()),
+        callback_epoch: resources.interaction_callback_epoch(),
+        pending_queries: resources.interaction_pending_queries(),
+        pending_submission: resources.interaction_submission_pending(),
+        ready_prefixes: resources.interaction_ready_prefixes(),
+        tick_scheduled: resources.interaction_tick_scheduled(),
+        tick_frame_requested: resources.interaction_tick_frame_requested(),
+        query_frame_scheduled: resources.interaction_query_frame_scheduled(),
+        query_resolution_active: resources.interaction_query_resolution_active(),
+        native_tick_wake_active: resources.interaction_native_tick_wake_active(),
+        native_query_wake_active: resources.interaction_native_query_wake_active(),
     })
 }
 
@@ -706,7 +710,7 @@ fn timeout_diagnostic(
     cx: &App,
 ) -> String {
     let host = host.read(cx);
-    let stats = host.stats();
+    let resources = host.resource_snapshot();
     let interaction_phase = host.interaction_presentation().phase();
     let transform = view.viewport_transform().ok();
     format!(
@@ -714,9 +718,9 @@ fn timeout_diagnostic(
          callback_registrations={}, frame_requests={}",
         interaction_phase,
         transform.map(|transform| transform.pan),
-        stats.interaction_tick_callback_entries(),
-        stats.interaction_tick_callback_registrations(),
-        stats.interaction_tick_frame_requests(),
+        tick_ordinal(resources.interaction_entered_tick_id()),
+        tick_ordinal(resources.interaction_registered_tick_id()),
+        tick_ordinal(resources.interaction_requested_tick_id()),
     )
 }
 

@@ -77,6 +77,9 @@ pub(super) struct OpenGpuiNativeInteractionOwner {
     tick_callback_entries: Rc<Cell<u64>>,
     tick_callback_registrations: u64,
     tick_frame_requests: u64,
+    last_registered_tick: Option<u64>,
+    last_entered_tick: Option<u64>,
+    last_requested_tick: Option<u64>,
     #[cfg(test)]
     terminal_window_transitions: u64,
 }
@@ -131,6 +134,9 @@ pub(super) struct InteractionTickDiagnostics {
     pub(super) callback_registrations: u64,
     pub(super) callback_entries: u64,
     pub(super) frame_requests: u64,
+    pub(super) last_registered_tick: Option<u64>,
+    pub(super) last_entered_tick: Option<u64>,
+    pub(super) last_requested_tick: Option<u64>,
     pub(super) callback_epoch: u64,
     pub(super) pending_queries: usize,
     pub(super) pending_submission: bool,
@@ -362,6 +368,9 @@ impl OpenGpuiNativeInteractionOwner {
             tick_callback_entries: Rc::new(Cell::new(0)),
             tick_callback_registrations: 0,
             tick_frame_requests: 0,
+            last_registered_tick: None,
+            last_entered_tick: None,
+            last_requested_tick: None,
             #[cfg(test)]
             terminal_window_transitions: 0,
         }
@@ -1233,6 +1242,7 @@ impl OpenGpuiNativeInteractionOwner {
         };
         self.next_tick_sequence = self.next_tick_sequence.wrapping_add(1);
         self.tick_scheduled = Some(token);
+        self.last_registered_tick = Some(token.sequence);
         self.last_tick_at.get_or_insert_with(Instant::now);
         self.tick_callback_registrations = self.tick_callback_registrations.saturating_add(1);
         Some((Rc::downgrade(&self.epoch), token))
@@ -1250,6 +1260,7 @@ impl OpenGpuiNativeInteractionOwner {
             return false;
         }
         self.tick_frame_requested = Some(scheduled);
+        self.last_requested_tick = Some(scheduled.sequence);
         self.tick_frame_requests = self.tick_frame_requests.saturating_add(1);
         true
     }
@@ -1262,6 +1273,7 @@ impl OpenGpuiNativeInteractionOwner {
         if !self.callback_is_current(token.callback) {
             return None;
         }
+        self.last_entered_tick = Some(token.sequence);
         Some(interaction_elapsed_seconds(&mut self.last_tick_at, now))
     }
 
@@ -1282,6 +1294,9 @@ impl OpenGpuiNativeInteractionOwner {
             callback_registrations: self.tick_callback_registrations,
             callback_entries: self.tick_callback_entries.get(),
             frame_requests: self.tick_frame_requests,
+            last_registered_tick: self.last_registered_tick,
+            last_entered_tick: self.last_entered_tick,
+            last_requested_tick: self.last_requested_tick,
             callback_epoch: self.epoch(),
             pending_queries: usize::from(self.session.query_work_pending()),
             pending_submission: self.pending_submission.is_some(),
@@ -2347,8 +2362,10 @@ impl OpenGpuiSceneHost {
     }
 
     pub(super) fn interaction_node_drag_offsets(&mut self) -> BTreeMap<NodeId, CanvasPoint> {
-        self.stats.node_drag_offset_map_builds =
-            self.stats.node_drag_offset_map_builds.saturating_add(1);
+        self.work_ledger.node_drag_offset_map_builds = self
+            .work_ledger
+            .node_drag_offset_map_builds
+            .saturating_add(1);
         self.interaction_owner
             .presentation()
             .node_drag()

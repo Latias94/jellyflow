@@ -149,7 +149,7 @@ impl RealWindowSmokeProbe {
                     let geometry = view
                         .geometry_snapshot()
                         .map_err(|_| "geometry_snapshot_read_failed")?;
-                    let tick_stats = surface.read(cx).host().read(cx).stats();
+                    let tick_resources = surface.read(cx).host().read(cx).resource_snapshot();
                     eprintln!(
                         "JELLYFLOW_REAL_WINDOW_SMOKE_CONNECTION_AUTOPAN target_port={} \
                          target_point={target:?} settled_target={settled_target:?} frames={frames} \
@@ -160,9 +160,9 @@ impl RealWindowSmokeProbe {
                         current.pan.y,
                         current.zoom,
                         geometry.port_outcome(target_port),
-                        tick_stats.interaction_tick_callback_registrations(),
-                        tick_stats.interaction_tick_callback_entries(),
-                        tick_stats.interaction_tick_frame_requests(),
+                        tick_ordinal(tick_resources.interaction_registered_tick_id()),
+                        tick_ordinal(tick_resources.interaction_entered_tick_id()),
+                        tick_ordinal(tick_resources.interaction_requested_tick_id()),
                     );
                 }
                 window.refresh();

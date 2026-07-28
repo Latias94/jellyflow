@@ -238,8 +238,8 @@ fn pointer_capture_rebind_transfers_the_exact_ledger_entry_and_close_releases_it
         Some(rebound),
     );
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().protected_instances(), 1);
-        assert_eq!(host.stats().protected_leases(), 1);
+        assert_eq!(host.resource_snapshot().protected_instances(), 1);
+        assert_eq!(host.resource_snapshot().protected_leases(), 1);
     });
 
     cx.update(|window, cx| {
@@ -252,8 +252,8 @@ fn pointer_capture_rebind_transfers_the_exact_ledger_entry_and_close_releases_it
     assert!(cx.update(|window, _| window.captured_hitbox()).is_none());
     assert!(activity.is_revoked());
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().protected_instances(), 0);
-        assert_eq!(host.stats().protected_leases(), 0);
+        assert_eq!(host.resource_snapshot().protected_instances(), 0);
+        assert_eq!(host.resource_snapshot().protected_leases(), 0);
     });
     drop(lease);
 }
@@ -361,8 +361,8 @@ fn pointer_capture_retains_detail_across_overview_and_receives_outside_release(
             OpenGpuiNodePresentation::Overview,
         );
         assert!(mounted.has_interaction_island());
-        assert_eq!(host.stats().protected_instances(), 1);
-        assert_eq!(host.stats().protected_leases(), 1);
+        assert_eq!(host.resource_snapshot().protected_instances(), 1);
+        assert_eq!(host.resource_snapshot().protected_leases(), 1);
     });
 
     cx.simulate_mouse_up(
@@ -396,8 +396,8 @@ fn pointer_capture_retains_detail_across_overview_and_receives_outside_release(
             OpenGpuiNodePresentation::Overview,
         );
         assert!(!mounted.has_interaction_island());
-        assert_eq!(host.stats().protected_instances(), 0);
-        assert_eq!(host.stats().protected_leases(), 0);
+        assert_eq!(host.resource_snapshot().protected_instances(), 0);
+        assert_eq!(host.resource_snapshot().protected_leases(), 0);
     });
 }
 
@@ -441,10 +441,10 @@ fn retiring_a_node_releases_its_rebound_pointer_capture(cx: &mut open_gpui::Test
     assert!(cx.update(|window, _| window.captured_hitbox()).is_none());
     assert!(activity.is_revoked());
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().active_nodes(), 0);
-        assert_eq!(host.stats().protected_instances(), 0);
-        assert_eq!(host.stats().protected_leases(), 0);
-        assert_eq!(host.stats().hard_retirements(), 1);
+        assert_eq!(host.resource_snapshot().active_nodes(), 0);
+        assert_eq!(host.resource_snapshot().protected_instances(), 0);
+        assert_eq!(host.resource_snapshot().protected_leases(), 0);
+        assert_eq!(host.work_ledger_snapshot().hard_retirements(), 1);
     });
     drop(capture.borrow_mut().take());
 }

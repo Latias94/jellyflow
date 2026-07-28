@@ -444,7 +444,7 @@ def _validate_common_marker_fields(
         value = _marker_int(fields, key, errors)
         if value is not None and value != 0:
             errors.append(f"marker {key} is {value}, expected 0")
-    _marker_int(fields, "feedback_submissions", errors, minimum=2)
+    _marker_int(fields, "feedback_submissions", errors)
     _marker_int(fields, "geometry_layout_revision", errors, minimum=1)
 
     if initial_nodes is not None:

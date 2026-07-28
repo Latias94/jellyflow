@@ -406,8 +406,10 @@ impl OpenGpuiSceneHost {
             let Some(instance) = self.mounts.retained_instance(*node).cloned() else {
                 continue;
             };
-            self.stats.binding_reconciliation_visits =
-                self.stats.binding_reconciliation_visits.saturating_add(1);
+            self.work_ledger.binding_reconciliation_visits = self
+                .work_ledger
+                .binding_reconciliation_visits
+                .saturating_add(1);
 
             if change.is_stale_for(&instance) {
                 if let Some(mounted) = self.detach_instance(&instance) {
@@ -501,9 +503,10 @@ impl OpenGpuiSceneHost {
     ) -> Result<OpenGpuiBindingAdvance, crate::binding::OpenGpuiNodeBindingError> {
         match outcome {
             Ok(OpenGpuiBindingAdvance::Applied) => {
-                self.stats.binding_updates = self.stats.binding_updates.saturating_add(1);
-                self.stats.binding_notifications =
-                    self.stats.binding_notifications.saturating_add(1);
+                self.work_ledger.binding_updates =
+                    self.work_ledger.binding_updates.saturating_add(1);
+                self.work_ledger.binding_notifications =
+                    self.work_ledger.binding_notifications.saturating_add(1);
                 Ok(OpenGpuiBindingAdvance::Applied)
             }
             Ok(OpenGpuiBindingAdvance::Retry) => {
@@ -561,7 +564,7 @@ impl OpenGpuiSceneHost {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> MountedNode {
-        self.stats.mounts = self.stats.mounts.saturating_add(1);
+        self.work_ledger.mounts = self.work_ledger.mounts.saturating_add(1);
         let mount = OpenGpuiMountCapability::new();
         let activity = OpenGpuiNodeActivityRegistry::for_host(
             frame.instance().clone(),
@@ -596,8 +599,10 @@ impl OpenGpuiSceneHost {
 
         let (view, overview, content_kind, binding, registration_policy) = match binding_mount {
             Ok(binding_mount) => {
-                self.stats.binding_mount_initializations =
-                    self.stats.binding_mount_initializations.saturating_add(1);
+                self.work_ledger.binding_mount_initializations = self
+                    .work_ledger
+                    .binding_mount_initializations
+                    .saturating_add(1);
                 let layout_invalidator = Self::layout_invalidator(cx);
                 let binding = cx.new(|cx| {
                     OpenGpuiNodeBinding::new(

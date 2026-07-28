@@ -208,7 +208,9 @@ fn application_overview_reuses_one_mount_and_publishes_real_ports(
         cx.notify();
     });
     draw(cx);
-    cx.read_entity(&host, |host, _| assert_eq!(host.stats().parked_nodes(), 1));
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(host.resource_snapshot().parked_nodes(), 1)
+    });
     cx.update_entity(&host, |host, cx| {
         host.set_frame_bounds(visible_viewport());
         cx.notify();
@@ -219,7 +221,9 @@ fn application_overview_reuses_one_mount_and_publishes_real_ports(
         1,
         "restore must retain overview entity"
     );
-    cx.read_entity(&host, |host, _| assert_eq!(host.stats().mounts(), 1));
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(host.resource_snapshot().active_nodes(), 1)
+    });
 }
 
 #[open_gpui::test]

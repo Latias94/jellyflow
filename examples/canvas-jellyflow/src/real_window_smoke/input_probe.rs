@@ -135,7 +135,7 @@ impl InteractionProbeState {
 #[derive(Debug)]
 struct LodProbeState {
     current: LodSample,
-    feedback_before: u64,
+    layout_revision_before: u64,
     node: Option<jellyflow_core::NodeId>,
     frames: BTreeMap<LodSample, LodFrameEvidence>,
     captures: BTreeSet<SmokeCaptureState>,
@@ -147,7 +147,7 @@ impl Default for LodProbeState {
     fn default() -> Self {
         Self {
             current: LodSample::Lod086,
-            feedback_before: 0,
+            layout_revision_before: 0,
             node: None,
             frames: BTreeMap::new(),
             captures: BTreeSet::new(),
@@ -189,6 +189,10 @@ fn record_capture<const N: usize>(
     ensure_capture_pending(captures, state, allowed)?;
     captures.insert(state);
     Ok(())
+}
+
+fn tick_ordinal(tick_id: Option<u64>) -> u64 {
+    tick_id.map_or(0, |tick_id| tick_id.saturating_add(1))
 }
 
 #[derive(Debug)]

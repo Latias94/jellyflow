@@ -12,7 +12,7 @@ use jellyflow_open_gpui::chrome::{
     OpenGpuiEdgeLabelAppearance, OpenGpuiEdgeMarkerShape, OpenGpuiEdgePainterRecipe,
     OpenGpuiEdgePainterRegistry, OpenGpuiEdgeStrokePattern, OpenGpuiEdgeTone,
 };
-use jellyflow_open_gpui::host::OpenGpuiSceneHost;
+use jellyflow_open_gpui::host::{OpenGpuiSceneHost, OpenGpuiSceneHostDiagnosticKind};
 use jellyflow_open_gpui::registry::{
     OpenGpuiNodeRegistrationPolicy, OpenGpuiNodeRegistry, OpenGpuiNodeRegistryIssueKind,
     OpenGpuiRendererRegistrationStatus,
@@ -522,10 +522,15 @@ fn external_retained_node_mounts_and_measures_real_ports(cx: &mut open_gpui::Tes
     assert_eq!(runtime.history_state().unwrap().undo_len(), 1);
 
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().mounts(), 2);
-        assert_eq!(host.stats().active_nodes(), 2);
-        assert!(host.stats().feedback_submissions() >= 1);
-        assert_eq!(host.stats().feedback_failures(), 0);
+        assert_eq!(host.resource_snapshot().active_nodes(), 2);
+        let diagnostic = host
+            .last_diagnostic()
+            .expect("the deliberately missing sink renderer uses the fallback");
+        assert_eq!(
+            diagnostic.kind(),
+            OpenGpuiSceneHostDiagnosticKind::MissingRenderer
+        );
+        assert_eq!(diagnostic.node(), Some(sink_node_id()));
         assert_eq!(host.graph_theme(), expected_theme);
         assert_eq!(host.edge_painter_registry().len(), 1);
     });

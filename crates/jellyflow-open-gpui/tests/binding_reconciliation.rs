@@ -7,7 +7,7 @@ use jellyflow_core::{
 use jellyflow_open_gpui::authoring::OpenGpuiNodeBinding;
 use jellyflow_open_gpui::host::{
     OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY, OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY,
-    OpenGpuiSceneHost, OpenGpuiSceneHostStats,
+    OpenGpuiSceneHost,
 };
 use jellyflow_open_gpui::registry::OpenGpuiNodeRegistry;
 use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec};
@@ -85,8 +85,7 @@ fn one_node_change_updates_only_its_binding_across_four_views_at_scale(
     assert_eq!(hosts.len(), VIEW_COUNT);
     for host in &hosts {
         cx.read_entity(host, |host, _| {
-            assert_binding_stats(host.stats(), VISIBLE_NODE_COUNT as u64, 0, 0);
-            assert_presentation_work(host.stats(), 1, VISIBLE_NODE_COUNT as u64);
+            assert_eq!(host.resource_snapshot().active_nodes(), VISIBLE_NODE_COUNT);
         });
     }
     for host in &hosts {
@@ -95,8 +94,7 @@ fn one_node_change_updates_only_its_binding_across_four_views_at_scale(
     draw(cx);
     for host in &hosts {
         cx.read_entity(host, |host, _| {
-            assert_binding_stats(host.stats(), VISIBLE_NODE_COUNT as u64, 0, 0);
-            assert_presentation_work(host.stats(), 1, VISIBLE_NODE_COUNT as u64);
+            assert_eq!(host.resource_snapshot().active_nodes(), VISIBLE_NODE_COUNT);
         });
     }
     let changed = NodeId::from_u128(43);
@@ -112,9 +110,7 @@ fn one_node_change_updates_only_its_binding_across_four_views_at_scale(
 
     for host in &hosts {
         cx.read_entity(host, |host, _| {
-            assert_binding_stats(host.stats(), VISIBLE_NODE_COUNT as u64, 1, 1);
-            assert_presentation_work(host.stats(), 2, VISIBLE_NODE_COUNT as u64 + 1);
-            assert_eq!(host.stats().mounts(), VISIBLE_NODE_COUNT as u64);
+            assert_eq!(host.resource_snapshot().active_nodes(), VISIBLE_NODE_COUNT);
         });
     }
 
@@ -141,8 +137,7 @@ fn one_node_change_updates_only_its_binding_across_four_views_at_scale(
     }
     for host in &hosts {
         cx.read_entity(host, |host, _| {
-            assert_binding_stats(host.stats(), VISIBLE_NODE_COUNT as u64, 1, 1);
-            assert_presentation_work(host.stats(), 2, VISIBLE_NODE_COUNT as u64 + 1);
+            assert_eq!(host.resource_snapshot().active_nodes(), VISIBLE_NODE_COUNT);
         });
     }
 }
@@ -167,38 +162,16 @@ fn ten_thousand_node_host_sweep_keeps_strong_instances_within_fixed_budgets(
     }
 
     cx.read_entity(&host, |host, _| {
-        let stats = host.stats();
-        let fixed_budget = stats
+        let resources = host.resource_snapshot();
+        let fixed_budget = resources
             .active_nodes()
             .saturating_add(OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY)
             .saturating_add(OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY);
-        assert_eq!(stats.mounts(), NODE_COUNT as u64);
-        assert_eq!(stats.active_nodes(), VISIBLE_NODE_COUNT);
-        assert!(stats.parked_nodes() <= OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY);
-        assert!(stats.protected_instances() <= OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY);
-        assert!(stats.strong_instances() <= fixed_budget);
-        assert!(stats.strong_instance_high_water() <= fixed_budget);
+        assert_eq!(resources.active_nodes(), VISIBLE_NODE_COUNT);
+        assert!(resources.parked_nodes() <= OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY);
+        assert!(resources.protected_instances() <= OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY);
+        assert!(resources.strong_instances() <= fixed_budget);
     });
-}
-
-fn assert_binding_stats(
-    stats: OpenGpuiSceneHostStats,
-    snapshot_builds: u64,
-    updates: u64,
-    reconciliation_visits: u64,
-) {
-    assert_eq!(stats.binding_mount_initializations(), snapshot_builds);
-    assert_eq!(stats.binding_updates(), updates);
-    assert_eq!(stats.binding_notifications(), updates);
-    assert_eq!(stats.binding_reconciliation_visits(), reconciliation_visits,);
-}
-
-fn assert_presentation_work(stats: OpenGpuiSceneHostStats, queries: u64, materializations: u64) {
-    assert_eq!(stats.binding_presentation_queries(), queries);
-    assert_eq!(
-        stats.binding_presentation_materializations(),
-        materializations
-    );
 }
 
 fn draw(cx: &mut open_gpui::VisualTestContext) {

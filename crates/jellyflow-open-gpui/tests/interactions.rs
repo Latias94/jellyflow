@@ -459,7 +459,7 @@ fn disabling_an_active_port_drag_cancels_only_that_owner_and_releases_resources(
     cx.update(|window, cx| assert_eq!(window.focused(cx), Some(control_focus)));
     cx.read_entity(&host, |host, _| {
         assert!(host.active_port_drag().is_none());
-        assert_eq!(host.stats().protected_instances(), 0);
+        assert_eq!(host.resource_snapshot().protected_instances(), 0);
     });
 
     let outside = point(px(700.0), px(500.0));
@@ -515,8 +515,8 @@ fn removing_a_captured_dynamic_port_cancels_capture_after_the_topology_patch(
             CanvasInteractionPhase::Idle
         );
         assert!(host.connection_search_request().is_none());
-        assert_eq!(host.stats().protected_instances(), 0);
-        assert_eq!(host.stats().protected_leases(), 0);
+        assert_eq!(host.resource_snapshot().protected_instances(), 0);
+        assert_eq!(host.resource_snapshot().protected_leases(), 0);
     });
     assert!(
         runtime
@@ -594,8 +594,8 @@ fn removing_a_keyboard_activated_dynamic_port_cancels_keyboard_connection(
         );
         assert!(host.connection_search_request().is_none());
         assert!(host.active_port_drag().is_none());
-        assert_eq!(host.stats().protected_instances(), 0);
-        assert_eq!(host.stats().protected_leases(), 0);
+        assert_eq!(host.resource_snapshot().protected_instances(), 0);
+        assert_eq!(host.resource_snapshot().protected_leases(), 0);
     });
 }
 
@@ -629,7 +629,7 @@ fn disabling_a_port_does_not_steal_focus_acquired_after_the_drag_started(
     cx.update(|window, cx| assert_eq!(window.focused(cx), Some(new_focus.clone())));
     cx.read_entity(&host, |host, _| {
         assert!(host.active_port_drag().is_none());
-        assert_eq!(host.stats().protected_instances(), 0);
+        assert_eq!(host.resource_snapshot().protected_instances(), 0);
     });
 }
 
@@ -675,7 +675,7 @@ fn port_capture_survives_redraw_and_transfers_out_of_bounds_release_to_search(
         let owner = host.active_port_drag().expect("active port owner");
         assert_eq!(owner.instance().node(), node_id());
         assert_eq!(owner.port(), output_id());
-        assert_eq!(host.stats().protected_instances(), 1);
+        assert_eq!(host.resource_snapshot().protected_instances(), 1);
     });
 
     cx.update_entity(&host, |_, cx| cx.notify());
@@ -716,7 +716,7 @@ fn port_capture_survives_redraw_and_transfers_out_of_bounds_release_to_search(
             host.interaction_presentation().phase(),
             CanvasInteractionPhase::ConnectionSearch
         );
-        assert_eq!(host.stats().protected_instances(), 1);
+        assert_eq!(host.resource_snapshot().protected_instances(), 1);
         host.connection_search_request().expect("search request")
     });
     cx.update(|window, cx| {
@@ -726,7 +726,7 @@ fn port_capture_survives_redraw_and_transfers_out_of_bounds_release_to_search(
         .expect("cancel search");
     });
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().protected_instances(), 0);
+        assert_eq!(host.resource_snapshot().protected_instances(), 0);
     });
     cx.update(|window, cx| {
         assert_eq!(window.focused(cx), control_focus.upgrade());
@@ -772,7 +772,7 @@ fn escape_cancels_port_capture_and_consumes_the_key(cx: &mut open_gpui::TestAppC
     });
     cx.read_entity(&host, |host, _| {
         assert!(host.active_port_drag().is_none());
-        assert_eq!(host.stats().protected_instances(), 0);
+        assert_eq!(host.resource_snapshot().protected_instances(), 0);
     });
 }
 
@@ -806,8 +806,8 @@ fn hard_retirement_cancels_capture_and_suppresses_late_pointer_events(
 
     cx.read_entity(&host, |host, _| {
         assert!(host.active_port_drag().is_none());
-        assert_eq!(host.stats().protected_instances(), 0);
-        assert_eq!(host.stats().strong_instances(), 0);
+        assert_eq!(host.resource_snapshot().protected_instances(), 0);
+        assert_eq!(host.resource_snapshot().strong_instances(), 0);
     });
     assert!(previous_focus.upgrade().is_none());
 
@@ -924,7 +924,7 @@ fn native_control_and_scroll_keep_component_bubbling_without_graph_gestures(
             CanvasInteractionPhase::Idle
         );
         assert!(host.active_port_drag().is_none());
-        assert_eq!(host.stats().protected_instances(), 0);
+        assert_eq!(host.resource_snapshot().protected_instances(), 0);
     });
 }
 
@@ -943,9 +943,9 @@ fn captured_owner_is_force_included_until_release_then_becomes_parkable(
     });
     draw(cx);
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().active_nodes(), 1);
-        assert_eq!(host.stats().parked_nodes(), 0);
-        assert_eq!(host.stats().protected_instances(), 1);
+        assert_eq!(host.resource_snapshot().active_nodes(), 1);
+        assert_eq!(host.resource_snapshot().parked_nodes(), 0);
+        assert_eq!(host.resource_snapshot().protected_instances(), 1);
         assert!(host.active_port_drag().is_some());
     });
 
@@ -963,9 +963,9 @@ fn captured_owner_is_force_included_until_release_then_becomes_parkable(
     assert!(node_events.borrow().is_empty());
     assert!(canvas_events.borrow().is_empty());
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().active_nodes(), 0);
-        assert_eq!(host.stats().parked_nodes(), 1);
-        assert_eq!(host.stats().protected_instances(), 0);
+        assert_eq!(host.resource_snapshot().active_nodes(), 0);
+        assert_eq!(host.resource_snapshot().parked_nodes(), 1);
+        assert_eq!(host.resource_snapshot().protected_instances(), 0);
         assert!(host.active_port_drag().is_none());
     });
 }
@@ -988,8 +988,8 @@ fn create_from_wire_search_force_includes_its_source_until_cancelled(
             host.interaction_presentation().phase(),
             CanvasInteractionPhase::ConnectionSearch
         );
-        assert_eq!(host.stats().protected_instances(), 1);
-        assert_eq!(host.stats().protected_leases(), 1);
+        assert_eq!(host.resource_snapshot().protected_instances(), 1);
+        assert_eq!(host.resource_snapshot().protected_leases(), 1);
         host.connection_search_request().expect("search request")
     });
 
@@ -999,9 +999,9 @@ fn create_from_wire_search_force_includes_its_source_until_cancelled(
     });
     draw(cx);
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().active_nodes(), 1);
-        assert_eq!(host.stats().parked_nodes(), 0);
-        assert_eq!(host.stats().protected_instances(), 1);
+        assert_eq!(host.resource_snapshot().active_nodes(), 1);
+        assert_eq!(host.resource_snapshot().parked_nodes(), 0);
+        assert_eq!(host.resource_snapshot().protected_instances(), 1);
         assert_eq!(host.connection_search_request().as_ref(), Some(&request));
     });
 
@@ -1017,10 +1017,10 @@ fn create_from_wire_search_force_includes_its_source_until_cancelled(
             host.interaction_presentation().phase(),
             CanvasInteractionPhase::Idle
         );
-        assert_eq!(host.stats().active_nodes(), 0);
-        assert_eq!(host.stats().parked_nodes(), 1);
-        assert_eq!(host.stats().protected_instances(), 0);
-        assert_eq!(host.stats().protected_leases(), 0);
+        assert_eq!(host.resource_snapshot().active_nodes(), 0);
+        assert_eq!(host.resource_snapshot().parked_nodes(), 1);
+        assert_eq!(host.resource_snapshot().protected_instances(), 0);
+        assert_eq!(host.resource_snapshot().protected_leases(), 0);
     });
 }
 
@@ -1050,8 +1050,8 @@ fn window_aware_close_releases_capture_before_returning(cx: &mut open_gpui::Test
     assert!(canvas_events.borrow().is_empty());
     cx.read_entity(&host, |host, _| {
         assert!(host.active_port_drag().is_none());
-        assert_eq!(host.stats().protected_instances(), 0);
-        assert_eq!(host.stats().strong_instances(), 0);
+        assert_eq!(host.resource_snapshot().protected_instances(), 0);
+        assert_eq!(host.resource_snapshot().strong_instances(), 0);
     });
 }
 
@@ -1083,8 +1083,8 @@ fn runtime_drop_during_connection_drag_releases_capture_and_terminalizes_the_own
             CanvasInteractionPhase::Closed
         );
         assert!(host.active_port_drag().is_none());
-        assert_eq!(host.stats().protected_instances(), 0);
-        assert_eq!(host.stats().strong_instances(), 0);
+        assert_eq!(host.resource_snapshot().protected_instances(), 0);
+        assert_eq!(host.resource_snapshot().strong_instances(), 0);
     });
 }
 
@@ -1133,8 +1133,8 @@ fn cancelling_create_from_wire_restores_the_pre_drag_focus_and_leaves_no_owner(
         );
         assert!(host.connection_search_request().is_none());
         assert!(host.active_port_drag().is_none());
-        assert_eq!(host.stats().protected_instances(), 0);
-        assert_eq!(host.stats().protected_leases(), 0);
+        assert_eq!(host.resource_snapshot().protected_instances(), 0);
+        assert_eq!(host.resource_snapshot().protected_leases(), 0);
     });
     cx.update(|window, cx| assert_eq!(window.focused(cx), Some(control_focus)));
 

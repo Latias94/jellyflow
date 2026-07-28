@@ -697,46 +697,48 @@ impl OpenGpuiSceneHost {
         };
         self.last_edge_layer_overflow = overflow;
         if rebuilt {
-            self.stats.edge_layer_plans = self.stats.edge_layer_plans.saturating_add(1);
+            self.work_ledger.edge_layer_plans = self.work_ledger.edge_layer_plans.saturating_add(1);
         } else {
-            self.stats.edge_route_list_reuses = self.stats.edge_route_list_reuses.saturating_add(1);
+            self.work_ledger.edge_route_list_reuses =
+                self.work_ledger.edge_route_list_reuses.saturating_add(1);
         }
-        self.stats.edge_route_query_entries_examined = self
-            .stats
+        self.work_ledger.edge_route_query_entries_examined = self
+            .work_ledger
             .edge_route_query_entries_examined
             .saturating_add(report.work.entries_examined);
-        self.stats.edge_route_query_candidates_matched = self
-            .stats
+        self.work_ledger.edge_route_query_candidates_matched = self
+            .work_ledger
             .edge_route_query_candidates_matched
             .saturating_add(report.work.candidates_matched);
-        self.stats.edge_route_query_pending = self
-            .stats
+        self.work_ledger.edge_route_query_pending = self
+            .work_ledger
             .edge_route_query_pending
             .saturating_add(u64::from(report.pending));
-        self.stats.edge_route_query_budget_exhausted = self
-            .stats
+        self.work_ledger.edge_route_query_budget_exhausted = self
+            .work_ledger
             .edge_route_query_budget_exhausted
             .saturating_add(u64::from(report.budget_exhausted));
-        self.stats.edge_route_geometry_overflows = self
-            .stats
+        self.work_ledger.edge_route_geometry_overflows = self
+            .work_ledger
             .edge_route_geometry_overflows
             .saturating_add(report.geometry_overflows as u64);
-        self.stats.edge_route_previous_plan_reuses = self
-            .stats
+        self.work_ledger.edge_route_previous_plan_reuses = self
+            .work_ledger
             .edge_route_previous_plan_reuses
             .saturating_add(u64::from(report.reused_previous_plan));
         if rebuilt {
-            self.stats.edge_routes_planned = self
-                .stats
+            self.work_ledger.edge_routes_planned = self
+                .work_ledger
                 .edge_routes_planned
                 .saturating_add(published.len() as u64);
-            self.stats.edge_routes_budget_omitted = self
-                .stats
+            self.work_ledger.edge_routes_budget_omitted = self
+                .work_ledger
                 .edge_routes_budget_omitted
                 .saturating_add(budget_omitted as u64);
         }
         if !overflow.is_empty() {
-            self.stats.edge_layer_overflows = self.stats.edge_layer_overflows.saturating_add(1);
+            self.work_ledger.edge_layer_overflows =
+                self.work_ledger.edge_layer_overflows.saturating_add(1);
         }
         if let Some((fallbacks, total)) = painter_fallback {
             self.record_edge_painter_diagnostics(fallbacks, total);
@@ -1913,7 +1915,8 @@ impl OpenGpuiSceneHost {
         resolutions.extend(self.settle_retained_command_batch(result.take_command_batch_result()));
         match result.submission {
             OpenGpuiFrameTransactionSubmission::Submitted(disposition) => {
-                self.stats.feedback_submissions = self.stats.feedback_submissions.saturating_add(1);
+                self.work_ledger.feedback_submissions =
+                    self.work_ledger.feedback_submissions.saturating_add(1);
                 let disposition = self.apply_frame_receipt_disposition(disposition);
                 request_next_frame |= disposition.request_next_frame;
                 request_next_frame |= self.observe_content_measurements(

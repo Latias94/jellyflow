@@ -320,8 +320,8 @@ fn native_model_select_exposes_resource_states_without_clearing_persisted_value(
             .is_some()
     );
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().protected_instances(), 1);
-        assert_eq!(host.stats().protected_leases(), 1);
+        assert_eq!(host.resource_snapshot().protected_instances(), 1);
+        assert_eq!(host.resource_snapshot().protected_leases(), 1);
     });
     let _loading_request = cx
         .update(|_, cx| model_options.update(cx, WorkflowModelOptionsState::begin_request))
@@ -333,8 +333,8 @@ fn native_model_select_exposes_resource_states_without_clearing_persisted_value(
         "resource invalidation closes the controlled model overlay"
     );
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().protected_instances(), 0);
-        assert_eq!(host.stats().protected_leases(), 0);
+        assert_eq!(host.resource_snapshot().protected_instances(), 0);
+        assert_eq!(host.resource_snapshot().protected_leases(), 0);
     });
     assert_eq!(model_value(&runtime), "gpt-4.1");
 }

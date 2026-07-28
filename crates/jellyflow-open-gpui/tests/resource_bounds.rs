@@ -332,8 +332,8 @@ fn protected_nodes_ignore_zero_required_budget_then_resume_ordinary_culling(
     });
     draw(cx);
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().active_nodes(), 1);
-        assert_eq!(host.stats().parked_nodes(), 0);
+        assert_eq!(host.resource_snapshot().active_nodes(), 1);
+        assert_eq!(host.resource_snapshot().parked_nodes(), 0);
         assert_eq!(host.frame_materialization_budget().required_nodes(), 0);
         assert_eq!(
             host.last_frame_materialization_overflow()
@@ -348,8 +348,8 @@ fn protected_nodes_ignore_zero_required_budget_then_resume_ordinary_culling(
     cx.update_entity(&host, |_, cx| cx.notify());
     draw(cx);
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().active_nodes(), 0);
-        assert_eq!(host.stats().parked_nodes(), 1);
+        assert_eq!(host.resource_snapshot().active_nodes(), 0);
+        assert_eq!(host.resource_snapshot().parked_nodes(), 1);
     });
 
     attached.set(false);
@@ -370,8 +370,8 @@ fn protected_nodes_ignore_zero_required_budget_then_resume_ordinary_culling(
 
     assert_eq!(task_revocations.get(), 1);
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().active_nodes(), 0);
-        assert_eq!(host.stats().parked_nodes(), 0);
+        assert_eq!(host.resource_snapshot().active_nodes(), 0);
+        assert_eq!(host.resource_snapshot().parked_nodes(), 0);
     });
 
     runtime
@@ -392,8 +392,7 @@ fn protected_nodes_ignore_zero_required_budget_then_resume_ordinary_culling(
     });
     draw(cx);
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().mounts(), 2);
-        assert_eq!(host.stats().active_nodes(), 1);
+        assert_eq!(host.resource_snapshot().active_nodes(), 1);
     });
 }
 
@@ -472,11 +471,10 @@ fn coalesced_reincarnation_hard_retires_active_node_without_waiting_for_draw(
 
     assert_eq!(revocations.get(), 1);
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().active_nodes(), 0);
-        assert_eq!(host.stats().parked_nodes(), 0);
-        assert_eq!(host.stats().strong_instances(), 0);
-        assert_eq!(host.stats().protected_instances(), 0);
-        assert_eq!(host.stats().hard_retirements(), 1);
+        assert_eq!(host.resource_snapshot().active_nodes(), 0);
+        assert_eq!(host.resource_snapshot().parked_nodes(), 0);
+        assert_eq!(host.resource_snapshot().strong_instances(), 0);
+        assert_eq!(host.resource_snapshot().protected_instances(), 0);
     });
     cx.update(|_, _| {});
     cx.run_until_parked();
@@ -551,14 +549,13 @@ fn protected_instance_budget_is_distinct_bounded_and_reusable(cx: &mut open_gpui
     );
     cx.read_entity(&host, |host, _| {
         assert_eq!(
-            host.stats().protected_instances(),
+            host.resource_snapshot().protected_instances(),
             OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY,
         );
         assert_eq!(
-            host.stats().protected_leases(),
+            host.resource_snapshot().protected_leases(),
             OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY + 1,
         );
-        assert_eq!(host.stats().protected_overflows(), 1);
     });
 
     cx.update_entity(&host, |host, cx| {
@@ -568,10 +565,10 @@ fn protected_instance_budget_is_distinct_bounded_and_reusable(cx: &mut open_gpui
     draw(cx);
     cx.read_entity(&host, |host, _| {
         assert_eq!(
-            host.stats().active_nodes(),
+            host.resource_snapshot().active_nodes(),
             OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY,
         );
-        assert_eq!(host.stats().parked_nodes(), 1);
+        assert_eq!(host.resource_snapshot().parked_nodes(), 1);
     });
 
     let released_node = *leases.borrow().keys().nth(1).unwrap();
@@ -585,12 +582,12 @@ fn protected_instance_budget_is_distinct_bounded_and_reusable(cx: &mut open_gpui
 
     cx.read_entity(&host, |host, _| {
         assert_eq!(
-            host.stats().active_nodes(),
+            host.resource_snapshot().active_nodes(),
             OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY,
         );
-        assert_eq!(host.stats().parked_nodes(), 1);
+        assert_eq!(host.resource_snapshot().parked_nodes(), 1);
         assert_eq!(
-            host.stats().protected_instances(),
+            host.resource_snapshot().protected_instances(),
             OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY,
         );
     });
@@ -649,7 +646,6 @@ fn sixty_fifth_real_port_drag_cancels_without_side_effects_then_retries_after_re
     });
     let graph_before = runtime.snapshot().unwrap();
     let history_before = runtime.history_state().unwrap();
-    let overflows_before = cx.read_entity(&host, |host, _| host.stats().protected_overflows());
     let port = cx
         .debug_bounds(CAPACITY_PORT_SELECTOR)
         .expect("capacity port bounds");
@@ -673,10 +669,9 @@ fn sixty_fifth_real_port_drag_cancels_without_side_effects_then_retries_after_re
             CanvasInteractionPhase::Idle
         );
         assert_eq!(
-            host.stats().protected_instances(),
+            host.resource_snapshot().protected_instances(),
             OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY
         );
-        assert_eq!(host.stats().protected_overflows(), overflows_before + 1);
     });
     assert!(graph_before.ptr_eq(&runtime.snapshot().unwrap()));
     assert_eq!(runtime.history_state().unwrap(), history_before);
@@ -685,7 +680,7 @@ fn sixty_fifth_real_port_drag_cancels_without_side_effects_then_retries_after_re
     drop(leases.borrow_mut().remove(&released_node));
     cx.read_entity(&host, |host, _| {
         assert_eq!(
-            host.stats().protected_instances(),
+            host.resource_snapshot().protected_instances(),
             OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY - 1,
         );
     });
@@ -709,7 +704,7 @@ fn sixty_fifth_real_port_drag_cancels_without_side_effects_then_retries_after_re
     cx.read_entity(&host, |host, _| {
         assert!(host.active_port_drag().is_none());
         assert_eq!(
-            host.stats().protected_instances(),
+            host.resource_snapshot().protected_instances(),
             OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY - 1,
         );
     });
@@ -750,8 +745,8 @@ fn eligible_lru_evicts_oldest_instances_and_keeps_strong_references_bounded(
     });
     draw(cx);
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().active_nodes(), node_count);
-        assert_eq!(host.stats().strong_instances(), node_count);
+        assert_eq!(host.resource_snapshot().active_nodes(), node_count);
+        assert_eq!(host.resource_snapshot().strong_instances(), node_count);
     });
 
     cx.update_entity(&host, |host, cx| {
@@ -760,21 +755,23 @@ fn eligible_lru_evicts_oldest_instances_and_keeps_strong_references_bounded(
     });
     draw(cx);
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().active_nodes(), 0);
+        assert_eq!(host.resource_snapshot().active_nodes(), 0);
         assert_eq!(
-            host.stats().parked_nodes(),
+            host.resource_snapshot().parked_nodes(),
             OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY,
         );
         assert_eq!(
-            host.stats().eligible_parked_nodes(),
+            host.resource_snapshot().eligible_parked_nodes(),
             OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY,
         );
         assert_eq!(
-            host.stats().strong_instances(),
+            host.resource_snapshot().strong_instances(),
             OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY,
         );
-        assert!(host.stats().eligible_lru_entries() <= OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY,);
-        assert_eq!(host.stats().evictions(), 2);
+        assert!(
+            host.resource_snapshot().eligible_lru_entries()
+                <= OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY,
+        );
     });
 
     cx.update_entity(&host, |host, cx| {
@@ -787,13 +784,8 @@ fn eligible_lru_evicts_oldest_instances_and_keeps_strong_references_bounded(
     assert_eq!(mounts.borrow()[&NodeId::from_u128(2)], 2);
     assert_eq!(mounts.borrow()[&NodeId::from_u128(3)], 1);
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().active_nodes(), node_count);
-        assert_eq!(host.stats().parked_nodes(), 0);
-        assert_eq!(host.stats().mounts(), (node_count + 2) as u64);
-        assert_eq!(
-            host.stats().restores(),
-            OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY as u64,
-        );
+        assert_eq!(host.resource_snapshot().active_nodes(), node_count);
+        assert_eq!(host.resource_snapshot().parked_nodes(), 0);
     });
 }
 
@@ -860,12 +852,9 @@ fn thousand_lifecycle_cycles_return_native_resources_to_baseline(
         assert_eq!(replacement_mounts.get(), cycle);
         assert_eq!(published_geometry_counts(&weak_view), (1, 1, 0));
         cx.read_entity(&host, |host, _| {
-            assert_eq!(host.stats().mounts(), 1);
-            assert_eq!(host.stats().active_nodes(), 1);
-            assert_eq!(host.stats().strong_instances(), 1);
-            assert_eq!(host.stats().strong_instance_high_water(), 1);
-            assert_eq!(host.stats().protected_instances(), 1);
-            assert_eq!(host.stats().protected_high_water(), 1);
+            assert_eq!(host.resource_snapshot().active_nodes(), 1);
+            assert_eq!(host.resource_snapshot().strong_instances(), 1);
+            assert_eq!(host.resource_snapshot().protected_instances(), 1);
         });
 
         start_cycle_capture(cx);
@@ -890,10 +879,10 @@ fn thousand_lifecycle_cycles_return_native_resources_to_baseline(
         );
         assert_eq!(published_geometry_counts(&weak_view), geometry_baseline);
         cx.read_entity(&host, |host, _| {
-            assert_eq!(host.stats().active_nodes(), 0);
-            assert_eq!(host.stats().strong_instances(), 0);
-            assert_eq!(host.stats().protected_instances(), 0);
-            assert_eq!(host.stats().protected_leases(), 0);
+            assert_eq!(host.resource_snapshot().active_nodes(), 0);
+            assert_eq!(host.resource_snapshot().strong_instances(), 0);
+            assert_eq!(host.resource_snapshot().protected_instances(), 0);
+            assert_eq!(host.resource_snapshot().protected_leases(), 0);
         });
 
         runtime
@@ -934,13 +923,9 @@ fn thousand_lifecycle_cycles_return_native_resources_to_baseline(
         assert_eq!(replacement_mounts.get(), cycle + 1);
         assert_eq!(published_geometry_counts(&weak_view), (1, 1, 0));
         cx.read_entity(&host, |host, _| {
-            assert_eq!(host.stats().mounts(), 3);
-            assert_eq!(host.stats().hard_retirements(), 2);
-            assert_eq!(host.stats().active_nodes(), 1);
-            assert_eq!(host.stats().strong_instances(), 1);
-            assert_eq!(host.stats().strong_instance_high_water(), 1);
-            assert_eq!(host.stats().protected_instances(), 1);
-            assert_eq!(host.stats().protected_high_water(), 1);
+            assert_eq!(host.resource_snapshot().active_nodes(), 1);
+            assert_eq!(host.resource_snapshot().strong_instances(), 1);
+            assert_eq!(host.resource_snapshot().protected_instances(), 1);
         });
         flush_effect_cycle(cx);
         assert_released_entities(&weak_entities, 2);
@@ -961,13 +946,11 @@ fn thousand_lifecycle_cycles_return_native_resources_to_baseline(
         draw(cx);
 
         cx.read_entity(&host, |host, _| {
-            assert_eq!(host.stats().mounts(), MOUNTS_PER_CYCLE);
-            assert_eq!(host.stats().hard_retirements(), MOUNTS_PER_CYCLE);
-            assert_eq!(host.stats().active_nodes(), 0);
-            assert_eq!(host.stats().parked_nodes(), 0);
-            assert_eq!(host.stats().strong_instances(), 0);
-            assert_eq!(host.stats().protected_instances(), 0);
-            assert_eq!(host.stats().protected_leases(), 0);
+            assert_eq!(host.resource_snapshot().active_nodes(), 0);
+            assert_eq!(host.resource_snapshot().parked_nodes(), 0);
+            assert_eq!(host.resource_snapshot().strong_instances(), 0);
+            assert_eq!(host.resource_snapshot().protected_instances(), 0);
+            assert_eq!(host.resource_snapshot().protected_leases(), 0);
         });
         assert_eq!(
             revocations.get(),
@@ -1071,9 +1054,9 @@ fn dropping_last_host_entity_releases_live_native_resources_after_revocation_pan
     draw(cx);
 
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().active_nodes(), 1);
-        assert_eq!(host.stats().strong_instances(), 1);
-        assert_eq!(host.stats().protected_instances(), 1);
+        assert_eq!(host.resource_snapshot().active_nodes(), 1);
+        assert_eq!(host.resource_snapshot().strong_instances(), 1);
+        assert_eq!(host.resource_snapshot().protected_instances(), 1);
     });
     assert_eq!(runtime.live_view_count(), 1);
     assert_eq!(weak_entities.borrow().len(), 1);

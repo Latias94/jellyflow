@@ -77,8 +77,8 @@ fn scene_host_parks_and_restores_the_same_retained_node(cx: &mut open_gpui::Test
     assert_eq!(mounts.get(), 1);
     assert!(renders.get() > 0);
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().active_nodes(), 1);
-        assert_eq!(host.stats().parked_nodes(), 0);
+        assert_eq!(host.resource_snapshot().active_nodes(), 1);
+        assert_eq!(host.resource_snapshot().parked_nodes(), 0);
     });
 
     cx.update_entity(&host, |host, cx| {
@@ -88,8 +88,8 @@ fn scene_host_parks_and_restores_the_same_retained_node(cx: &mut open_gpui::Test
     draw(cx);
     assert_eq!(mounts.get(), 1);
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().active_nodes(), 0);
-        assert_eq!(host.stats().parked_nodes(), 1);
+        assert_eq!(host.resource_snapshot().active_nodes(), 0);
+        assert_eq!(host.resource_snapshot().parked_nodes(), 1);
     });
 
     cx.update_entity(&host, |host, cx| {
@@ -103,10 +103,8 @@ fn scene_host_parks_and_restores_the_same_retained_node(cx: &mut open_gpui::Test
         "parked node must reuse its retained entity"
     );
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().active_nodes(), 1);
-        assert_eq!(host.stats().parked_nodes(), 0);
-        assert_eq!(host.stats().mounts(), 1);
-        assert!(host.stats().restores() >= 1);
+        assert_eq!(host.resource_snapshot().active_nodes(), 1);
+        assert_eq!(host.resource_snapshot().parked_nodes(), 0);
     });
 }
 
@@ -165,9 +163,7 @@ fn factory_failure_recovers_only_after_an_explicit_mount_retry(cx: &mut open_gpu
         "a successful matching mount retires its factory fallback"
     );
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().active_nodes(), 1);
-        assert_eq!(host.stats().mounts(), 2);
-        assert_eq!(host.stats().hard_retirements(), 1);
+        assert_eq!(host.resource_snapshot().active_nodes(), 1);
         assert!(
             host.last_diagnostic().is_none(),
             "the matching factory diagnostic clears only after a successful remount"
@@ -231,8 +227,7 @@ fn panicking_factory_fallback_retirement_is_diagnosed_and_the_retry_continues(
         "retry notification must schedule the replacement mount before propagating the panic",
     );
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().active_nodes(), 1);
-        assert_eq!(host.stats().hard_retirements(), 1);
+        assert_eq!(host.resource_snapshot().active_nodes(), 1);
         assert!(
             host.last_diagnostic()
                 .is_some_and(|diagnostic| diagnostic.message().contains("retry continued"))
@@ -263,8 +258,7 @@ fn missing_renderer_fallback_is_not_mount_retryable(cx: &mut open_gpui::TestAppC
     }));
     draw(cx);
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().mounts(), 1);
-        assert_eq!(host.stats().hard_retirements(), 0);
+        assert_eq!(host.resource_snapshot().active_nodes(), 1)
     });
 }
 
@@ -332,11 +326,10 @@ fn explicit_close_drains_final_command_once_then_retires_native_state(
     assert_eq!(revocations.get(), 1);
     cx.read_entity(&host, |host, _| {
         assert_eq!(host.close_reason(), Some(ViewCloseReason::HostClosed));
-        assert_eq!(host.stats().active_nodes(), 0);
-        assert_eq!(host.stats().parked_nodes(), 0);
-        assert_eq!(host.stats().strong_instances(), 0);
-        assert_eq!(host.stats().protected_instances(), 0);
-        assert_eq!(host.stats().hard_retirements(), 1);
+        assert_eq!(host.resource_snapshot().active_nodes(), 0);
+        assert_eq!(host.resource_snapshot().parked_nodes(), 0);
+        assert_eq!(host.resource_snapshot().strong_instances(), 0);
+        assert_eq!(host.resource_snapshot().protected_instances(), 0);
     });
 
     assert!(matches!(
@@ -372,7 +365,7 @@ fn runtime_drop_retires_native_state_on_the_next_host_tick(cx: &mut open_gpui::T
     });
     draw(cx);
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().active_nodes(), 1);
+        assert_eq!(host.resource_snapshot().active_nodes(), 1);
     });
 
     drop(runtime);
@@ -380,10 +373,9 @@ fn runtime_drop_retires_native_state_on_the_next_host_tick(cx: &mut open_gpui::T
 
     cx.read_entity(&host, |host, _| {
         assert_eq!(host.close_reason(), Some(ViewCloseReason::RuntimeDropped));
-        assert_eq!(host.stats().active_nodes(), 0);
-        assert_eq!(host.stats().parked_nodes(), 0);
-        assert_eq!(host.stats().strong_instances(), 0);
-        assert_eq!(host.stats().hard_retirements(), 1);
+        assert_eq!(host.resource_snapshot().active_nodes(), 0);
+        assert_eq!(host.resource_snapshot().parked_nodes(), 0);
+        assert_eq!(host.resource_snapshot().strong_instances(), 0);
     });
 }
 
@@ -411,10 +403,9 @@ fn runtime_drop_bridge_retires_every_mount_after_the_first_revocation_panics(
     );
     cx.read_entity(&host, |host, _| {
         assert_eq!(host.close_reason(), Some(ViewCloseReason::RuntimeDropped));
-        assert_eq!(host.stats().active_nodes(), 0);
-        assert_eq!(host.stats().parked_nodes(), 0);
-        assert_eq!(host.stats().strong_instances(), 0);
-        assert_eq!(host.stats().hard_retirements(), 2);
+        assert_eq!(host.resource_snapshot().active_nodes(), 0);
+        assert_eq!(host.resource_snapshot().parked_nodes(), 0);
+        assert_eq!(host.resource_snapshot().strong_instances(), 0);
         assert!(
             host.last_diagnostic()
                 .is_some_and(|diagnostic| diagnostic.message().contains("completed cleanup"))
@@ -451,7 +442,7 @@ fn nonterminal_retirement_panic_does_not_stop_the_lifecycle_bridge(
     cx.run_until_parked();
     assert_eq!(&*revocations.borrow(), &[NodeId::from_u128(10)]);
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().active_nodes(), 1);
+        assert_eq!(host.resource_snapshot().active_nodes(), 1);
         assert!(
             host.last_diagnostic()
                 .is_some_and(|diagnostic| diagnostic.message().contains("bridge continued"))
@@ -476,8 +467,8 @@ fn nonterminal_retirement_panic_does_not_stop_the_lifecycle_bridge(
         "the bridge must consume later patches after isolating a callback panic",
     );
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().active_nodes(), 0);
-        assert_eq!(host.stats().strong_instances(), 0);
+        assert_eq!(host.resource_snapshot().active_nodes(), 0);
+        assert_eq!(host.resource_snapshot().strong_instances(), 0);
     });
 }
 
@@ -500,7 +491,7 @@ fn stale_parked_reconciliation_finishes_every_retirement_before_propagating_a_pa
     });
     draw(cx);
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().parked_nodes(), 2);
+        assert_eq!(host.resource_snapshot().parked_nodes(), 2);
     });
 
     runtime

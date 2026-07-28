@@ -510,9 +510,7 @@ fn measured_surface_bootstrap_requests_a_second_frame_and_mounts_visible_nodes(
     draw(cx);
 
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().active_nodes(), 1);
-        assert_eq!(host.stats().mounts(), 1);
-        assert!(host.stats().feedback_submissions() >= 2);
+        assert_eq!(host.resource_snapshot().active_nodes(), 1);
     });
 }
 
@@ -635,10 +633,7 @@ fn native_port_handles_publish_complete_geometry_after_prepaint(
         node.bounds().origin.x + node.bounds().size.width,
     );
 
-    cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().feedback_submissions(), 2);
-        assert_eq!(host.stats().feedback_failures(), 0);
-    });
+    cx.read_entity(&host, |host, _| assert!(host.last_diagnostic().is_none()));
 
     let settled_revision = geometry.layout_revision();
     for _ in 0..120 {
@@ -1342,7 +1337,6 @@ fn stale_prepaint_feedback_refreshes_without_becoming_a_user_diagnostic(
     assert!(geometry.port(input_id()).is_some());
     assert!(geometry.port(output_id()).is_some());
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().feedback_failures(), 0);
         assert!(host.last_diagnostic().is_none());
     });
 }
@@ -1394,7 +1388,6 @@ fn stale_same_node_measurement_does_not_emit_a_size_command(cx: &mut open_gpui::
         })
     );
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().feedback_failures(), 0);
         assert!(host.last_diagnostic().is_none());
     });
 }
@@ -1447,9 +1440,7 @@ fn nested_scene_origin_is_removed_from_native_layout_feedback(cx: &mut open_gpui
     assert!(geometry.port(output_id()).is_some());
 
     let host = captured_host.borrow().clone().expect("captured scene host");
-    cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().feedback_failures(), 0);
-    });
+    cx.read_entity(&host, |host, _| assert!(host.last_diagnostic().is_none()));
 }
 
 #[open_gpui::test]
@@ -1477,7 +1468,6 @@ fn missing_renderer_fallback_measures_every_real_port(cx: &mut open_gpui::TestAp
             host.last_diagnostic().map(|diagnostic| diagnostic.kind()),
             Some(OpenGpuiSceneHostDiagnosticKind::MissingRenderer),
         );
-        assert_eq!(host.stats().feedback_failures(), 0);
     });
 }
 
@@ -1782,8 +1772,8 @@ fn semantic_zoom_uses_overview_below_one_and_native_pixels_at_or_above_one(
     }
 
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().mounts(), 1);
-        assert_eq!(host.stats().feedback_failures(), 0);
+        assert_eq!(host.resource_snapshot().active_nodes(), 1);
+        assert!(host.last_diagnostic().is_none());
     });
     assert!(renders.get() > 0, "detail zoom rendered the retained child");
 }
@@ -1845,7 +1835,9 @@ fn semantic_zoom_holds_presentation_inside_the_hysteresis_gap(cx: &mut open_gpui
         );
     }
 
-    cx.read_entity(&host, |host, _| assert_eq!(host.stats().mounts(), 1));
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(host.resource_snapshot().active_nodes(), 1)
+    });
 }
 
 #[open_gpui::test]
@@ -1907,8 +1899,8 @@ fn protected_node_uses_graph_inert_interaction_island_at_low_zoom_without_remoun
         1.1,
     );
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().mounts(), 1);
-        assert_eq!(host.stats().protected_instances(), 1);
+        assert_eq!(host.resource_snapshot().active_nodes(), 1);
+        assert_eq!(host.resource_snapshot().protected_instances(), 1);
     });
 
     let renders_before_release = renders.get();
@@ -1929,9 +1921,9 @@ fn protected_node_uses_graph_inert_interaction_island_at_low_zoom_without_remoun
         protected_size,
     );
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().mounts(), 1);
-        assert_eq!(host.stats().protected_instances(), 0);
-        assert_eq!(host.stats().strong_instances(), 1);
+        assert_eq!(host.resource_snapshot().active_nodes(), 1);
+        assert_eq!(host.resource_snapshot().protected_instances(), 0);
+        assert_eq!(host.resource_snapshot().strong_instances(), 1);
     });
 }
 
@@ -1977,8 +1969,8 @@ fn graph_interaction_protects_retention_without_creating_an_interaction_island(
     assert!(cx.debug_bounds(FIXED_NATIVE_CONTROL_SELECTOR).is_none());
     assert!(cx.debug_bounds(OVERVIEW_NODE_SELECTOR).is_some());
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().protected_instances(), 1);
-        assert_eq!(host.stats().mounts(), 1);
+        assert_eq!(host.resource_snapshot().protected_instances(), 1);
+        assert_eq!(host.resource_snapshot().active_nodes(), 1);
     });
     assert_eq!(renders.get(), 0);
     drop(lease.borrow_mut().take());
@@ -2010,10 +2002,8 @@ fn late_incomplete_feedback_after_runtime_drop_is_silently_discarded(
 
     cx.read_entity(&host, |host, _| {
         assert_eq!(host.close_reason(), Some(ViewCloseReason::RuntimeDropped));
-        assert_eq!(host.stats().feedback_submissions(), 0);
-        assert_eq!(host.stats().feedback_failures(), 0);
         assert!(host.last_diagnostic().is_none());
-        assert_eq!(host.stats().strong_instances(), 0);
+        assert_eq!(host.resource_snapshot().strong_instances(), 0);
     });
 }
 

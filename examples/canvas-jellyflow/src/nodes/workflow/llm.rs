@@ -1748,7 +1748,7 @@ mod tests {
         draw_transient_host(cx);
         cx.read_entity(&host, |host, _| {
             assert_eq!(
-                host.stats().protected_instances(),
+                host.resource_snapshot().protected_instances(),
                 OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY
             );
         });
@@ -1795,7 +1795,7 @@ mod tests {
         });
         draw_transient_host(cx);
         cx.read_entity(&host, |host, _| {
-            assert!(host.stats().eligible_parked_nodes() >= 1);
+            assert!(host.resource_snapshot().eligible_parked_nodes() >= 1);
         });
         let weak_node = node.downgrade();
         let weak_controller = controller.downgrade();
@@ -1811,13 +1811,12 @@ mod tests {
             draw_transient_host(cx);
         }
         cx.read_entity(&host, |host, _| {
-            assert!(host.stats().evictions() >= 1);
             assert_eq!(
-                host.stats().protected_instances(),
+                host.resource_snapshot().protected_instances(),
                 OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY
             );
             assert!(
-                host.stats().eligible_parked_nodes() <= OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY
+                host.resource_snapshot().eligible_parked_nodes() <= OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY
             );
         });
         assert!(weak_node.upgrade().is_none());

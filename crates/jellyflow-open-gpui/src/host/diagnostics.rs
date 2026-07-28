@@ -124,9 +124,207 @@ impl OpenGpuiEdgeLayerOverflow {
     }
 }
 
-/// Deterministic retained-lifecycle counters for one scene host.
+/// Current resource ownership retained by one scene host.
+///
+/// This snapshot deliberately excludes cumulative work counters. Use operation receipts and
+/// diagnostics to observe completed work; use this value only to inspect resources that are still
+/// owned or scheduled when the snapshot is taken.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct OpenGpuiSceneHostStats {
+pub struct OpenGpuiSceneHostResourceSnapshot {
+    pub(super) active_nodes: usize,
+    pub(super) parked_nodes: usize,
+    pub(super) eligible_parked_nodes: usize,
+    pub(super) eligible_lru_entries: usize,
+    pub(super) strong_instances: usize,
+    pub(super) protected_instances: usize,
+    pub(super) protected_leases: usize,
+    pub(super) interaction_callback_epoch: u64,
+    pub(super) interaction_registered_tick_id: Option<u64>,
+    pub(super) interaction_entered_tick_id: Option<u64>,
+    pub(super) interaction_requested_tick_id: Option<u64>,
+    pub(super) interaction_pending_queries: usize,
+    pub(super) interaction_submission_pending: bool,
+    pub(super) interaction_ready_prefixes: usize,
+    pub(super) interaction_tick_scheduled: bool,
+    pub(super) interaction_tick_frame_requested: bool,
+    pub(super) interaction_query_frame_scheduled: bool,
+    pub(super) interaction_query_resolution_active: bool,
+    pub(super) interaction_native_tick_wake_active: bool,
+    pub(super) interaction_native_query_wake_active: bool,
+    pub(super) edge_path_cache_resident: usize,
+    pub(super) edge_path_cache_vertices: usize,
+    pub(super) edge_path_cache_estimated_bytes: usize,
+    pub(super) edge_paint_plan_cache_resident: usize,
+    pub(super) edge_marker_plan_cache_resident: usize,
+    pub(super) edge_plan_cache_generations: usize,
+    pub(super) edge_plan_cache_vertices: usize,
+    pub(super) edge_plan_cache_estimated_bytes: usize,
+    pub(super) edge_plan_live_vertices: usize,
+    pub(super) edge_plan_live_estimated_bytes: usize,
+}
+
+impl OpenGpuiSceneHostResourceSnapshot {
+    #[must_use]
+    pub const fn active_nodes(self) -> usize {
+        self.active_nodes
+    }
+
+    #[must_use]
+    pub const fn parked_nodes(self) -> usize {
+        self.parked_nodes
+    }
+
+    #[must_use]
+    pub const fn eligible_parked_nodes(self) -> usize {
+        self.eligible_parked_nodes
+    }
+
+    #[must_use]
+    pub const fn eligible_lru_entries(self) -> usize {
+        self.eligible_lru_entries
+    }
+
+    #[must_use]
+    pub const fn strong_instances(self) -> usize {
+        self.strong_instances
+    }
+
+    #[must_use]
+    pub const fn protected_instances(self) -> usize {
+        self.protected_instances
+    }
+
+    #[must_use]
+    pub const fn protected_leases(self) -> usize {
+        self.protected_leases
+    }
+
+    /// Current semantic callback epoch used to invalidate stale native-frame work.
+    #[must_use]
+    pub const fn interaction_callback_epoch(self) -> u64 {
+        self.interaction_callback_epoch
+    }
+
+    /// Identity of the latest registered continuous-interaction tick.
+    #[must_use]
+    pub const fn interaction_registered_tick_id(self) -> Option<u64> {
+        self.interaction_registered_tick_id
+    }
+
+    /// Identity of the latest current tick that entered semantic advancement.
+    #[must_use]
+    pub const fn interaction_entered_tick_id(self) -> Option<u64> {
+        self.interaction_entered_tick_id
+    }
+
+    /// Identity of the latest tick submitted to the native frame scheduler.
+    #[must_use]
+    pub const fn interaction_requested_tick_id(self) -> Option<u64> {
+        self.interaction_requested_tick_id
+    }
+
+    #[must_use]
+    pub const fn interaction_pending_queries(self) -> usize {
+        self.interaction_pending_queries
+    }
+
+    #[must_use]
+    pub const fn interaction_submission_pending(self) -> bool {
+        self.interaction_submission_pending
+    }
+
+    #[must_use]
+    pub const fn interaction_ready_prefixes(self) -> usize {
+        self.interaction_ready_prefixes
+    }
+
+    #[must_use]
+    pub const fn interaction_tick_scheduled(self) -> bool {
+        self.interaction_tick_scheduled
+    }
+
+    #[must_use]
+    pub const fn interaction_tick_frame_requested(self) -> bool {
+        self.interaction_tick_frame_requested
+    }
+
+    #[must_use]
+    pub const fn interaction_query_frame_scheduled(self) -> bool {
+        self.interaction_query_frame_scheduled
+    }
+
+    #[must_use]
+    pub const fn interaction_query_resolution_active(self) -> bool {
+        self.interaction_query_resolution_active
+    }
+
+    #[must_use]
+    pub const fn interaction_native_tick_wake_active(self) -> bool {
+        self.interaction_native_tick_wake_active
+    }
+
+    #[must_use]
+    pub const fn interaction_native_query_wake_active(self) -> bool {
+        self.interaction_native_query_wake_active
+    }
+
+    #[must_use]
+    pub const fn edge_path_cache_resident(self) -> usize {
+        self.edge_path_cache_resident
+    }
+
+    #[must_use]
+    pub const fn edge_path_cache_vertices(self) -> usize {
+        self.edge_path_cache_vertices
+    }
+
+    #[must_use]
+    pub const fn edge_path_cache_estimated_bytes(self) -> usize {
+        self.edge_path_cache_estimated_bytes
+    }
+
+    #[must_use]
+    pub const fn edge_paint_plan_cache_resident(self) -> usize {
+        self.edge_paint_plan_cache_resident
+    }
+
+    #[must_use]
+    pub const fn edge_marker_plan_cache_resident(self) -> usize {
+        self.edge_marker_plan_cache_resident
+    }
+
+    /// Distinct transform/plan generations currently retained by paint and marker plans.
+    #[must_use]
+    pub const fn edge_plan_cache_generations(self) -> usize {
+        self.edge_plan_cache_generations
+    }
+
+    #[must_use]
+    pub const fn edge_plan_cache_vertices(self) -> usize {
+        self.edge_plan_cache_vertices
+    }
+
+    #[must_use]
+    pub const fn edge_plan_cache_estimated_bytes(self) -> usize {
+        self.edge_plan_cache_estimated_bytes
+    }
+
+    /// Conservative simultaneous vertex ownership for retained native paint plans.
+    #[must_use]
+    pub const fn edge_plan_live_vertices(self) -> usize {
+        self.edge_plan_live_vertices
+    }
+
+    /// Conservative simultaneous byte ownership for retained native paint plans.
+    #[must_use]
+    pub const fn edge_plan_live_estimated_bytes(self) -> usize {
+        self.edge_plan_live_estimated_bytes
+    }
+}
+
+/// Internal cumulative diagnostics used only by white-box host tests.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct OpenGpuiSceneHostWorkLedger {
     pub(super) active_nodes: usize,
     pub(super) parked_nodes: usize,
     pub(super) mounts: u64,
@@ -212,7 +410,39 @@ pub struct OpenGpuiSceneHostStats {
     pub(super) edge_native_markers_painted: u64,
 }
 
-impl OpenGpuiSceneHostStats {
+#[allow(dead_code)]
+impl OpenGpuiSceneHostWorkLedger {
+    fn with_resource_snapshot(mut self, snapshot: OpenGpuiSceneHostResourceSnapshot) -> Self {
+        self.active_nodes = snapshot.active_nodes;
+        self.parked_nodes = snapshot.parked_nodes;
+        self.eligible_parked_nodes = snapshot.eligible_parked_nodes;
+        self.eligible_lru_entries = snapshot.eligible_lru_entries;
+        self.strong_instances = snapshot.strong_instances;
+        self.protected_instances = snapshot.protected_instances;
+        self.protected_leases = snapshot.protected_leases;
+        self.interaction_callback_epoch = snapshot.interaction_callback_epoch;
+        self.interaction_pending_queries = snapshot.interaction_pending_queries;
+        self.interaction_submission_pending = snapshot.interaction_submission_pending;
+        self.interaction_ready_prefixes = snapshot.interaction_ready_prefixes;
+        self.interaction_tick_scheduled = snapshot.interaction_tick_scheduled;
+        self.interaction_tick_frame_requested = snapshot.interaction_tick_frame_requested;
+        self.interaction_query_frame_scheduled = snapshot.interaction_query_frame_scheduled;
+        self.interaction_query_resolution_active = snapshot.interaction_query_resolution_active;
+        self.interaction_native_tick_wake_active = snapshot.interaction_native_tick_wake_active;
+        self.interaction_native_query_wake_active = snapshot.interaction_native_query_wake_active;
+        self.edge_path_cache_resident = snapshot.edge_path_cache_resident;
+        self.edge_path_cache_vertices = snapshot.edge_path_cache_vertices;
+        self.edge_path_cache_estimated_bytes = snapshot.edge_path_cache_estimated_bytes;
+        self.edge_paint_plan_cache_resident = snapshot.edge_paint_plan_cache_resident;
+        self.edge_marker_plan_cache_resident = snapshot.edge_marker_plan_cache_resident;
+        self.edge_plan_cache_generations = snapshot.edge_plan_cache_generations;
+        self.edge_plan_cache_vertices = snapshot.edge_plan_cache_vertices;
+        self.edge_plan_cache_estimated_bytes = snapshot.edge_plan_cache_estimated_bytes;
+        self.edge_plan_live_vertices = snapshot.edge_plan_live_vertices;
+        self.edge_plan_live_estimated_bytes = snapshot.edge_plan_live_estimated_bytes;
+        self
+    }
+
     #[must_use]
     pub fn active_nodes(self) -> usize {
         self.active_nodes
@@ -782,10 +1012,58 @@ impl Render for DiagnosticFallback {
 }
 
 impl OpenGpuiSceneHost {
+    /// Returns current retained resources and native interaction scheduling state.
     #[must_use]
-    pub fn stats(&self) -> OpenGpuiSceneHostStats {
+    pub fn resource_snapshot(&self) -> OpenGpuiSceneHostResourceSnapshot {
         let activity = self.activity_coordinator.stats();
         let mounts = self.mounts.snapshot();
+        let interaction = self.interaction_owner.tick_diagnostics();
+        let edge_cache = self
+            .edge_paths
+            .try_borrow()
+            .map(|cache| cache.usage())
+            .unwrap_or_default();
+
+        OpenGpuiSceneHostResourceSnapshot {
+            active_nodes: mounts.active_nodes,
+            parked_nodes: mounts.parked_nodes,
+            eligible_parked_nodes: mounts.eligible_parked_nodes,
+            eligible_lru_entries: mounts.eligible_lru_entries,
+            strong_instances: mounts.strong_instances,
+            protected_instances: activity.protected_instances,
+            protected_leases: activity.protected_leases,
+            interaction_callback_epoch: interaction.callback_epoch,
+            interaction_registered_tick_id: interaction.last_registered_tick,
+            interaction_entered_tick_id: interaction.last_entered_tick,
+            interaction_requested_tick_id: interaction.last_requested_tick,
+            interaction_pending_queries: interaction.pending_queries,
+            interaction_submission_pending: interaction.pending_submission,
+            interaction_ready_prefixes: interaction.ready_prefixes,
+            interaction_tick_scheduled: interaction.tick_scheduled,
+            interaction_tick_frame_requested: interaction.tick_frame_requested,
+            interaction_query_frame_scheduled: interaction.query_frame_scheduled,
+            interaction_query_resolution_active: interaction.query_resolution_active,
+            interaction_native_tick_wake_active: interaction.native_tick_wake_active,
+            interaction_native_query_wake_active: interaction.native_query_wake_active,
+            edge_path_cache_resident: edge_cache.resident_paths,
+            edge_path_cache_vertices: edge_cache.path_footprint.vertices,
+            edge_path_cache_estimated_bytes: edge_cache.path_footprint.estimated_bytes,
+            edge_paint_plan_cache_resident: edge_cache.resident_paint_plans,
+            edge_marker_plan_cache_resident: edge_cache.resident_marker_plans,
+            edge_plan_cache_generations: edge_cache.plan_generations,
+            edge_plan_cache_vertices: edge_cache.plan_footprint.vertices,
+            edge_plan_cache_estimated_bytes: edge_cache.plan_footprint.estimated_bytes,
+            edge_plan_live_vertices: edge_cache.plan_live_footprint.vertices,
+            edge_plan_live_estimated_bytes: edge_cache.plan_live_footprint.estimated_bytes,
+        }
+    }
+
+    #[must_use]
+    #[allow(dead_code)]
+    pub(crate) fn work_ledger_snapshot(&self) -> OpenGpuiSceneHostWorkLedger {
+        let resources = self.resource_snapshot();
+        let mounts = self.mounts.snapshot();
+        let activity = self.activity_coordinator.stats();
         let interaction_ticks = self.interaction_owner.tick_diagnostics();
         let path_cache = self
             .edge_paths
@@ -797,45 +1075,20 @@ impl OpenGpuiSceneHost {
             .try_borrow()
             .map(|cache| cache.paint_usage())
             .unwrap_or_default();
-        OpenGpuiSceneHostStats {
-            active_nodes: mounts.active_nodes,
-            parked_nodes: mounts.parked_nodes,
+        OpenGpuiSceneHostWorkLedger {
             restores: mounts.restores,
             evictions: mounts.evictions,
             hard_retirements: mounts.hard_retirements,
-            protected_instances: activity.protected_instances,
-            protected_leases: activity.protected_leases,
             protected_high_water: activity.protected_high_water,
             protected_overflows: activity.overflows,
-            eligible_parked_nodes: mounts.eligible_parked_nodes,
-            eligible_lru_entries: mounts.eligible_lru_entries,
-            strong_instances: mounts.strong_instances,
             strong_instance_high_water: mounts.strong_instance_high_water,
             interaction_tick_callback_registrations: interaction_ticks.callback_registrations,
             interaction_tick_callback_entries: interaction_ticks.callback_entries,
             interaction_tick_frame_requests: interaction_ticks.frame_requests,
-            interaction_callback_epoch: interaction_ticks.callback_epoch,
-            interaction_pending_queries: interaction_ticks.pending_queries,
-            interaction_submission_pending: interaction_ticks.pending_submission,
-            interaction_ready_prefixes: interaction_ticks.ready_prefixes,
-            interaction_tick_scheduled: interaction_ticks.tick_scheduled,
-            interaction_tick_frame_requested: interaction_ticks.tick_frame_requested,
-            interaction_query_frame_scheduled: interaction_ticks.query_frame_scheduled,
-            interaction_query_resolution_active: interaction_ticks.query_resolution_active,
-            interaction_native_tick_wake_active: interaction_ticks.native_tick_wake_active,
-            interaction_native_query_wake_active: interaction_ticks.native_query_wake_active,
             edge_path_cache_hits: path_cache.path_hits,
             edge_path_cache_misses: path_cache.path_misses,
-            edge_path_cache_resident: path_cache.resident_paths,
-            edge_path_cache_vertices: path_cache.path_footprint.vertices,
-            edge_path_cache_estimated_bytes: path_cache.path_footprint.estimated_bytes,
             edge_path_cache_budget_evictions: path_cache.path_budget_evictions,
             edge_path_cache_budget_rejections: path_cache.path_budget_rejections,
-            edge_paint_plan_cache_resident: path_cache.resident_paint_plans,
-            edge_marker_plan_cache_resident: path_cache.resident_marker_plans,
-            edge_plan_cache_generations: path_cache.plan_generations,
-            edge_plan_cache_vertices: path_cache.plan_footprint.vertices,
-            edge_plan_cache_estimated_bytes: path_cache.plan_footprint.estimated_bytes,
             edge_plan_cache_budget_rejections: path_cache.plan_budget_rejections,
             edge_plan_incomplete_builds: path_cache.plan_incomplete_builds,
             edge_plan_rejected_items: path_cache.plan_rejected_items,
@@ -843,8 +1096,6 @@ impl OpenGpuiSceneHost {
             edge_plan_build_peak_estimated_bytes: path_cache
                 .plan_build_peak_footprint
                 .estimated_bytes,
-            edge_plan_live_vertices: path_cache.plan_live_footprint.vertices,
-            edge_plan_live_estimated_bytes: path_cache.plan_live_footprint.estimated_bytes,
             edge_plan_live_peak_vertices: path_cache.plan_live_peak_footprint.vertices,
             edge_plan_live_peak_estimated_bytes: path_cache
                 .plan_live_peak_footprint
@@ -860,8 +1111,9 @@ impl OpenGpuiSceneHost {
             edge_marker_plan_reuses: paint_usage.marker_plan_reuses,
             edge_native_marker_paint_calls: paint_usage.native_marker_paint_calls,
             edge_native_markers_painted: paint_usage.native_markers_painted,
-            ..self.stats
+            ..self.work_ledger
         }
+        .with_resource_snapshot(resources)
     }
 
     #[must_use]
@@ -931,8 +1183,8 @@ impl OpenGpuiSceneHost {
         if duplicate {
             return;
         }
-        self.stats.edge_painter_fallbacks = self
-            .stats
+        self.work_ledger.edge_painter_fallbacks = self
+            .work_ledger
             .edge_painter_fallbacks
             .saturating_add(total as u64);
         self.last_diagnostic = Some(OpenGpuiSceneHostDiagnostic {
@@ -966,8 +1218,8 @@ impl OpenGpuiSceneHost {
         if duplicate {
             return;
         }
-        self.stats.endpoint_geometry_fallbacks = self
-            .stats
+        self.work_ledger.endpoint_geometry_fallbacks = self
+            .work_ledger
             .endpoint_geometry_fallbacks
             .saturating_add(total as u64);
         self.last_diagnostic = Some(OpenGpuiSceneHostDiagnostic {
@@ -1006,8 +1258,8 @@ impl OpenGpuiSceneHost {
     }
 
     pub(super) fn record_layout_rejection(&mut self, node: NodeId, status: LayoutNodeStatus) {
-        self.stats.layout_rejections = self.stats.layout_rejections.saturating_add(1);
-        self.stats.feedback_failures = self.stats.feedback_failures.saturating_add(1);
+        self.work_ledger.layout_rejections = self.work_ledger.layout_rejections.saturating_add(1);
+        self.work_ledger.feedback_failures = self.work_ledger.feedback_failures.saturating_add(1);
         self.record_feedback_diagnostic(
             Some(node),
             format!("native layout for node {node:?} was rejected: {status:?}"),
@@ -1015,13 +1267,14 @@ impl OpenGpuiSceneHost {
     }
 
     pub(super) fn record_measurement_failure(&mut self, error: OpenGpuiMeasurementError) {
-        self.stats.measurement_failures = self.stats.measurement_failures.saturating_add(1);
-        self.stats.feedback_failures = self.stats.feedback_failures.saturating_add(1);
+        self.work_ledger.measurement_failures =
+            self.work_ledger.measurement_failures.saturating_add(1);
+        self.work_ledger.feedback_failures = self.work_ledger.feedback_failures.saturating_add(1);
         self.record_feedback_diagnostic(error.node(), error.to_string());
     }
 
     pub(super) fn record_feedback_failure(&mut self, node: Option<NodeId>, message: String) {
-        self.stats.feedback_failures = self.stats.feedback_failures.saturating_add(1);
+        self.work_ledger.feedback_failures = self.work_ledger.feedback_failures.saturating_add(1);
         self.record_feedback_diagnostic(node, message);
     }
 
@@ -1136,8 +1389,82 @@ mod tests {
     #[test]
     fn endpoint_geometry_fallback_stats_start_at_zero() {
         assert_eq!(
-            OpenGpuiSceneHostStats::default().endpoint_geometry_fallbacks(),
+            OpenGpuiSceneHostWorkLedger::default().endpoint_geometry_fallbacks(),
             0
         );
+    }
+
+    #[test]
+    fn resource_snapshot_exposes_current_resources_without_work_counters() {
+        let snapshot = OpenGpuiSceneHostResourceSnapshot {
+            active_nodes: 2,
+            parked_nodes: 3,
+            eligible_parked_nodes: 1,
+            eligible_lru_entries: 4,
+            strong_instances: 5,
+            protected_instances: 6,
+            protected_leases: 7,
+            interaction_callback_epoch: 8,
+            interaction_registered_tick_id: Some(9),
+            interaction_entered_tick_id: Some(9),
+            interaction_requested_tick_id: Some(9),
+            interaction_pending_queries: 9,
+            interaction_submission_pending: true,
+            interaction_ready_prefixes: 10,
+            interaction_tick_scheduled: true,
+            interaction_tick_frame_requested: true,
+            interaction_query_frame_scheduled: true,
+            interaction_query_resolution_active: true,
+            interaction_native_tick_wake_active: true,
+            interaction_native_query_wake_active: true,
+            edge_path_cache_resident: 11,
+            edge_path_cache_vertices: 12,
+            edge_path_cache_estimated_bytes: 13,
+            edge_paint_plan_cache_resident: 14,
+            edge_marker_plan_cache_resident: 15,
+            edge_plan_cache_generations: 16,
+            edge_plan_cache_vertices: 17,
+            edge_plan_cache_estimated_bytes: 18,
+            edge_plan_live_vertices: 19,
+            edge_plan_live_estimated_bytes: 20,
+        };
+        let mut ledger = OpenGpuiSceneHostWorkLedger::default();
+        ledger.mounts = 99;
+        ledger.edge_path_cache_hits = 100;
+
+        let combined = ledger.with_resource_snapshot(snapshot);
+        assert_eq!(combined.active_nodes(), 2);
+        assert_eq!(combined.parked_nodes(), 3);
+        assert_eq!(combined.eligible_parked_nodes(), 1);
+        assert_eq!(combined.strong_instances(), 5);
+        assert_eq!(combined.protected_instances(), 6);
+        assert_eq!(combined.interaction_callback_epoch(), 8);
+        assert!(combined.interaction_tick_scheduled());
+        assert_eq!(combined.edge_path_cache_resident(), 11);
+        assert_eq!(combined.edge_plan_live_vertices(), 19);
+        assert_eq!(combined.mounts(), 99);
+        assert_eq!(combined.edge_path_cache_hits(), 100);
+    }
+
+    #[test]
+    fn default_resource_snapshot_has_no_retained_or_scheduled_work() {
+        let snapshot = OpenGpuiSceneHostResourceSnapshot::default();
+        assert_eq!(snapshot.active_nodes(), 0);
+        assert_eq!(snapshot.parked_nodes(), 0);
+        assert_eq!(snapshot.eligible_parked_nodes(), 0);
+        assert_eq!(snapshot.strong_instances(), 0);
+        assert_eq!(snapshot.protected_instances(), 0);
+        assert_eq!(snapshot.protected_leases(), 0);
+        assert_eq!(snapshot.interaction_callback_epoch(), 0);
+        assert_eq!(snapshot.interaction_registered_tick_id(), None);
+        assert_eq!(snapshot.interaction_pending_queries(), 0);
+        assert!(!snapshot.interaction_submission_pending());
+        assert!(!snapshot.interaction_tick_scheduled());
+        assert!(!snapshot.interaction_query_frame_scheduled());
+        assert_eq!(snapshot.edge_path_cache_resident(), 0);
+        assert_eq!(snapshot.edge_path_cache_vertices(), 0);
+        assert_eq!(snapshot.edge_path_cache_estimated_bytes(), 0);
+        assert_eq!(snapshot.edge_plan_live_vertices(), 0);
+        assert_eq!(snapshot.edge_plan_live_estimated_bytes(), 0);
     }
 }

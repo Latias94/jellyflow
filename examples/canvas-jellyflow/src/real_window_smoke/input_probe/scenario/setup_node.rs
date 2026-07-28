@@ -179,7 +179,8 @@ impl RealWindowSmokeProbe {
                             .auto_pan_origin
                             .ok_or("input_autopan_baseline_missing")?;
                         let presentation = interaction_presentation(surface, cx);
-                        let tick_stats = surface.read(cx).host().read(cx).stats();
+                        let tick_resources =
+                            surface.read(cx).host().read(cx).resource_snapshot();
                         let drag_delta = presentation
                             .node_drag()
                             .map(|drag| drag.delta())
@@ -204,9 +205,9 @@ impl RealWindowSmokeProbe {
                             drag_delta.x,
                             drag_delta.y,
                             release_pending,
-                            tick_stats.interaction_tick_callback_registrations(),
-                            tick_stats.interaction_tick_callback_entries(),
-                            tick_stats.interaction_tick_frame_requests(),
+                            tick_ordinal(tick_resources.interaction_registered_tick_id()),
+                            tick_ordinal(tick_resources.interaction_entered_tick_id()),
+                            tick_ordinal(tick_resources.interaction_requested_tick_id()),
                             auto_pan_frames,
                         );
                     }
@@ -285,14 +286,13 @@ impl RealWindowSmokeProbe {
                             y: origin.y - plan.original_geometry_origin.y,
                         });
                         let presentation = interaction_presentation(surface, cx);
-                        let stats = surface.read(cx).host().read(cx).stats();
                         eprintln!(
                             "JELLYFLOW_REAL_WINDOW_SMOKE_NODE_SETTLEMENT node={} reason={reason} \
                              original_model={:?} current_model={current_model:?} model_delta={model_delta:?} \
                              original_geometry={:?} published_origin={published_origin:?} \
                              geometry_delta={geometry_delta:?} geometry_fresh={:?} \
                              layout_generation={:?} layout_revision={} graph_revision={} \
-                             interaction_phase={:?} feedback_submissions={} feedback_failures={}",
+                             interaction_phase={:?}",
                             plan.node.0,
                             plan.original_position,
                             plan.original_geometry_origin,
@@ -301,8 +301,6 @@ impl RealWindowSmokeProbe {
                             geometry.layout_revision(),
                             snapshot.revision(),
                             presentation.phase(),
-                            stats.feedback_submissions(),
-                            stats.feedback_failures(),
                         );
                     }
                     self.wait_with_reason(reason)

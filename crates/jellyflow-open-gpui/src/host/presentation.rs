@@ -137,8 +137,10 @@ impl OpenGpuiSceneHost {
             graph.revision(),
             requested_ports.as_slice(),
         )? {
-            self.stats.binding_presentation_queries =
-                self.stats.binding_presentation_queries.saturating_add(1);
+            self.work_ledger.binding_presentation_queries = self
+                .work_ledger
+                .binding_presentation_queries
+                .saturating_add(1);
         }
 
         let interaction = self.interaction_owner.presentation();
@@ -259,8 +261,8 @@ impl OpenGpuiSceneHost {
             });
         }
         debug_assert_eq!(summary_cursor, summaries.len());
-        self.stats.binding_presentation_materializations = self
-            .stats
+        self.work_ledger.binding_presentation_materializations = self
+            .work_ledger
             .binding_presentation_materializations
             .saturating_add(materializations);
 
@@ -276,9 +278,10 @@ impl OpenGpuiSceneHost {
                 }
             });
             if changed {
-                self.stats.binding_updates = self.stats.binding_updates.saturating_add(1);
-                self.stats.binding_notifications =
-                    self.stats.binding_notifications.saturating_add(1);
+                self.work_ledger.binding_updates =
+                    self.work_ledger.binding_updates.saturating_add(1);
+                self.work_ledger.binding_notifications =
+                    self.work_ledger.binding_notifications.saturating_add(1);
             }
         }
         Ok(())

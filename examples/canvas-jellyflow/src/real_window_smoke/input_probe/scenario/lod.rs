@@ -34,8 +34,8 @@ impl RealWindowSmokeProbe {
     pub(super) fn advance_lod(
         &mut self,
         window: &mut Window,
-        cx: &mut App,
-        surface: &Entity<NativeGraphSurface>,
+        _cx: &mut App,
+        _surface: &Entity<NativeGraphSurface>,
         view: &WeakViewSession,
         expectations: &SmokeExpectations,
         surface_size: ViewSize,
@@ -43,13 +43,11 @@ impl RealWindowSmokeProbe {
         match self.phase {
             ProbePhase::LodSet => {
                 let sample = self.lod()?.current;
-                let feedback_before = surface
-                    .read(cx)
-                    .host()
-                    .read(cx)
-                    .stats()
-                    .feedback_submissions();
-                self.lod_mut()?.feedback_before = feedback_before;
+                let layout_revision_before = view
+                    .geometry_snapshot()
+                    .map_err(|_| "geometry_snapshot_read_failed")?
+                    .layout_revision();
+                self.lod_mut()?.layout_revision_before = layout_revision_before;
                 set_zoom_preserving_surface_center(view, surface_size, sample.zoom())?;
                 window.refresh();
                 self.transition(ProbePhase::LodWait);
@@ -58,18 +56,16 @@ impl RealWindowSmokeProbe {
             ProbePhase::LodWait => {
                 let lod = self.lod()?;
                 let expected = lod.current.zoom();
-                let feedback_before = lod.feedback_before;
+                let layout_revision_before = lod.layout_revision_before;
                 let transform = view
                     .viewport_transform()
                     .map_err(|_| "input_viewport_read_failed")?;
-                let feedback_after = surface
-                    .read(cx)
-                    .host()
-                    .read(cx)
-                    .stats()
-                    .feedback_submissions();
+                let layout_revision_after = view
+                    .geometry_snapshot()
+                    .map_err(|_| "geometry_snapshot_read_failed")?
+                    .layout_revision();
                 if (transform.zoom - expected).abs() <= TARGET_ZOOM_TOLERANCE
-                    && feedback_after > feedback_before
+                    && layout_revision_after > layout_revision_before
                 {
                     self.transition(ProbePhase::LodCapture);
                     Ok(None)

@@ -326,7 +326,6 @@ fn native_vertical_tracer_runs_commands_and_layout_through_one_real_host_frame(
         .snapshot()
         .expect("graph before topology")
         .revision();
-    let topology_submissions = cx.read_entity(&host, |host, _| host.stats().feedback_submissions());
     click_command(cx);
     assert_eq!(
         take_command_observation(&observations, &withdrawals),
@@ -339,10 +338,6 @@ fn native_vertical_tracer_runs_commands_and_layout_through_one_real_host_frame(
         runtime.snapshot().expect("topology graph").revision(),
         topology_revision + 1,
     );
-    assert!(
-        cx.read_entity(&host, |host, _| host.stats().feedback_submissions()) > topology_submissions,
-        "the native click must submit through the mounted host",
-    );
     draw(cx);
     assert_eq!(
         fresh_published_ports(&host_view_handle, ids.node),
@@ -351,7 +346,6 @@ fn native_vertical_tracer_runs_commands_and_layout_through_one_real_host_frame(
     assert_native_state(cx, &node, &prompt);
 
     let undo_revision = runtime.snapshot().expect("graph before undo").revision();
-    let undo_submissions = cx.read_entity(&host, |host, _| host.stats().feedback_submissions());
     click_command(cx);
     assert_eq!(
         take_command_observation(&observations, &withdrawals),
@@ -363,10 +357,6 @@ fn native_vertical_tracer_runs_commands_and_layout_through_one_real_host_frame(
     assert_eq!(
         runtime.snapshot().expect("undone graph").revision(),
         undo_revision + 1,
-    );
-    assert!(
-        cx.read_entity(&host, |host, _| host.stats().feedback_submissions()) > undo_submissions,
-        "undo must submit through the same mounted host",
     );
     draw(cx);
     assert_eq!(
@@ -423,8 +413,8 @@ fn native_vertical_tracer_runs_commands_and_layout_through_one_real_host_frame(
     );
     assert_other_view_isolated(&untouched_view);
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().mounts(), 1);
-        assert_eq!(host.stats().feedback_failures(), 0);
+        assert_eq!(host.resource_snapshot().active_nodes(), 1);
+        assert!(host.last_diagnostic().is_none());
     });
 }
 

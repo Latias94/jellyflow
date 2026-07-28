@@ -215,7 +215,7 @@ fn overlay_control_and_blank_space_own_events_before_port_node_and_canvas(
                 "an overlay-owned pointer phase must not arm the graph host",
             );
             assert!(host.active_port_drag().is_none());
-            assert_eq!(host.stats().protected_instances(), 0);
+            assert_eq!(host.resource_snapshot().protected_instances(), 0);
         });
         assert!(
             graph_before.ptr_eq(
@@ -337,7 +337,7 @@ fn overlay_control_and_blank_space_own_events_before_port_node_and_canvas(
             CanvasInteractionPhase::Armed,
         );
         assert!(host.active_port_drag().is_none());
-        assert_eq!(host.stats().protected_instances(), 1);
+        assert_eq!(host.resource_snapshot().protected_instances(), 1);
     });
     cx.simulate_mouse_move(node_drag_end, Some(MouseButton::Left), Default::default());
     assert!(cx.update(|window, _| window.captured_hitbox()).is_some());
@@ -347,7 +347,7 @@ fn overlay_control_and_blank_space_own_events_before_port_node_and_canvas(
             CanvasInteractionPhase::NodeDrag,
         );
         assert!(host.active_port_drag().is_none());
-        assert_eq!(host.stats().protected_instances(), 1);
+        assert_eq!(host.resource_snapshot().protected_instances(), 1);
     });
     cx.simulate_mouse_up(node_drag_end, MouseButton::Left, Default::default());
     cx.run_until_parked();
@@ -382,7 +382,7 @@ fn overlay_control_and_blank_space_own_events_before_port_node_and_canvas(
             CanvasInteractionPhase::Idle,
         );
         assert!(host.active_port_drag().is_none());
-        assert_eq!(host.stats().protected_instances(), 0);
+        assert_eq!(host.resource_snapshot().protected_instances(), 0);
     });
 
     events.borrow_mut().clear();
@@ -404,7 +404,7 @@ fn overlay_control_and_blank_space_own_events_before_port_node_and_canvas(
             host.interaction_presentation().phase(),
             CanvasInteractionPhase::Armed,
         );
-        assert_eq!(host.stats().protected_instances(), 1);
+        assert_eq!(host.resource_snapshot().protected_instances(), 1);
         host.active_port_drag().expect("one live port owner")
     });
     assert_eq!(port_owner.instance().node(), node_id());
@@ -417,7 +417,7 @@ fn overlay_control_and_blank_space_own_events_before_port_node_and_canvas(
             CanvasInteractionPhase::ConnectionDrag,
         );
         assert_eq!(host.active_port_drag(), Some(port_owner.clone()));
-        assert_eq!(host.stats().protected_instances(), 1);
+        assert_eq!(host.resource_snapshot().protected_instances(), 1);
     });
     cx.simulate_mouse_up(port_drag_end, MouseButton::Left, Default::default());
     cx.run_until_parked();
@@ -438,7 +438,7 @@ fn overlay_control_and_blank_space_own_events_before_port_node_and_canvas(
             CanvasInteractionPhase::Idle,
         );
         assert!(host.active_port_drag().is_none());
-        assert_eq!(host.stats().protected_instances(), 0);
+        assert_eq!(host.resource_snapshot().protected_instances(), 0);
     });
     assert!(
         graph_before_port_drag.ptr_eq(

@@ -254,7 +254,7 @@ fn focused_composing_draft_survives_real_undo_and_redo_until_remote_is_accepted(
     assert!(activity.is_revoked());
     assert_eq!(activity.active_count(), 0);
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().strong_instances(), 0)
+        assert_eq!(host.resource_snapshot().strong_instances(), 0)
     });
 }
 
@@ -349,7 +349,7 @@ fn internal_supervisor_owns_dispatch_ticket_and_releases_task_resources(
     assert!(store.is_empty());
 
     let settled_revision = runtime.snapshot().unwrap().revision();
-    let settled_stats = cx.read_entity(&host, |host, _| host.stats());
+    let settled_resources = cx.read_entity(&host, |host, _| host.resource_snapshot());
     for frame in 0..120 {
         draw(cx);
         cx.read_entity(&node, |node, _| {
@@ -363,11 +363,13 @@ fn internal_supervisor_owns_dispatch_ticket_and_releases_task_resources(
     }
     assert_eq!(runtime.snapshot().unwrap().revision(), settled_revision);
     cx.read_entity(&host, |host, _| {
-        let stats = host.stats();
-        assert_eq!(stats.mounts(), settled_stats.mounts());
-        assert_eq!(stats.strong_instances(), settled_stats.strong_instances());
-        assert_eq!(stats.protected_instances(), 0);
-        assert_eq!(stats.protected_leases(), 0);
+        let resources = host.resource_snapshot();
+        assert_eq!(
+            resources.strong_instances(),
+            settled_resources.strong_instances()
+        );
+        assert_eq!(resources.protected_instances(), 0);
+        assert_eq!(resources.protected_leases(), 0);
     });
 }
 
@@ -405,10 +407,10 @@ fn focused_native_input_survives_culling_then_blurs_parks_and_hard_retires(
     });
     assert_eq!(activity.active_count(), 1);
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().active_nodes(), 1);
-        assert_eq!(host.stats().parked_nodes(), 0);
-        assert_eq!(host.stats().protected_instances(), 1);
-        assert_eq!(host.stats().protected_leases(), 1);
+        assert_eq!(host.resource_snapshot().active_nodes(), 1);
+        assert_eq!(host.resource_snapshot().parked_nodes(), 0);
+        assert_eq!(host.resource_snapshot().protected_instances(), 1);
+        assert_eq!(host.resource_snapshot().protected_leases(), 1);
     });
 
     cx.update(|window, _| window.blur());
@@ -423,12 +425,12 @@ fn focused_native_input_survives_culling_then_blurs_parks_and_hard_retires(
     cx.update_entity(&host, |_, cx| cx.notify());
     draw(cx);
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().active_nodes(), 0);
-        assert_eq!(host.stats().parked_nodes(), 1);
-        assert_eq!(host.stats().eligible_parked_nodes(), 1);
-        assert_eq!(host.stats().protected_instances(), 0);
-        assert_eq!(host.stats().protected_leases(), 0);
-        assert_eq!(host.stats().strong_instances(), 1);
+        assert_eq!(host.resource_snapshot().active_nodes(), 0);
+        assert_eq!(host.resource_snapshot().parked_nodes(), 1);
+        assert_eq!(host.resource_snapshot().eligible_parked_nodes(), 1);
+        assert_eq!(host.resource_snapshot().protected_instances(), 0);
+        assert_eq!(host.resource_snapshot().protected_leases(), 0);
+        assert_eq!(host.resource_snapshot().strong_instances(), 1);
     });
     cx.update(|window, cx| {
         assert!(!input_focus.is_focused(window));
@@ -451,12 +453,11 @@ fn focused_native_input_survives_culling_then_blurs_parks_and_hard_retires(
     assert_eq!(activity.active_count(), 0);
     assert_eq!(activity.protected_count(), 0);
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().active_nodes(), 0);
-        assert_eq!(host.stats().parked_nodes(), 0);
-        assert_eq!(host.stats().strong_instances(), 0);
-        assert_eq!(host.stats().protected_instances(), 0);
-        assert_eq!(host.stats().protected_leases(), 0);
-        assert_eq!(host.stats().hard_retirements(), 1);
+        assert_eq!(host.resource_snapshot().active_nodes(), 0);
+        assert_eq!(host.resource_snapshot().parked_nodes(), 0);
+        assert_eq!(host.resource_snapshot().strong_instances(), 0);
+        assert_eq!(host.resource_snapshot().protected_instances(), 0);
+        assert_eq!(host.resource_snapshot().protected_leases(), 0);
     });
     cx.update(|window, cx| assert!(window.focused(cx).is_none()));
     weak_node.assert_released();

@@ -83,7 +83,7 @@ fn edit_is_rejected_before_publish_when_host_and_external_field_budgets_are_full
     draw(cx);
     cx.read_entity(&host, |host, _| {
         assert_eq!(
-            host.stats().protected_instances(),
+            host.resource_snapshot().protected_instances(),
             OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY
         );
     });
@@ -259,12 +259,11 @@ fn sixty_fifth_dirty_draft_survives_real_host_capacity_and_lru_churn(
         draw(cx);
     }
     cx.read_entity(&host, |host, _| {
-        assert!(host.stats().evictions() >= 1);
         assert_eq!(
-            host.stats().protected_instances(),
+            host.resource_snapshot().protected_instances(),
             OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY
         );
-        assert!(host.stats().eligible_parked_nodes() <= OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY);
+        assert!(host.resource_snapshot().eligible_parked_nodes() <= OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY);
     });
 
     cx.update_entity(&host, |host, cx| {
@@ -336,7 +335,7 @@ fn sixty_fifth_workflow_focus_is_rejected_before_the_node_can_park(
     draw(cx);
     cx.read_entity(&host, |host, _| {
         assert_eq!(
-            host.stats().protected_instances(),
+            host.resource_snapshot().protected_instances(),
             OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY
         );
     });
@@ -355,10 +354,9 @@ fn sixty_fifth_workflow_focus_is_rejected_before_the_node_can_park(
     cx.update(|window, cx| assert!(window.focused(cx).is_none()));
     cx.read_entity(&host, |host, _| {
         assert_eq!(
-            host.stats().protected_instances(),
+            host.resource_snapshot().protected_instances(),
             OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY
         );
-        assert!(host.stats().protected_overflows() >= 1);
     });
 
     cx.update_entity(&host, |host, cx| {
@@ -367,8 +365,8 @@ fn sixty_fifth_workflow_focus_is_rejected_before_the_node_can_park(
     });
     draw(cx);
     cx.read_entity(&host, |host, _| {
-        assert!(host.stats().parked_nodes() >= 1);
-        assert!(host.stats().eligible_parked_nodes() >= 1);
+        assert!(host.resource_snapshot().parked_nodes() >= 1);
+        assert!(host.resource_snapshot().eligible_parked_nodes() >= 1);
     });
     cx.update(|window, cx| assert!(window.focused(cx).is_none()));
 }

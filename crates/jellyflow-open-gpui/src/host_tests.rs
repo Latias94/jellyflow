@@ -688,13 +688,13 @@ fn incomplete_real_port_measurement_preserves_authoritative_geometry_without_ret
             .last_diagnostic()
             .expect("incomplete native measurement is explicit");
         assert!(diagnostic.message().contains("missing real ports"));
-        assert_eq!(host.stats().layout_rejections(), 0);
-        assert!(host.stats().measurement_failures() >= 2);
-        assert!(host.stats().feedback_failures() >= 2);
+        assert_eq!(host.work_ledger_snapshot().layout_rejections(), 0);
+        assert!(host.work_ledger_snapshot().measurement_failures() >= 2);
+        assert!(host.work_ledger_snapshot().feedback_failures() >= 2);
         (
-            host.stats().feedback_submissions(),
-            host.stats().layout_rejections(),
-            host.stats().feedback_failures(),
+            host.work_ledger_snapshot().feedback_submissions(),
+            host.work_ledger_snapshot().layout_rejections(),
+            host.work_ledger_snapshot().feedback_failures(),
         )
     });
     let geometry = weak_view
@@ -715,9 +715,9 @@ fn incomplete_real_port_measurement_preserves_authoritative_geometry_without_ret
     cx.run_until_parked();
     assert_eq!(
         cx.read_entity(&host, |host, _| (
-            host.stats().feedback_submissions(),
-            host.stats().layout_rejections(),
-            host.stats().feedback_failures(),
+            host.work_ledger_snapshot().feedback_submissions(),
+            host.work_ledger_snapshot().layout_rejections(),
+            host.work_ledger_snapshot().feedback_failures(),
         )),
         counts_after_draw,
         "incomplete coverage must not schedule an unbounded retry"
@@ -782,23 +782,23 @@ fn retired_dynamic_port_handle_reports_prepaint_error_with_node_identity(
             .expect("prepaint measurement diagnostic");
         assert_eq!(diagnostic.node(), Some(NodeId::from_u128(10)));
         assert!(!diagnostic.message().is_empty());
-        assert!(host.stats().measurement_failures() >= 1);
+        assert!(host.work_ledger_snapshot().measurement_failures() >= 1);
         assert_eq!(
-            host.stats().feedback_failures(),
-            host.stats().measurement_failures()
+            host.work_ledger_snapshot().feedback_failures(),
+            host.work_ledger_snapshot().measurement_failures()
         );
         (
-            host.stats().feedback_submissions(),
-            host.stats().measurement_failures(),
-            host.stats().feedback_failures(),
+            host.work_ledger_snapshot().feedback_submissions(),
+            host.work_ledger_snapshot().measurement_failures(),
+            host.work_ledger_snapshot().feedback_failures(),
         )
     });
     cx.run_until_parked();
     assert_eq!(
         cx.read_entity(&host, |host, _| (
-            host.stats().feedback_submissions(),
-            host.stats().measurement_failures(),
-            host.stats().feedback_failures(),
+            host.work_ledger_snapshot().feedback_submissions(),
+            host.work_ledger_snapshot().measurement_failures(),
+            host.work_ledger_snapshot().feedback_failures(),
         )),
         counts_after_draw,
         "a deterministic prepaint error must not trigger an unbounded retry"
@@ -898,16 +898,16 @@ fn fresh_route_is_painted_after_edges_and_before_retained_nodes(
             "node controls must paint and receive pointer hits above edge focus controls",
         );
         assert_eq!(
-            host.stats().mounts(),
+            host.work_ledger_snapshot().mounts(),
             2,
             "fresh frames retain node identity"
         );
     });
 
-    let before = cx.read_entity(&host, |host, _| host.stats());
+    let before = cx.read_entity(&host, |host, _| host.work_ledger_snapshot());
     cx.update_entity(&host, |_, cx| cx.notify());
     draw_once(cx);
-    let after = cx.read_entity(&host, |host, _| host.stats());
+    let after = cx.read_entity(&host, |host, _| host.work_ledger_snapshot());
     assert_eq!(
         after.edge_route_query_entries_examined(),
         before.edge_route_query_entries_examined(),
@@ -946,7 +946,7 @@ fn fresh_route_is_painted_after_edges_and_before_retained_nodes(
     });
     cx.simulate_mouse_move(pointer, None, Default::default());
     cx.run_until_parked();
-    let hovered = cx.read_entity(&host, |host, _| host.stats());
+    let hovered = cx.read_entity(&host, |host, _| host.work_ledger_snapshot());
     assert_eq!(
         hovered.edge_route_query_entries_examined(),
         after.edge_route_query_entries_examined(),
@@ -981,7 +981,7 @@ fn same_style_edges_merge_into_fewer_native_paint_submissions(cx: &mut open_gpui
     draw(cx);
     draw(cx);
 
-    let stats = cx.read_entity(&host, |host, _| host.stats());
+    let stats = cx.read_entity(&host, |host, _| host.work_ledger_snapshot());
     assert!(stats.edge_native_paint_calls() > 0);
     assert!(stats.edge_native_edges_painted() >= EDGE_COUNT as u64);
     assert!(
@@ -1006,7 +1006,7 @@ fn matching_edge_markers_share_native_submissions_and_reuse_their_plan(
     draw(cx);
     draw(cx);
 
-    let before = cx.read_entity(&host, |host, _| host.stats());
+    let before = cx.read_entity(&host, |host, _| host.work_ledger_snapshot());
     assert!(before.edge_native_markers_painted() >= EDGE_COUNT as u64);
     assert!(
         before.edge_native_marker_paint_calls() < before.edge_native_markers_painted(),
@@ -1015,7 +1015,7 @@ fn matching_edge_markers_share_native_submissions_and_reuse_their_plan(
 
     cx.update_entity(&host, |_, cx| cx.notify());
     draw_once(cx);
-    let after = cx.read_entity(&host, |host, _| host.stats());
+    let after = cx.read_entity(&host, |host, _| host.work_ledger_snapshot());
     assert_eq!(
         after.edge_marker_preparations(),
         before.edge_marker_preparations(),
@@ -1046,10 +1046,10 @@ fn alternating_edge_styles_merge_globally_within_their_visual_layer(
 
     draw(cx);
     draw(cx);
-    let before = cx.read_entity(&host, |host, _| host.stats());
+    let before = cx.read_entity(&host, |host, _| host.work_ledger_snapshot());
     cx.update_entity(&host, |_, cx| cx.notify());
     draw_once(cx);
-    let after = cx.read_entity(&host, |host, _| host.stats());
+    let after = cx.read_entity(&host, |host, _| host.work_ledger_snapshot());
 
     let painted_edges = after.edge_native_edges_painted() - before.edge_native_edges_painted();
     let path_passes = painted_edges / EDGE_COUNT as u64;
@@ -1096,7 +1096,7 @@ fn edge_chrome_paints_hovered_labels_between_ordinary_and_selected_chrome(
     });
     cx.run_until_parked();
     draw(cx);
-    let before_hover = cx.read_entity(&host, |host, _| host.stats());
+    let before_hover = cx.read_entity(&host, |host, _| host.work_ledger_snapshot());
 
     let pointer = cx.read_entity(&host, |host, _| {
         let geometry = host.view.geometry_snapshot().expect("edge geometry");
@@ -1119,7 +1119,7 @@ fn edge_chrome_paints_hovered_labels_between_ordinary_and_selected_chrome(
     cx.simulate_mouse_move(pointer, None, Default::default());
     cx.run_until_parked();
     draw_once(cx);
-    let after_hover = cx.read_entity(&host, |host, _| host.stats());
+    let after_hover = cx.read_entity(&host, |host, _| host.work_ledger_snapshot());
     assert_eq!(
         after_hover.edge_marker_preparations() - before_hover.edge_marker_preparations(),
         1,
@@ -1198,7 +1198,7 @@ fn endpoint_geometry_fallbacks_are_deduplicated_in_host_diagnostics_and_stats() 
         vec!["layout revision 3 endpoint fallback selected PublishedPort".to_owned()],
         1,
     );
-    assert_eq!(host.stats().endpoint_geometry_fallbacks(), 1);
+    assert_eq!(host.work_ledger_snapshot().endpoint_geometry_fallbacks(), 1);
     assert_eq!(
         host.last_diagnostic().map(|diagnostic| diagnostic.kind()),
         Some(super::OpenGpuiSceneHostDiagnosticKind::EndpointGeometry)
@@ -1209,7 +1209,7 @@ fn endpoint_geometry_fallbacks_are_deduplicated_in_host_diagnostics_and_stats() 
         1,
     );
     assert_eq!(
-        host.stats().endpoint_geometry_fallbacks(),
+        host.work_ledger_snapshot().endpoint_geometry_fallbacks(),
         1,
         "the same retained fallback must not inflate telemetry every frame",
     );
@@ -1218,7 +1218,7 @@ fn endpoint_geometry_fallbacks_are_deduplicated_in_host_diagnostics_and_stats() 
         vec!["layout revision 4 endpoint fallback selected ExplicitFallback".to_owned()],
         2,
     );
-    assert_eq!(host.stats().endpoint_geometry_fallbacks(), 3);
+    assert_eq!(host.work_ledger_snapshot().endpoint_geometry_fallbacks(), 3);
     assert!(
         host.last_diagnostic()
             .is_some_and(|diagnostic| diagnostic.message().contains("additional endpoint"))
@@ -1276,7 +1276,7 @@ fn committed_wire_endpoints_match_the_exact_same_revision_port_publication() {
     assert_eq!(wire.target_endpoint.identity().port(), target_port);
     assert_eq!(wire.source_endpoint.diagnostic(), None);
     assert_eq!(wire.target_endpoint.diagnostic(), None);
-    assert_eq!(host.stats().endpoint_geometry_fallbacks(), 0);
+    assert_eq!(host.work_ledger_snapshot().endpoint_geometry_fallbacks(), 0);
 }
 
 #[open_gpui::test]
@@ -1375,7 +1375,7 @@ fn edge_layer_culls_offscreen_routes_and_prioritizes_selection_within_its_own_bu
     assert_eq!(overflow.budget_omitted(), VISIBLE_EDGES - EDGE_BUDGET);
     assert!(!overflow.is_empty());
 
-    let stats = host.stats();
+    let stats = host.work_ledger_snapshot();
     assert_eq!(stats.edge_layer_plans(), 1);
     assert_eq!(
         stats.edge_route_query_candidates_matched(),
@@ -1406,7 +1406,7 @@ fn edge_layer_culls_offscreen_routes_and_prioritizes_selection_within_its_own_bu
     assert!(overflow.reused_previous_plan());
     assert_eq!(overflow.query_entries_examined(), 0);
     assert_eq!(overflow.query_candidates_matched(), 0);
-    let reused_stats = host.stats();
+    let reused_stats = host.work_ledger_snapshot();
     assert_eq!(
         reused_stats.edge_route_query_candidates_matched(),
         candidates_before_reuse,
@@ -1490,7 +1490,7 @@ fn ten_thousand_routes_keep_each_visible_query_page_hard_bounded() {
         break;
     }
 
-    let stats = host.stats();
+    let stats = host.work_ledger_snapshot();
     assert_eq!(stats.edge_layer_plans(), 1);
     assert!(stats.edge_route_list_reuses() >= pending_pages);
     assert_eq!(
@@ -1509,7 +1509,7 @@ fn ten_thousand_routes_keep_each_visible_query_page_hard_bounded() {
     assert!(overflow.query_budget_exhausted());
     assert_eq!(overflow.query_entries_examined(), 0);
     assert_eq!(overflow.query_candidates_matched(), 0);
-    let terminal_stats = host.stats();
+    let terminal_stats = host.work_ledger_snapshot();
     assert_eq!(
         terminal_stats.edge_route_query_entries_examined(),
         stats.edge_route_query_entries_examined(),
@@ -1567,7 +1567,7 @@ fn ten_thousand_spatial_routes_materialize_only_the_local_hundred() {
     assert!(!overflow.query_budget_exhausted());
     assert!(overflow.query_entries_examined() <= QUERY_BUDGET as u64);
     assert_eq!(overflow.query_candidates_matched(), 100);
-    let stats = host.stats();
+    let stats = host.work_ledger_snapshot();
     assert_eq!(stats.edge_routes_planned(), 100);
     assert_eq!(stats.retained_edge_entities(), 0);
 }
@@ -2058,7 +2058,7 @@ fn busy_edge_reconnect_admission_neither_installs_nor_replaces_native_context(
                 .interaction_presentation()
                 .generation()
                 .expect("pan generation");
-            let protected = host.stats().protected_instances();
+            let protected = host.resource_snapshot().protected_instances();
             let focus = host.interaction_owner.has_focus_state();
 
             assert!(!host.activate_edge_reconnect_action(
@@ -2076,7 +2076,7 @@ fn busy_edge_reconnect_admission_neither_installs_nor_replaces_native_context(
                 host.interaction_presentation().phase(),
                 CanvasInteractionPhase::Armed
             );
-            assert_eq!(host.stats().protected_instances(), protected);
+            assert_eq!(host.resource_snapshot().protected_instances(), protected);
             assert_eq!(host.interaction_owner.has_focus_state(), focus);
 
             let update = host.interaction_owner.cancel();
@@ -2107,7 +2107,7 @@ fn busy_edge_reconnect_admission_neither_installs_nor_replaces_native_context(
             assert_eq!(phase_before, CanvasInteractionPhase::ConnectionDrag);
             let generation_before = presentation_before.generation();
             assert!(host.connection_search_request().is_none());
-            let protected_before = host.stats().protected_instances();
+            let protected_before = host.resource_snapshot().protected_instances();
             let focus_before = host.interaction_owner.has_focus_state();
 
             assert!(!host.activate_edge_reconnect_action(
@@ -2129,7 +2129,10 @@ fn busy_edge_reconnect_admission_neither_installs_nor_replaces_native_context(
                 generation_before,
             );
             assert!(host.connection_search_request().is_none());
-            assert_eq!(host.stats().protected_instances(), protected_before);
+            assert_eq!(
+                host.resource_snapshot().protected_instances(),
+                protected_before
+            );
             assert_eq!(host.interaction_owner.has_focus_state(), focus_before);
             let update = host.interaction_owner.cancel();
             assert!(host.apply_canvas_interaction_result(update, window, cx));
@@ -2223,7 +2226,7 @@ fn binding_presentation_projects_real_node_and_port_focus(cx: &mut open_gpui::Te
             binding,
         )
     });
-    let baseline_stats = cx.read_entity(&host, |host, _| host.stats());
+    let baseline_stats = cx.read_entity(&host, |host, _| host.work_ledger_snapshot());
     cx.update(|window, _| window.blur());
 
     cx.update(|window, cx| {
@@ -2243,7 +2246,7 @@ fn binding_presentation_projects_real_node_and_port_focus(cx: &mut open_gpui::Te
                 .focused()
         );
     });
-    let node_focus_stats = cx.read_entity(&host, |host, _| host.stats());
+    let node_focus_stats = cx.read_entity(&host, |host, _| host.work_ledger_snapshot());
     assert_eq!(
         node_focus_stats.binding_presentation_materializations(),
         baseline_stats.binding_presentation_materializations() + 1
@@ -2268,7 +2271,7 @@ fn binding_presentation_projects_real_node_and_port_focus(cx: &mut open_gpui::Te
             "a focused descendant keeps its node focus state observable"
         );
     });
-    let port_focus_stats = cx.read_entity(&host, |host, _| host.stats());
+    let port_focus_stats = cx.read_entity(&host, |host, _| host.work_ledger_snapshot());
     assert_eq!(
         port_focus_stats.binding_presentation_materializations(),
         node_focus_stats.binding_presentation_materializations() + 1
@@ -2391,7 +2394,7 @@ fn dynamic_port_reconciliation_preserves_order_index_and_retained_capabilities(
         );
     });
 
-    let host_stats = cx.read_entity(&host, |host, _| host.stats());
+    let host_stats = cx.read_entity(&host, |host, _| host.work_ledger_snapshot());
     for _ in 0..QUIESCENT_FRAMES {
         cx.update_entity(&host, |_, cx| cx.notify());
         draw(cx);
@@ -2401,7 +2404,7 @@ fn dynamic_port_reconciliation_preserves_order_index_and_retained_capabilities(
             assert!(authoring.port(retained).is_some());
         });
     }
-    let settled_stats = cx.read_entity(&host, |host, _| host.stats());
+    let settled_stats = cx.read_entity(&host, |host, _| host.work_ledger_snapshot());
     assert_eq!(
         settled_stats.binding_presentation_queries(),
         host_stats.binding_presentation_queries()
@@ -2551,10 +2554,10 @@ fn max_capacity_node_drag_builds_one_index_with_equivalent_offsets(
         assert_eq!(drag.nodes(), nodes);
         let expected_delta = drag.delta();
 
-        let builds_before = host.stats().node_drag_offset_map_builds();
+        let builds_before = host.work_ledger_snapshot().node_drag_offset_map_builds();
         let offsets = host.interaction_node_drag_offsets();
         assert_eq!(
-            host.stats().node_drag_offset_map_builds(),
+            host.work_ledger_snapshot().node_drag_offset_map_builds(),
             builds_before + 1,
             "one presentation index must be built for the entire multi-node drag"
         );
@@ -2602,8 +2605,8 @@ fn node_drag_cohort_materializes_never_mounted_and_parked_peers_until_applied_fr
     draw(cx);
 
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().active_nodes(), 1);
-        assert_eq!(host.stats().parked_nodes(), 0);
+        assert_eq!(host.resource_snapshot().active_nodes(), 1);
+        assert_eq!(host.resource_snapshot().parked_nodes(), 0);
         assert!(host.mounts.retained_instance(offscreen).is_none());
     });
 
@@ -2635,8 +2638,8 @@ fn node_drag_cohort_materializes_never_mounted_and_parked_peers_until_applied_fr
     });
     draw_once(cx);
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().active_nodes(), 2);
-        assert_eq!(host.stats().parked_nodes(), 0);
+        assert_eq!(host.resource_snapshot().active_nodes(), 2);
+        assert_eq!(host.resource_snapshot().parked_nodes(), 0);
         assert!(host.mounts.retained_instance(offscreen).is_some());
         assert!(host.interaction_owner.has_node_drag_residency());
     });
@@ -2649,8 +2652,8 @@ fn node_drag_cohort_materializes_never_mounted_and_parked_peers_until_applied_fr
     });
     draw(cx);
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().active_nodes(), 1);
-        assert_eq!(host.stats().parked_nodes(), 1);
+        assert_eq!(host.resource_snapshot().active_nodes(), 1);
+        assert_eq!(host.resource_snapshot().parked_nodes(), 1);
     });
 
     cx.update_entity(&host, |host, cx| {
@@ -2659,8 +2662,8 @@ fn node_drag_cohort_materializes_never_mounted_and_parked_peers_until_applied_fr
     });
     draw(cx);
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().active_nodes(), 2);
-        assert_eq!(host.stats().parked_nodes(), 0);
+        assert_eq!(host.resource_snapshot().active_nodes(), 2);
+        assert_eq!(host.resource_snapshot().parked_nodes(), 0);
         assert!(host.interaction_owner.has_node_drag_residency());
     });
 
@@ -2715,7 +2718,7 @@ fn node_drag_cohort_materializes_never_mounted_and_parked_peers_until_applied_fr
     });
     draw_once(cx);
     cx.read_entity(&host, |host, _| {
-        let stats = host.stats();
+        let stats = host.work_ledger_snapshot();
         assert_eq!(stats.active_nodes() + stats.parked_nodes(), 2);
         assert!(host.mounts.retained_instance(offscreen).is_some());
         assert!(!host.interaction_owner.has_node_drag_residency());
@@ -2724,8 +2727,8 @@ fn node_drag_cohort_materializes_never_mounted_and_parked_peers_until_applied_fr
     cx.update_entity(&host, |_, cx| cx.notify());
     draw(cx);
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().active_nodes(), 1);
-        assert_eq!(host.stats().parked_nodes(), 1);
+        assert_eq!(host.resource_snapshot().active_nodes(), 1);
+        assert_eq!(host.resource_snapshot().parked_nodes(), 1);
     });
 }
 
@@ -2744,7 +2747,7 @@ fn binding_presentation_tracks_real_port_hit_bounds_hover(cx: &mut open_gpui::Te
     let marker = cx
         .debug_bounds("jellyflow-test-output-port")
         .expect("source output marker");
-    let baseline_stats = cx.read_entity(&host, |host, _| host.stats());
+    let baseline_stats = cx.read_entity(&host, |host, _| host.work_ledger_snapshot());
 
     cx.simulate_mouse_move(marker.center(), None, Default::default());
     draw(cx);
@@ -2758,7 +2761,7 @@ fn binding_presentation_tracks_real_port_hit_bounds_hover(cx: &mut open_gpui::Te
                 .hovered()
         );
     });
-    let hovered_stats = cx.read_entity(&host, |host, _| host.stats());
+    let hovered_stats = cx.read_entity(&host, |host, _| host.work_ledger_snapshot());
     assert_eq!(
         hovered_stats.binding_presentation_materializations(),
         baseline_stats.binding_presentation_materializations() + 1
@@ -2780,7 +2783,7 @@ fn binding_presentation_tracks_real_port_hit_bounds_hover(cx: &mut open_gpui::Te
                 .hovered()
         );
     });
-    let cleared_stats = cx.read_entity(&host, |host, _| host.stats());
+    let cleared_stats = cx.read_entity(&host, |host, _| host.work_ledger_snapshot());
     assert_eq!(
         cleared_stats.binding_presentation_materializations(),
         hovered_stats.binding_presentation_materializations() + 1
@@ -2825,7 +2828,7 @@ fn settled_routed_scene_remains_quiescent_across_120_explicit_redraws(
         (
             nodes,
             host.mounts.active_reconcile_usage(),
-            host.stats(),
+            host.work_ledger_snapshot(),
             host.view
                 .geometry_snapshot()
                 .expect("settled routed geometry")
@@ -2869,7 +2872,7 @@ fn settled_routed_scene_remains_quiescent_across_120_explicit_redraws(
                 )
             })
             .collect::<Vec<_>>();
-        let stats = host.stats();
+        let stats = host.work_ledger_snapshot();
         assert_eq!(nodes, baseline_nodes);
         assert_eq!(host.mounts.active_reconcile_usage(), baseline_usage);
         assert_eq!(stats.mounts(), baseline_stats.mounts());
@@ -3047,12 +3050,13 @@ fn settled_routed_scene_remains_quiescent_across_120_explicit_redraws(
             assert_eq!(semantic_usage, baseline.3);
         }
         assert_eq!(
-            host.stats().binding_presentation_materializations(),
+            host.work_ledger_snapshot()
+                .binding_presentation_materializations(),
             baseline_stats.binding_presentation_materializations() + 1,
             "selection changes materialize only the affected node binding"
         );
         assert_eq!(
-            host.stats().binding_notifications(),
+            host.work_ledger_snapshot().binding_notifications(),
             baseline_stats.binding_notifications() + 1,
             "selection changes notify only the affected node binding"
         );
@@ -4410,7 +4414,7 @@ fn idle_tick_schedule_does_not_notify_or_register_a_frame(cx: &mut open_gpui::Te
 
     assert_eq!(notifications.get(), 0, "idle scheduling must not notify");
     cx.read_entity(&host, |host, _| {
-        let stats = host.stats();
+        let stats = host.work_ledger_snapshot();
         assert_eq!(stats.interaction_tick_callback_registrations(), 0);
         assert_eq!(stats.interaction_tick_callback_entries(), 0);
         assert_eq!(stats.interaction_tick_frame_requests(), 0);
@@ -4517,7 +4521,7 @@ fn active_node_drag_requests_successor_animation_frames_for_auto_pan(
             );
             assert!(host.interaction_owner.test_tick_scheduled());
             assert_eq!(host.interaction_owner.test_tick_callback_attempts(), 0);
-            let stats = host.stats();
+            let stats = host.work_ledger_snapshot();
             assert_eq!(stats.interaction_tick_callback_registrations(), 1);
             assert_eq!(stats.interaction_tick_callback_entries(), 0);
             assert_eq!(stats.interaction_tick_frame_requests(), 1);
@@ -4546,7 +4550,7 @@ fn active_node_drag_requests_successor_animation_frames_for_auto_pan(
         );
         let (current, callback_attempts, registrations, frame_requests, scheduled) = cx
             .read_entity(&host, |host, _| {
-                let stats = host.stats();
+                let stats = host.work_ledger_snapshot();
                 assert_eq!(
                     stats.interaction_tick_callback_registrations(),
                     initial_registrations + frame,
@@ -4650,7 +4654,7 @@ fn external_frame_clock_cannot_let_stale_native_callback_consume_successor_tick(
     );
     draw(cx);
     let after_external_tick = cx.read_entity(&host, |host, _| {
-        let stats = host.stats();
+        let stats = host.work_ledger_snapshot();
         assert_eq!(stats.interaction_tick_callback_registrations(), 2);
         assert_eq!(stats.interaction_tick_callback_entries(), 0);
         assert_eq!(stats.interaction_tick_frame_requests(), 2);
@@ -4669,7 +4673,7 @@ fn external_frame_clock_cannot_let_stale_native_callback_consume_successor_tick(
         "the queued native frame callbacks must be delivered"
     );
     let after_queued_callbacks = cx.read_entity(&host, |host, _| {
-        let stats = host.stats();
+        let stats = host.work_ledger_snapshot();
         assert_eq!(
             stats.interaction_tick_callback_entries(),
             2,
@@ -4699,7 +4703,7 @@ fn external_frame_clock_cannot_let_stale_native_callback_consume_successor_tick(
         "the successor native frame callback must be delivered"
     );
     cx.read_entity(&host, |host, _| {
-        let stats = host.stats();
+        let stats = host.work_ledger_snapshot();
         assert_eq!(stats.interaction_tick_callback_entries(), 3);
         assert_eq!(stats.interaction_tick_callback_registrations(), 4);
         assert_eq!(stats.interaction_tick_frame_requests(), 4);
@@ -5040,7 +5044,9 @@ fn sixty_fifth_real_node_gesture_cancels_without_side_effects_then_retries_after
     let history_before = runtime
         .history_state()
         .expect("history before capacity rejection");
-    let overflows_before = cx.read_entity(&host, |host, _| host.stats().protected_overflows());
+    let overflows_before = cx.read_entity(&host, |host, _| {
+        host.work_ledger_snapshot().protected_overflows()
+    });
     let pointer = point(px(100.0), px(100.0));
 
     cx.simulate_mouse_down(pointer, MouseButton::Left, Default::default());
@@ -5058,10 +5064,13 @@ fn sixty_fifth_real_node_gesture_cancels_without_side_effects_then_retries_after
         );
         assert!(!host.active_scene_gesture());
         assert_eq!(
-            host.stats().protected_instances(),
+            host.resource_snapshot().protected_instances(),
             OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY
         );
-        assert_eq!(host.stats().protected_overflows(), overflows_before + 1);
+        assert_eq!(
+            host.work_ledger_snapshot().protected_overflows(),
+            overflows_before + 1
+        );
     });
     assert!(graph_before.ptr_eq(&runtime.snapshot().expect("snapshot after rejection")));
     assert_eq!(
@@ -5081,7 +5090,7 @@ fn sixty_fifth_real_node_gesture_cancels_without_side_effects_then_retries_after
         );
         assert!(host.active_scene_gesture());
         assert_eq!(
-            host.stats().protected_instances(),
+            host.resource_snapshot().protected_instances(),
             OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY
         );
     });
@@ -5098,7 +5107,7 @@ fn sixty_fifth_real_node_gesture_cancels_without_side_effects_then_retries_after
         );
         assert!(!host.active_scene_gesture());
         assert_eq!(
-            host.stats().protected_instances(),
+            host.resource_snapshot().protected_instances(),
             OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY - 1,
         );
     });
@@ -5835,10 +5844,10 @@ fn coalesced_remove_undo_and_payload_patch_revoke_the_retired_incarnation_withou
     assert!(old_activity.is_revoked());
     assert_eq!(old_activity.active_count(), 0);
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().active_nodes(), 0);
-        assert_eq!(host.stats().parked_nodes(), 0);
-        assert_eq!(host.stats().strong_instances(), 0);
-        assert_eq!(host.stats().hard_retirements(), 1);
+        assert_eq!(host.resource_snapshot().active_nodes(), 0);
+        assert_eq!(host.resource_snapshot().parked_nodes(), 0);
+        assert_eq!(host.resource_snapshot().strong_instances(), 0);
+        assert_eq!(host.work_ledger_snapshot().hard_retirements(), 1);
     });
 }
 
@@ -5986,8 +5995,8 @@ fn dragging_a_real_output_to_a_real_input_commits_through_the_scene_host(
     assert_eq!(edge.to, PortId::from_u128(21));
     cx.read_entity(&host, |host, _| {
         assert!(host.interaction_presentation().connection().is_none());
-        assert_eq!(host.stats().protected_instances(), 0);
-        assert_eq!(host.stats().protected_leases(), 0);
+        assert_eq!(host.resource_snapshot().protected_instances(), 0);
+        assert_eq!(host.resource_snapshot().protected_leases(), 0);
         assert_eq!(host.scene_evidence.last_connection_preview.get(), None);
         assert_eq!(
             host.scene_evidence
@@ -6671,7 +6680,7 @@ fn windowless_close_rejects_keyboard_connection_before_closing_the_view(
             CanvasInteractionPhase::Closed
         );
         assert!(!host.interaction_owner.has_connection());
-        assert_eq!(host.stats().protected_instances(), 0);
+        assert_eq!(host.resource_snapshot().protected_instances(), 0);
     });
 }
 
@@ -6712,7 +6721,7 @@ fn windowless_close_rejects_node_owned_window_activity(cx: &mut open_gpui::TestA
     let host = captured_host.borrow().clone().expect("captured host");
     draw(cx);
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().protected_leases(), 1)
+        assert_eq!(host.resource_snapshot().protected_leases(), 1)
     });
 
     assert!(matches!(
@@ -6724,8 +6733,8 @@ fn windowless_close_rejects_node_owned_window_activity(cx: &mut open_gpui::TestA
             .expect("window-aware close");
     });
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().protected_leases(), 0);
-        assert_eq!(host.stats().protected_instances(), 0);
+        assert_eq!(host.resource_snapshot().protected_leases(), 0);
+        assert_eq!(host.resource_snapshot().protected_instances(), 0);
     });
     drop(leases);
 }
@@ -6871,7 +6880,7 @@ fn window_close_revocation_panic_finishes_window_cleanup_and_does_not_strand_tic
     cx.read_entity(&host, |host, _| {
         assert_eq!(host.close_reason(), Some(ViewCloseReason::HostClosed));
         assert!(!host.interaction_owner.requires_window_cleanup());
-        assert_eq!(host.stats().protected_instances(), 0);
+        assert_eq!(host.resource_snapshot().protected_instances(), 0);
     });
     cx.run_until_parked();
     assert_eq!(
@@ -9188,8 +9197,8 @@ fn runtime_drop_during_input_reconnect_retires_the_preview_without_mutating_the_
         );
         assert!(host.interaction_presentation().connection().is_none());
         assert!(host.active_port_drag().is_none());
-        assert_eq!(host.stats().protected_instances(), 0);
-        assert_eq!(host.stats().strong_instances(), 0);
+        assert_eq!(host.resource_snapshot().protected_instances(), 0);
+        assert_eq!(host.resource_snapshot().strong_instances(), 0);
     });
 }
 
@@ -9250,8 +9259,8 @@ fn runtime_drop_releases_registered_third_party_capture_while_host_is_detached(
     assert!(cx.update(|window, _| window.captured_hitbox()).is_none());
     cx.read_entity(&host, |host, _| {
         assert_eq!(host.close_reason(), Some(ViewCloseReason::RuntimeDropped));
-        assert_eq!(host.stats().protected_instances(), 0);
-        assert_eq!(host.stats().strong_instances(), 0);
+        assert_eq!(host.resource_snapshot().protected_instances(), 0);
+        assert_eq!(host.resource_snapshot().strong_instances(), 0);
         assert_eq!(host.interaction_owner.terminal_window_transition_count(), 1,);
         assert!(!host.interaction_owner.has_focus_state());
     });
@@ -9273,7 +9282,7 @@ fn runtime_drop_releases_registered_third_party_capture_while_host_is_detached(
 }
 
 fn assert_settled_host_has_no_pending_work(host: &OpenGpuiSceneHost) {
-    let stats = host.stats();
+    let stats = host.work_ledger_snapshot();
     assert!(!host.commands.has_pending());
     assert_eq!(host.commands.capacity_usage(), (0, 0, 0));
     assert!(host.frame_transaction.is_none());
@@ -9397,7 +9406,9 @@ fn keyboard_connection_capacity_failure_aborts_then_retries_after_release(
             OpenGpuiPortActivationSource::Keyboard,
         ))
     };
-    let overflows_before = cx.read_entity(&host, |host, _| host.stats().protected_overflows());
+    let overflows_before = cx.read_entity(&host, |host, _| {
+        host.work_ledger_snapshot().protected_overflows()
+    });
 
     let event = activate();
     cx.update(|window, cx| {
@@ -9410,9 +9421,12 @@ fn keyboard_connection_capacity_failure_aborts_then_retries_after_release(
         );
         assert!(host.connection_search_request().is_none());
         assert!(!host.interaction_owner.has_connection());
-        assert_eq!(host.stats().protected_overflows(), overflows_before + 1);
         assert_eq!(
-            host.stats().protected_instances(),
+            host.work_ledger_snapshot().protected_overflows(),
+            overflows_before + 1
+        );
+        assert_eq!(
+            host.resource_snapshot().protected_instances(),
             OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY
         );
     });
@@ -9430,13 +9444,13 @@ fn keyboard_connection_capacity_failure_aborts_then_retries_after_release(
             CanvasInteractionPhase::ConnectionDrag
         );
         assert_eq!(
-            host.stats().protected_instances(),
+            host.resource_snapshot().protected_instances(),
             OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY
         );
         let update = host.interaction_owner.cancel();
         assert!(host.apply_canvas_interaction_result(update, window, cx));
         assert_eq!(
-            host.stats().protected_instances(),
+            host.resource_snapshot().protected_instances(),
             OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY - 1
         );
     });
@@ -9888,8 +9902,8 @@ fn close_active_scene_gesture(
     });
     cx.read_entity(host, |host, _| {
         assert!(!host.active_scene_gesture());
-        assert_eq!(host.stats().protected_instances(), 0);
-        assert_eq!(host.stats().strong_instances(), 0);
+        assert_eq!(host.resource_snapshot().protected_instances(), 0);
+        assert_eq!(host.resource_snapshot().strong_instances(), 0);
     });
 
     cx.run_until_parked();
@@ -9901,8 +9915,8 @@ fn close_active_scene_gesture(
         );
         assert!(!host.active_scene_gesture());
         assert!(!host.interaction_owner.test_native_requires_window_cleanup());
-        assert_eq!(host.stats().protected_instances(), 0);
-        assert_eq!(host.stats().strong_instances(), 0);
+        assert_eq!(host.resource_snapshot().protected_instances(), 0);
+        assert_eq!(host.resource_snapshot().strong_instances(), 0);
     });
 }
 

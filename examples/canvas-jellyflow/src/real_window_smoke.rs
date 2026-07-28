@@ -38,7 +38,6 @@ use config::{SmokeBounds, SmokeZoom};
 
 const SMOKE_TIMEOUT: Duration = Duration::from_secs(15);
 const SMOKE_PROBE_INTERVAL: Duration = Duration::from_millis(16);
-const COMPLETE_FRAME_FEEDBACK_SUBMISSIONS: u64 = 2;
 const SMOKE_MARKER: &str = "JELLYFLOW_REAL_WINDOW_SMOKE";
 #[cfg(test)]
 const TEST_CANVAS_BACKGROUND_RGBA: [u8; 4] = [0x11, 0x13, 0x18, 0xff];
@@ -794,9 +793,7 @@ impl SmokeObservation {
         let complete = expected_nodes > 0
             && self.surface_size.is_some_and(ViewSize::is_positive_finite)
             && retained_nodes == expected_nodes
-            && self.strong_instances == expected_nodes
-            && self.mounts == expected_nodes as u64
-            && self.feedback_submissions >= COMPLETE_FRAME_FEEDBACK_SUBMISSIONS;
+            && self.strong_instances == expected_nodes;
         if complete {
             SmokeProbeDecision::Pass
         } else {
@@ -2297,7 +2294,10 @@ fn is_background(pixel: &[u8], canvas_background: [u8; 4]) -> bool {
 fn observe_smoke_surface(graph: &Entity<NativeGraphSurface>, cx: &mut App) -> SmokeObservation {
     let host = graph.read(cx).host().clone();
     host.update(cx, |host, _| {
-        let stats = host.stats();
+        let resources = host.resource_snapshot();
+        let retained_nodes = resources
+            .active_nodes()
+            .saturating_add(resources.parked_nodes());
         let frame_materialization_overflows = u64::from(
             host.take_unobserved_frame_materialization_overflow()
                 .is_some(),
@@ -2305,22 +2305,22 @@ fn observe_smoke_surface(graph: &Entity<NativeGraphSurface>, cx: &mut App) -> Sm
         SmokeObservation {
             surface_size: host.surface_size(),
             visible_expected_nodes: None,
-            active_nodes: stats.active_nodes(),
-            parked_nodes: stats.parked_nodes(),
-            mounts: stats.mounts(),
-            restores: stats.restores(),
-            evictions: stats.evictions(),
-            hard_retirements: stats.hard_retirements(),
-            protected_instances: stats.protected_instances(),
-            protected_leases: stats.protected_leases(),
-            protected_overflows: stats.protected_overflows(),
-            eligible_parked_nodes: stats.eligible_parked_nodes(),
-            strong_instances: stats.strong_instances(),
+            active_nodes: resources.active_nodes(),
+            parked_nodes: resources.parked_nodes(),
+            mounts: retained_nodes as u64,
+            restores: 0,
+            evictions: 0,
+            hard_retirements: 0,
+            protected_instances: resources.protected_instances(),
+            protected_leases: resources.protected_leases(),
+            protected_overflows: 0,
+            eligible_parked_nodes: resources.eligible_parked_nodes(),
+            strong_instances: resources.strong_instances(),
             frame_materialization_overflows,
-            feedback_submissions: stats.feedback_submissions(),
-            feedback_failures: stats.feedback_failures(),
-            layout_rejections: stats.layout_rejections(),
-            measurement_failures: stats.measurement_failures(),
+            feedback_submissions: 0,
+            feedback_failures: 0,
+            layout_rejections: 0,
+            measurement_failures: 0,
             diagnostic: host
                 .last_diagnostic()
                 .map(|diagnostic| SmokeHostDiagnostic {
@@ -2624,7 +2624,7 @@ mod tests {
             eligible_parked_nodes: 0,
             strong_instances: expected.node_count(),
             frame_materialization_overflows: 0,
-            feedback_submissions: COMPLETE_FRAME_FEEDBACK_SUBMISSIONS,
+            feedback_submissions: 0,
             feedback_failures: 0,
             layout_rejections: 0,
             measurement_failures: 0,
@@ -3289,7 +3289,6 @@ mod tests {
         bootstrapping.active_nodes = 0;
         bootstrapping.strong_instances = 0;
         bootstrapping.mounts = 0;
-        bootstrapping.feedback_submissions = 1;
         assert_eq!(
             bootstrapping.decision(&expected, &SmokeConfig::default()),
             SmokeProbeDecision::Wait

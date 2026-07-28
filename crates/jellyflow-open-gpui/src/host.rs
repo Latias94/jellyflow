@@ -18,10 +18,11 @@ mod scene_render;
 pub use self::connection::{OpenGpuiConnectionSearchError, OpenGpuiConnectionSearchSubmission};
 pub use self::diagnostics::{
     OpenGpuiEdgeLayerOverflow, OpenGpuiSceneHostDiagnostic, OpenGpuiSceneHostDiagnosticKind,
-    OpenGpuiSceneHostStats,
+    OpenGpuiSceneHostResourceSnapshot,
 };
 pub use self::lifecycle::OpenGpuiSceneHostCloseError;
 
+use self::diagnostics::OpenGpuiSceneHostWorkLedger;
 use self::edge_layer::{OpenGpuiEdgePathCache, OpenGpuiVisibleRouteCache};
 #[cfg(test)]
 use self::frame_feedback::{LayoutReceiptAction, layout_receipt_action};
@@ -234,7 +235,7 @@ pub struct OpenGpuiSceneHost {
     frame_submission_fault: bool,
     #[cfg(test)]
     prepaint_close_fault: bool,
-    stats: OpenGpuiSceneHostStats,
+    work_ledger: OpenGpuiSceneHostWorkLedger,
     last_diagnostic: Option<OpenGpuiSceneHostDiagnostic>,
     last_frame_materialization_overflow: Option<FrameMaterializationOverflow>,
     unobserved_frame_materialization_overflow: Option<FrameMaterializationOverflow>,
@@ -354,7 +355,7 @@ impl OpenGpuiSceneHost {
             frame_submission_fault: false,
             #[cfg(test)]
             prepaint_close_fault: false,
-            stats: OpenGpuiSceneHostStats::default(),
+            work_ledger: OpenGpuiSceneHostWorkLedger::default(),
             last_diagnostic: None,
             last_frame_materialization_overflow: None,
             unobserved_frame_materialization_overflow: None,

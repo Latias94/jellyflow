@@ -478,8 +478,8 @@ fn native_workflow_controls_commit_graph_facts_and_publish_real_case_ports(
     draw(cx);
     assert_eq!(prompt_value(&host_runtime), "");
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().protected_instances(), 1);
-        assert!(host.stats().protected_leases() >= 2);
+        assert_eq!(host.resource_snapshot().protected_instances(), 1);
+        assert!(host.resource_snapshot().protected_leases() >= 2);
     });
     let apply_prompt = cx
         .debug_bounds(&workflow_prompt_apply_selector(llm))
@@ -551,8 +551,7 @@ fn native_workflow_controls_commit_graph_facts_and_publish_real_case_ports(
         assert!(layout.visual_bounds().size.is_positive_finite());
     }
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().mounts(), fixture_node_count as u64);
-        assert_eq!(host.stats().active_nodes(), fixture_node_count);
+        assert_eq!(host.resource_snapshot().active_nodes(), fixture_node_count);
         assert!(host.last_diagnostic().is_none());
     });
 }
@@ -856,7 +855,7 @@ fn prompt_conflict_can_explicitly_reapply_local_text_after_another_view_wins(
     );
     assert_eq!(runtime.history_state().unwrap().undo_len(), 2);
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().mounts(), fixture_node_count as u64)
+        assert_eq!(host.resource_snapshot().strong_instances(), fixture_node_count)
     });
 }
 
@@ -907,7 +906,7 @@ fn prompt_conflict_can_discard_local_text_without_writing_the_graph(
             .is_none()
     );
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().mounts(), fixture_node_count as u64)
+        assert_eq!(host.resource_snapshot().strong_instances(), fixture_node_count)
     });
 }
 
@@ -1021,8 +1020,8 @@ fn stale_condition_add_waits_for_refresh_and_explicit_retry_without_render_resub
     assert_eq!(refreshed.len(), 3);
     assert_eq!(refreshed.last(), Some(&concurrent));
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().protected_instances(), 1);
-        assert_eq!(host.stats().protected_leases(), 1);
+        assert_eq!(host.resource_snapshot().protected_instances(), 1);
+        assert_eq!(host.resource_snapshot().protected_leases(), 1);
     });
 
     cx.update_entity(&host, |host, cx| {
@@ -1031,9 +1030,9 @@ fn stale_condition_add_waits_for_refresh_and_explicit_retry_without_render_resub
     });
     draw(cx);
     cx.read_entity(&host, |host, _| {
-        assert!(host.stats().parked_nodes() >= 1);
-        assert_eq!(host.stats().protected_instances(), 1);
-        assert_eq!(host.stats().protected_leases(), 1);
+        assert!(host.resource_snapshot().parked_nodes() >= 1);
+        assert_eq!(host.resource_snapshot().protected_instances(), 1);
+        assert_eq!(host.resource_snapshot().protected_leases(), 1);
     });
 
     cx.update_entity(&host, |host, cx| {
@@ -1059,8 +1058,8 @@ fn stale_condition_add_waits_for_refresh_and_explicit_retry_without_render_resub
             .is_none()
     );
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().protected_instances(), 0);
-        assert_eq!(host.stats().protected_leases(), 0);
+        assert_eq!(host.resource_snapshot().protected_instances(), 0);
+        assert_eq!(host.resource_snapshot().protected_leases(), 0);
     });
     let committed = condition_cases(&runtime.snapshot().unwrap(), condition).unwrap();
     assert_eq!(committed.len(), 4);
@@ -1115,8 +1114,8 @@ fn controlled_model_select_escape_restores_focus_releases_lease_and_is_graph_vie
 
     assert!(cx.debug_bounds(&option_selector).is_some());
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().protected_instances(), 1);
-        assert_eq!(host.stats().protected_leases(), 1);
+        assert_eq!(host.resource_snapshot().protected_instances(), 1);
+        assert_eq!(host.resource_snapshot().protected_leases(), 1);
     });
 
     cx.simulate_keystrokes("escape");
@@ -1128,8 +1127,8 @@ fn controlled_model_select_escape_restores_focus_releases_lease_and_is_graph_vie
         "Escape returns focus to the controlled select trigger",
     );
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().protected_instances(), 0);
-        assert_eq!(host.stats().protected_leases(), 0);
+        assert_eq!(host.resource_snapshot().protected_instances(), 0);
+        assert_eq!(host.resource_snapshot().protected_leases(), 0);
     });
     assert!(graph_before.ptr_eq(&runtime.snapshot().expect("graph after Escape")));
     assert_eq!(
@@ -1173,8 +1172,8 @@ fn model_overlay_lease_protects_culling_and_releases_on_every_close_path(
     draw(cx);
     assert!(cx.debug_bounds(&option_selector).is_some());
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().protected_instances(), 1);
-        assert_eq!(host.stats().protected_leases(), 1);
+        assert_eq!(host.resource_snapshot().protected_instances(), 1);
+        assert_eq!(host.resource_snapshot().protected_leases(), 1);
     });
 
     cx.update_entity(&host, |host, cx| {
@@ -1183,10 +1182,10 @@ fn model_overlay_lease_protects_culling_and_releases_on_every_close_path(
     });
     draw(cx);
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().active_nodes(), 1);
-        assert_eq!(host.stats().parked_nodes(), fixture_node_count - 1);
-        assert_eq!(host.stats().protected_instances(), 1);
-        assert_eq!(host.stats().protected_leases(), 1);
+        assert_eq!(host.resource_snapshot().active_nodes(), 1);
+        assert_eq!(host.resource_snapshot().parked_nodes(), fixture_node_count - 1);
+        assert_eq!(host.resource_snapshot().protected_instances(), 1);
+        assert_eq!(host.resource_snapshot().protected_leases(), 1);
     });
 
     cx.update_entity(&host, |host, cx| {
@@ -1201,8 +1200,8 @@ fn model_overlay_lease_protects_culling_and_releases_on_every_close_path(
     draw(cx);
     assert!(cx.debug_bounds(&option_selector).is_none());
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().protected_instances(), 0);
-        assert_eq!(host.stats().protected_leases(), 0);
+        assert_eq!(host.resource_snapshot().protected_instances(), 0);
+        assert_eq!(host.resource_snapshot().protected_leases(), 0);
     });
 
     cx.update_entity(&host, |host, cx| {
@@ -1211,8 +1210,8 @@ fn model_overlay_lease_protects_culling_and_releases_on_every_close_path(
     });
     draw(cx);
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().active_nodes(), 0);
-        assert_eq!(host.stats().parked_nodes(), fixture_node_count);
+        assert_eq!(host.resource_snapshot().active_nodes(), 0);
+        assert_eq!(host.resource_snapshot().parked_nodes(), fixture_node_count);
     });
 
     cx.update_entity(&host, |host, cx| {
@@ -1232,8 +1231,8 @@ fn model_overlay_lease_protects_culling_and_releases_on_every_close_path(
     draw(cx);
     assert_eq!(model_value(&runtime), "claude-3.7-sonnet");
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().protected_instances(), 0);
-        assert_eq!(host.stats().protected_leases(), 0);
+        assert_eq!(host.resource_snapshot().protected_instances(), 0);
+        assert_eq!(host.resource_snapshot().protected_leases(), 0);
     });
 
     let model = cx
@@ -1242,8 +1241,8 @@ fn model_overlay_lease_protects_culling_and_releases_on_every_close_path(
     cx.simulate_click(model.center(), Default::default());
     draw(cx);
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().protected_instances(), 1);
-        assert_eq!(host.stats().protected_leases(), 1);
+        assert_eq!(host.resource_snapshot().protected_instances(), 1);
+        assert_eq!(host.resource_snapshot().protected_leases(), 1);
     });
     let version = runtime.snapshot().unwrap().version();
     runtime
@@ -1258,9 +1257,8 @@ fn model_overlay_lease_protects_culling_and_releases_on_every_close_path(
     assert!(cx.debug_bounds(&model_selector).is_none());
     assert!(cx.debug_bounds(&option_selector).is_none());
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().hard_retirements(), 1);
-        assert_eq!(host.stats().protected_instances(), 0);
-        assert_eq!(host.stats().protected_leases(), 0);
+        assert_eq!(host.resource_snapshot().protected_instances(), 0);
+        assert_eq!(host.resource_snapshot().protected_leases(), 0);
     });
 }
 
@@ -1311,9 +1309,9 @@ fn model_overlay_lease_preserves_native_workflow_across_semantic_zoom(
     draw(cx);
     assert!(cx.debug_bounds(&option_selector).is_some());
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().mounts(), fixture_node_count as u64);
-        assert_eq!(host.stats().protected_instances(), 1);
-        assert_eq!(host.stats().protected_leases(), 1);
+        assert_eq!(host.resource_snapshot().strong_instances(), fixture_node_count);
+        assert_eq!(host.resource_snapshot().protected_instances(), 1);
+        assert_eq!(host.resource_snapshot().protected_leases(), 1);
     });
 
     weak_view
@@ -1337,9 +1335,9 @@ fn model_overlay_lease_preserves_native_workflow_across_semantic_zoom(
     assert!(cx.debug_bounds(OVERVIEW_NODE_SELECTOR).is_some());
     assert_graph_unchanged();
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().mounts(), fixture_node_count as u64);
-        assert_eq!(host.stats().protected_instances(), 1);
-        assert_eq!(host.stats().protected_leases(), 1);
+        assert_eq!(host.resource_snapshot().strong_instances(), fixture_node_count);
+        assert_eq!(host.resource_snapshot().protected_instances(), 1);
+        assert_eq!(host.resource_snapshot().protected_leases(), 1);
     });
 
     let model = cx
@@ -1361,10 +1359,9 @@ fn model_overlay_lease_preserves_native_workflow_across_semantic_zoom(
         assert!(geometry.visual_bounds().size.is_positive_finite());
     }
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().mounts(), fixture_node_count as u64);
-        assert_eq!(host.stats().protected_instances(), 0);
-        assert_eq!(host.stats().protected_leases(), 0);
-        assert_eq!(host.stats().strong_instances(), fixture_node_count);
+        assert_eq!(host.resource_snapshot().protected_instances(), 0);
+        assert_eq!(host.resource_snapshot().protected_leases(), 0);
+        assert_eq!(host.resource_snapshot().strong_instances(), fixture_node_count);
     });
 
     weak_view
@@ -1398,10 +1395,9 @@ fn model_overlay_lease_preserves_native_workflow_across_semantic_zoom(
         assert!(restored_geometry.port(port).is_some());
     }
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().mounts(), fixture_node_count as u64);
-        assert_eq!(host.stats().protected_instances(), 0);
-        assert_eq!(host.stats().protected_leases(), 0);
-        assert_eq!(host.stats().strong_instances(), fixture_node_count);
+        assert_eq!(host.resource_snapshot().protected_instances(), 0);
+        assert_eq!(host.resource_snapshot().protected_leases(), 0);
+        assert_eq!(host.resource_snapshot().strong_instances(), fixture_node_count);
         assert!(host.last_diagnostic().is_none());
     });
 }
