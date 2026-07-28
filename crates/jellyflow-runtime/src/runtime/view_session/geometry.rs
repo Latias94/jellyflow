@@ -1006,8 +1006,10 @@ pub(super) fn publish_layouts(
     let mut staged = Vec::new();
     let mut withdrawals = BTreeMap::<NodeId, IncidentEdgeSnapshot>::new();
     let mut request_refresh = false;
+    let layouts_examined = layouts.len() as u64;
+    let mut layouts_stale = 0_u64;
     let mut impact_candidates_checked = 0_u64;
-    let mut impact_candidates_stale = 0_u64;
+    let mut impact_candidates_invalidated = 0_u64;
 
     for pending_layout in layouts {
         let node = pending_layout.layout.node();
@@ -1053,8 +1055,11 @@ pub(super) fn publish_layouts(
             };
             (status, None)
         };
+        if status == LayoutNodeStatus::Stale {
+            layouts_stale = layouts_stale.saturating_add(1);
+        }
         if impact_stale && status == LayoutNodeStatus::Stale {
-            impact_candidates_stale = impact_candidates_stale.saturating_add(1);
+            impact_candidates_invalidated = impact_candidates_invalidated.saturating_add(1);
         }
 
         request_refresh |= status == LayoutNodeStatus::Stale;
@@ -1113,8 +1118,10 @@ pub(super) fn publish_layouts(
     (
         publication,
         FeedbackLayoutWork::new(
+            layouts_examined,
+            layouts_stale,
             impact_candidates_checked,
-            impact_candidates_stale,
+            impact_candidates_invalidated,
             work.incident_snapshot.entries_read(),
             work.incident_snapshot.materializations(),
             work.spatial_updates,

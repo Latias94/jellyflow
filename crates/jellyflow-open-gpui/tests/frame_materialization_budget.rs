@@ -9,7 +9,10 @@ use jellyflow_open_gpui::host::OpenGpuiSceneHost;
 use jellyflow_open_gpui::registry::OpenGpuiNodeRegistry;
 use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec};
 use jellyflow_runtime::{
-    graph::GraphRuntime, view::DEFAULT_FRAME_ROUTING_DEPENDENCY_BUDGET, view::ViewSessionOptions,
+    graph::GraphRuntime,
+    view::{
+        DEFAULT_FRAME_ROUTING_DEPENDENCY_BUDGET, FrameMaterializationOverflow, ViewSessionOptions,
+    },
 };
 use open_gpui::{AppContext, Context, Entity, ParentElement, Render, Window, div};
 
@@ -70,6 +73,35 @@ fn high_fanout_host_bounds_active_instances_and_exposes_overflow(
         assert_eq!(overflow.visible_nodes(), 0);
         assert_eq!(overflow.required_nodes(), 0);
         assert_eq!(overflow.routing_dependency_nodes(), 0);
+    });
+
+    cx.update_entity(&host, |host, cx| {
+        host.set_frame_bounds(CanvasRect {
+            origin: CanvasPoint {
+                x: -10_000.0,
+                y: -10_000.0,
+            },
+            size: hub_viewport().size,
+        });
+        cx.notify();
+    });
+    draw(cx);
+
+    cx.update_entity(&host, |host, _| {
+        assert!(
+            host.last_frame_materialization_overflow()
+                .is_some_and(FrameMaterializationOverflow::is_empty),
+            "the latest offscreen frame fits within the materialization budget",
+        );
+        let overflow = host
+            .take_unobserved_frame_materialization_overflow()
+            .expect("an unobserved overflow survives a later empty frame");
+        assert!(overflow.incident_scan_truncated());
+        assert_eq!(
+            host.take_unobserved_frame_materialization_overflow(),
+            None,
+            "one-shot overflow evidence drains exactly once",
+        );
     });
 }
 

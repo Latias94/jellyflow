@@ -546,7 +546,7 @@ impl OpenGpuiSceneHost {
             self.reject_native_connection_start(owner, mount, window, cx);
             return;
         };
-        let Some(drag_intent) = query.into_outcome() else {
+        let Some(drag_intent) = query.into_outcome().ready() else {
             self.reject_native_connection_start(owner, mount, window, cx);
             return;
         };

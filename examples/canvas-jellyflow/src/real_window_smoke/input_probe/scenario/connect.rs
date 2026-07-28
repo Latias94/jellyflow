@@ -107,8 +107,7 @@ impl RealWindowSmokeProbe {
                 let target_anchor = plan
                     .to_anchor
                     .ok_or("input_connection_target_anchor_missing")?;
-                let target = current
-                    .screen_point_for_canvas(target_anchor);
+                let target = current.screen_point_for_canvas(target_anchor);
                 let settled_target =
                     target.and_then(|point| settled_connection_target_point(point, surface_size));
                 let _ = interaction;

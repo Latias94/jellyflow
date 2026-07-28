@@ -237,6 +237,7 @@ pub struct OpenGpuiSceneHost {
     stats: OpenGpuiSceneHostStats,
     last_diagnostic: Option<OpenGpuiSceneHostDiagnostic>,
     last_frame_materialization_overflow: Option<FrameMaterializationOverflow>,
+    unobserved_frame_materialization_overflow: Option<FrameMaterializationOverflow>,
     last_edge_layer_overflow: OpenGpuiEdgeLayerOverflow,
 }
 
@@ -353,6 +354,7 @@ impl OpenGpuiSceneHost {
             stats: OpenGpuiSceneHostStats::default(),
             last_diagnostic: None,
             last_frame_materialization_overflow: None,
+            unobserved_frame_materialization_overflow: None,
             last_edge_layer_overflow: OpenGpuiEdgeLayerOverflow::default(),
         }
     }

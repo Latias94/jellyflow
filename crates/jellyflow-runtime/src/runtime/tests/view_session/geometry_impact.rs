@@ -214,8 +214,10 @@ fn unrelated_external_patch_publishes_only_unaffected_layout_and_counts_work() {
     assert_eq!(patch_work.global_fallbacks(), 0);
     let feedback_work = *receipt.work();
     assert_eq!(feedback_work.command_impact().patches_merged(), 0);
-    assert_eq!(feedback_work.layout().candidates_checked(), 2);
-    assert_eq!(feedback_work.layout().candidates_stale(), 1);
+    assert_eq!(feedback_work.layout().layouts_examined(), 2);
+    assert_eq!(feedback_work.layout().layouts_stale(), 1);
+    assert_eq!(feedback_work.layout().impact_candidates_checked(), 2);
+    assert_eq!(feedback_work.layout().impact_candidates_invalidated(), 1);
 }
 
 #[test]
@@ -259,8 +261,10 @@ fn same_frame_applied_command_stales_only_intersecting_candidate() {
     assert_eq!(work.command_impact().patches_merged(), 1);
     assert_eq!(work.command_impact().records_merged(), 1);
     assert_eq!(work.command_impact().global_fallbacks(), 0);
-    assert_eq!(work.layout().candidates_checked(), 2);
-    assert_eq!(work.layout().candidates_stale(), 1);
+    assert_eq!(work.layout().layouts_examined(), 2);
+    assert_eq!(work.layout().layouts_stale(), 1);
+    assert_eq!(work.layout().impact_candidates_checked(), 2);
+    assert_eq!(work.layout().impact_candidates_invalidated(), 1);
 }
 
 #[test]
@@ -412,8 +416,10 @@ fn noop_rejected_and_conflicting_commands_do_not_create_geometry_impact() {
     assert_eq!(work.command_impact().patches_merged(), 0);
     assert_eq!(work.command_impact().records_merged(), 0);
     assert_eq!(work.command_impact().global_fallbacks(), 0);
-    assert_eq!(work.layout().candidates_checked(), 1);
-    assert_eq!(work.layout().candidates_stale(), 0);
+    assert_eq!(work.layout().layouts_examined(), 1);
+    assert_eq!(work.layout().layouts_stale(), 0);
+    assert_eq!(work.layout().impact_candidates_checked(), 1);
+    assert_eq!(work.layout().impact_candidates_invalidated(), 0);
 }
 
 #[test]
@@ -482,12 +488,18 @@ fn multi_view_pending_impacts_are_scoped_per_candidate() {
         assert_eq!(merge.global_fallbacks(), 0);
     }
     assert_eq!(
-        first_receipt.work().layout().candidates_stale(),
+        first_receipt
+            .work()
+            .layout()
+            .impact_candidates_invalidated(),
         1,
         "the first view's candidate intersects the patch",
     );
     assert_eq!(
-        second_receipt.work().layout().candidates_stale(),
+        second_receipt
+            .work()
+            .layout()
+            .impact_candidates_invalidated(),
         0,
         "the second view's candidate remains independent",
     );

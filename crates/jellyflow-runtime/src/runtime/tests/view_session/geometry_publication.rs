@@ -799,6 +799,10 @@ fn runtime_owned_connection_probe_resolves_against_latest_graph_revision() {
                 if receipt.work().entries_examined > 0
                     && receipt.work().exact_tests > 0
                     && receipt.work().policy_evaluations == 1
+                    && receipt
+                        .work()
+                        .planning_work()
+                        .is_some_and(|work| work.fact_reads() > 0)
         )
     });
     assert!(resolved.effects().is_empty());
@@ -1343,6 +1347,12 @@ fn view_space_layout_uses_the_issued_transform_for_all_canvas_geometry() {
         } => {
             assert_eq!(target.port(), ids.target_port);
             assert_eq!(receipt.work().policy_evaluations, 1);
+            let planning = receipt
+                .work()
+                .planning_work()
+                .expect("valid candidate must expose its planning work");
+            assert!(planning.fact_reads() > 0);
+            assert_eq!(planning.operations_emitted(), 1);
         }
         other => panic!("published target port must be a valid candidate: {other:?}"),
     }
@@ -1360,6 +1370,12 @@ fn view_space_layout_uses_the_issued_transform_for_all_canvas_geometry() {
             receipt,
         } => {
             assert_eq!(receipt.work().policy_evaluations, 1);
+            let planning = receipt
+                .work()
+                .planning_work()
+                .expect("invalid candidate must expose its partial planning work");
+            assert!(planning.fact_reads() > 0);
+            assert_eq!(planning.operations_emitted(), 0);
             assert!(
                 diagnostics
                     .iter()

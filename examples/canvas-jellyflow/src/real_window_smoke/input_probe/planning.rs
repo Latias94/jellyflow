@@ -347,9 +347,7 @@ pub(super) fn port_owner_view_center(
     let transform = view
         .viewport_transform()
         .map_err(|_| "input_viewport_read_failed")?;
-    Ok(transform
-        .screen_point_for_canvas(anchor)
-    )
+    Ok(transform.screen_point_for_canvas(anchor))
 }
 
 fn port_owner_canvas_center(
@@ -427,11 +425,12 @@ fn edge_owner_reveal_anchor(
             let transform = view
                 .viewport_transform()
                 .map_err(|_| "input_viewport_read_failed")?;
-            let viewport_center = transform.canvas_point_at_screen(ViewPoint {
-                x: surface_size.width * 0.5,
-                y: surface_size.height * 0.5,
-            })
-            .ok_or("input_viewport_read_failed")?;
+            let viewport_center = transform
+                .canvas_point_at_screen(ViewPoint {
+                    x: surface_size.width * 0.5,
+                    y: surface_size.height * 0.5,
+                })
+                .ok_or("input_viewport_read_failed")?;
             let distance_squared = |point: CanvasPoint| {
                 (point.x - viewport_center.x).powi(2) + (point.y - viewport_center.y).powi(2)
             };
@@ -629,9 +628,7 @@ pub(super) fn visible_unique_edge_point(
     }
     candidates.sort_by(|left, right| right.1.total_cmp(&left.1));
     for (canvas_point, _) in &candidates {
-        let Some(point) = transform
-            .screen_point_for_canvas(*canvas_point)
-        else {
+        let Some(point) = transform.screen_point_for_canvas(*canvas_point) else {
             continue;
         };
         if input_point_is_safe(point, surface_size) {
@@ -667,9 +664,7 @@ pub(super) fn visible_reconnect_grip(
     let transform = view
         .viewport_transform()
         .map_err(|_| "input_viewport_read_failed")?;
-    Ok(transform
-        .screen_point_for_canvas(edge_canvas)
-    )
+    Ok(transform.screen_point_for_canvas(edge_canvas))
 }
 
 fn reconnect_grip_canvas_point(
@@ -977,10 +972,7 @@ pub(super) fn blank_surface_point(
         .port_outcomes()
         .values()
         .filter_map(|outcome| outcome.rendered())
-        .map(|port| {
-            transform
-                .screen_point_for_canvas(port.route_anchor())
-        })
+        .map(|port| transform.screen_point_for_canvas(port.route_anchor()))
         .collect::<Option<Vec<_>>>()
         .ok_or("input_blank_surface_port_projection_failed")?;
     Ok(blank_surface_point_from_obstacles(

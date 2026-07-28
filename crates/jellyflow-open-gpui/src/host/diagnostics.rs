@@ -877,6 +877,16 @@ impl OpenGpuiSceneHost {
         self.last_frame_materialization_overflow
     }
 
+    /// Takes the first non-empty frame overflow published since the previous take.
+    ///
+    /// This one-shot evidence survives later frames that fit within the budget, so
+    /// asynchronous diagnostics cannot miss a short-lived overflow.
+    pub fn take_unobserved_frame_materialization_overflow(
+        &mut self,
+    ) -> Option<FrameMaterializationOverflow> {
+        self.unobserved_frame_materialization_overflow.take()
+    }
+
     /// Returns edge-layer culling and visible-route overflow evidence from the latest plan.
     #[must_use]
     pub const fn last_edge_layer_overflow(&self) -> OpenGpuiEdgeLayerOverflow {
@@ -976,6 +986,9 @@ impl OpenGpuiSceneHost {
         self.last_frame_materialization_overflow = Some(overflow);
         if overflow.is_empty() {
             return;
+        }
+        if self.unobserved_frame_materialization_overflow.is_none() {
+            self.unobserved_frame_materialization_overflow = Some(overflow);
         }
         self.last_diagnostic = Some(OpenGpuiSceneHostDiagnostic {
             kind: OpenGpuiSceneHostDiagnosticKind::FrameMaterialization,

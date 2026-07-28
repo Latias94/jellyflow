@@ -5,6 +5,7 @@ use std::rc::Rc;
 use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize, NodeId, PortDirection, PortId};
 
 use crate::runtime::adapter_protocol::{PublishedPortGeometry, ViewPoint};
+use crate::runtime::commands::GraphCommandPlanningWork;
 use crate::runtime::graph_runtime::{GraphRevision, PortInstanceKey, RuntimeShared};
 use crate::runtime::interaction::{
     ConnectionGestureBinding, ConnectionProbe, ConnectionProbeTarget, ConnectionProbeTargetIdentity,
@@ -142,6 +143,15 @@ pub struct ConnectionProbeWork {
     pub entries_examined: u64,
     pub exact_tests: u64,
     pub policy_evaluations: u64,
+    planning_work: Option<GraphCommandPlanningWork>,
+}
+
+impl ConnectionProbeWork {
+    /// Returns command-planning work for the candidate evaluated on this page, when present.
+    #[must_use]
+    pub const fn planning_work(self) -> Option<GraphCommandPlanningWork> {
+        self.planning_work
+    }
 }
 
 #[derive(Debug)]
@@ -606,6 +616,7 @@ fn connection_probe_page(
                     .evaluate_connection(intent.edit_for_target(candidate.target.port()))
                     .map_err(ViewSessionError::from)?;
                 work.policy_evaluations = 1;
+                work.planning_work = Some(evaluation.planning_work());
                 if evaluation.revision() != graph_revision {
                     return Err(ConnectionProbeQueryError::StaleCursor(
                         ConnectionProbeCursorStaleReason::GraphRevision,

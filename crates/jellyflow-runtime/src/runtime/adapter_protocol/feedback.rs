@@ -584,8 +584,10 @@ impl LayoutPublicationReceipt {
 /// Work performed while validating and publishing layouts from one feedback submission.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FeedbackLayoutWork {
-    candidates_checked: u64,
-    candidates_stale: u64,
+    layouts_examined: u64,
+    layouts_stale: u64,
+    impact_candidates_checked: u64,
+    impact_candidates_invalidated: u64,
     incident_snapshot_entries_read: u64,
     incident_snapshot_materializations: u64,
     spatial_updates: u64,
@@ -597,8 +599,10 @@ pub struct FeedbackLayoutWork {
 impl FeedbackLayoutWork {
     #[allow(clippy::too_many_arguments)]
     pub(crate) const fn new(
-        candidates_checked: u64,
-        candidates_stale: u64,
+        layouts_examined: u64,
+        layouts_stale: u64,
+        impact_candidates_checked: u64,
+        impact_candidates_invalidated: u64,
         incident_snapshot_entries_read: u64,
         incident_snapshot_materializations: u64,
         spatial_updates: u64,
@@ -607,8 +611,10 @@ impl FeedbackLayoutWork {
         refresh_requested: bool,
     ) -> Self {
         Self {
-            candidates_checked,
-            candidates_stale,
+            layouts_examined,
+            layouts_stale,
+            impact_candidates_checked,
+            impact_candidates_invalidated,
             incident_snapshot_entries_read,
             incident_snapshot_materializations,
             spatial_updates,
@@ -619,34 +625,48 @@ impl FeedbackLayoutWork {
     }
 
     pub(crate) const fn empty() -> Self {
-        Self::new(0, 0, 0, 0, 0, 0, 0, false)
+        Self::new(0, 0, 0, 0, 0, 0, 0, 0, 0, false)
     }
 
-    /// Returns the number of submitted node-layout candidates validated.
+    /// Returns the number of submitted node layouts examined by this publication attempt.
     #[must_use]
-    pub const fn candidates_checked(self) -> u64 {
-        self.candidates_checked
+    pub const fn layouts_examined(self) -> u64 {
+        self.layouts_examined
     }
 
-    /// Returns the candidates rejected because their frame facts were stale.
+    /// Returns submitted layouts rejected as stale for any frame-validity reason.
     #[must_use]
-    pub const fn candidates_stale(self) -> u64 {
-        self.candidates_stale
+    pub const fn layouts_stale(self) -> u64 {
+        self.layouts_stale
     }
 
-    /// Returns incident-edge snapshot entries read for accepted candidates.
+    /// Returns pending-frame nodes checked against accumulated geometry impact.
+    #[must_use]
+    pub const fn impact_candidates_checked(self) -> u64 {
+        self.impact_candidates_checked
+    }
+
+    /// Returns geometry-impact checks that invalidated a submitted layout.
+    #[must_use]
+    pub const fn impact_candidates_invalidated(self) -> u64 {
+        self.impact_candidates_invalidated
+    }
+
+    /// Returns incident-edge snapshot entries read while publishing, withdrawing, or
+    /// invalidating geometry.
     #[must_use]
     pub const fn incident_snapshot_entries_read(self) -> u64 {
         self.incident_snapshot_entries_read
     }
 
-    /// Returns new incident-edge snapshots materialized for accepted candidates.
+    /// Returns new incident-edge snapshots materialized while publishing, withdrawing, or
+    /// invalidating geometry.
     #[must_use]
     pub const fn incident_snapshot_materializations(self) -> u64 {
         self.incident_snapshot_materializations
     }
 
-    /// Returns unique node geometry entries inserted, replaced, or withdrawn.
+    /// Returns node spatial-index entries inserted or replaced.
     #[must_use]
     pub const fn spatial_updates(self) -> u64 {
         self.spatial_updates

@@ -201,7 +201,12 @@ impl EguiCanvasInteraction {
         mode: NodeGraphConnectionMode,
         allow_create_from_wire: bool,
     ) -> Result<Option<CanvasPressTarget>, EguiInteractionError> {
-        let Some(drag_intent) = self.view.port_connection_drag_intent(port)?.into_outcome() else {
+        let Some(drag_intent) = self
+            .view
+            .port_connection_drag_intent(port)?
+            .into_outcome()
+            .ready()
+        else {
             return Ok(None);
         };
         let binding =

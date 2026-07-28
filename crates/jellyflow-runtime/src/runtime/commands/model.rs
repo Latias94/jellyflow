@@ -397,22 +397,29 @@ pub struct ConnectionEvaluation {
     version: GraphVersion,
     decision: ConnectDecision,
     diagnostics: Vec<Diagnostic>,
+    planning_work: GraphCommandPlanningWork,
 }
 
 impl ConnectionEvaluation {
-    pub(crate) fn accepted(version: GraphVersion) -> Self {
+    pub(crate) fn accepted(version: GraphVersion, planning_work: GraphCommandPlanningWork) -> Self {
         Self {
             version,
             decision: ConnectDecision::Accept,
             diagnostics: Vec::new(),
+            planning_work,
         }
     }
 
-    pub(crate) fn rejected(version: GraphVersion, diagnostics: Vec<Diagnostic>) -> Self {
+    pub(crate) fn rejected(
+        version: GraphVersion,
+        diagnostics: Vec<Diagnostic>,
+        planning_work: GraphCommandPlanningWork,
+    ) -> Self {
         Self {
             version,
             decision: ConnectDecision::Reject,
             diagnostics,
+            planning_work,
         }
     }
 
@@ -434,6 +441,12 @@ impl ConnectionEvaluation {
 
     pub fn diagnostics(&self) -> &[Diagnostic] {
         &self.diagnostics
+    }
+
+    /// Returns the exact command-planning work used to reach this decision.
+    #[must_use]
+    pub const fn planning_work(&self) -> GraphCommandPlanningWork {
+        self.planning_work
     }
 }
 
@@ -1039,6 +1052,7 @@ pub struct GraphCommandRejection {
     version: GraphVersion,
     message: String,
     diagnostics: Vec<Diagnostic>,
+    planning_work: GraphCommandPlanningWork,
 }
 
 impl GraphCommandRejection {
@@ -1047,12 +1061,14 @@ impl GraphCommandRejection {
         version: GraphVersion,
         message: impl Into<String>,
         diagnostics: Vec<Diagnostic>,
+        planning_work: GraphCommandPlanningWork,
     ) -> Self {
         Self {
             identity,
             version,
             message: message.into(),
             diagnostics,
+            planning_work,
         }
     }
 
@@ -1074,6 +1090,12 @@ impl GraphCommandRejection {
 
     pub fn diagnostics(&self) -> &[Diagnostic] {
         &self.diagnostics
+    }
+
+    /// Returns command-planning work completed before this command was rejected.
+    #[must_use]
+    pub const fn planning_work(&self) -> GraphCommandPlanningWork {
+        self.planning_work
     }
 }
 

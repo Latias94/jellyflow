@@ -9,7 +9,9 @@ use crate::runtime::commands::{
     ConnectionEdit, GraphCommand, IncidentEdgePolicy, TopologyEdit, TopologyPort,
 };
 use crate::runtime::geometry::HandlePosition;
-use crate::runtime::graph_runtime::{GraphRuntime, GraphRuntimePolicy, PortConnectionDragIntent};
+use crate::runtime::graph_runtime::{
+    GraphRuntime, GraphRuntimePolicy, PortConnectionDragIntent, PortConnectionDragQueryOutcome,
+};
 use crate::runtime::interaction::{ConnectionGestureBinding, ConnectionInteractionStart};
 use crate::runtime::tests::fixtures::{
     GraphFixtureMutExt, current_port_instance, port_connection_drag_intent_by_id,
@@ -48,6 +50,12 @@ fn strong_and_weak_views_expose_symmetric_connection_queries() {
     let weak_evaluation = weak.evaluate_connection(edit).unwrap();
     assert_eq!(strong_evaluation.revision(), weak_evaluation.revision());
     assert_eq!(strong_evaluation.decision(), weak_evaluation.decision());
+    assert_eq!(
+        strong_evaluation.planning_work(),
+        weak_evaluation.planning_work()
+    );
+    assert!(strong_evaluation.planning_work().fact_reads() > 0);
+    assert_eq!(strong_evaluation.planning_work().operations_emitted(), 2);
 
     let strong_facts = view
         .port_connection_facts(ids.target_port)
@@ -128,11 +136,13 @@ fn strong_and_weak_views_expose_symmetric_connection_queries() {
         .port_connection_drag_intent(target_instance)
         .expect("target drag intent")
         .into_outcome()
+        .ready()
         .expect("target port remains current");
     let weak_drag_intent = weak
         .port_connection_drag_intent(target_instance)
         .expect("target drag intent")
         .into_outcome()
+        .ready()
         .expect("target port remains current");
     assert_eq!(strong_drag_intent, weak_drag_intent);
     assert_eq!(strong_drag_intent.revision(), 0);
@@ -208,7 +218,10 @@ fn same_id_port_replacement_refreshes_every_connection_fact_identity() {
     assert_eq!(stale_drag.work().fact_reads(), 1);
     assert_eq!(stale_drag.work().incident_bucket_reads(), 0);
     assert_eq!(stale_drag.work().incident_entries_read(), 0);
-    assert!(stale_drag.into_outcome().is_none());
+    assert_eq!(
+        stale_drag.into_outcome(),
+        PortConnectionDragQueryOutcome::Stale
+    );
     assert_eq!(
         view.port_connection_facts(ids.target_port)
             .unwrap()
@@ -229,6 +242,7 @@ fn same_id_port_replacement_refreshes_every_connection_fact_identity() {
         view.port_connection_drag_intent(current_instance)
             .unwrap()
             .into_outcome()
+            .ready()
             .unwrap()
             .instance(),
         current_instance,
@@ -341,10 +355,13 @@ fn port_drag_facts_are_accepted_only_by_the_issuing_runtime() {
     let foreign_query = second
         .port_connection_drag_intent(drag.instance())
         .expect("foreign identity is a negative query outcome");
-    assert_eq!(foreign_query.work().fact_reads(), 1);
+    assert_eq!(foreign_query.work().fact_reads(), 0);
     assert_eq!(foreign_query.work().incident_bucket_reads(), 0);
     assert_eq!(foreign_query.work().incident_entries_read(), 0);
-    assert!(foreign_query.into_outcome().is_none());
+    assert_eq!(
+        foreign_query.into_outcome(),
+        PortConnectionDragQueryOutcome::Foreign
+    );
 
     assert!(
         first
@@ -387,13 +404,13 @@ fn batched_port_summaries_preserve_order_missing_positions_and_one_revision() {
 
     let strong_query = view.port_connection_summaries(&requested).unwrap();
     assert_eq!(strong_query.work().fact_reads(), 7);
-    assert_eq!(strong_query.work().incident_bucket_reads(), 0);
+    assert_eq!(strong_query.work().incident_bucket_reads(), 3);
     assert_eq!(strong_query.work().incident_entries_read(), 0);
     let strong = strong_query.into_outcome();
 
     let weak_query = weak.port_connection_summaries(&requested).unwrap();
     assert_eq!(weak_query.work().fact_reads(), 7);
-    assert_eq!(weak_query.work().incident_bucket_reads(), 0);
+    assert_eq!(weak_query.work().incident_bucket_reads(), 3);
     assert_eq!(weak_query.work().incident_entries_read(), 0);
     let weak = weak_query.into_outcome();
 
@@ -427,7 +444,7 @@ fn batched_port_summaries_preserve_order_missing_positions_and_one_revision() {
     .expect("unrelated node update applies");
     let updated_query = view.port_connection_summaries(&requested).unwrap();
     assert_eq!(updated_query.work().fact_reads(), 7);
-    assert_eq!(updated_query.work().incident_bucket_reads(), 0);
+    assert_eq!(updated_query.work().incident_bucket_reads(), 3);
     assert_eq!(updated_query.work().incident_entries_read(), 0);
     let updated = updated_query.into_outcome();
     assert_eq!(updated.revision(), 1);
@@ -507,6 +524,8 @@ fn runtime_owned_policy_keeps_connection_queries_and_commands_consistent() {
     );
     let evaluation = second.evaluate_connection(edit).unwrap();
     assert!(!evaluation.is_accept());
+    assert!(evaluation.planning_work().fact_reads() > 0);
+    assert_eq!(evaluation.planning_work().operations_emitted(), 0);
     assert_eq!(
         evaluation.diagnostics()[0].key,
         "connect.source_not_connectable"
@@ -523,10 +542,12 @@ fn runtime_owned_policy_keeps_connection_queries_and_commands_consistent() {
         .unwrap()
         .into_result()
         .unwrap();
+    let rejection = outcome.rejection().expect("policy rejects the command");
     assert_eq!(
-        outcome.rejection().unwrap().diagnostics()[0].key,
+        rejection.diagnostics()[0].key,
         "connect.source_not_connectable"
     );
+    assert_eq!(rejection.planning_work(), evaluation.planning_work());
     assert!(runtime.snapshot().unwrap().graph().edge(&edge).is_none());
 }
 
@@ -665,7 +686,7 @@ fn port_connection_facts_read_only_the_requested_incident_edge_bucket() {
     let query = view.port_connection_facts(target_port).unwrap();
     assert_eq!(query.work().incident_bucket_reads(), 1);
     assert_eq!(query.work().incident_entries_read(), 1);
-    assert_eq!(query.work().fact_reads(), 3);
+    assert_eq!(query.work().fact_reads(), 4);
     let facts = query.into_outcome().expect("target facts");
 
     assert_eq!(facts.incident().len(), 1);
@@ -700,7 +721,7 @@ fn output_drag_intent_skips_a_high_fanout_incident_bucket() {
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
 
     let summary_query = view.port_connection_summary(output).unwrap();
-    assert_eq!(summary_query.work().incident_bucket_reads(), 0);
+    assert_eq!(summary_query.work().incident_bucket_reads(), 1);
     assert_eq!(summary_query.work().incident_entries_read(), 0);
     assert_eq!(summary_query.work().fact_reads(), 2);
     let summary = summary_query.into_outcome().expect("output summary");
@@ -714,7 +735,10 @@ fn output_drag_intent_skips_a_high_fanout_incident_bucket() {
     assert_eq!(intent_query.work().incident_bucket_reads(), 0);
     assert_eq!(intent_query.work().incident_entries_read(), 0);
     assert_eq!(intent_query.work().fact_reads(), 2);
-    let intent = intent_query.into_outcome().expect("output remains current");
+    let intent = intent_query
+        .into_outcome()
+        .ready()
+        .expect("output remains current");
 
     assert!(matches!(intent, PortConnectionDragIntent::Connect { .. }));
     assert_eq!(intent.revision(), 0);
@@ -741,6 +765,7 @@ fn input_drag_intent_is_explicit_and_selects_the_first_reconnectable_edge() {
     assert_eq!(vacant_query.work().fact_reads(), 2);
     let vacant = vacant_query
         .into_outcome()
+        .ready()
         .expect("vacant input remains current");
     assert!(matches!(vacant, PortConnectionDragIntent::Connect { .. }));
     assert_eq!(vacant.direction(), PortDirection::In);
@@ -764,9 +789,10 @@ fn input_drag_intent_is_explicit_and_selects_the_first_reconnectable_edge() {
         2,
         "the stable EdgeId scan stops after the first reconnectable candidate",
     );
-    assert_eq!(reconnect_query.work().fact_reads(), 4);
+    assert_eq!(reconnect_query.work().fact_reads(), 6);
     let reconnect = reconnect_query
         .into_outcome()
+        .ready()
         .expect("reconnect input remains current");
     assert!(matches!(
         reconnect,
@@ -790,9 +816,10 @@ fn input_drag_intent_is_explicit_and_selects_the_first_reconnectable_edge() {
         .expect("blocked drag intent");
     assert_eq!(blocked_query.work().incident_bucket_reads(), 1);
     assert_eq!(blocked_query.work().incident_entries_read(), 3);
-    assert_eq!(blocked_query.work().fact_reads(), 5);
+    assert_eq!(blocked_query.work().fact_reads(), 8);
     let blocked = blocked_query
         .into_outcome()
+        .ready()
         .expect("blocked input remains current");
     assert!(matches!(
         blocked,
@@ -844,6 +871,7 @@ fn connection_binding(view: &ViewSession, port: PortId, edge: EdgeId) -> Connect
         .port_connection_drag_intent(current_port_instance(view, port))
         .expect("connection facts are readable")
         .into_outcome()
+        .ready()
         .expect("connection port remains current");
     ConnectionInteractionStart::binding_from_port_drag(drag, edge, NodeGraphConnectionMode::Strict)
         .expect("source port can begin a connection")

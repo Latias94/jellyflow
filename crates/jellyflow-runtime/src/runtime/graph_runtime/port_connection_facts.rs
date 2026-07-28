@@ -1,11 +1,14 @@
-use jellyflow_core::core::{Edge, EdgeId, NodeId, PortCapacity, PortDirection, PortId};
+use std::cell::Cell;
+
+use jellyflow_core::core::{Edge, EdgeId, Node, NodeId, Port, PortCapacity, PortDirection, PortId};
 
 use crate::rules::EdgeEndpoint;
 use crate::runtime::policy::{GraphRuntimePolicy, resolve_edge_policy, resolve_port_policy};
 
 use super::{
     EdgeIncarnationEntry, EdgeInstanceKey, GraphRevision, GraphRuntimeError, GraphVersion,
-    PortInstanceKey, RuntimeProvenance, RuntimeShared, port_instance_key_from_state,
+    PortIncarnationEntry, PortInstanceKey, RuntimeId, RuntimeProvenance, RuntimeShared,
+    RuntimeState,
 };
 
 /// Exact authoritative work performed by one port-connection query.
@@ -28,7 +31,11 @@ impl PortConnectionQueryWork {
         }
     }
 
-    /// Returns the number of authoritative connection-fact lookups performed by this query.
+    const fn empty() -> Self {
+        Self::new(0, 0, 0)
+    }
+
+    /// Returns the number of authoritative graph records inspected by this query.
     #[must_use]
     pub const fn fact_reads(self) -> u64 {
         self.fact_reads
@@ -44,6 +51,86 @@ impl PortConnectionQueryWork {
     #[must_use]
     pub const fn incident_entries_read(self) -> u64 {
         self.incident_entries_read
+    }
+}
+
+struct PortConnectionQueryContext<'state> {
+    runtime: RuntimeId,
+    state: &'state RuntimeState,
+    work: Cell<PortConnectionQueryWork>,
+}
+
+impl<'state> PortConnectionQueryContext<'state> {
+    fn new(runtime: RuntimeId, state: &'state RuntimeState) -> Self {
+        Self {
+            runtime,
+            state,
+            work: Cell::new(PortConnectionQueryWork::empty()),
+        }
+    }
+
+    fn port(&self, port: PortId) -> Option<&'state Port> {
+        let mut work = self.work.get();
+        work.fact_reads = work.fact_reads.saturating_add(1);
+        self.work.set(work);
+        self.state.graph.port(&port)
+    }
+
+    fn node(&self, node: NodeId) -> Option<&'state Node> {
+        let mut work = self.work.get();
+        work.fact_reads = work.fact_reads.saturating_add(1);
+        self.work.set(work);
+        self.state.graph.node(&node)
+    }
+
+    fn edge(&self, edge: EdgeId) -> Option<&'state Edge> {
+        let mut work = self.work.get();
+        work.fact_reads = work.fact_reads.saturating_add(1);
+        self.work.set(work);
+        self.state.graph.edge(&edge)
+    }
+
+    fn port_instance(&self, port: PortId, record: &Port) -> Option<PortInstanceKey> {
+        let node_incarnation = self.state.incarnations.get(&record.node).copied()?;
+        let port_incarnation = self
+            .state
+            .port_incarnations
+            .get(&port)
+            .map(PortIncarnationEntry::incarnation)?;
+        Some(PortInstanceKey::new(
+            RuntimeProvenance::new(self.runtime),
+            record.node,
+            node_incarnation,
+            port,
+            port_incarnation,
+        ))
+    }
+
+    fn incident_edge_count(&self, port: PortId) -> usize {
+        let mut work = self.work.get();
+        work.incident_bucket_reads = work.incident_bucket_reads.saturating_add(1);
+        self.work.set(work);
+        self.state.index.incident_edge_count(port)
+    }
+
+    fn incident_edges(&self, port: PortId) -> impl Iterator<Item = EdgeId> + '_ {
+        let mut work = self.work.get();
+        work.incident_bucket_reads = work.incident_bucket_reads.saturating_add(1);
+        self.work.set(work);
+        self.state
+            .index
+            .incident_edges(port)
+            .inspect(|_| self.inspect_incident_entry())
+    }
+
+    fn inspect_incident_entry(&self) {
+        let mut work = self.work.get();
+        work.incident_entries_read = work.incident_entries_read.saturating_add(1);
+        self.work.set(work);
+    }
+
+    fn into_work(self) -> PortConnectionQueryWork {
+        self.work.get()
     }
 }
 
@@ -391,6 +478,32 @@ impl PortConnectionDragIntent {
     }
 }
 
+/// Authority classification and semantic decision for one port-drag query.
+///
+/// Foreign and stale capabilities remain distinct even though native adapters commonly project
+/// both into a rejected gesture start. Keeping the classification inside the query outcome lets
+/// every branch retain its operation-scoped work receipt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PortConnectionDragQueryOutcome {
+    /// The exact live port capability resolved to a drag decision.
+    Ready(PortConnectionDragIntent),
+    /// The capability was issued by another graph runtime.
+    Foreign,
+    /// The capability belonged to this runtime but its port lifetime has ended.
+    Stale,
+}
+
+impl PortConnectionDragQueryOutcome {
+    /// Returns the live drag decision, or `None` for foreign and stale capabilities.
+    #[must_use]
+    pub const fn ready(self) -> Option<PortConnectionDragIntent> {
+        match self {
+            Self::Ready(intent) => Some(intent),
+            Self::Foreign | Self::Stale => None,
+        }
+    }
+}
+
 /// Connection facts for one edge incident to a queried port.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PortIncidentConnectionFacts {
@@ -477,43 +590,40 @@ impl RuntimeShared {
             .try_borrow()
             .map_err(|_| GraphRuntimeError::Busy)?;
         let version = GraphVersion::new(state.provenance, state.revision);
-        let mut fact_reads = 0_u64;
-        let entries = ports
-            .iter()
-            .copied()
-            .map(|port| {
-                let Some(current_port) = state.graph.port(&port) else {
-                    fact_reads = fact_reads.saturating_add(1);
-                    return (port, None);
-                };
-                let node = current_port.node;
-                let Some(owner) = state.graph.node(&node) else {
-                    fact_reads = fact_reads.saturating_add(2);
-                    return (port, None);
-                };
-                let port_policy = resolve_port_policy(owner, current_port, &state.policy);
-                let Some(instance) = port_instance_key_from_state(self.id, &state, port) else {
-                    fact_reads = fact_reads.saturating_add(2);
-                    return (port, None);
-                };
-                fact_reads = fact_reads.saturating_add(2);
-                (
-                    port,
-                    Some(PortConnectionSummary {
-                        version,
-                        instance,
-                        direction: current_port.dir,
-                        capacity: current_port.capacity,
-                        can_start_connection: port_policy.can_start_connection(),
-                        can_accept_connection: port_policy.can_accept_connection(),
-                        incident_count: state.index.incident_edge_count(port),
-                    }),
-                )
-            })
-            .collect();
+        let query = PortConnectionQueryContext::new(self.id, &state);
+        let mut entries = Vec::with_capacity(ports.len());
+        for port in ports.iter().copied() {
+            let Some(current_port) = query.port(port) else {
+                entries.push((port, None));
+                continue;
+            };
+            let Some(owner) = query.node(current_port.node) else {
+                entries.push((port, None));
+                continue;
+            };
+            let port_policy = resolve_port_policy(owner, current_port, &state.policy);
+            let Some(instance) = query.port_instance(port, current_port) else {
+                entries.push((port, None));
+                continue;
+            };
+            let incident_count = query.incident_edge_count(port);
+            entries.push((
+                port,
+                Some(PortConnectionSummary {
+                    version,
+                    instance,
+                    direction: current_port.dir,
+                    capacity: current_port.capacity,
+                    can_start_connection: port_policy.can_start_connection(),
+                    can_accept_connection: port_policy.can_accept_connection(),
+                    incident_count,
+                }),
+            ));
+        }
+        let work = query.into_work();
         Ok(PortConnectionQueryResult::new(
             PortConnectionSummaryBatch { version, entries },
-            PortConnectionQueryWork::new(fact_reads, 0, 0),
+            work,
         ))
     }
 
@@ -525,35 +635,26 @@ impl RuntimeShared {
             .state
             .try_borrow()
             .map_err(|_| GraphRuntimeError::Busy)?;
-        let Some(current_port) = state.graph.port(&port) else {
-            return Ok(PortConnectionQueryResult::new(
-                None,
-                PortConnectionQueryWork::new(1, 0, 0),
-            ));
+        let query = PortConnectionQueryContext::new(self.id, &state);
+        let Some(current_port) = query.port(port) else {
+            return Ok(PortConnectionQueryResult::new(None, query.into_work()));
         };
         let node = current_port.node;
         let direction = current_port.dir;
         let capacity = current_port.capacity;
-        let Some(owner) = state.graph.node(&node) else {
-            return Ok(PortConnectionQueryResult::new(
-                None,
-                PortConnectionQueryWork::new(2, 0, 0),
-            ));
+        let Some(owner) = query.node(node) else {
+            return Ok(PortConnectionQueryResult::new(None, query.into_work()));
         };
         let port_policy = resolve_port_policy(owner, current_port, &state.policy);
-        let Some(instance) = port_instance_key_from_state(self.id, &state, port) else {
-            return Ok(PortConnectionQueryResult::new(
-                None,
-                PortConnectionQueryWork::new(2, 0, 0),
-            ));
+        let Some(instance) = query.port_instance(port, current_port) else {
+            return Ok(PortConnectionQueryResult::new(None, query.into_work()));
         };
         let can_start_connection = port_policy.can_start_connection();
         let can_accept_connection = port_policy.can_accept_connection();
 
-        let incident_edges = state.index.incident_edges(port).collect::<Vec<_>>();
-        let mut incident = Vec::with_capacity(incident_edges.len());
-        for edge_id in incident_edges.iter().copied() {
-            let Some(current) = state.graph.edge(&edge_id) else {
+        let mut incident = Vec::new();
+        for edge_id in query.incident_edges(port) {
+            let Some(current) = query.edge(edge_id) else {
                 continue;
             };
             let Some(edge_incarnation) = state
@@ -570,8 +671,10 @@ impl RuntimeShared {
             } else {
                 continue;
             };
-            let Some(opposite_port) = port_instance_key_from_state(self.id, &state, opposite_port)
-            else {
+            let Some(opposite_record) = query.port(opposite_port) else {
+                continue;
+            };
+            let Some(opposite_port) = query.port_instance(opposite_port, opposite_record) else {
                 continue;
             };
             let Some(facts) = resolve_incident_connection_facts(
@@ -586,7 +689,7 @@ impl RuntimeShared {
             incident.push(facts);
         }
 
-        let incident_entries_read = incident_edges.len() as u64;
+        let work = query.into_work();
         Ok(PortConnectionQueryResult::new(
             Some(PortConnectionFacts {
                 version: GraphVersion::new(state.provenance, state.revision),
@@ -597,52 +700,46 @@ impl RuntimeShared {
                 can_accept_connection,
                 incident,
             }),
-            PortConnectionQueryWork::new(
-                2_u64.saturating_add(incident_entries_read),
-                1,
-                incident_entries_read,
-            ),
+            work,
         ))
     }
 
     pub(crate) fn port_connection_drag_intent(
         &self,
         instance: PortInstanceKey,
-    ) -> Result<PortConnectionQueryResult<Option<PortConnectionDragIntent>>, GraphRuntimeError>
-    {
+    ) -> Result<PortConnectionQueryResult<PortConnectionDragQueryOutcome>, GraphRuntimeError> {
         let state = self
             .state
             .try_borrow()
             .map_err(|_| GraphRuntimeError::Busy)?;
         let port = instance.port();
-        if instance.provenance() != state.provenance
-            || port_instance_key_from_state(self.id, &state, port) != Some(instance)
-        {
+        if instance.provenance() != state.provenance {
             return Ok(PortConnectionQueryResult::new(
-                None,
-                PortConnectionQueryWork::new(1, 0, 0),
+                PortConnectionDragQueryOutcome::Foreign,
+                PortConnectionQueryWork::empty(),
             ));
         }
-        let Some(current_port) = state.graph.port(&port) else {
+        let query = PortConnectionQueryContext::new(self.id, &state);
+        let Some(current_port) = query.port(port) else {
             return Ok(PortConnectionQueryResult::new(
-                None,
-                PortConnectionQueryWork::new(1, 0, 0),
+                PortConnectionDragQueryOutcome::Stale,
+                query.into_work(),
             ));
         };
-        let node = current_port.node;
-        let Some(owner) = state.graph.node(&node) else {
+        if query.port_instance(port, current_port) != Some(instance) {
             return Ok(PortConnectionQueryResult::new(
-                None,
-                PortConnectionQueryWork::new(2, 0, 0),
+                PortConnectionDragQueryOutcome::Stale,
+                query.into_work(),
+            ));
+        }
+        let node = current_port.node;
+        let Some(owner) = query.node(node) else {
+            return Ok(PortConnectionQueryResult::new(
+                PortConnectionDragQueryOutcome::Stale,
+                query.into_work(),
             ));
         };
         let port_policy = resolve_port_policy(owner, current_port, &state.policy);
-        let Some(instance) = port_instance_key_from_state(self.id, &state, port) else {
-            return Ok(PortConnectionQueryResult::new(
-                None,
-                PortConnectionQueryWork::new(2, 0, 0),
-            ));
-        };
         let facts = PortConnectionDragFacts {
             version: GraphVersion::new(state.provenance, state.revision),
             instance,
@@ -653,19 +750,18 @@ impl RuntimeShared {
         };
 
         if facts.direction == PortDirection::Out {
+            let work = query.into_work();
             return Ok(PortConnectionQueryResult::new(
-                Some(PortConnectionDragIntent::Connect { facts }),
-                PortConnectionQueryWork::new(2, 0, 0),
+                PortConnectionDragQueryOutcome::Ready(PortConnectionDragIntent::Connect { facts }),
+                work,
             ));
         }
 
-        let (candidate, occupied, entries_read) = {
+        let (candidate, occupied) = {
             let mut candidate = None;
             let mut occupied = false;
-            let mut entries_read = 0_u64;
-            for edge_id in state.index.incident_edges(port) {
-                entries_read = entries_read.saturating_add(1);
-                let Some(edge) = state.graph.edge(&edge_id) else {
+            for edge_id in query.incident_edges(port) {
+                let Some(edge) = query.edge(edge_id) else {
                     continue;
                 };
                 let Some(edge_incarnation) = state
@@ -682,8 +778,10 @@ impl RuntimeShared {
                 } else {
                     continue;
                 };
-                let Some(opposite_port) =
-                    port_instance_key_from_state(self.id, &state, opposite_port)
+                let Some(opposite_record) = query.port(opposite_port) else {
+                    continue;
+                };
+                let Some(opposite_port) = query.port_instance(opposite_port, opposite_record)
                 else {
                     continue;
                 };
@@ -706,15 +804,16 @@ impl RuntimeShared {
                     break;
                 }
             }
-            (candidate, occupied, entries_read)
+            (candidate, occupied)
         };
+        let work = query.into_work();
         Ok(PortConnectionQueryResult::new(
-            Some(match candidate {
+            PortConnectionDragQueryOutcome::Ready(match candidate {
                 Some(candidate) => PortConnectionDragIntent::Reconnect { facts, candidate },
                 None if occupied => PortConnectionDragIntent::BlockedOccupied { facts },
                 None => PortConnectionDragIntent::Connect { facts },
             }),
-            PortConnectionQueryWork::new(2_u64.saturating_add(entries_read), 1, entries_read),
+            work,
         ))
     }
 }

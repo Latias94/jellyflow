@@ -1791,6 +1791,7 @@ fn connection_binding(view: &ViewSession, port: PortId, edge: EdgeId) -> Connect
         .port_connection_drag_intent(port)
         .expect("source port can begin a connection")
         .into_outcome()
+        .ready()
         .expect("source port remains current");
     ConnectionInteractionStart::binding_from_port_drag(drag, edge, NodeGraphConnectionMode::Strict)
         .expect("source port admits a strict connection")

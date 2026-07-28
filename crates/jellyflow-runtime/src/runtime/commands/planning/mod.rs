@@ -135,6 +135,26 @@ pub(crate) enum GraphCommandPlanningError {
     Profile(#[from] ApplyPipelineError),
 }
 
+#[derive(Debug)]
+pub(crate) struct GraphCommandPlanningFailure {
+    error: GraphCommandPlanningError,
+    work: GraphCommandPlanningWork,
+}
+
+impl GraphCommandPlanningFailure {
+    fn new(error: GraphCommandPlanningError, work: GraphCommandPlanningWork) -> Self {
+        Self { error, work }
+    }
+
+    pub(crate) const fn work(&self) -> GraphCommandPlanningWork {
+        self.work
+    }
+
+    pub(crate) fn into_error(self) -> GraphCommandPlanningError {
+        self.error
+    }
+}
+
 pub(crate) fn plan_graph_command(
     graph: &Graph,
     index: &GraphIndex,
@@ -142,90 +162,99 @@ pub(crate) fn plan_graph_command(
     command: &GraphCommand,
     profile: Option<&dyn GraphProfile>,
     policy: &GraphRuntimePolicy,
-) -> Result<PlannedGraphCommand, GraphCommandPlanningError> {
+) -> Result<PlannedGraphCommand, GraphCommandPlanningFailure> {
     let mut context = PlanningContext::new(graph, index, catalog);
 
-    match &command.action {
-        GraphCommandAction::Undo | GraphCommandAction::Redo => {
-            unreachable!("history commands are replayed by GraphRuntime")
-        }
-        GraphCommandAction::SetNodeData { node, data } => {
-            plan_set_node_data(&mut context, *node, data, profile.is_some())?;
-        }
-        GraphCommandAction::SetNodeGeometry(edits) => {
-            let mut edited_nodes = BTreeSet::new();
-            let mut geometry_operations = Vec::new();
-            for edit in edits {
-                if !edited_nodes.insert(edit.node()) {
-                    return Err(GraphCommandPlanningError::DuplicateNodeGeometry(
-                        edit.node(),
-                    ));
+    let result = (|| -> Result<(), GraphCommandPlanningError> {
+        match &command.action {
+            GraphCommandAction::Undo | GraphCommandAction::Redo => {
+                unreachable!("history commands are replayed by GraphRuntime")
+            }
+            GraphCommandAction::SetNodeData { node, data } => {
+                plan_set_node_data(&mut context, *node, data, profile.is_some())?;
+            }
+            GraphCommandAction::SetNodeGeometry(edits) => {
+                let mut edited_nodes = BTreeSet::new();
+                let mut geometry_operations = Vec::new();
+                for edit in edits {
+                    if !edited_nodes.insert(edit.node()) {
+                        return Err(GraphCommandPlanningError::DuplicateNodeGeometry(
+                            edit.node(),
+                        ));
+                    }
+                    context.read_facts(1);
+                    let current = context
+                        .graph()
+                        .node(&edit.node())
+                        .ok_or(GraphCommandPlanningError::MissingNode(edit.node()))?;
+                    if let Some(position) = edit.position()
+                        && current.pos != position
+                    {
+                        geometry_operations.push(GraphOp::SetNodePos {
+                            id: edit.node(),
+                            from: current.pos,
+                            to: position,
+                        });
+                    }
+                    if let Some(size) = edit.size()
+                        && current.size != size
+                    {
+                        geometry_operations.push(GraphOp::SetNodeSize {
+                            id: edit.node(),
+                            from: current.size,
+                            to: size,
+                        });
+                    }
                 }
+                context.stage(geometry_operations)?;
+            }
+            GraphCommandAction::SetPortData { port, data } => {
                 context.read_facts(1);
                 let current = context
                     .graph()
-                    .node(&edit.node())
-                    .ok_or(GraphCommandPlanningError::MissingNode(edit.node()))?;
-                if let Some(position) = edit.position()
-                    && current.pos != position
-                {
-                    geometry_operations.push(GraphOp::SetNodePos {
-                        id: edit.node(),
-                        from: current.pos,
-                        to: position,
-                    });
-                }
-                if let Some(size) = edit.size()
-                    && current.size != size
-                {
-                    geometry_operations.push(GraphOp::SetNodeSize {
-                        id: edit.node(),
-                        from: current.size,
-                        to: size,
-                    });
+                    .port(port)
+                    .ok_or(GraphCommandPlanningError::MissingPort(*port))?;
+                let operation = GraphOp::SetPortData {
+                    id: *port,
+                    from: current.data.clone(),
+                    to: data.clone(),
+                };
+                context.stage([operation])?;
+                if profile.is_some() {
+                    context.schedule_type_revalidation([*port], IncidentEdgePolicy::Reject);
                 }
             }
-            context.stage(geometry_operations)?;
-        }
-        GraphCommandAction::SetPortData { port, data } => {
-            context.read_facts(1);
-            let current = context
-                .graph()
-                .port(port)
-                .ok_or(GraphCommandPlanningError::MissingPort(*port))?;
-            let operation = GraphOp::SetPortData {
-                id: *port,
-                from: current.data.clone(),
-                to: data.clone(),
-            };
-            context.stage([operation])?;
-            if profile.is_some() {
-                context.schedule_type_revalidation([*port], IncidentEdgePolicy::Reject);
+            GraphCommandAction::Symbols(edit) => symbols::plan_symbol_edit(&mut context, edit)?,
+            GraphCommandAction::Topology(edit) => {
+                topology::plan_topology_edit(&mut context, edit, profile, policy)?;
             }
         }
-        GraphCommandAction::Symbols(edit) => symbols::plan_symbol_edit(&mut context, edit)?,
-        GraphCommandAction::Topology(edit) => {
-            topology::plan_topology_edit(&mut context, edit, profile, policy)?;
-        }
-    }
 
-    if let Some(profile) = profile {
-        profile::converge_profile(&mut context, graph, profile, policy)?;
-    } else {
-        profile::revalidate_unprofiled(&mut context)?;
+        if let Some(profile) = profile {
+            profile::converge_profile(&mut context, graph, profile, policy)?;
+        } else {
+            profile::revalidate_unprofiled(&mut context)?;
+        }
+        Ok(())
+    })();
+    if let Err(error) = result {
+        let (_, _, stats) = context.into_parts();
+        return Err(GraphCommandPlanningFailure::new(error, stats.into_work()));
     }
 
     let (graph, operations, planning_stats) = context.into_parts();
+    let planning_work = planning_stats.into_work();
     let transaction = GraphTransactionGate::normalize_and_validate(GraphTransaction::from_parts(
         command.label.clone(),
         operations,
-    ))?;
+    ))
+    .map_err(|error| GraphCommandPlanningFailure::new(error.into(), planning_work))?;
     let footprint = transaction.footprint();
     Ok(PlannedGraphCommand {
         transaction,
         footprint,
         graph,
-        planning_work: planning_stats.into_work(),
+        planning_work,
     })
 }
 

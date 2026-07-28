@@ -2294,43 +2294,48 @@ fn is_background(pixel: &[u8], canvas_background: [u8; 4]) -> bool {
     pixel[3] == 0 || pixel == canvas_background
 }
 
-fn observe_smoke_surface(graph: &Entity<NativeGraphSurface>, cx: &App) -> SmokeObservation {
+fn observe_smoke_surface(graph: &Entity<NativeGraphSurface>, cx: &mut App) -> SmokeObservation {
     let host = graph.read(cx).host().clone();
-    let host = host.read(cx);
-    let stats = host.stats();
-    SmokeObservation {
-        surface_size: host.surface_size(),
-        visible_expected_nodes: None,
-        active_nodes: stats.active_nodes(),
-        parked_nodes: stats.parked_nodes(),
-        mounts: stats.mounts(),
-        restores: stats.restores(),
-        evictions: stats.evictions(),
-        hard_retirements: stats.hard_retirements(),
-        protected_instances: stats.protected_instances(),
-        protected_leases: stats.protected_leases(),
-        protected_overflows: stats.protected_overflows(),
-        eligible_parked_nodes: stats.eligible_parked_nodes(),
-        strong_instances: stats.strong_instances(),
-        frame_materialization_overflows: stats.frame_materialization_overflows(),
-        feedback_submissions: stats.feedback_submissions(),
-        feedback_failures: stats.feedback_failures(),
-        layout_rejections: stats.layout_rejections(),
-        measurement_failures: stats.measurement_failures(),
-        diagnostic: host
-            .last_diagnostic()
-            .map(|diagnostic| SmokeHostDiagnostic {
-                kind: diagnostic.kind(),
-                message: format!("{:?}: {}", diagnostic.kind(), diagnostic.message()),
-            }),
-        host_closed: host.close_reason().is_some(),
-        geometry: None,
-        paint: None,
-        input: None,
-        native_probe_failure: None,
-        native_probe_phase: None,
-        native_probe_wait_ticks: None,
-    }
+    host.update(cx, |host, _| {
+        let stats = host.stats();
+        let frame_materialization_overflows = u64::from(
+            host.take_unobserved_frame_materialization_overflow()
+                .is_some(),
+        );
+        SmokeObservation {
+            surface_size: host.surface_size(),
+            visible_expected_nodes: None,
+            active_nodes: stats.active_nodes(),
+            parked_nodes: stats.parked_nodes(),
+            mounts: stats.mounts(),
+            restores: stats.restores(),
+            evictions: stats.evictions(),
+            hard_retirements: stats.hard_retirements(),
+            protected_instances: stats.protected_instances(),
+            protected_leases: stats.protected_leases(),
+            protected_overflows: stats.protected_overflows(),
+            eligible_parked_nodes: stats.eligible_parked_nodes(),
+            strong_instances: stats.strong_instances(),
+            frame_materialization_overflows,
+            feedback_submissions: stats.feedback_submissions(),
+            feedback_failures: stats.feedback_failures(),
+            layout_rejections: stats.layout_rejections(),
+            measurement_failures: stats.measurement_failures(),
+            diagnostic: host
+                .last_diagnostic()
+                .map(|diagnostic| SmokeHostDiagnostic {
+                    kind: diagnostic.kind(),
+                    message: format!("{:?}: {}", diagnostic.kind(), diagnostic.message()),
+                }),
+            host_closed: host.close_reason().is_some(),
+            geometry: None,
+            paint: None,
+            input: None,
+            native_probe_failure: None,
+            native_probe_phase: None,
+            native_probe_wait_ticks: None,
+        }
+    })
 }
 
 pub(super) fn start_smoke_timeout(cx: &App, state: SharedSmokeState) {

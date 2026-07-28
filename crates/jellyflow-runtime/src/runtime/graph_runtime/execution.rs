@@ -145,15 +145,26 @@ pub(super) fn execute_command_locked(
         planning_work,
     } = match planned {
         Ok(planned) => planned,
-        Err(error) => {
+        Err(failure) => {
+            let planning_work = failure.work();
             return Ok(CommandExecution::Outcome(GraphCommandOutcome::Rejected(
-                command_rejection_from_planning(command.identity().clone(), current_version, error),
+                command_rejection_from_planning(
+                    command.identity().clone(),
+                    current_version,
+                    failure.into_error(),
+                    planning_work,
+                ),
             )));
         }
     };
     if let Err(error) = run_before_command_middleware(state, command) {
         return Ok(CommandExecution::Outcome(GraphCommandOutcome::Rejected(
-            command_rejection_from_apply(command.identity().clone(), current_version, error),
+            command_rejection_from_apply(
+                command.identity().clone(),
+                current_version,
+                error,
+                planning_work,
+            ),
         )));
     }
     if transaction.is_empty() {
@@ -187,7 +198,12 @@ fn execute_history_command_locked(
     let current_version = GraphVersion::new(state.provenance, state.revision);
     if let Err(error) = run_before_command_middleware(state, command) {
         return Ok(CommandExecution::Outcome(GraphCommandOutcome::Rejected(
-            command_rejection_from_apply(command.identity().clone(), current_version, error),
+            command_rejection_from_apply(
+                command.identity().clone(),
+                current_version,
+                error,
+                GraphCommandPlanningWork::empty(),
+            ),
         )));
     }
     state
@@ -208,7 +224,12 @@ fn execute_history_command_locked(
         Ok(replayed) => replayed,
         Err(error) => {
             return Ok(CommandExecution::Outcome(GraphCommandOutcome::Rejected(
-                command_rejection_from_apply(command.identity().clone(), current_version, error),
+                command_rejection_from_apply(
+                    command.identity().clone(),
+                    current_version,
+                    error,
+                    GraphCommandPlanningWork::empty(),
+                ),
             )));
         }
     };
@@ -233,7 +254,12 @@ fn execute_history_command_locked(
     })();
     if let Err(error) = replay_result {
         return Ok(CommandExecution::Outcome(GraphCommandOutcome::Rejected(
-            command_rejection_from_apply(command.identity().clone(), current_version, error),
+            command_rejection_from_apply(
+                command.identity().clone(),
+                current_version,
+                error,
+                GraphCommandPlanningWork::empty(),
+            ),
         )));
     }
 
@@ -268,16 +294,17 @@ pub(super) fn command_rejection_from_planning(
     identity: GraphCommandIdentity,
     version: GraphVersion,
     error: GraphCommandPlanningError,
+    planning_work: GraphCommandPlanningWork,
 ) -> GraphCommandRejection {
     if let GraphCommandPlanningError::RuleRejected {
         message,
         diagnostics,
     } = error
     {
-        return GraphCommandRejection::new(identity, version, message, diagnostics);
+        return GraphCommandRejection::new(identity, version, message, diagnostics, planning_work);
     }
     if let GraphCommandPlanningError::Profile(error) = error {
-        return command_rejection_from_apply(identity, version, error);
+        return command_rejection_from_apply(identity, version, error, planning_work);
     }
     let (key, target) = planning_error_diagnostic(&error);
     let message = error.to_string();
@@ -286,6 +313,7 @@ pub(super) fn command_rejection_from_planning(
         version,
         message.clone(),
         vec![Diagnostic::error(key, target, message)],
+        planning_work,
     )
 }
 
@@ -390,12 +418,13 @@ fn command_rejection_from_apply(
     identity: GraphCommandIdentity,
     version: GraphVersion,
     error: ApplyPipelineError,
+    planning_work: GraphCommandPlanningWork,
 ) -> GraphCommandRejection {
     match error {
         ApplyPipelineError::Rejected {
             message,
             diagnostics,
-        } => GraphCommandRejection::new(identity, version, message, diagnostics),
+        } => GraphCommandRejection::new(identity, version, message, diagnostics, planning_work),
         error => {
             let message = error.to_string();
             GraphCommandRejection::new(
@@ -407,6 +436,7 @@ fn command_rejection_from_apply(
                     DiagnosticTarget::Graph,
                     message,
                 )],
+                planning_work,
             )
         }
     }

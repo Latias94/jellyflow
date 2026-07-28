@@ -30,7 +30,7 @@ use crate::runtime::commands::{
 use crate::runtime::graph_runtime::{
     CreateFromWireCandidates, CreateFromWireQueryError, EdgeInstanceKey, FactChangeMask,
     GraphRevision, GraphRuntimeError, GraphRuntimePolicy, GraphSnapshot, NodeLifetimeKey,
-    PortConnectionDragIntent, PortConnectionFacts, PortConnectionQueryResult,
+    PortConnectionDragQueryOutcome, PortConnectionFacts, PortConnectionQueryResult,
     PortConnectionSummary, PortInstanceKey, RuntimeFactKey, RuntimeId, RuntimePatch,
     RuntimePatchKind, RuntimeProvenance, RuntimeShared,
 };
@@ -1230,8 +1230,8 @@ impl ViewSession {
 
     /// Resolves pointer-connection facts and exact work for one port instance.
     ///
-    /// A retired or foreign instance produces a successful query with a `None` outcome, preserving
-    /// the negative lookup's work receipt for diagnostics and bounded-work assertions.
+    /// Foreign and retired instances remain distinct typed outcomes while retaining the negative
+    /// lookup's work receipt for diagnostics and bounded-work assertions.
     ///
     /// ```compile_fail
     /// use jellyflow_core::core::PortId;
@@ -1244,7 +1244,7 @@ impl ViewSession {
     pub fn port_connection_drag_intent(
         &self,
         port: PortInstanceKey,
-    ) -> Result<PortConnectionQueryResult<Option<PortConnectionDragIntent>>, ViewSessionError> {
+    ) -> Result<PortConnectionQueryResult<PortConnectionDragQueryOutcome>, ViewSessionError> {
         self.runtime()?
             .port_connection_drag_intent(port)
             .map_err(Into::into)
@@ -1767,7 +1767,7 @@ impl WeakViewSession {
     pub fn port_connection_drag_intent(
         &self,
         port: PortInstanceKey,
-    ) -> Result<PortConnectionQueryResult<Option<PortConnectionDragIntent>>, ViewSessionError> {
+    ) -> Result<PortConnectionQueryResult<PortConnectionDragQueryOutcome>, ViewSessionError> {
         let (_, runtime) = self.open_capability()?;
         runtime
             .port_connection_drag_intent(port)

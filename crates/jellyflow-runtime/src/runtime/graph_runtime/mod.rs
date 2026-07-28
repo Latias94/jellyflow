@@ -10,8 +10,8 @@ mod subscriptions;
 
 pub use create_from_wire::{CreateFromWireCandidates, CreateFromWireQueryError};
 pub use port_connection_facts::{
-    PortConnectionDragFacts, PortConnectionDragIntent, PortConnectionFacts,
-    PortConnectionQueryResult, PortConnectionQueryWork, PortConnectionSummary,
+    PortConnectionDragFacts, PortConnectionDragIntent, PortConnectionDragQueryOutcome,
+    PortConnectionFacts, PortConnectionQueryResult, PortConnectionQueryWork, PortConnectionSummary,
     PortConnectionSummaryBatch, PortIncidentConnectionFacts,
 };
 
@@ -1355,11 +1355,20 @@ impl RuntimeShared {
                 &state.policy,
             );
             match planned {
-                Ok(_) => ConnectionEvaluation::accepted(version),
-                Err(error) => {
-                    let rejection =
-                        command_rejection_from_planning(command.identity().clone(), version, error);
-                    ConnectionEvaluation::rejected(version, rejection.diagnostics().to_vec())
+                Ok(planned) => ConnectionEvaluation::accepted(version, planned.planning_work),
+                Err(failure) => {
+                    let planning_work = failure.work();
+                    let rejection = command_rejection_from_planning(
+                        command.identity().clone(),
+                        version,
+                        failure.into_error(),
+                        planning_work,
+                    );
+                    ConnectionEvaluation::rejected(
+                        version,
+                        rejection.diagnostics().to_vec(),
+                        planning_work,
+                    )
                 }
             }
         };

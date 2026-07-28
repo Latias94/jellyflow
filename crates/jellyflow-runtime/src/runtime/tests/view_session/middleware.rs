@@ -533,7 +533,10 @@ fn graph_runtime_middleware_rejection_has_zero_side_effects() {
         ))
         .into_result();
 
-    assert!(result.unwrap().rejection().is_some());
+    let outcome = result.unwrap();
+    let rejection = outcome.rejection().expect("middleware rejects the command");
+    assert_eq!(rejection.planning_work().fact_reads(), 1);
+    assert_eq!(rejection.planning_work().operations_emitted(), 1);
     assert!(runtime.snapshot().unwrap().ptr_eq(&before));
     assert_eq!(runtime.history_state().unwrap().undo_len(), 0);
     assert_eq!(event_count.get(), 0);
@@ -590,7 +593,11 @@ fn stale_and_rule_rejected_commands_do_not_reach_middleware() {
         ))
         .into_result()
         .unwrap();
-    assert!(invalid.rejection().is_some());
+    let rejection = invalid
+        .rejection()
+        .expect("planner rejects invalid endpoints");
+    assert!(rejection.planning_work().fact_reads() > 0);
+    assert_eq!(rejection.planning_work().operations_emitted(), 0);
     assert_eq!(before_calls.get(), 0);
 }
 
@@ -750,6 +757,8 @@ fn assert_history_middleware_rejection(rejected_label: &'static str) {
         rejection.diagnostics()[0].key,
         "test.runtime_middleware.reject_history"
     );
+    assert_eq!(rejection.planning_work().fact_reads(), 0);
+    assert_eq!(rejection.planning_work().operations_emitted(), 0);
     assert!(before.ptr_eq(&runtime.snapshot().unwrap()));
     assert_eq!(runtime.history_state().unwrap(), history_before);
     assert_eq!(event_count.get(), 0);

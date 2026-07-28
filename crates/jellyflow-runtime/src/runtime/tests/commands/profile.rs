@@ -343,6 +343,15 @@ fn stable_port_type_changes_revalidate_existing_edges_against_final_topology() {
         rejected.rejection().unwrap().diagnostics()[0].target,
         DiagnosticTarget::Port { id } if id == ids.target_port
     ));
+    assert_eq!(
+        rejected
+            .rejection()
+            .unwrap()
+            .planning_work()
+            .operations_emitted(),
+        1,
+        "profile convergence rejection preserves work emitted before validation",
+    );
 
     let (graph, ids) = string_typed_routed_graph();
     let runtime = GraphRuntime::builder(Default::default())
@@ -535,6 +544,15 @@ fn runtime_computes_transitive_profile_type_dependency_closure() {
         rejected.rejection().unwrap().diagnostics()[0].target,
         DiagnosticTarget::Port { id } if id == ids.target_port
     ));
+    assert_eq!(
+        rejected
+            .rejection()
+            .unwrap()
+            .planning_work()
+            .operations_emitted(),
+        1,
+        "transitive profile rejection preserves the attempted connection operation",
+    );
 }
 
 #[test]
@@ -809,6 +827,7 @@ fn connection_evaluation_and_execution_observe_the_same_pure_profile_policy() {
         rejection.diagnostics()[0].target,
         evaluation.diagnostics()[0].target
     );
+    assert_eq!(rejection.planning_work(), evaluation.planning_work());
     assert!(
         query_count.get() >= 4,
         "both queries resolved both endpoint types"

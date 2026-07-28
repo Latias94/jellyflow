@@ -16,7 +16,7 @@ use crate::runtime::geometry::{EdgeEndpointPosition, HandlePosition};
 use crate::runtime::graph_runtime::{
     CreateFromWireCandidates, CreateFromWireQueryError, EdgeInstanceKey, GraphRuntimeError,
     GraphRuntimePolicy, GraphSnapshot, GraphVersion, NodeLifetimeKey, PortConnectionDragIntent,
-    PortInstanceKey,
+    PortConnectionDragQueryOutcome, PortInstanceKey,
 };
 use crate::runtime::unwind::{PanicPayload, resume};
 use crate::runtime::view_session::{
@@ -788,8 +788,16 @@ impl WeakViewSession {
         let policy = self.graph_policy()?;
         let drag_intent = self
             .port_connection_drag_intent(source.instance())?
-            .into_outcome()
-            .ok_or(ViewSessionError::StaleInteractionFacts)?;
+            .into_outcome();
+        let drag_intent = match drag_intent {
+            PortConnectionDragQueryOutcome::Ready(intent) => intent,
+            PortConnectionDragQueryOutcome::Foreign => {
+                return Err(ViewSessionError::ForeignInteractionFacts);
+            }
+            PortConnectionDragQueryOutcome::Stale => {
+                return Err(ViewSessionError::StaleInteractionFacts);
+            }
+        };
         keyboard_connection_start_from_facts(
             provenance,
             &snapshot,

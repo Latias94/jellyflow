@@ -71,6 +71,7 @@ pub(crate) fn port_connection_drag_intent_by_id(
 ) -> Result<PortConnectionDragIntent, ViewSessionError> {
     view.port_connection_drag_intent(current_port_instance(view, port))?
         .into_outcome()
+        .ready()
         .ok_or(ViewSessionError::StaleInteractionFacts)
 }
 
