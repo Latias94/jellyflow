@@ -668,7 +668,7 @@ impl OpenGpuiSceneHost {
         let window_cleanup_required = self.owns_window_resources();
         self.interaction_owner
             .prepare_terminal(window_cleanup_required);
-        self.discard_pending_node_size_submission();
+        self.content_sizes.clear();
         self.discard_frame_transaction();
         self.scene_origin = None;
         self.scene_transform = None;
@@ -688,6 +688,7 @@ impl OpenGpuiSceneHost {
 impl Drop for OpenGpuiSceneHost {
     fn drop(&mut self) {
         let completed = self.commands.terminate_dropped();
+        self.content_sizes.clear();
         self.discard_frame_transaction();
         let resolutions = self.handle_completed_commands(completed);
         let mounted = self.close_all_instances(ViewCloseReason::HostClosed);

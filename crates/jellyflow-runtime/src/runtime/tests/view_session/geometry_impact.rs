@@ -41,7 +41,15 @@ fn layout_for(frame: &AdapterFrame, node: NodeId) -> NodeLayout {
         .iter()
         .find(|record| record.id() == node)
         .expect("fixture node is materialized");
-    let canvas = record.bounds();
+    layout_for_bounds(frame, node, record.bounds())
+}
+
+fn layout_for_bounds(frame: &AdapterFrame, node: NodeId, canvas: CanvasRect) -> NodeLayout {
+    let record = frame
+        .nodes()
+        .iter()
+        .find(|record| record.id() == node)
+        .expect("fixture node is materialized");
     let transform = frame.transform();
     let origin = transform
         .screen_point_for_canvas(canvas.origin)
@@ -149,6 +157,10 @@ fn runtime_patch_geometry_impact_covers_payload_move_size_and_topology() {
     );
     assert!(!size.geometry_impact().is_global());
     assert!(size.geometry_impact().nodes().contains(&ids.target));
+    assert!(
+        size.geometry_impact()
+            .retains_last_complete_layout(ids.target)
+    );
 
     let topology = applied_patch(
         &runtime,
@@ -265,6 +277,192 @@ fn same_frame_applied_command_stales_only_intersecting_candidate() {
     assert_eq!(work.layout().layouts_stale(), 1);
     assert_eq!(work.layout().impact_candidates_checked(), 2);
     assert_eq!(work.layout().impact_candidates_invalidated(), 1);
+}
+
+#[test]
+fn same_frame_size_command_keeps_complete_geometry_until_refresh_publication() {
+    let (graph, ids) = graph_with_routed_edge();
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .unwrap();
+    let session = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+
+    let initial = session.frame(request()).unwrap();
+    let collector = initial.collector();
+    for node in initial.nodes() {
+        collector.layout(layout_for(&initial, node.id())).unwrap();
+    }
+    session
+        .submit_feedback(collector.finish().unwrap())
+        .unwrap();
+    let before = session.geometry_snapshot().unwrap();
+    let before_source = before.node(ids.source).unwrap().clone();
+    let before_port = before.port(ids.source_port).unwrap().clone();
+    let before_route = before.route(ids.edge).unwrap().clone();
+
+    let stale_frame = session.frame(request()).unwrap();
+    let collector = stale_frame.collector();
+    for node in stale_frame.nodes() {
+        collector
+            .layout(layout_for(&stale_frame, node.id()))
+            .unwrap();
+    }
+    let command = GraphCommand::set_node_size(
+        stale_frame.graph_version(),
+        ids.source,
+        Some(CanvasSize {
+            width: 220.0,
+            height: 140.0,
+        }),
+    );
+    collector.command(command).unwrap();
+    let receipt = session
+        .submit_feedback(collector.finish().unwrap())
+        .unwrap();
+
+    assert_eq!(
+        receipt
+            .layout_receipts()
+            .find(|layout| layout.node() == ids.source)
+            .unwrap()
+            .status()
+            .unwrap(),
+        LayoutNodeStatus::Stale
+    );
+    let pending = session.geometry_snapshot().unwrap();
+    assert_eq!(pending.node(ids.source), Some(&before_source));
+    assert_eq!(pending.port(ids.source_port), Some(&before_port));
+    assert_eq!(pending.route(ids.edge), Some(&before_route));
+
+    let invalid_frame = session.frame(request()).unwrap();
+    let collector = invalid_frame.collector();
+    for node in invalid_frame.nodes() {
+        let layout = if node.id() == ids.source {
+            let mut bounds = node.bounds();
+            bounds.size.width = -1.0;
+            layout_for_bounds(&invalid_frame, node.id(), bounds)
+        } else {
+            layout_for(&invalid_frame, node.id())
+        };
+        collector.layout(layout).unwrap();
+    }
+    let invalid_receipt = session
+        .submit_feedback(collector.finish().unwrap())
+        .unwrap();
+    assert_eq!(
+        invalid_receipt
+            .layout_receipts()
+            .find(|layout| layout.node() == ids.source)
+            .unwrap()
+            .status()
+            .unwrap(),
+        LayoutNodeStatus::InvalidBounds
+    );
+    let still_pending = session.geometry_snapshot().unwrap();
+    assert_eq!(still_pending.node(ids.source), Some(&before_source));
+    assert_eq!(still_pending.port(ids.source_port), Some(&before_port));
+    assert_eq!(still_pending.route(ids.edge), Some(&before_route));
+
+    let replacement_frame = session.frame(request()).unwrap();
+    let collector = replacement_frame.collector();
+    for node in replacement_frame.nodes() {
+        let layout = if node.id() == ids.source {
+            let mut bounds = node.bounds();
+            bounds.size = CanvasSize {
+                width: 220.0,
+                height: 140.0,
+            };
+            layout_for_bounds(&replacement_frame, node.id(), bounds)
+        } else {
+            layout_for(&replacement_frame, node.id())
+        };
+        collector.layout(layout).unwrap();
+    }
+    session
+        .submit_feedback(collector.finish().unwrap())
+        .unwrap();
+
+    let replacement = session.geometry_snapshot().unwrap();
+    assert_eq!(
+        replacement.node(ids.source).unwrap().bounds().size,
+        CanvasSize {
+            width: 220.0,
+            height: 140.0,
+        }
+    );
+    assert_ne!(replacement.port(ids.source_port), Some(&before_port));
+    assert_ne!(replacement.route(ids.edge), Some(&before_route));
+}
+
+#[test]
+fn non_size_layout_impact_poisoning_is_order_independent_across_frames() {
+    for size_first in [true, false] {
+        let (graph, ids) = graph_with_routed_edge();
+        let runtime = GraphRuntime::builder(Default::default())
+            .build(graph)
+            .unwrap();
+        let session = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+        let initial = session.frame(request()).unwrap();
+        let collector = initial.collector();
+        for node in initial.nodes() {
+            collector.layout(layout_for(&initial, node.id())).unwrap();
+        }
+        session
+            .submit_feedback(collector.finish().unwrap())
+            .unwrap();
+
+        let resize = |runtime: &GraphRuntime| {
+            applied_patch(
+                runtime,
+                GraphCommand::set_node_size(
+                    runtime.snapshot().unwrap().version(),
+                    ids.source,
+                    Some(CanvasSize {
+                        width: 220.0,
+                        height: 140.0,
+                    }),
+                ),
+            );
+        };
+        let change_data = |runtime: &GraphRuntime| {
+            applied_patch(
+                runtime,
+                GraphCommand::set_node_data(
+                    runtime.snapshot().unwrap().version(),
+                    ids.source,
+                    serde_json::json!({ "expanded": true }),
+                ),
+            );
+        };
+        if size_first {
+            resize(&runtime);
+            change_data(&runtime);
+        } else {
+            change_data(&runtime);
+            resize(&runtime);
+        }
+
+        let invalid_frame = session.frame(request()).unwrap();
+        let collector = invalid_frame.collector();
+        for node in invalid_frame.nodes() {
+            let layout = if node.id() == ids.source {
+                let mut bounds = node.bounds();
+                bounds.size.width = -1.0;
+                layout_for_bounds(&invalid_frame, node.id(), bounds)
+            } else {
+                layout_for(&invalid_frame, node.id())
+            };
+            collector.layout(layout).unwrap();
+        }
+        session
+            .submit_feedback(collector.finish().unwrap())
+            .unwrap();
+
+        let withdrawn = session.geometry_snapshot().unwrap();
+        assert!(!withdrawn.node(ids.source).unwrap().is_fresh());
+        assert!(withdrawn.port(ids.source_port).is_none());
+        assert!(withdrawn.route(ids.edge).is_none());
+    }
 }
 
 #[test]

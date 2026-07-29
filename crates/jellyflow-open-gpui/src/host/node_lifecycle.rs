@@ -23,7 +23,6 @@ use crate::registry::{
 };
 use crate::scale_policy::OpenGpuiNodeScaleState;
 use crate::semantic_zoom::{OpenGpuiNodePresentation, OpenGpuiSemanticZoomState};
-use crate::size_policy::{OpenGpuiNodeSizeEpoch, OpenGpuiNodeSizeState};
 
 use super::OpenGpuiSceneHost;
 use super::diagnostics::{OpenGpuiSceneHostDiagnosticKind, binding_diagnostic, mount_diagnostic};
@@ -44,8 +43,6 @@ pub(super) struct MountedNode {
     pub(super) semantic_zoom: OpenGpuiSemanticZoomState,
     pub(super) registration_policy: OpenGpuiNodeRegistrationPolicy,
     pub(super) scale_state: OpenGpuiNodeScaleState,
-    pub(super) size_state: OpenGpuiNodeSizeState,
-    pub(super) content_epoch: u64,
     pub(super) binding_revision: jellyflow_runtime::graph::GraphRevision,
     pub(super) accessible_name: String,
     pub(super) selected: bool,
@@ -199,17 +196,11 @@ impl OpenGpuiSceneHost {
             preparation.insert_mount(frame_node.instance().clone(), mounted);
         }
         let previous_geometry = self.view.geometry_snapshot().ok();
-        let input = RetainedFrameReconcileInput::new(
-            frame,
-            &self.view,
-            zoom,
-            previous_geometry.as_ref(),
-            measurements,
-        );
+        let input =
+            RetainedFrameReconcileInput::new(frame, &self.view, zoom, previous_geometry.as_ref());
         let RetainedFrameReconcileReceipt {
             releases,
             binding_failures,
-            measurement_errors,
             panic,
         } = self
             .retained_nodes
@@ -221,11 +212,12 @@ impl OpenGpuiSceneHost {
             ));
             cx.notify();
         }
-        for error in measurement_errors {
-            self.record_measurement_failure(error);
-        }
         for release in releases {
             retired_nodes.push(self.settle_release(release));
+        }
+        if panic.is_none() {
+            self.synchronize_content_size_mounts();
+            self.activate_content_size_measurements(measurements);
         }
         if panic.is_none() {
             self.interaction_owner.observe_materialized_frame(
@@ -324,9 +316,8 @@ impl OpenGpuiSceneHost {
         {
             return Ok(false);
         }
-        let invalidated_content = self
-            .retained_nodes
-            .invalidate_mount_content(instance, mount);
+        let (invalidated_content, effects) = self.content_sizes.invalidate_content(instance, mount);
+        self.apply_content_size_effects(effects);
         debug_assert!(invalidated_content);
         let invalidated = self.view.invalidate_node_layout(instance)?;
         if invalidated {
@@ -419,12 +410,6 @@ impl OpenGpuiSceneHost {
             semantic_zoom.install_application_overview(overview);
         }
         let scale_state = OpenGpuiNodeScaleState::new(registration_policy.scale_policy(), zoom);
-        let size_state = OpenGpuiNodeSizeState::new(
-            OpenGpuiNodeSizeEpoch::new(0, self.adapter_environment_epoch),
-            semantic_zoom.canonical_size(),
-        )
-        .expect("frame geometry always has a positive finite canonical node size");
-
         construction.complete(MountedNode {
             view,
             content_kind,
@@ -435,8 +420,6 @@ impl OpenGpuiSceneHost {
             semantic_zoom,
             registration_policy,
             scale_state,
-            size_state,
-            content_epoch: 0,
             binding_revision: frame.binding_revision(),
             accessible_name,
             selected: frame.selected(),
@@ -546,6 +529,10 @@ impl OpenGpuiSceneHost {
     }
 
     fn settle_release(&mut self, mut release: RetainedNodeRelease) -> MountedNode {
+        let effects = self
+            .content_sizes
+            .retire_mount(&release.instance, release.mount());
+        self.apply_content_size_effects(effects);
         if release.kind == RetainedNodeReleaseKind::HardRetirement {
             self.interaction_owner.cancel_scene_owner_deferred(
                 &release.instance,

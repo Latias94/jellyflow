@@ -1,4 +1,5 @@
 mod connection;
+mod content_size_submission_owner;
 mod diagnostics;
 mod edge_actions;
 mod edge_layer;
@@ -23,11 +24,12 @@ pub use self::diagnostics::{
 };
 pub use self::lifecycle::OpenGpuiSceneHostCloseError;
 
+use self::content_size_submission_owner::ContentSizeSubmissionOwner;
 use self::diagnostics::OpenGpuiSceneHostWorkLedger;
 use self::edge_layer::{OpenGpuiEdgePathCache, OpenGpuiVisibleRouteCache};
+use self::frame_feedback::OpenGpuiFrameTransaction;
 #[cfg(test)]
 use self::frame_feedback::{LayoutReceiptAction, layout_receipt_action};
-use self::frame_feedback::{OpenGpuiFrameTransaction, PendingNodeSizeSubmission};
 #[cfg(test)]
 use self::lifecycle::HostLifecycleSignal;
 use self::retained_node_owner::RetainedNodeOwner;
@@ -38,7 +40,6 @@ use self::scene_render::{
 };
 
 use std::cell::RefCell;
-use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -61,9 +62,7 @@ use self::lifecycle::HostLifecycleBridge;
 use self::scene_render::OpenGpuiPreparedEdgeCache;
 
 use crate::chrome::OpenGpuiEdgePainterRegistry;
-use crate::command_journal::{
-    OpenGpuiCommandJournal, OpenGpuiCommandPrefixBarrierResult, resolve_command_tickets,
-};
+use crate::command_journal::{OpenGpuiCommandJournal, resolve_command_tickets};
 use crate::interaction::OpenGpuiOverlayInteractionBoundary;
 use crate::navigation::OpenGpuiNavigationConfig;
 use crate::panic_sink::OpenGpuiPanicAccumulator;
@@ -207,11 +206,9 @@ pub struct OpenGpuiSceneHost {
     edge_painters: Arc<OpenGpuiEdgePainterRegistry>,
     retained_nodes: RetainedNodeOwner,
     interaction_owner: interaction_session::OpenGpuiNativeInteractionOwner,
-    pending_node_size_submission: Option<PendingNodeSizeSubmission>,
-    ready_node_size_prefixes: VecDeque<OpenGpuiCommandPrefixBarrierResult>,
+    content_sizes: ContentSizeSubmissionOwner,
     scene_origin: Option<open_gpui::Point<Pixels>>,
     scene_transform: Option<ViewportTransform>,
-    adapter_environment_epoch: u64,
     terminal_reason: Option<ViewCloseReason>,
     pending_terminal_panics: OpenGpuiPanicAccumulator,
     window_owner: Option<OpenGpuiSceneHostWindowOwner>,
@@ -311,11 +308,9 @@ impl OpenGpuiSceneHost {
             interaction_owner: interaction_session::OpenGpuiNativeInteractionOwner::new(
                 canvas_interaction,
             ),
-            pending_node_size_submission: None,
-            ready_node_size_prefixes: VecDeque::new(),
+            content_sizes: ContentSizeSubmissionOwner::default(),
             scene_origin: None,
             scene_transform: None,
-            adapter_environment_epoch: 0,
             terminal_reason: None,
             pending_terminal_panics: OpenGpuiPanicAccumulator::default(),
             window_owner: None,
@@ -705,7 +700,8 @@ impl OpenGpuiSceneHost {
     ) -> Result<bool, ViewSessionError> {
         let changed = self.view.set_adapter_environment(environment)?;
         if changed {
-            self.adapter_environment_epoch = self.adapter_environment_epoch.saturating_add(1);
+            let effects = self.content_sizes.advance_environment();
+            self.apply_content_size_effects(effects);
             cx.notify();
         }
         Ok(changed)
@@ -829,6 +825,7 @@ impl Render for OpenGpuiSceneHost {
             .set_focus_handle(focus_handle.clone());
         self.interaction_owner
             .schedule_pending_native_drain(window, cx);
+        self.observe_content_size_mutation(cx);
         let superseded = self.abort_frame_transaction(
             "native frame was superseded before prepaint submission".to_owned(),
         );
@@ -852,7 +849,7 @@ impl Render for OpenGpuiSceneHost {
             frame.nodes(),
             frame.transform(),
             presentation_offsets,
-            self.adapter_environment_epoch,
+            self.content_sizes.environment_epoch(),
         ));
         self.reconcile_frame(
             frame.nodes(),
@@ -863,8 +860,8 @@ impl Render for OpenGpuiSceneHost {
             window,
             cx,
         );
-        self.process_one_ready_node_size_prefix(cx);
-        self.schedule_pending_node_size_prefix(cx);
+        self.process_one_ready_content_size_prefix(cx);
+        self.schedule_content_size_prefix(cx);
         let command_batch = match self.commands.collect_next_batch(&collector) {
             Ok(batch) => batch,
             Err(error) => {

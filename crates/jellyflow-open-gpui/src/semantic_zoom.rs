@@ -379,6 +379,10 @@ impl OpenGpuiSemanticZoomState {
         self.canonical_origin
     }
 
+    pub(crate) fn expected_layout_generation(&self) -> u64 {
+        self.expected_layout_generation
+    }
+
     pub(crate) fn install_application_overview(&mut self, overview: AnyView) {
         self.application_overview = Some(overview);
     }

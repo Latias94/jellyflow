@@ -1,12 +1,10 @@
-use std::collections::{BTreeMap, BTreeSet};
-use std::rc::Rc;
-
-use jellyflow_core::{NodeId, PortId};
+use jellyflow_core::{CanvasSize, NodeId, PortId};
 use jellyflow_runtime::{
     graph::{DocumentEpoch, GraphRevision, PortInstanceKey},
     view::{FrameNode, GeometrySnapshot, NodeInstanceKey, ViewSession},
 };
 use open_gpui::{Entity, Window};
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::activity::{
     OpenGpuiActivityCoordinator, OpenGpuiActivityCoordinatorStats, OpenGpuiNodeActivityRegistry,
@@ -15,8 +13,12 @@ use crate::binding::{
     OpenGpuiBindingAdvance, OpenGpuiMountCapability, OpenGpuiNodeBinding, OpenGpuiNodeBindingError,
 };
 use crate::panic_sink::OpenGpuiPanicAccumulator;
-use crate::port_handle::{OpenGpuiMeasurementError, OpenGpuiPendingMeasurements};
+use crate::port_handle::{
+    OpenGpuiGraphPresentationSource, OpenGpuiMeasurementError, OpenGpuiMeasurementSink,
+};
+use crate::registry::OpenGpuiNodeRegistrationPolicy;
 use crate::semantic_zoom::OpenGpuiNodePresentation;
+use crate::size_policy::OpenGpuiNodeSizePolicy;
 
 use super::OpenGpuiSceneHost;
 use super::diagnostics::OpenGpuiSceneHostWorkLedger;
@@ -46,6 +48,16 @@ pub(super) struct RetainedNodeOwner {
 pub(super) struct RetainedNodeOwnerSnapshot {
     pub(super) mounts: RetainedMountSnapshot,
     pub(super) activity: OpenGpuiActivityCoordinatorStats,
+}
+
+#[derive(Clone)]
+pub(super) struct RetainedContentSizeSource {
+    pub(super) instance: NodeInstanceKey,
+    pub(super) mount: OpenGpuiMountCapability,
+    pub(super) measurement: OpenGpuiMeasurementSink,
+    pub(super) presentation: OpenGpuiGraphPresentationSource,
+    pub(super) registration_policy: OpenGpuiNodeRegistrationPolicy,
+    pub(super) canonical_size: CanvasSize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -240,7 +252,6 @@ pub(super) struct RetainedFrameReconcileInput<'a> {
     view: &'a ViewSession,
     zoom: f32,
     previous_geometry: Option<&'a GeometrySnapshot>,
-    measurements: &'a Rc<OpenGpuiPendingMeasurements>,
 }
 
 impl<'a> RetainedFrameReconcileInput<'a> {
@@ -249,14 +260,12 @@ impl<'a> RetainedFrameReconcileInput<'a> {
         view: &'a ViewSession,
         zoom: f32,
         previous_geometry: Option<&'a GeometrySnapshot>,
-        measurements: &'a Rc<OpenGpuiPendingMeasurements>,
     ) -> Self {
         Self {
             frame,
             view,
             zoom,
             previous_geometry,
-            measurements,
         }
     }
 }
@@ -269,7 +278,6 @@ pub(super) struct RetainedBindingFailure {
 pub(super) struct RetainedFrameReconcileReceipt {
     pub(super) releases: Vec<RetainedNodeRelease>,
     pub(super) binding_failures: Vec<RetainedBindingFailure>,
-    pub(super) measurement_errors: Vec<OpenGpuiMeasurementError>,
     pub(super) panic: Option<Box<dyn std::any::Any + Send + 'static>>,
 }
 
@@ -411,7 +419,6 @@ impl RetainedNodeOwner {
         debug_assert!(preparation.missing_frame_indices.is_empty());
         let mut releases = Vec::new();
         let mut binding_failures = Vec::new();
-        let mut measurement_errors = Vec::new();
 
         let reconcile = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.store.begin_reconcile();
@@ -455,17 +462,6 @@ impl RetainedNodeOwner {
                         }
                     }
                 }
-                let mounted = self
-                    .store
-                    .get(instance)
-                    .expect("a reconciled retained mount remains active");
-                if let Err(error) = mounted.measurement.activate(
-                    input.measurements,
-                    mounted.graph_measurement_source(),
-                    mounted.content_epoch,
-                ) {
-                    measurement_errors.push(error);
-                }
             }
 
             debug_assert!(preparation.new_mounts.is_empty());
@@ -498,7 +494,6 @@ impl RetainedNodeOwner {
         RetainedFrameReconcileReceipt {
             releases,
             binding_failures,
-            measurement_errors,
             panic,
         }
     }
@@ -581,10 +576,6 @@ impl RetainedNodeOwner {
         self.store.get(instance)
     }
 
-    pub(super) fn get_mut(&mut self, instance: &NodeInstanceKey) -> Option<&mut MountedNode> {
-        self.store.get_mut(instance)
-    }
-
     pub(super) fn active_in_order(&self) -> impl Iterator<Item = (&NodeInstanceKey, &MountedNode)> {
         self.store.active_in_order()
     }
@@ -636,19 +627,64 @@ impl RetainedNodeOwner {
             .then(|| mounted.activity.clone())
     }
 
-    pub(super) fn invalidate_mount_content(
-        &mut self,
+    pub(super) fn content_size_sources(&self) -> Vec<RetainedContentSizeSource> {
+        self.store.iter().map(Self::content_size_source).collect()
+    }
+
+    pub(super) fn active_content_size_sources(&self) -> Vec<RetainedContentSizeSource> {
+        self.store
+            .active_in_order()
+            .map(Self::content_size_source)
+            .collect()
+    }
+
+    pub(super) fn binding_for_mount(
+        &self,
+        instance: &NodeInstanceKey,
+        mount: &OpenGpuiMountCapability,
+    ) -> Option<Entity<OpenGpuiNodeBinding>> {
+        let mounted = self.store.get(instance)?;
+        mounted
+            .mount
+            .is_same_mount(mount)
+            .then(|| mounted.binding.clone())
+            .flatten()
+    }
+
+    pub(super) fn contains_mount(
+        &self,
         instance: &NodeInstanceKey,
         mount: &OpenGpuiMountCapability,
     ) -> bool {
-        let Some(mounted) = self.store.get_mut(instance) else {
+        self.store
+            .get(instance)
+            .is_some_and(|mounted| mounted.mount.is_same_mount(mount))
+    }
+
+    pub(super) fn has_complete_content_size_publication(
+        &self,
+        instance: &NodeInstanceKey,
+        mount: &OpenGpuiMountCapability,
+        desired_size: CanvasSize,
+        policy: OpenGpuiNodeSizePolicy,
+        geometry: &GeometrySnapshot,
+    ) -> bool {
+        let Some(mounted) = self.store.get(instance) else {
             return false;
         };
-        if !mounted.mount.is_same_mount(mount) {
+        if !mounted.mount.is_same_mount(mount)
+            || !policy.sizes_are_equivalent(mounted.semantic_zoom.canonical_size(), desired_size)
+        {
             return false;
         }
-        mounted.content_epoch = mounted.content_epoch.saturating_add(1);
-        true
+        geometry.node(instance.node()).is_some_and(|published| {
+            published.is_fresh()
+                && published.lifetime() == instance.lifetime()
+                && published.renderer() == instance.renderer()
+                && published.layout_generation()
+                    == mounted.semantic_zoom.expected_layout_generation()
+                && policy.sizes_are_equivalent(published.bounds().size, desired_size)
+        })
     }
 
     pub(super) fn take_active_measurement_errors(&self) -> Vec<OpenGpuiMeasurementError> {
@@ -720,17 +756,7 @@ impl RetainedNodeOwner {
                 .remember_detail_geometry(frame.id(), geometry);
         }
 
-        let previous_size = mounted.semantic_zoom.canonical_size();
         mounted.semantic_zoom.reconcile(frame, document_epoch);
-        let canonical_size = mounted.semantic_zoom.canonical_size();
-        if canonical_size != previous_size
-            && !mounted.size_state.recognizes_authoritative_size(
-                mounted.registration_policy.size_policy(),
-                canonical_size,
-            )
-        {
-            mounted.content_epoch = mounted.content_epoch.saturating_add(1);
-        }
         mounted
             .scale_state
             .reconcile(mounted.registration_policy.scale_policy(), zoom);
@@ -739,6 +765,19 @@ impl RetainedNodeOwner {
             return None;
         }
         mounted.binding.clone()
+    }
+
+    fn content_size_source(
+        (instance, mounted): (&NodeInstanceKey, &MountedNode),
+    ) -> RetainedContentSizeSource {
+        RetainedContentSizeSource {
+            instance: instance.clone(),
+            mount: mounted.mount.clone(),
+            measurement: mounted.measurement.clone(),
+            presentation: mounted.graph_measurement_source(),
+            registration_policy: mounted.registration_policy,
+            canonical_size: mounted.semantic_zoom.canonical_size(),
+        }
     }
 
     pub(super) fn retire_instance(

@@ -106,69 +106,6 @@ fn dropping_frame_transaction_resolves_collected_ticket_once() {
 }
 
 #[test]
-fn dropping_frame_transaction_defers_internal_origin_for_host_settlement() {
-    let runtime = GraphRuntime::builder(catalog())
-        .build(unconnected_graph())
-        .expect("valid transaction graph");
-    let view = runtime
-        .attach_view(ViewSessionOptions::default())
-        .expect("transaction view");
-    let journal = OpenGpuiCommandJournal::new();
-    let version = runtime
-        .snapshot()
-        .expect("internal transaction graph version")
-        .version();
-    journal
-        .enqueue_detached(
-            GraphCommand::set_node_data(
-                version,
-                NodeId::from_u128(10),
-                serde_json::json!({ "transaction": "deferred-internal" }),
-            ),
-            OpenGpuiCommandOrigin::NodeSizes {
-                tickets: Vec::new(),
-            },
-        )
-        .expect("queued internal transaction command");
-    let frame = view
-        .frame(FrameRequest::new(
-            viewport(),
-            RendererStamp::new(RENDERER, 1),
-        ))
-        .expect("transaction frame");
-    let collector = frame.collector();
-    let batch = journal
-        .collect_next_batch(&collector)
-        .expect("collect internal transaction batch");
-    let transaction = OpenGpuiFrameTransaction::new(
-        collector,
-        Rc::new(OpenGpuiPendingMeasurements::new(
-            frame.nodes(),
-            frame.transform(),
-            BTreeMap::new(),
-            0,
-        )),
-        Rc::clone(&journal),
-        batch,
-    );
-
-    drop(transaction);
-
-    let completed = journal.take_deferred_completions();
-    assert_eq!(completed.len(), 1);
-    assert!(matches!(
-        completed[0].origin,
-        OpenGpuiCommandOrigin::NodeSizes { .. }
-    ));
-    assert!(matches!(
-        completed[0].result,
-        Err(crate::command_journal::OpenGpuiCommandTicketError::HostDropped)
-    ));
-    assert!(journal.take_deferred_completions().is_empty());
-    assert_eq!(runtime.snapshot().expect("unsubmitted graph").revision(), 0);
-}
-
-#[test]
 fn unwind_after_frame_state_take_terminalizes_batch_and_allows_retry() {
     let (runtime, view, journal, mut ticket, transaction) = command_transaction("prepare-unwind");
     transaction.inject_fault(OpenGpuiFrameTransactionFault::AfterStateTake);
@@ -489,6 +426,26 @@ fn managed_mutation_maps_host_notification_unwind_to_dispatch_uncertainty(
         ManagedMutationPostAdmissionFault::HostNotificationUnwound,
         "host-notification-unwind",
     );
+}
+
+#[open_gpui::test]
+fn managed_mount_set_retires_when_its_primary_member_retires(cx: &mut open_gpui::TestAppContext) {
+    assert_managed_mount_set_terminal(cx, ManagedMountSetTerminalScenario::Retire(0));
+}
+
+#[open_gpui::test]
+fn managed_mount_set_retires_when_a_non_primary_member_retires(cx: &mut open_gpui::TestAppContext) {
+    assert_managed_mount_set_terminal(cx, ManagedMountSetTerminalScenario::Retire(1));
+}
+
+#[open_gpui::test]
+fn managed_mount_set_close_wins_after_another_member_retires(cx: &mut open_gpui::TestAppContext) {
+    assert_managed_mount_set_terminal(cx, ManagedMountSetTerminalScenario::RetireThenClose);
+}
+
+#[open_gpui::test]
+fn managed_mount_set_close_wins_before_another_member_retires(cx: &mut open_gpui::TestAppContext) {
+    assert_managed_mount_set_terminal(cx, ManagedMountSetTerminalScenario::CloseThenRetire);
 }
 
 #[open_gpui::test]
@@ -979,7 +936,7 @@ fn install_collected_transaction(
         frame.nodes(),
         frame.transform(),
         BTreeMap::new(),
-        host.adapter_environment_epoch,
+        host.content_sizes.environment_epoch(),
     ));
     let transaction = Rc::new(OpenGpuiFrameTransaction::new(
         collector,
@@ -1053,6 +1010,130 @@ fn observe_managed_data_mutation(
         let authoring = binding.authoring().expect("live managed observation");
         mutation.observe(&authoring, |intent| authoring.node().data == *intent, cx)
     })
+}
+
+#[derive(Clone, Copy)]
+enum ManagedMountSetTerminalScenario {
+    Retire(usize),
+    RetireThenClose,
+    CloseThenRetire,
+}
+
+fn assert_managed_mount_set_terminal(
+    cx: &mut open_gpui::TestAppContext,
+    scenario: ManagedMountSetTerminalScenario,
+) {
+    let (_runtime, host, cx) = mount_gesture_scene_for_graph(cx, unconnected_graph());
+    draw(cx);
+    let primary_node = NodeId::from_u128(10);
+    let secondary_node = NodeId::from_u128(11);
+    let primary_binding = mounted_binding(cx, &host, primary_node);
+    let secondary_binding = mounted_binding(cx, &host, secondary_node);
+    let owners = vec![
+        cx.read_entity(&primary_binding, |binding, _| {
+            binding.managed_mutation_owner()
+        }),
+        cx.read_entity(&secondary_binding, |binding, _| {
+            binding.managed_mutation_owner()
+        }),
+    ];
+    let primary_owner = owners[0].clone();
+    let secondary_owner = owners[1].clone();
+    let mut mutation = OpenGpuiManagedMutation::mount_set(owners)
+        .expect("two exact mounts from one host form one mutation owner set");
+    let intent = serde_json::json!({ "managed": "mount-set-retirement" });
+
+    let settlement = cx.update_entity(&primary_binding, |binding, cx| {
+        let authoring = binding.authoring().expect("live mount-set authoring");
+        let command =
+            GraphCommand::set_node_data(authoring.version(), authoring.node_id(), intent.clone());
+        mutation
+            .dispatch(
+                authoring,
+                command,
+                MutationRequest::new(intent.clone()),
+                MutationLayoutEffect::Preserve,
+                cx,
+            )
+            .expect("mount-set mutation dispatch")
+    });
+    assert_eq!(
+        settlement,
+        MutationSettlement::Pending {
+            awaiting_authority: false,
+        }
+    );
+    cx.read_entity(&host, |host, _| {
+        let activity = |node| {
+            host.retained_nodes
+                .active_in_order()
+                .find(|(instance, _)| instance.node() == node)
+                .map(|(_, mounted)| {
+                    (
+                        mounted.activity.active_count(),
+                        mounted.activity.protected_count(),
+                    )
+                })
+                .expect("mount-set member remains mounted")
+        };
+        assert_eq!(activity(primary_node), (2, 1));
+        assert_eq!(activity(secondary_node), (1, 1));
+        let resources = host.resource_snapshot();
+        assert_eq!(resources.protected_instances(), 2);
+        assert_eq!(resources.protected_leases(), 2);
+    });
+
+    match scenario {
+        ManagedMountSetTerminalScenario::Retire(owner) => match owner {
+            0 => primary_owner.retire_mount_for_test(),
+            1 => secondary_owner.retire_mount_for_test(),
+            _ => panic!("mount-set retirement owner is out of range"),
+        },
+        ManagedMountSetTerminalScenario::RetireThenClose => {
+            primary_owner.retire_mount_for_test();
+            secondary_owner.close_mount_for_test(ViewCloseReason::HostClosed);
+        }
+        ManagedMountSetTerminalScenario::CloseThenRetire => {
+            secondary_owner.close_mount_for_test(ViewCloseReason::HostClosed);
+            primary_owner.retire_mount_for_test();
+        }
+    }
+    let settlement = cx.update_entity(&primary_binding, |binding, cx| match binding.authoring() {
+        Ok(authoring) => mutation.observe(&authoring, |_| false, cx),
+        Err(error) => mutation.observe_authoring_error(&error),
+    });
+    match scenario {
+        ManagedMountSetTerminalScenario::Retire(_) => {
+            assert!(matches!(settlement, MutationSettlement::Retired { .. }));
+        }
+        ManagedMountSetTerminalScenario::RetireThenClose
+        | ManagedMountSetTerminalScenario::CloseThenRetire => {
+            assert!(matches!(
+                settlement,
+                MutationSettlement::Closed {
+                    reason: ViewCloseReason::HostClosed,
+                    ..
+                }
+            ));
+        }
+    }
+    assert_eq!(mutation.active_intent(), Some(&intent));
+    cx.read_entity(&host, |host, _| {
+        for node in [primary_node, secondary_node] {
+            let mounted = host
+                .retained_nodes
+                .active_in_order()
+                .find(|(instance, _)| instance.node() == node)
+                .map(|(_, mounted)| mounted)
+                .expect("retired mutation member remains retained until host reconciliation");
+            assert_eq!(mounted.activity.active_count(), 0);
+            assert_eq!(mounted.activity.protected_count(), 0);
+        }
+        let resources = host.resource_snapshot();
+        assert_eq!(resources.protected_instances(), 0);
+        assert_eq!(resources.protected_leases(), 0);
+        assert_eq!(host.commands.capacity_usage(), (0, 0, 0));
+    });
 }
 
 fn assert_managed_post_admission_unwind(
@@ -1177,7 +1258,7 @@ fn collect_managed_transaction(host: &OpenGpuiSceneHost) -> OpenGpuiFrameTransac
         frame.nodes(),
         frame.transform(),
         BTreeMap::new(),
-        host.adapter_environment_epoch,
+        host.content_sizes.environment_epoch(),
     ));
     OpenGpuiFrameTransaction::new(
         collector,

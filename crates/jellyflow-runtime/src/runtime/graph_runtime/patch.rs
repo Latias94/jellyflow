@@ -104,6 +104,7 @@ pub struct GeometryImpact {
     ports: BTreeSet<PortId>,
     incident_edges: BTreeSet<EdgeId>,
     translation_only_nodes: BTreeSet<NodeId>,
+    retained_complete_layout_nodes: BTreeSet<NodeId>,
 }
 
 impl GeometryImpact {
@@ -156,6 +157,23 @@ impl GeometryImpact {
                 .any(|edge| self.incident_edges.contains(&edge))
     }
 
+    pub(crate) fn preserves_last_complete_layout(
+        &self,
+        node: NodeId,
+        ports: impl IntoIterator<Item = PortId>,
+        incident_edges: impl IntoIterator<Item = EdgeId>,
+    ) -> bool {
+        self.retains_last_complete_layout(node)
+            && !ports.into_iter().any(|port| self.ports.contains(&port))
+            && !incident_edges
+                .into_iter()
+                .any(|edge| self.incident_edges.contains(&edge))
+    }
+
+    pub(crate) fn retains_last_complete_layout(&self, node: NodeId) -> bool {
+        !self.global && self.retained_complete_layout_nodes.contains(&node)
+    }
+
     pub(crate) fn merge(&mut self, other: &Self) -> u64 {
         if self.global {
             return 0;
@@ -172,6 +190,13 @@ impl GeometryImpact {
                 }
             } else {
                 self.translation_only_nodes.remove(&node);
+            }
+            if other.retained_complete_layout_nodes.contains(&node) {
+                if inserted {
+                    self.retained_complete_layout_nodes.insert(node);
+                }
+            } else {
+                self.retained_complete_layout_nodes.remove(&node);
             }
         }
         self.ports.extend(other.ports.iter().copied());
@@ -190,6 +215,7 @@ impl GeometryImpact {
         self.ports.clear();
         self.incident_edges.clear();
         self.translation_only_nodes.clear();
+        self.retained_complete_layout_nodes.clear();
     }
 
     pub(super) fn include_nodes(&mut self, nodes: impl IntoIterator<Item = NodeId>) {
@@ -206,6 +232,10 @@ impl GeometryImpact {
 
     pub(super) fn mark_translation_only(&mut self, nodes: impl IntoIterator<Item = NodeId>) {
         self.translation_only_nodes.extend(nodes);
+    }
+
+    pub(super) fn retain_complete_layout(&mut self, nodes: impl IntoIterator<Item = NodeId>) {
+        self.retained_complete_layout_nodes.extend(nodes);
     }
 }
 

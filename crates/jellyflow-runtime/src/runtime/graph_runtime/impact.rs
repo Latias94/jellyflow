@@ -227,6 +227,8 @@ struct SessionDirectives {
     geometry_withdrawals: BTreeSet<NodeId>,
     layout_dirty_nodes: BTreeSet<NodeId>,
     translated_nodes: BTreeSet<NodeId>,
+    complete_layout_retention_candidates: BTreeSet<NodeId>,
+    complete_layout_retention_disqualifications: BTreeSet<NodeId>,
     sanitize_view_state: bool,
 }
 
@@ -315,6 +317,41 @@ fn declare_operation_impact(
     traversal: &mut ImpactTraversal<'_>,
 ) {
     match operation {
+        GraphOp::SetNodeSize { id, .. } => {
+            if !seed
+                .session
+                .complete_layout_retention_disqualifications
+                .contains(id)
+            {
+                seed.session
+                    .complete_layout_retention_candidates
+                    .insert(*id);
+            }
+        }
+        GraphOp::AddNode { id, .. }
+        | GraphOp::RemoveNode { id, .. }
+        | GraphOp::SetNodeOrigin { id, .. }
+        | GraphOp::SetNodeKind { id, .. }
+        | GraphOp::SetNodeKindVersion { id, .. }
+        | GraphOp::SetNodeSelectable { id, .. }
+        | GraphOp::SetNodeDraggable { id, .. }
+        | GraphOp::SetNodeConnectable { id, .. }
+        | GraphOp::SetNodeDeletable { id, .. }
+        | GraphOp::SetNodeParent { id, .. }
+        | GraphOp::SetNodeExtent { id, .. }
+        | GraphOp::SetNodeExpandParent { id, .. }
+        | GraphOp::SetNodePorts { id, .. }
+        | GraphOp::SetNodeHidden { id, .. }
+        | GraphOp::SetNodeCollapsed { id, .. }
+        | GraphOp::SetNodeData { id, .. } => {
+            seed.session.complete_layout_retention_candidates.remove(id);
+            seed.session
+                .complete_layout_retention_disqualifications
+                .insert(*id);
+        }
+        _ => {}
+    }
+    match operation {
         GraphOp::AddNode { id, node } => {
             seed.fact(RuntimeFactKey::Node(*id), FactChangeMask::IDENTITY);
             traversal.visit_embedded_relationships(node.ports.len());
@@ -402,7 +439,11 @@ fn declare_operation_impact(
             seed.index.refresh_incident_nodes.insert(*id);
             seed.withdraw_and_dirty(*id);
         }
-        GraphOp::SetNodeSize { id, .. } | GraphOp::SetNodeCollapsed { id, .. } => {
+        GraphOp::SetNodeSize { id, .. } => {
+            seed.fact(RuntimeFactKey::Node(*id), FactChangeMask::LAYOUT);
+            seed.session.layout_dirty_nodes.insert(*id);
+        }
+        GraphOp::SetNodeCollapsed { id, .. } => {
             seed.fact(RuntimeFactKey::Node(*id), FactChangeMask::LAYOUT);
             seed.withdraw_and_dirty(*id);
         }
@@ -620,6 +661,9 @@ fn build_session_impact(
     let mut retired_nodes = identities.retired.clone();
     let mut geometry_withdrawals = directives.geometry_withdrawals;
     let mut layout_dirty_nodes = directives.layout_dirty_nodes;
+    let complete_layout_retention_candidates = directives.complete_layout_retention_candidates;
+    let mut complete_layout_retention_disqualifications =
+        directives.complete_layout_retention_disqualifications;
     let mut route_edges = BTreeSet::new();
     let mut position_only_nodes = BTreeSet::new();
     let staged_symbol_referrers = staged_symbol_referrers(traversal, &index.symbol_ref_nodes);
@@ -653,22 +697,24 @@ fn build_session_impact(
                     }
                 }
                 geometry_withdrawals.extend(live_owners.iter().copied());
-                layout_dirty_nodes.extend(live_owners);
+                layout_dirty_nodes.extend(live_owners.iter().copied());
+                complete_layout_retention_disqualifications.extend(live_owners);
             }
             RuntimeFactKey::Edge(edge) => {
                 let records = [traversal.before_edge(edge), traversal.after_edge(edge)];
                 for current in records.into_iter().flatten() {
                     traversal.visit_affected(1);
                     for endpoint in [current.from, current.to] {
-                        affected_nodes.extend(
-                            [
-                                traversal.before_port(endpoint),
-                                traversal.after_port(endpoint),
-                            ]
-                            .into_iter()
-                            .flatten()
-                            .map(|port| port.node),
-                        );
+                        let endpoint_nodes = [
+                            traversal.before_port(endpoint),
+                            traversal.after_port(endpoint),
+                        ]
+                        .into_iter()
+                        .flatten()
+                        .map(|port| port.node)
+                        .collect::<BTreeSet<_>>();
+                        affected_nodes.extend(endpoint_nodes.iter().copied());
+                        complete_layout_retention_disqualifications.extend(endpoint_nodes);
                     }
                 }
                 if fact.change() != FactChange::Updated
@@ -684,7 +730,10 @@ fn build_session_impact(
                 ];
                 for current in records.into_iter().flatten() {
                     traversal.visit_affected(1);
-                    extend_binding_nodes(&mut affected_nodes, traversal, current);
+                    let mut binding_nodes = BTreeSet::new();
+                    extend_binding_nodes(&mut binding_nodes, traversal, current);
+                    affected_nodes.extend(binding_nodes.iter().copied());
+                    complete_layout_retention_disqualifications.extend(binding_nodes);
                     extend_binding_geometry(&mut geometry, current);
                 }
             }
@@ -698,7 +747,8 @@ fn build_session_impact(
                     referrers.extend(staged.iter().copied());
                 }
                 affected_nodes.extend(referrers.iter().copied());
-                layout_dirty_nodes.extend(referrers);
+                layout_dirty_nodes.extend(referrers.iter().copied());
+                complete_layout_retention_disqualifications.extend(referrers);
             }
             RuntimeFactKey::Import(_)
             | RuntimeFactKey::Group(_)
@@ -740,6 +790,16 @@ fn build_session_impact(
                     && !layout_dirty_nodes.contains(node)
                     && position_only_nodes.contains(node)
             }),
+    );
+    geometry.retain_complete_layout(
+        complete_layout_retention_candidates
+            .difference(&complete_layout_retention_disqualifications)
+            .filter(|node| {
+                !retired_nodes.contains(node)
+                    && !identities.added.contains(node)
+                    && !geometry_withdrawals.contains(node)
+            })
+            .copied(),
     );
     if geometry.is_global() {
         geometry.make_global();
@@ -1649,6 +1709,8 @@ mod tests {
         let mut translated_nodes = Vec::new();
         let mut route_edges = BTreeSet::new();
         let mut position_only_nodes = BTreeSet::new();
+        let mut complete_layout_retention_nodes = BTreeSet::new();
+        let mut complete_layout_retention_disqualifications = BTreeSet::new();
         let mut sanitize_view_state = false;
         let mut geometry = GeometryImpact::default();
 
@@ -1683,10 +1745,19 @@ mod tests {
                             if fields.contains("data") {
                                 layout_dirty_nodes.insert(node);
                             }
+                            if fields.contains("size") {
+                                layout_dirty_nodes.insert(node);
+                                if fields
+                                    .iter()
+                                    .all(|field| matches!(field.as_str(), "size" | "pos"))
+                                {
+                                    complete_layout_retention_nodes.insert(node);
+                                }
+                            }
                             if fields.iter().any(|field| {
                                 matches!(
                                     field.as_str(),
-                                    "origin" | "parent" | "ports" | "size" | "collapsed" | "hidden"
+                                    "origin" | "parent" | "ports" | "collapsed" | "hidden"
                                 )
                             }) {
                                 geometry_withdrawals.insert(node);
@@ -1734,6 +1805,7 @@ mod tests {
                         if after.node(&owner).is_some() {
                             geometry_withdrawals.insert(owner);
                             layout_dirty_nodes.insert(owner);
+                            complete_layout_retention_disqualifications.insert(owner);
                         }
                     }
                     if fact.change() == FactChange::Removed {
@@ -1746,7 +1818,10 @@ mod tests {
                         .into_iter()
                         .flatten()
                     {
-                        extend_oracle_edge_nodes(&mut affected_nodes, before, after, edge);
+                        let mut endpoint_nodes = BTreeSet::new();
+                        extend_oracle_edge_nodes(&mut endpoint_nodes, before, after, edge);
+                        affected_nodes.extend(endpoint_nodes.iter().copied());
+                        complete_layout_retention_disqualifications.extend(endpoint_nodes);
                         if fact.change() != FactChange::Updated
                             || fields.contains("from")
                             || fields.contains("to")
@@ -1780,7 +1855,8 @@ mod tests {
                         })
                         .collect::<BTreeSet<_>>();
                     affected_nodes.extend(referrers.iter().copied());
-                    layout_dirty_nodes.extend(referrers);
+                    layout_dirty_nodes.extend(referrers.iter().copied());
+                    complete_layout_retention_disqualifications.extend(referrers);
                 }
                 RuntimeFactKey::Group(_) => {
                     if fact.change() == FactChange::Removed {
@@ -1793,13 +1869,16 @@ mod tests {
                         .into_iter()
                         .flatten()
                     {
+                        let mut binding_nodes = BTreeSet::new();
                         extend_oracle_binding(
-                            &mut affected_nodes,
+                            &mut binding_nodes,
                             &mut geometry,
                             before,
                             after,
                             binding,
                         );
+                        affected_nodes.extend(binding_nodes.iter().copied());
+                        complete_layout_retention_disqualifications.extend(binding_nodes);
                     }
                 }
             }
@@ -1823,6 +1902,16 @@ mod tests {
                         && !layout_dirty_nodes.contains(node)
                         && position_only_nodes.contains(node)
                 }),
+        );
+        geometry.retain_complete_layout(
+            complete_layout_retention_nodes
+                .difference(&complete_layout_retention_disqualifications)
+                .filter(|node| {
+                    !retired_nodes.contains(node)
+                        && !added_nodes.contains(node)
+                        && !geometry_withdrawals.contains(node)
+                })
+                .copied(),
         );
         if geometry.is_global() {
             geometry.make_global();
@@ -2097,6 +2186,88 @@ mod tests {
             std::iter::empty(),
             std::iter::empty()
         ));
+    }
+
+    #[test]
+    fn size_and_translation_can_project_the_last_complete_layout_together() {
+        let node_id = NodeId::from_u128(0x114);
+        let before = GraphBuilder::new(GraphId::from_u128(0x115))
+            .with_node(node_id, node_at(CanvasPoint::default(), vec![]))
+            .build()
+            .expect("valid fixture graph");
+        let size = CanvasSize {
+            width: 220.0,
+            height: 140.0,
+        };
+        let transaction = GraphTransaction::from_ops([
+            GraphOp::SetNodePos {
+                id: node_id,
+                from: CanvasPoint::default(),
+                to: CanvasPoint { x: 25.0, y: 5.0 },
+            },
+            GraphOp::SetNodeSize {
+                id: node_id,
+                from: None,
+                to: Some(size),
+            },
+        ]);
+        let mut after = before.clone();
+        transaction
+            .apply_to(&mut after)
+            .expect("apply fixture transaction");
+        let index = GraphIndex::from_graph(&before);
+
+        let impact = InstalledTransactionImpact::derive(&before, &after, &index, &transaction);
+
+        assert_eq!(impact.session.translated_nodes.len(), 1);
+        assert_eq!(impact.session.layout_dirty_nodes, vec![node_id]);
+        assert!(
+            impact
+                .session
+                .geometry
+                .retains_last_complete_layout(node_id)
+        );
+        assert!(impact.session.geometry_withdrawals.is_empty());
+    }
+
+    #[test]
+    fn geometry_impact_merge_uses_a_per_node_retention_meet() {
+        let first = NodeId::from_u128(0x118);
+        let second = NodeId::from_u128(0x119);
+        let size_impact = |node| {
+            let mut impact = GeometryImpact::default();
+            impact.include_nodes([node]);
+            impact.retain_complete_layout([node]);
+            impact
+        };
+        let ordinary_impact = |node| {
+            let mut impact = GeometryImpact::default();
+            impact.include_nodes([node]);
+            impact
+        };
+
+        let mut repeated_size = size_impact(first);
+        repeated_size.merge(&size_impact(first));
+        assert!(repeated_size.retains_last_complete_layout(first));
+
+        let mut size_then_data = size_impact(first);
+        size_then_data.merge(&ordinary_impact(first));
+        assert!(!size_then_data.retains_last_complete_layout(first));
+
+        let mut data_then_size = ordinary_impact(first);
+        data_then_size.merge(&size_impact(first));
+        assert!(!data_then_size.retains_last_complete_layout(first));
+
+        let mut independent_nodes = size_impact(first);
+        independent_nodes.merge(&ordinary_impact(second));
+        assert!(independent_nodes.retains_last_complete_layout(first));
+        assert!(!independent_nodes.retains_last_complete_layout(second));
+
+        let mut global = size_impact(first);
+        let mut invalidates_all = GeometryImpact::default();
+        invalidates_all.make_global();
+        global.merge(&invalidates_all);
+        assert!(!global.retains_last_complete_layout(first));
     }
 
     #[test]

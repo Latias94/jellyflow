@@ -1923,6 +1923,7 @@ impl OpenGpuiSceneHost {
                     feedback.measurements(),
                     &disposition.accepted_content_nodes,
                 );
+                request_next_frame |= self.observe_content_size_publication_after_feedback();
             }
             OpenGpuiFrameTransactionSubmission::Failed(error) => match error {
                 super::frame_feedback::OpenGpuiFrameTransactionError::Submission(error) => {
@@ -1955,8 +1956,8 @@ impl OpenGpuiSceneHost {
         for error in measurement_errors {
             self.record_measurement_failure(error);
         }
-        self.schedule_pending_node_size_prefix(cx);
-        request_next_frame |= self.node_size_submission_needs_frame();
+        request_next_frame |= self.schedule_content_size_prefix(cx);
+        request_next_frame |= self.content_sizes.needs_frame();
         OpenGpuiPrepaintFrameOutcome {
             request_next_frame,
             resolutions,
@@ -2264,7 +2265,7 @@ impl OpenGpuiSceneHost {
                                 let completed = feedback.abort_frame_preparation(message.clone());
                                 let resolutions = host.settle_command_batch(completed);
                                 host.record_feedback_failure(None, message);
-                                host.schedule_pending_node_size_prefix(cx);
+                                host.schedule_content_size_prefix(cx);
                                 OpenGpuiPrepaintFrameOutcome {
                                     request_next_frame: true,
                                     resolutions,

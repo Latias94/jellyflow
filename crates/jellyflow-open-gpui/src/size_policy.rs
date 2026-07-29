@@ -257,6 +257,13 @@ impl OpenGpuiNodeSizePolicy {
             }),
         }
     }
+
+    pub(crate) fn sizes_are_equivalent(self, left: CanvasSize, right: CanvasSize) -> bool {
+        let epsilon = self
+            .convergence()
+            .map_or(0.0, OpenGpuiNodeSizeConvergence::epsilon_in_canvas);
+        sizes_are_equivalent(left, right, epsilon)
+    }
 }
 
 /// Invalid node-size policy or reducer configuration.
@@ -329,19 +336,6 @@ impl OpenGpuiNodeSizeCommand {
     pub const fn size(self) -> CanvasSize {
         self.size
     }
-}
-
-/// Terminal outcome for one adapter-local size ticket.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum OpenGpuiNodeSizeSettlement {
-    /// The requested size became authoritative, including a semantic no-op receipt.
-    Applied,
-    /// The graph rejected the command for a non-conflict reason.
-    Rejected,
-    /// The command lost its expected-revision race.
-    Conflict,
-    /// The owning node instance retired before the command could settle normally.
-    Retired,
 }
 
 /// Deterministic reason that content-driven sizing stopped for the current epoch.
@@ -417,7 +411,7 @@ struct PendingSizeCommand {
 /// Pure convergence state for one retained node instance.
 ///
 /// The state owns no graph, host, or framework handle. Callers map the local ticket to their
-/// command journal, then feed one terminal settlement back through [`Self::settle`].
+/// command lifecycle, then report satisfaction, definitive failure, or retirement explicitly.
 #[derive(Debug, Clone)]
 pub(crate) struct OpenGpuiNodeSizeState {
     epoch: OpenGpuiNodeSizeEpoch,
@@ -503,14 +497,10 @@ impl OpenGpuiNodeSizeState {
         policy: OpenGpuiNodeSizePolicy,
         size: CanvasSize,
     ) -> bool {
-        let Some(convergence) = policy.convergence() else {
-            return size == self.last_applied_size;
-        };
-        sizes_are_equivalent(
-            size,
-            self.last_applied_size,
-            convergence.epsilon_in_canvas(),
-        )
+        policy.sizes_are_equivalent(size, self.last_applied_size)
+            || self
+                .pending
+                .is_some_and(|pending| policy.sizes_are_equivalent(size, pending.desired_size))
     }
 
     /// Observes one content measurement taken at native 1:1 scale.
@@ -583,38 +573,53 @@ impl OpenGpuiNodeSizeState {
         self.issue(desired_size, convergence)
     }
 
-    /// Applies one terminal command outcome and optionally dispatches the latest coalesced target.
-    ///
-    /// Unknown or stale local tickets are inert. Rejected and conflicting attempts are never
-    /// replayed automatically; only a distinct stable target observed while pending can dispatch
-    /// immediately after those outcomes.
+    /// Completes one ticket after shared mutation settlement proves its target authoritative.
     #[must_use]
-    pub fn settle(
+    pub fn complete_satisfied(
         &mut self,
         policy: OpenGpuiNodeSizePolicy,
         ticket: OpenGpuiNodeSizeTicket,
-        settlement: OpenGpuiNodeSizeSettlement,
     ) -> OpenGpuiNodeSizeUpdate {
-        let Some(pending) = self.pending.filter(|pending| pending.ticket == ticket) else {
+        let Some(pending) = self.take_pending(ticket) else {
             return OpenGpuiNodeSizeUpdate::default();
         };
-        self.pending = None;
+        self.last_applied_size = pending.desired_size;
+        self.suppressed_size = None;
+        self.issue_latest(policy)
+    }
 
-        if settlement == OpenGpuiNodeSizeSettlement::Applied {
-            self.last_applied_size = pending.desired_size;
-            self.suppressed_size = None;
-        } else if matches!(
-            settlement,
-            OpenGpuiNodeSizeSettlement::Rejected | OpenGpuiNodeSizeSettlement::Conflict
-        ) {
-            self.suppressed_size = Some(pending.desired_size);
-        }
-        if settlement == OpenGpuiNodeSizeSettlement::Retired {
-            self.reset_samples();
-            self.latest_desired_size = None;
+    /// Completes one ticket after shared mutation settlement proves a definitive failure.
+    #[must_use]
+    pub fn complete_definitive_failure(
+        &mut self,
+        policy: OpenGpuiNodeSizePolicy,
+        ticket: OpenGpuiNodeSizeTicket,
+    ) -> OpenGpuiNodeSizeUpdate {
+        let Some(pending) = self.take_pending(ticket) else {
+            return OpenGpuiNodeSizeUpdate::default();
+        };
+        self.suppressed_size = Some(pending.desired_size);
+        self.issue_latest(policy)
+    }
+
+    /// Retires one exact ticket without treating it as a command result.
+    #[must_use]
+    pub fn retire(&mut self, ticket: OpenGpuiNodeSizeTicket) -> OpenGpuiNodeSizeUpdate {
+        if self.take_pending(ticket).is_none() {
             return OpenGpuiNodeSizeUpdate::default();
         }
+        self.reset_samples();
+        self.latest_desired_size = None;
+        OpenGpuiNodeSizeUpdate::default()
+    }
 
+    fn take_pending(&mut self, ticket: OpenGpuiNodeSizeTicket) -> Option<PendingSizeCommand> {
+        let pending = self.pending.filter(|pending| pending.ticket == ticket)?;
+        self.pending = None;
+        Some(pending)
+    }
+
+    fn issue_latest(&mut self, policy: OpenGpuiNodeSizePolicy) -> OpenGpuiNodeSizeUpdate {
         let Some(desired_size) = self.latest_desired_size.take() else {
             return OpenGpuiNodeSizeUpdate::default();
         };
@@ -843,7 +848,7 @@ mod tests {
         assert!(observe_twice(&mut state, policy, document, size(140.0, 140.0)).is_idle());
         assert_eq!(state.latest_desired_size, Some(size(140.0, 140.0)));
 
-        let settled = state.settle(policy, first.ticket(), OpenGpuiNodeSizeSettlement::Applied);
+        let settled = state.complete_satisfied(policy, first.ticket());
         assert_eq!(
             settled.command().map(OpenGpuiNodeSizeCommand::size),
             Some(size(140.0, 140.0))
@@ -856,20 +861,29 @@ mod tests {
         let policy = OpenGpuiNodeSizePolicy::Content(OpenGpuiContentSizePolicy::default());
         let document = size(100.0, 100.0);
 
-        for settlement in [
-            OpenGpuiNodeSizeSettlement::Applied,
-            OpenGpuiNodeSizeSettlement::Rejected,
-            OpenGpuiNodeSizeSettlement::Conflict,
-            OpenGpuiNodeSizeSettlement::Retired,
+        for complete in [
+            OpenGpuiNodeSizeState::complete_satisfied
+                as fn(
+                    &mut OpenGpuiNodeSizeState,
+                    OpenGpuiNodeSizePolicy,
+                    OpenGpuiNodeSizeTicket,
+                ) -> OpenGpuiNodeSizeUpdate,
+            OpenGpuiNodeSizeState::complete_definitive_failure,
         ] {
             let mut state = state(document);
             let command = observe_twice(&mut state, policy, document, size(120.0, 120.0))
                 .command()
                 .expect("pending command");
-            let update = state.settle(policy, command.ticket(), settlement);
+            let update = complete(&mut state, policy, command.ticket());
             assert!(update.command().is_none());
             assert_eq!(state.pending, None);
         }
+        let mut state = state(document);
+        let command = observe_twice(&mut state, policy, document, size(120.0, 120.0))
+            .command()
+            .expect("pending command");
+        assert!(state.retire(command.ticket()).is_idle());
+        assert_eq!(state.pending, None);
     }
 
     #[test]
@@ -882,7 +896,7 @@ mod tests {
             .expect("pending command");
         let stale_ticket = OpenGpuiNodeSizeTicket(command.ticket().0 + 1);
 
-        let update = state.settle(policy, stale_ticket, OpenGpuiNodeSizeSettlement::Applied);
+        let update = state.complete_satisfied(policy, stale_ticket);
 
         assert!(update.is_idle());
         assert_eq!(
@@ -893,42 +907,53 @@ mod tests {
     }
 
     #[test]
-    fn rejected_and_conflicting_targets_do_not_retry_until_the_target_or_epoch_changes() {
+    fn failed_targets_do_not_retry_until_the_target_or_epoch_changes() {
         let policy = OpenGpuiNodeSizePolicy::Content(OpenGpuiContentSizePolicy::default());
         let document = size(100.0, 100.0);
 
-        for settlement in [
-            OpenGpuiNodeSizeSettlement::Rejected,
-            OpenGpuiNodeSizeSettlement::Conflict,
-        ] {
-            let mut state = state(document);
-            let rejected = observe_twice(&mut state, policy, document, size(120.0, 120.0))
-                .command()
-                .expect("pending command");
-            let update = state.settle(policy, rejected.ticket(), settlement);
-            assert!(update.is_idle());
-            assert_eq!(state.pending, None);
-            let epoch = state.epoch;
+        let mut state = state(document);
+        let failed = observe_twice(&mut state, policy, document, size(120.0, 120.0))
+            .command()
+            .expect("pending command");
+        let update = state.complete_definitive_failure(policy, failed.ticket());
+        assert!(update.is_idle());
+        assert_eq!(state.pending, None);
+        let epoch = state.epoch;
 
-            for _ in 0..120 {
-                assert!(
-                    state
-                        .observe(policy, epoch, document, size(120.0, 120.0),)
-                        .is_idle()
-                );
-            }
+        for _ in 0..120 {
             assert!(
                 state
-                    .observe(policy, epoch, document, size(140.0, 140.0),)
+                    .observe(policy, epoch, document, size(120.0, 120.0),)
                     .is_idle()
             );
-            assert!(
-                state
-                    .observe(policy, epoch, document, size(140.0, 140.0),)
-                    .command()
-                    .is_some()
-            );
         }
+        assert!(
+            state
+                .observe(policy, epoch, document, size(140.0, 140.0),)
+                .is_idle()
+        );
+        assert!(
+            state
+                .observe(policy, epoch, document, size(140.0, 140.0),)
+                .command()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn pending_target_is_recognized_as_authoritative_before_ticket_settlement() {
+        let policy = OpenGpuiNodeSizePolicy::Content(OpenGpuiContentSizePolicy::default());
+        let document = size(100.0, 100.0);
+        let desired = size(120.0, 120.0);
+        let mut state = state(document);
+
+        let command = observe_twice(&mut state, policy, document, desired)
+            .command()
+            .expect("pending command");
+
+        assert_eq!(command.size(), desired);
+        assert!(state.recognizes_authoritative_size(policy, desired));
+        assert!(!state.recognizes_authoritative_size(policy, size(140.0, 140.0)));
     }
 
     #[test]
@@ -960,7 +985,7 @@ mod tests {
         );
         assert_eq!(state.attempts, 0);
 
-        let update = state.settle(policy, first.ticket(), OpenGpuiNodeSizeSettlement::Applied);
+        let update = state.complete_satisfied(policy, first.ticket());
         assert_eq!(
             update.command().map(OpenGpuiNodeSizeCommand::size),
             Some(size(140.0, 140.0))
@@ -1005,11 +1030,7 @@ mod tests {
             let command = observe_twice(&mut state, policy, document, target)
                 .command()
                 .expect("bounded command");
-            let update = state.settle(
-                policy,
-                command.ticket(),
-                OpenGpuiNodeSizeSettlement::Applied,
-            );
+            let update = state.complete_satisfied(policy, command.ticket());
             assert!(update.is_idle());
             assert_eq!(state.pending, None);
         }
@@ -1041,6 +1062,32 @@ mod tests {
     }
 
     #[test]
+    fn default_convergence_allows_exactly_eight_attempts_before_freezing() {
+        let policy = OpenGpuiNodeSizePolicy::Content(OpenGpuiContentSizePolicy::default());
+        let document = size(100.0, 100.0);
+        let mut state = state(document);
+
+        for attempt in 0..OPEN_GPUI_DEFAULT_SIZE_ATTEMPT_BOUND {
+            let target = size(120.0 + f32::from(attempt) * 10.0, 120.0);
+            let command = observe_twice(&mut state, policy, document, target)
+                .command()
+                .unwrap_or_else(|| panic!("default attempt {attempt} must remain available"));
+            assert!(state.complete_satisfied(policy, command.ticket()).is_idle());
+        }
+
+        let frozen = observe_twice(&mut state, policy, document, size(240.0, 120.0));
+        let diagnostic = frozen
+            .diagnostic()
+            .expect("the ninth target reaches the default attempt bound");
+        assert_eq!(diagnostic.attempts(), OPEN_GPUI_DEFAULT_SIZE_ATTEMPT_BOUND);
+        assert_eq!(
+            diagnostic.reason(),
+            OpenGpuiNodeSizeFreezeReason::AttemptBound
+        );
+        assert!(state.pending.is_none());
+    }
+
+    #[test]
     fn non_alternating_changes_report_the_general_attempt_bound() {
         let convergence = OpenGpuiNodeSizeConvergence::new(0.1, 2, 2).expect("valid convergence");
         let policy = OpenGpuiNodeSizePolicy::Content(
@@ -1053,11 +1100,7 @@ mod tests {
             let command = observe_twice(&mut state, policy, document, target)
                 .command()
                 .expect("bounded command");
-            let update = state.settle(
-                policy,
-                command.ticket(),
-                OpenGpuiNodeSizeSettlement::Applied,
-            );
+            let update = state.complete_satisfied(policy, command.ticket());
             assert!(update.is_idle());
             assert_eq!(state.pending, None);
         }

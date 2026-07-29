@@ -1,4 +1,6 @@
-use std::cell::{Cell, RefCell};
+#[cfg(test)]
+use std::cell::Cell;
+use std::cell::RefCell;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::rc::Rc;
 
@@ -224,19 +226,18 @@ impl<I> MutationTerminal<I> {
     }
 }
 
-/// Owns native admission and asynchronous resources for one exact retained node mount.
+/// Owns native admission and asynchronous resources for an exact retained mount owner.
 ///
 /// The application still owns validation, command construction, satisfaction predicates, and
-/// every retry decision. This owner never rewrites or automatically replays a command.
+/// every retry decision. Public bindings create a single-mount owner; adapter internals may bind
+/// one atomic command to an exact mount set. This owner never rewrites or automatically replays a
+/// command.
 pub struct OpenGpuiManagedMutation<I> {
-    mount: OpenGpuiMountContext,
-    activity: OpenGpuiNodeActivityRegistry,
-    layout_invalidator: OpenGpuiLayoutInvalidator,
+    owners: Vec<OpenGpuiManagedMutationOwner>,
     reconciler: MutationReconciler<I>,
     terminal: Option<MutationTerminal<I>>,
-    terminal_signal: Rc<Cell<Option<MutationTerminalSignal>>>,
     task: Rc<RefCell<Option<AdmittedCommandTask<MutationAttemptId>>>>,
-    retention_lease: Option<OpenGpuiActivityLease>,
+    retention_leases: Vec<OpenGpuiActivityLease>,
     layout_effect: Option<(MutationAttemptId, MutationLayoutEffect)>,
     layout_failure: Option<MutationDiagnostic>,
     diagnostic_source: Option<(MutationAttemptId, MutationDiagnosticSource)>,
@@ -244,10 +245,41 @@ pub struct OpenGpuiManagedMutation<I> {
     post_admission_fault: Cell<Option<ManagedMutationPostAdmissionFault>>,
 }
 
+#[derive(Clone)]
+pub(crate) struct OpenGpuiManagedMutationOwner {
+    mount: OpenGpuiMountContext,
+    activity: OpenGpuiNodeActivityRegistry,
+    layout_invalidator: OpenGpuiLayoutInvalidator,
+}
+
+impl OpenGpuiManagedMutationOwner {
+    pub(crate) fn new(
+        mount: OpenGpuiMountContext,
+        activity: OpenGpuiNodeActivityRegistry,
+        layout_invalidator: OpenGpuiLayoutInvalidator,
+    ) -> Self {
+        Self {
+            mount,
+            activity,
+            layout_invalidator,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retire_mount_for_test(&self) {
+        self.mount.mount().retire();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn close_mount_for_test(&self, reason: ViewCloseReason) {
+        self.mount.mount().close(reason);
+    }
+}
+
 impl<I> Drop for OpenGpuiManagedMutation<I> {
     fn drop(&mut self) {
         AdmittedCommandTask::shutdown(&mut self.task.borrow_mut());
-        self.retention_lease.take();
+        self.retention_leases.clear();
     }
 }
 
@@ -258,7 +290,14 @@ where
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("OpenGpuiManagedMutation")
-            .field("instance", self.mount.instance())
+            .field(
+                "instances",
+                &self
+                    .owners
+                    .iter()
+                    .map(|owner| owner.mount.instance())
+                    .collect::<Vec<_>>(),
+            )
             .field("settlement", &self.current_settlement())
             .field("active_intent", &self.active_intent())
             .finish_non_exhaustive()
@@ -271,21 +310,36 @@ impl<I> OpenGpuiManagedMutation<I> {
         activity: OpenGpuiNodeActivityRegistry,
         layout_invalidator: OpenGpuiLayoutInvalidator,
     ) -> Self {
-        Self {
+        Self::mount_set(vec![OpenGpuiManagedMutationOwner::new(
             mount,
             activity,
             layout_invalidator,
+        )])
+        .expect("one exact mount always forms a valid mutation owner set")
+    }
+
+    pub(crate) fn mount_set(owners: Vec<OpenGpuiManagedMutationOwner>) -> Option<Self> {
+        let primary = owners.first()?;
+        let provenance = primary.mount.provenance();
+        let mut instances = std::collections::BTreeSet::new();
+        if owners.iter().any(|owner| {
+            owner.mount.provenance() != provenance
+                || !instances.insert(owner.mount.instance().clone())
+        }) {
+            return None;
+        }
+        Some(Self {
+            owners,
             reconciler: MutationReconciler::default(),
             terminal: None,
-            terminal_signal: Rc::new(Cell::new(None)),
             task: Rc::new(RefCell::new(None)),
-            retention_lease: None,
+            retention_leases: Vec::new(),
             layout_effect: None,
             layout_failure: None,
             diagnostic_source: None,
             #[cfg(test)]
             post_admission_fault: Cell::new(None),
-        }
+        })
     }
 
     #[cfg(test)]
@@ -293,7 +347,10 @@ impl<I> OpenGpuiManagedMutation<I> {
         &mut self,
         layout_invalidator: OpenGpuiLayoutInvalidator,
     ) {
-        self.layout_invalidator = layout_invalidator;
+        self.owners
+            .first_mut()
+            .expect("managed mutations always own at least one mount")
+            .layout_invalidator = layout_invalidator;
     }
 
     #[cfg(test)]
@@ -301,7 +358,11 @@ impl<I> OpenGpuiManagedMutation<I> {
         &mut self,
         activity: OpenGpuiNodeActivityRegistry,
     ) -> OpenGpuiNodeActivityRegistry {
-        std::mem::replace(&mut self.activity, activity)
+        let primary = self
+            .owners
+            .first_mut()
+            .expect("managed mutations always own at least one mount");
+        std::mem::replace(&mut primary.activity, activity)
     }
 
     #[cfg(test)]
@@ -439,11 +500,44 @@ where
         layout_effect: MutationLayoutEffect,
         cx: &mut Context<N>,
     ) -> Result<MutationSettlement, MutationDispatchError> {
+        self.dispatch_with_admission(
+            authoring,
+            command,
+            request,
+            layout_effect,
+            OpenGpuiNodeAuthoring::admit,
+            cx,
+        )
+    }
+
+    pub(crate) fn dispatch_with_admission<N: 'static>(
+        &mut self,
+        authoring: OpenGpuiNodeAuthoring,
+        command: GraphCommand,
+        request: MutationRequest<I>,
+        layout_effect: MutationLayoutEffect,
+        admit: impl FnOnce(
+            OpenGpuiNodeAuthoring,
+            GraphCommand,
+        ) -> Result<
+            crate::command_journal::OpenGpuiAdmittedCommand,
+            OpenGpuiCommandAdmissionError,
+        >,
+        cx: &mut Context<N>,
+    ) -> Result<MutationSettlement, MutationDispatchError> {
         self.synchronize_terminal();
         self.ensure_dispatchable()?;
         if !self.same_owner(&authoring) {
             self.retire("mutation authoring belongs to another native mount".to_owned());
             return Err(MutationDispatchError::Retired);
+        }
+        if self.owners.len() > 1 && layout_effect != MutationLayoutEffect::Preserve {
+            return Err(MutationDispatchError::NotDispatched {
+                diagnostic: MutationDiagnostic::new(
+                    MutationDiagnosticSource::NativeLayout,
+                    "exact mount-set mutations cannot invalidate one member independently",
+                ),
+            });
         }
 
         let base_revision = authoring.version().revision();
@@ -455,7 +549,7 @@ where
             Ok(attempt) => attempt,
             Err(error) => {
                 if self.reconciler.phase() == MutationPhase::Idle {
-                    self.retention_lease.take();
+                    self.retention_leases.clear();
                 }
                 return Err(map_begin_error(error));
             }
@@ -470,7 +564,7 @@ where
             return Err(self.fail_not_dispatched(attempt, diagnostic));
         }
 
-        let task_lease = match AdmittedCommandTaskLease::acquire(&self.activity) {
+        let task_lease = match AdmittedCommandTaskLease::acquire(&self.primary_owner().activity) {
             Ok(lease) => lease,
             Err(error) => {
                 let diagnostic = MutationDiagnostic::new(
@@ -480,7 +574,7 @@ where
                 return Err(self.fail_not_dispatched(attempt, diagnostic));
             }
         };
-        let admitted = match authoring.admit(command) {
+        let admitted = match admit(authoring, command) {
             Ok(admitted) => admitted,
             Err(error) => return Err(self.handle_admission_failure(attempt, error)),
         };
@@ -575,6 +669,10 @@ where
         &mut self,
         error: &OpenGpuiNodeAuthoringError,
     ) -> MutationSettlement {
+        self.synchronize_terminal();
+        if self.terminal.is_some() {
+            return self.current_settlement();
+        }
         match error {
             OpenGpuiNodeAuthoringError::RetiredMount { .. }
             | OpenGpuiNodeAuthoringError::RetiredIncarnation { .. }
@@ -670,45 +768,35 @@ where
     }
 
     fn pending_terminal_signal(&self) -> Option<MutationTerminalSignal> {
-        self.terminal_signal
-            .get()
-            .or_else(|| match self.mount.mount().state() {
-                OpenGpuiMountState::Live => None,
-                OpenGpuiMountState::Retired => Some(MutationTerminalSignal::Retired),
-                OpenGpuiMountState::Closed(reason) => Some(MutationTerminalSignal::Closed(reason)),
-            })
+        self.owner_terminal_signal()
     }
 
     fn ensure_retention(&mut self) -> Result<(), MutationDiagnostic> {
-        if self.retention_lease.is_some() {
+        if self.retention_leases.len() == self.owners.len() {
             return Ok(());
         }
-        let task = Rc::downgrade(&self.task);
-        let signal = Rc::clone(&self.terminal_signal);
-        let mount = self.mount.mount().clone();
-        let lease = self
-            .activity
-            .acquire_with_revocation(OpenGpuiActivityKind::Mutation, move || {
-                let terminal = match mount.state() {
-                    OpenGpuiMountState::Live => None,
-                    OpenGpuiMountState::Retired => Some(MutationTerminalSignal::Retired),
-                    OpenGpuiMountState::Closed(reason) => {
-                        Some(MutationTerminalSignal::Closed(reason))
+        self.retention_leases.clear();
+        let mut leases = Vec::with_capacity(self.owners.len());
+        for owner in &self.owners {
+            let task = Rc::downgrade(&self.task);
+            let lease = owner
+                .activity
+                .acquire_with_revocation(OpenGpuiActivityKind::Mutation, move || {
+                    if let Some(task) = task.upgrade()
+                        && let Ok(mut task) = task.try_borrow_mut()
+                    {
+                        AdmittedCommandTask::shutdown(&mut task);
                     }
-                };
-                if let Some(terminal) = terminal {
-                    signal.set(Some(terminal));
-                }
-                if let Some(task) = task.upgrade()
-                    && let Ok(mut task) = task.try_borrow_mut()
-                {
-                    AdmittedCommandTask::shutdown(&mut task);
-                }
-            })
-            .map_err(|error| {
-                MutationDiagnostic::new(MutationDiagnosticSource::NativeActivity, error.to_string())
-            })?;
-        self.retention_lease = Some(lease);
+                })
+                .map_err(|error| {
+                    MutationDiagnostic::new(
+                        MutationDiagnosticSource::NativeActivity,
+                        error.to_string(),
+                    )
+                })?;
+            leases.push(lease);
+        }
+        self.retention_leases = leases;
         self.synchronize_terminal();
         self.ensure_dispatchable().map_err(|error| {
             MutationDiagnostic::new(MutationDiagnosticSource::NativeLifecycle, error.to_string())
@@ -717,9 +805,10 @@ where
 
     fn same_owner(&self, authoring: &OpenGpuiNodeAuthoring) -> bool {
         let stamp = authoring.stamp();
-        stamp.context.instance() == self.mount.instance()
-            && stamp.context.mount().is_same_mount(self.mount.mount())
-            && stamp.context.provenance() == self.mount.provenance()
+        let primary = self.primary_owner();
+        stamp.context.instance() == primary.mount.instance()
+            && stamp.context.mount().is_same_mount(primary.mount.mount())
+            && stamp.context.provenance() == primary.mount.provenance()
     }
 
     fn handle_admission_failure(
@@ -851,15 +940,20 @@ where
         if let Some(attempt) = attempt {
             AdmittedCommandTask::release_if(&mut self.task.borrow_mut(), attempt);
         }
-        self.retention_lease.take();
+        self.retention_leases.clear();
         let layout_effect = attempt
             .and_then(|attempt| self.layout_effect.take_if(|(active, _)| *active == attempt))
             .map_or(MutationLayoutEffect::Preserve, |(_, effect)| effect);
         let layout = match layout_effect {
             MutationLayoutEffect::Preserve => MutationLayoutSettlement::NotRequested,
             MutationLayoutEffect::InvalidateWhenSatisfied => {
+                let primary = self.primary_owner();
                 match catch_unwind(AssertUnwindSafe(|| {
-                    (self.layout_invalidator)(self.mount.instance(), self.mount.mount(), cx)
+                    (primary.layout_invalidator)(
+                        primary.mount.instance(),
+                        primary.mount.mount(),
+                        cx,
+                    )
                 })) {
                     Ok(Ok(true)) => MutationLayoutSettlement::Invalidated,
                     Ok(Ok(false)) => MutationLayoutSettlement::NoLongerMounted,
@@ -899,22 +993,14 @@ where
             }
         }
         if self.reconciler.phase() == MutationPhase::Idle || self.terminal.is_some() {
-            self.retention_lease.take();
+            self.retention_leases.clear();
             self.layout_effect.take();
             self.diagnostic_source.take();
         }
     }
 
     fn synchronize_terminal(&mut self) {
-        let signal = self
-            .terminal_signal
-            .take()
-            .or_else(|| match self.mount.mount().state() {
-                OpenGpuiMountState::Live => None,
-                OpenGpuiMountState::Retired => Some(MutationTerminalSignal::Retired),
-                OpenGpuiMountState::Closed(reason) => Some(MutationTerminalSignal::Closed(reason)),
-            });
-        match signal {
+        match self.owner_terminal_signal() {
             Some(MutationTerminalSignal::Retired) => {
                 self.retire("native mutation owner was retired".to_owned())
             }
@@ -955,10 +1041,30 @@ where
 
     fn release_native_resources(&mut self) {
         AdmittedCommandTask::shutdown(&mut self.task.borrow_mut());
-        self.retention_lease.take();
+        self.retention_leases.clear();
         self.layout_effect.take();
         self.layout_failure.take();
         self.diagnostic_source.take();
+    }
+
+    fn primary_owner(&self) -> &OpenGpuiManagedMutationOwner {
+        self.owners
+            .first()
+            .expect("managed mutations always own at least one mount")
+    }
+
+    fn owner_terminal_signal(&self) -> Option<MutationTerminalSignal> {
+        let mut retired = false;
+        for owner in &self.owners {
+            match owner.mount.mount().state() {
+                OpenGpuiMountState::Live => {}
+                OpenGpuiMountState::Retired => retired = true,
+                OpenGpuiMountState::Closed(reason) => {
+                    return Some(MutationTerminalSignal::Closed(reason));
+                }
+            }
+        }
+        retired.then_some(MutationTerminalSignal::Retired)
     }
 }
 

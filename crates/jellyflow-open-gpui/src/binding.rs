@@ -17,7 +17,7 @@ use crate::activity::{OpenGpuiNodeActivityHandle, OpenGpuiNodeActivityRegistry};
 use crate::authoring::{OpenGpuiNodeAuthoring, OpenGpuiNodeAuthoringError};
 use crate::command_journal::OpenGpuiCommandSink;
 use crate::interaction::OpenGpuiOverlayInteractionBoundary;
-use crate::managed_mutation::OpenGpuiManagedMutation;
+use crate::managed_mutation::{OpenGpuiManagedMutation, OpenGpuiManagedMutationOwner};
 use crate::node_drag_handle::OpenGpuiNodeDragHandle;
 use crate::port_handle::{OpenGpuiMeasurementSink, OpenGpuiPortHandle};
 use crate::presentation::{
@@ -744,6 +744,14 @@ impl OpenGpuiNodeBinding {
     /// explicit retry decisions. The returned supervisor owns native admission and task lifecycle.
     pub fn managed_mutation<I>(&self) -> OpenGpuiManagedMutation<I> {
         OpenGpuiManagedMutation::mount(
+            self.mount.context.clone(),
+            self.activity.clone(),
+            Rc::clone(&self.layout_invalidator),
+        )
+    }
+
+    pub(crate) fn managed_mutation_owner(&self) -> OpenGpuiManagedMutationOwner {
+        OpenGpuiManagedMutationOwner::new(
             self.mount.context.clone(),
             self.activity.clone(),
             Rc::clone(&self.layout_invalidator),

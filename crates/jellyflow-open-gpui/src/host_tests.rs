@@ -42,10 +42,7 @@ use crate::registry::{
     OpenGpuiNodeAdapterPresentation, OpenGpuiNodeRegistrationPolicy, OpenGpuiNodeRegistryBuilder,
     OpenGpuiNodeRendererDescriptor,
 };
-use crate::size_policy::{
-    OpenGpuiContentHeightPolicy, OpenGpuiNodeSizeEpoch, OpenGpuiNodeSizePolicy,
-    OpenGpuiNodeSizeUpdate,
-};
+use crate::size_policy::{OpenGpuiContentHeightPolicy, OpenGpuiNodeSizePolicy};
 
 use super::connection::OpenGpuiConnectionPreviewProbeOutcome;
 use super::edge_semantics::{
@@ -2909,7 +2906,9 @@ fn settled_routed_scene_remains_quiescent_across_120_explicit_redraws(
                 (
                     instance.node(),
                     std::ptr::from_ref(mounted) as usize,
-                    mounted.content_epoch,
+                    host.content_sizes
+                        .content_epoch(instance)
+                        .expect("retained content-size epoch"),
                     mounted.semantic_zoom.reconcile_usage(),
                 )
             })
@@ -2956,7 +2955,9 @@ fn settled_routed_scene_remains_quiescent_across_120_explicit_redraws(
                 (
                     instance.node(),
                     std::ptr::from_ref(mounted) as usize,
-                    mounted.content_epoch,
+                    host.content_sizes
+                        .content_epoch(instance)
+                        .expect("retained content-size epoch"),
                     mounted.semantic_zoom.reconcile_usage(),
                 )
             })
@@ -3122,7 +3123,9 @@ fn settled_routed_scene_remains_quiescent_across_120_explicit_redraws(
                 (
                     instance.node(),
                     std::ptr::from_ref(mounted) as usize,
-                    mounted.content_epoch,
+                    host.content_sizes
+                        .content_epoch(instance)
+                        .expect("retained content-size epoch"),
                     mounted.semantic_zoom.reconcile_usage(),
                 )
             })
@@ -8792,8 +8795,7 @@ fn node_size_updates_after_a_captured_prefix_wait_for_their_own_barrier(
             .graph_snapshot()
             .expect("node-size ordering graph version")
             .version();
-        let source_update = issue_content_height_update(host, source, 172.0);
-        assert!(host.queue_node_size_updates(vec![source_update]));
+        issue_content_height_update(host, source, 172.0);
         let prefix_ticket = host
             .commands
             .enqueue(
@@ -8808,8 +8810,8 @@ fn node_size_updates_after_a_captured_prefix_wait_for_their_own_barrier(
                 super::OpenGpuiCommandOrigin::Binding,
             )
             .expect("authoritative prefix resize");
-        host.schedule_pending_node_size_prefix(cx);
-        assert!(host.has_pending_node_size_prefix_task());
+        host.schedule_content_size_prefix(cx);
+        assert!(host.content_sizes.has_prefix_task());
 
         let suffix_ticket = host
             .commands
@@ -8822,9 +8824,8 @@ fn node_size_updates_after_a_captured_prefix_wait_for_their_own_barrier(
                 super::OpenGpuiCommandOrigin::Binding,
             )
             .expect("suffix command queued after the captured prefix");
-        let target_update = issue_content_height_update(host, target, 188.0);
-        assert!(host.queue_node_size_updates(vec![target_update]));
-        assert_eq!(host.pending_node_size_command_counts(), Some((1, 1)));
+        issue_content_height_update(host, target, 188.0);
+        assert_eq!(host.content_sizes.pending_command_counts(), Some((1, 1)));
         (prefix_ticket, suffix_ticket)
     });
 
@@ -8863,7 +8864,7 @@ fn node_size_updates_after_a_captured_prefix_wait_for_their_own_barrier(
         })
     );
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.pending_node_size_command_counts(), None);
+        assert_eq!(host.content_sizes.pending_command_counts(), None);
         assert_eq!(host.commands.capacity_usage(), (0, 0, 0));
         assert!(
             host.last_diagnostic().is_none(),
@@ -8874,7 +8875,209 @@ fn node_size_updates_after_a_captured_prefix_wait_for_their_own_barrier(
 }
 
 #[open_gpui::test]
-fn closing_with_a_pending_node_size_prefix_releases_its_task_and_reservation(
+fn content_size_target_survives_prefix_capture_queue_backpressure(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let (runtime, host, cx) = mount_content_size_scene(cx);
+    draw(cx);
+
+    let source = NodeId::from_u128(10);
+    let target = NodeId::from_u128(11);
+    cx.update_entity(&host, |host, cx| {
+        issue_content_height_update(host, source, 172.0);
+        let version = host
+            .view
+            .graph_snapshot()
+            .expect("queue-backpressure graph version")
+            .version();
+        for _ in 0..OPEN_GPUI_COMMAND_JOURNAL_CAPACITY {
+            host.commands
+                .enqueue_detached(
+                    GraphCommand::set_node_data(version, target, serde_json::Value::Null),
+                    super::OpenGpuiCommandOrigin::Binding,
+                )
+                .expect("fill command journal with deterministic noops");
+        }
+
+        assert!(host.schedule_content_size_prefix(cx));
+        assert_eq!(
+            host.commands.capacity_usage(),
+            (OPEN_GPUI_COMMAND_JOURNAL_CAPACITY, 0, 0)
+        );
+        assert_eq!(host.content_sizes.pending_command_counts(), Some((0, 1)));
+        assert!(!host.content_sizes.has_prefix_task());
+        assert!(
+            host.last_diagnostic().is_none(),
+            "pre-admission backpressure is not a semantic size failure"
+        );
+    });
+
+    for _ in 0..12 {
+        draw(cx);
+    }
+
+    assert_eq!(
+        runtime
+            .snapshot()
+            .expect("queue-backpressure graph")
+            .graph()
+            .node(&source)
+            .expect("content-sized source")
+            .size,
+        Some(CanvasSize {
+            width: 180.0,
+            height: 172.0,
+        })
+    );
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(host.content_sizes.pending_command_counts(), None);
+        assert_eq!(host.commands.capacity_usage(), (0, 0, 0));
+    });
+}
+
+#[open_gpui::test]
+fn content_size_mutation_coalesces_the_latest_target_while_pending(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let (runtime, host, cx) = mount_content_size_scene(cx);
+    draw(cx);
+
+    let source = NodeId::from_u128(10);
+    cx.update_entity(&host, |host, cx| {
+        issue_content_height_update(host, source, 172.0);
+        host.schedule_content_size_prefix(cx);
+        assert!(host.content_sizes.has_prefix_task());
+
+        let instance = host
+            .retained_nodes
+            .retained_instance(source)
+            .cloned()
+            .expect("content-sized source instance");
+        host.content_sizes
+            .coalesce_stable_height_for_test(&instance, 188.0);
+        assert_eq!(host.content_sizes.pending_command_counts(), Some((1, 0)));
+    });
+
+    for _ in 0..12 {
+        draw(cx);
+    }
+
+    let snapshot = runtime.snapshot().expect("coalesced content-size graph");
+    assert_eq!(snapshot.revision(), 2);
+    assert_eq!(
+        snapshot
+            .graph()
+            .node(&source)
+            .expect("coalesced content-sized node")
+            .size,
+        Some(CanvasSize {
+            width: 180.0,
+            height: 188.0,
+        })
+    );
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(host.content_sizes.pending_command_counts(), None);
+        assert_eq!(host.commands.capacity_usage(), (0, 0, 0));
+    });
+}
+
+#[open_gpui::test]
+fn content_epoch_invalidation_isolates_a_pending_prefix_callback(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let (runtime, host, cx) = mount_content_size_scene(cx);
+    draw(cx);
+    let source = NodeId::from_u128(10);
+    let prefix_hold = cx.read_entity(&host, |host, _| host.commands.hold_prefix_resolutions());
+
+    let binding = cx.update_entity(&host, |host, cx| {
+        issue_content_height_update(host, source, 172.0);
+        host.schedule_content_size_prefix(cx);
+        assert!(host.content_sizes.has_prefix_task());
+        let instance = host
+            .retained_nodes
+            .retained_instance(source)
+            .cloned()
+            .expect("content-sized source instance");
+        let mount = host
+            .mount_capability(&instance)
+            .cloned()
+            .expect("content-sized source mount");
+        host.retained_nodes
+            .binding_for_mount(&instance, &mount)
+            .expect("content-sized source binding")
+    });
+    assert!(
+        binding
+            .update(cx, |binding, cx| binding.invalidate_layout(cx))
+            .expect("invalidate content epoch")
+    );
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(host.content_sizes.pending_command_counts(), None);
+        assert!(!host.content_sizes.has_prefix_task());
+    });
+
+    drop(prefix_hold);
+    cx.run_until_parked();
+    for _ in 0..4 {
+        draw(cx);
+    }
+    assert_eq!(
+        runtime
+            .snapshot()
+            .expect("content-invalidated graph")
+            .graph()
+            .node(&source)
+            .expect("content-invalidated source")
+            .size,
+        Some(CanvasSize {
+            width: 180.0,
+            height: 100.0,
+        })
+    );
+}
+
+#[open_gpui::test]
+fn environment_invalidation_isolates_a_pending_prefix_callback(cx: &mut open_gpui::TestAppContext) {
+    let (runtime, host, cx) = mount_content_size_scene(cx);
+    draw(cx);
+    let source = NodeId::from_u128(10);
+    let prefix_hold = cx.read_entity(&host, |host, _| host.commands.hold_prefix_resolutions());
+
+    cx.update_entity(&host, |host, cx| {
+        issue_content_height_update(host, source, 172.0);
+        host.schedule_content_size_prefix(cx);
+        assert!(host.content_sizes.has_prefix_task());
+        assert!(
+            host.set_adapter_environment(AdapterEnvironment::new(2, 3, 5, 7), cx)
+                .expect("advance adapter environment")
+        );
+        assert_eq!(host.content_sizes.pending_command_counts(), None);
+        assert!(!host.content_sizes.has_prefix_task());
+    });
+
+    drop(prefix_hold);
+    cx.run_until_parked();
+    for _ in 0..4 {
+        draw(cx);
+    }
+    assert_eq!(
+        runtime
+            .snapshot()
+            .expect("environment-invalidated graph")
+            .graph()
+            .node(&source)
+            .expect("environment-invalidated source")
+            .size,
+        Some(CanvasSize {
+            width: 180.0,
+            height: 100.0,
+        })
+    );
+}
+
+#[open_gpui::test]
+fn closing_with_a_pending_content_size_prefix_releases_its_task_and_reservation(
     cx: &mut open_gpui::TestAppContext,
 ) {
     let (_runtime, host, cx) = mount_content_size_scene(cx);
@@ -8886,8 +9089,7 @@ fn closing_with_a_pending_node_size_prefix_releases_its_task_and_reservation(
             .graph_snapshot()
             .expect("close-prefix graph version")
             .version();
-        let update = issue_content_height_update(host, NodeId::from_u128(10), 172.0);
-        assert!(host.queue_node_size_updates(vec![update]));
+        issue_content_height_update(host, NodeId::from_u128(10), 172.0);
         let prefix_ticket = host
             .commands
             .enqueue(
@@ -8899,15 +9101,15 @@ fn closing_with_a_pending_node_size_prefix_releases_its_task_and_reservation(
                 super::OpenGpuiCommandOrigin::Binding,
             )
             .expect("queued close prefix");
-        host.schedule_pending_node_size_prefix(cx);
-        assert!(host.has_pending_node_size_prefix_task());
+        host.schedule_content_size_prefix(cx);
+        assert!(host.content_sizes.has_prefix_task());
         assert_eq!(host.commands.capacity_usage(), (1, 0, 1));
 
         host.close_in_window(window, cx)
             .expect("window close drains the prefix and cancels node sizing");
-        assert_eq!(host.pending_node_size_command_counts(), None);
-        assert!(!host.has_pending_node_size_prefix_task());
-        assert!(host.ready_node_size_prefixes.is_empty());
+        assert_eq!(host.content_sizes.pending_command_counts(), None);
+        assert!(!host.content_sizes.has_prefix_task());
+        assert!(host.content_sizes.ready_is_empty());
         assert_eq!(host.commands.capacity_usage(), (0, 0, 0));
         prefix_ticket
     });
@@ -8916,8 +9118,8 @@ fn closing_with_a_pending_node_size_prefix_releases_its_task_and_reservation(
     assert!(poll_command_ticket(&mut prefix_ticket).is_ok());
     cx.read_entity(&host, |host, _| {
         assert_eq!(host.close_reason(), Some(ViewCloseReason::HostClosed));
-        assert_eq!(host.pending_node_size_command_counts(), None);
-        assert!(host.ready_node_size_prefixes.is_empty());
+        assert_eq!(host.content_sizes.pending_command_counts(), None);
+        assert!(host.content_sizes.ready_is_empty());
         assert_eq!(host.commands.capacity_usage(), (0, 0, 0));
     });
 }
@@ -9477,9 +9679,9 @@ fn assert_settled_host_has_no_pending_work(host: &OpenGpuiSceneHost) {
     assert!(!host.commands.has_pending());
     assert_eq!(host.commands.capacity_usage(), (0, 0, 0));
     assert!(host.frame_transaction.is_none());
-    assert!(host.pending_node_size_command_counts().is_none());
-    assert!(!host.has_pending_node_size_prefix_task());
-    assert!(host.ready_node_size_prefixes.is_empty());
+    assert!(host.content_sizes.pending_command_counts().is_none());
+    assert!(!host.content_sizes.has_prefix_task());
+    assert!(host.content_sizes.ready_is_empty());
     assert!(host.pending_blank_canvas_context.is_none());
     assert!(host.lifecycle_bridge.is_some());
     assert!(host.window_owner.is_some());
@@ -9879,46 +10081,16 @@ fn mount_content_size_scene(
     (runtime, host, cx)
 }
 
-fn issue_content_height_update(
-    host: &mut OpenGpuiSceneHost,
-    node: NodeId,
-    height: f32,
-) -> (
-    jellyflow_runtime::view::NodeInstanceKey,
-    OpenGpuiNodeSizeUpdate,
-) {
+fn issue_content_height_update(host: &mut OpenGpuiSceneHost, node: NodeId, height: f32) {
     let instance = host
         .retained_nodes
         .retained_instance(node)
         .cloned()
         .expect("content-sized node instance");
-    let environment_epoch = host.adapter_environment_epoch;
-    let mounted = host
-        .retained_nodes
-        .get_mut(&instance)
-        .expect("mounted content node");
-    let document_size = mounted.semantic_zoom.canonical_size();
-    let measured_size = CanvasSize {
-        width: document_size.width,
-        height,
-    };
-    let policy = mounted.registration_policy.size_policy();
-    let epoch = OpenGpuiNodeSizeEpoch::new(mounted.content_epoch, environment_epoch);
-    assert!(
-        mounted
-            .size_state
-            .observe(policy, epoch, document_size, measured_size)
-            .is_idle(),
-        "the first sample only establishes stability",
-    );
-    let update = mounted
-        .size_state
-        .observe(policy, epoch, document_size, measured_size);
-    assert!(
-        update.command().is_some(),
-        "the second stable sample emits one size command",
-    );
-    (instance, update)
+    let effects = host
+        .content_sizes
+        .issue_stable_height_for_test(&instance, height);
+    assert!(host.apply_content_size_effects(effects));
 }
 
 fn mount_connection_scene_for_graph(

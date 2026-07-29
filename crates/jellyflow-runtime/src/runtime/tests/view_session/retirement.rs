@@ -166,7 +166,7 @@ fn removing_a_node_withdraws_its_geometry_and_invalidates_only_its_incident_rout
 }
 
 #[test]
-fn changing_node_size_withdraws_old_geometry_and_invalidates_only_incident_routes() {
+fn changing_node_size_retains_complete_geometry_until_atomic_replacement() {
     let (graph, ids) = graph_with_routed_edge();
     let graph_id = graph.graph_id();
     let runtime = GraphRuntime::builder(Default::default())
@@ -176,6 +176,10 @@ fn changing_node_size_withdraws_old_geometry_and_invalidates_only_incident_route
         .attach_view(view_options(ViewSessionSeed::new(graph_id)))
         .expect("view");
     publish_graph_layouts(&view);
+    let before = view.geometry_snapshot().unwrap();
+    let before_source = before.node(ids.source).unwrap().clone();
+    let before_port = before.port(ids.source_port).unwrap().clone();
+    let before_route = before.route(ids.edge).unwrap().clone();
     let patch_receipts = collect_patch_receipts(&view);
 
     let version = runtime.snapshot().unwrap().version();
@@ -194,14 +198,29 @@ fn changing_node_size_withdraws_old_geometry_and_invalidates_only_incident_route
         .expect("resize applies");
 
     let geometry = view.geometry_snapshot().unwrap();
-    assert!(geometry.node(ids.source).is_none());
+    assert_eq!(geometry.node(ids.source), Some(&before_source));
+    assert_eq!(geometry.port(ids.source_port), Some(&before_port));
+    assert_eq!(geometry.route(ids.edge), Some(&before_route));
     assert!(geometry.node(ids.target).is_some());
     assert!(geometry.node(ids.alternate_source).is_some());
-    assert!(geometry.route(ids.edge).is_none());
     let patch_receipts = patch_receipts.borrow();
     assert_eq!(patch_receipts.len(), 1);
-    assert_eq!(patch_receipts[0].geometry().spatial_updates(), 1);
+    assert_eq!(patch_receipts[0].geometry().spatial_updates(), 0);
     assert_eq!(patch_receipts[0].geometry().route_invalidations(), 1);
+    drop(patch_receipts);
+
+    publish_graph_layouts(&view);
+
+    let replacement = view.geometry_snapshot().unwrap();
+    assert_eq!(
+        replacement.node(ids.source).unwrap().bounds().size,
+        CanvasSize {
+            width: 220.0,
+            height: 140.0,
+        }
+    );
+    assert_ne!(replacement.port(ids.source_port), Some(&before_port));
+    assert_ne!(replacement.route(ids.edge), Some(&before_route));
 }
 
 #[test]

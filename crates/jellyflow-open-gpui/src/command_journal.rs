@@ -9,14 +9,11 @@ use jellyflow_runtime::{
     commands::CommandCompletionCorrelationError, commands::CommandExecutionCompletion,
     commands::CommandExecutionCompletions, commands::GraphCommand, commands::GraphCommandIdentity,
     view::FeedbackCollector, view::FeedbackCollectorError, view::FeedbackReceipt,
-    view::FeedbackSubmissionError, view::NodeInstanceKey, view::ViewCloseReason,
-    view::ViewSessionError,
+    view::FeedbackSubmissionError, view::ViewCloseReason, view::ViewSessionError,
 };
 use open_gpui::{App, EntityId};
 
 use jellyflow_runtime::interaction::InteractionTicketId;
-
-use crate::size_policy::OpenGpuiNodeSizeTicket;
 
 /// Maximum number of commands owned by one native host across its queue and in-flight batch.
 pub(crate) const OPEN_GPUI_COMMAND_JOURNAL_CAPACITY: usize = 256;
@@ -36,6 +33,8 @@ pub(crate) enum OpenGpuiCommandEnqueueError {
     IdentityExhausted,
     #[error("native command prefix reservation is no longer active")]
     PrefixReservationInactive,
+    #[error("native command prefix reservation belongs to another host journal")]
+    ForeignPrefixReservation,
     #[error("native command journal is busy in another callback")]
     Busy,
 }
@@ -92,6 +91,14 @@ pub(crate) enum OpenGpuiCommandPrefixBarrierError {
     QueueFull { capacity: usize },
     #[error("native command prefix reservation is no longer active")]
     ReservationInactive,
+}
+
+impl OpenGpuiCommandPrefixBarrierError {
+    /// Returns whether no command was admitted and a later capture may succeed after journal
+    /// progress or callback completion.
+    pub(crate) const fn is_pre_admission_backpressure(&self) -> bool {
+        matches!(self, Self::Busy | Self::QueueFull { .. })
+    }
 }
 
 type PrefixBarrierCompletionResult = Result<(), OpenGpuiCommandPrefixBarrierError>;
@@ -237,6 +244,28 @@ impl OpenGpuiCommandPrefixPermit {
         Ok(())
     }
 
+    fn admit(
+        mut self,
+        command: GraphCommand,
+        notification: OpenGpuiCommandNotification,
+    ) -> Result<OpenGpuiAdmittedCommand, OpenGpuiCommandEnqueueError> {
+        let sequence = self
+            .sequence
+            .ok_or(OpenGpuiCommandEnqueueError::PrefixReservationInactive)?;
+        let journal = self
+            .journal
+            .upgrade()
+            .ok_or(OpenGpuiCommandEnqueueError::HostUnavailable)?;
+        let ticket = journal
+            .enqueue_reserved(sequence, command, OpenGpuiCommandOrigin::Binding, true)?
+            .ok_or(OpenGpuiCommandEnqueueError::IdentityExhausted)?;
+        self.sequence = None;
+        Ok(OpenGpuiAdmittedCommand {
+            ticket,
+            notification,
+        })
+    }
+
     pub(crate) fn abandon(self) {
         drop(self);
     }
@@ -302,6 +331,17 @@ impl OpenGpuiCommandSink {
             notification: OpenGpuiCommandNotification { host: self.host },
         })
     }
+
+    pub(crate) fn admit_reserved(
+        &self,
+        command: GraphCommand,
+        permit: OpenGpuiCommandPrefixPermit,
+    ) -> Result<OpenGpuiAdmittedCommand, OpenGpuiCommandEnqueueError> {
+        if !Weak::ptr_eq(&self.journal, &permit.journal) {
+            return Err(OpenGpuiCommandEnqueueError::ForeignPrefixReservation);
+        }
+        permit.admit(command, OpenGpuiCommandNotification { host: self.host })
+    }
 }
 
 /// Journal-admission proof split from the fallible native host notification.
@@ -330,12 +370,7 @@ impl OpenGpuiCommandNotification {
 #[derive(Debug, Clone)]
 pub(crate) enum OpenGpuiCommandOrigin {
     Binding,
-    Interaction {
-        ticket: InteractionTicketId,
-    },
-    NodeSizes {
-        tickets: Vec<(NodeInstanceKey, OpenGpuiNodeSizeTicket)>,
-    },
+    Interaction { ticket: InteractionTicketId },
 }
 
 struct OneShotCompletion<T> {
@@ -1933,6 +1968,25 @@ mod tests {
     }
 
     #[test]
+    fn reserved_admission_rejects_a_foreign_host_journal() {
+        let (_runtime, view) = runtime_and_view();
+        let permit_journal = OpenGpuiCommandJournal::new();
+        let sink_journal = OpenGpuiCommandJournal::new();
+        let sink = OpenGpuiCommandSink::new(Rc::downgrade(&sink_journal), EntityId::from(1));
+        let mut barrier = permit_journal
+            .capture_prefix_barrier()
+            .expect("capture empty prefix");
+        let permit = ready_prefix_permit(&mut barrier);
+
+        assert!(matches!(
+            sink.admit_reserved(command(&view, 1), permit),
+            Err(OpenGpuiCommandEnqueueError::ForeignPrefixReservation)
+        ));
+        assert!(!permit_journal.has_pending());
+        assert!(!sink_journal.has_pending());
+    }
+
+    #[test]
     fn dropping_prefix_permit_while_journal_is_borrowed_does_not_block_its_suffix() {
         let (_runtime, view) = runtime_and_view();
         let journal = OpenGpuiCommandJournal::new();
@@ -2533,32 +2587,6 @@ mod tests {
         resolve_completed(journal.terminate_dropped());
         assert!(matches!(
             ready_ticket(&mut ticket),
-            Err(OpenGpuiCommandTicketError::HostDropped)
-        ));
-    }
-
-    #[test]
-    fn dropped_internal_origins_remain_available_for_host_settlement() {
-        let (_runtime, view) = runtime_and_view();
-        let journal = OpenGpuiCommandJournal::new();
-        journal
-            .enqueue_detached(
-                command(&view, 1),
-                OpenGpuiCommandOrigin::NodeSizes {
-                    tickets: Vec::new(),
-                },
-            )
-            .expect("queued internal command");
-
-        let completed = journal.terminate_dropped();
-
-        assert_eq!(completed.len(), 1);
-        assert!(matches!(
-            completed[0].origin,
-            OpenGpuiCommandOrigin::NodeSizes { .. }
-        ));
-        assert!(matches!(
-            completed[0].result,
             Err(OpenGpuiCommandTicketError::HostDropped)
         ));
     }

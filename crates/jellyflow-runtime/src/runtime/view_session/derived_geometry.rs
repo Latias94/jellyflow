@@ -75,6 +75,12 @@ pub(super) struct LayoutWithdrawal {
     current_incident_edges: Option<IncidentEdgeSnapshot>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PendingLayoutReplacement {
+    RetainLastComplete,
+    WithdrawOnInvalid,
+}
+
 impl LayoutWithdrawal {
     pub(super) fn new(
         node: NodeId,
@@ -99,6 +105,7 @@ pub(super) struct DerivedGeometry {
     layout_generations: BTreeMap<NodeId, u64>,
     binding_revisions: BTreeMap<NodeId, GraphRevision>,
     renderer_bindings: BTreeMap<NodeId, RendererStamp>,
+    pending_layout_replacements: BTreeMap<NodeId, PendingLayoutReplacement>,
     nodes: SharedGeometryMap<NodeId, PublishedNodeGeometry>,
     node_owners: SharedGeometryOwnerMap<NodeId>,
     ports: SharedGeometryMap<PortId, PublishedPortGeometry>,
@@ -126,6 +133,7 @@ impl DerivedGeometry {
             layout_generations: BTreeMap::new(),
             binding_revisions: BTreeMap::new(),
             renderer_bindings: BTreeMap::new(),
+            pending_layout_replacements: BTreeMap::new(),
             nodes: SharedGeometryMap::default(),
             node_owners: SharedGeometryOwnerMap::default(),
             ports: SharedGeometryMap::default(),
@@ -465,6 +473,7 @@ impl DerivedGeometry {
         let mut incident_work = IncidentSnapshotWork::default();
 
         for (node, geometry, incident_edges) in staged {
+            self.pending_layout_replacements.remove(&node);
             spatial_updates = spatial_updates
                 .saturating_add(u64::from(self.node_spatial.upsert(node, geometry.bounds())));
             self.upsert_node(node, geometry, true);
@@ -629,6 +638,7 @@ impl DerivedGeometry {
         let impact = patch.impact();
         let mut spatially_updated = BTreeSet::new();
         for node in &impact.retired_nodes {
+            self.pending_layout_replacements.remove(node);
             if self.remove_node(*node) {
                 spatially_updated.insert(*node);
             }
@@ -644,6 +654,7 @@ impl DerivedGeometry {
             }
         }
         for node in &impact.geometry_withdrawals {
+            self.pending_layout_replacements.remove(node);
             if self.remove_node(*node) {
                 spatially_updated.insert(*node);
             }
@@ -658,6 +669,7 @@ impl DerivedGeometry {
                 .is_some_and(|geometry| geometry.lifetime() != lifetime)
                 && self.remove_node(*node)
             {
+                self.pending_layout_replacements.remove(node);
                 spatially_updated.insert(*node);
             }
         }
@@ -667,6 +679,16 @@ impl DerivedGeometry {
             }
         }
         for node in &impact.layout_dirty_nodes {
+            if impact.retired_nodes.contains(node) || impact.geometry_withdrawals.contains(node) {
+                self.pending_layout_replacements.remove(node);
+            } else if patch.geometry_impact().retains_last_complete_layout(*node) {
+                self.pending_layout_replacements
+                    .entry(*node)
+                    .or_insert(PendingLayoutReplacement::RetainLastComplete);
+            } else {
+                self.pending_layout_replacements
+                    .insert(*node, PendingLayoutReplacement::WithdrawOnInvalid);
+            }
             self.advance_node_generation(*node);
         }
         let route_edges = impact.route_edges.iter().copied().collect::<BTreeSet<_>>();
@@ -714,6 +736,7 @@ impl DerivedGeometry {
         selected_edges: &SelectedEdgeMembership,
     ) -> Option<u64> {
         for node in ports_by_node.keys() {
+            self.pending_layout_replacements.remove(node);
             self.advance_node_generation(*node);
         }
         let stale_nodes = ports_by_node
@@ -738,6 +761,7 @@ impl DerivedGeometry {
         policy: GraphRuntimePolicy,
         selected_edges: &SelectedEdgeMembership,
     ) -> Option<u64> {
+        self.pending_layout_replacements.remove(&node);
         self.advance_node_generation(node);
         let geometry_changed = self.mark_node_stale(node, ports);
         let recomputation = self.recompute_routes(snapshot, route_edges, policy, selected_edges);
@@ -757,6 +781,7 @@ impl DerivedGeometry {
         self.layout_generations.clear();
         self.binding_revisions.clear();
         self.renderer_bindings.clear();
+        self.pending_layout_replacements.clear();
         self.clear_routes();
         self.unresolved_routes.clear();
         self.snapshot_cache = None;
@@ -866,6 +891,7 @@ impl DerivedGeometry {
     }
 
     fn remove_node(&mut self, node: NodeId) -> bool {
+        self.pending_layout_replacements.remove(&node);
         let Some(current) = self.nodes.get(&node).cloned() else {
             return false;
         };
@@ -924,6 +950,7 @@ impl DerivedGeometry {
     }
 
     fn mark_node_stale(&mut self, node: NodeId, ports: impl IntoIterator<Item = PortId>) -> bool {
+        self.pending_layout_replacements.remove(&node);
         let Some(current) = self.nodes.get(&node) else {
             return false;
         };
@@ -932,6 +959,11 @@ impl DerivedGeometry {
             return false;
         }
         self.upsert_node(node, stale, false)
+    }
+
+    pub(super) fn retains_last_complete_layout(&self, node: NodeId) -> bool {
+        self.pending_layout_replacements.get(&node)
+            == Some(&PendingLayoutReplacement::RetainLastComplete)
     }
 
     fn clear_nodes(&mut self) {

@@ -1,12 +1,12 @@
 use std::collections::BTreeMap;
 
-use jellyflow_core::{Node, NodeId, Port, PortId};
+use jellyflow_core::{CanvasSize, Node, NodeId, Port, PortId};
 pub use jellyflow_runtime::reconciliation::MutationRetryReason;
 use jellyflow_runtime::viewport::ViewportTransform;
 use jellyflow_runtime::{
     commands::GraphCommand, graph::GraphRevision, graph::GraphSnapshot, graph::GraphVersion,
-    graph::PortConnectionSummary, graph::PortInstanceKey, view::NodeInstanceKey,
-    view::ViewCloseReason, view::ViewSessionError,
+    graph::NodeLifetimeKey, graph::PortConnectionSummary, graph::PortInstanceKey,
+    view::NodeInstanceKey, view::ViewCloseReason, view::ViewSessionError,
 };
 
 use crate::activity::OpenGpuiNodeActivityRegistry;
@@ -14,8 +14,8 @@ pub use crate::binding::OpenGpuiNodeBinding;
 use crate::binding::{
     OpenGpuiMountContext, OpenGpuiMountValidationError, OpenGpuiNodePresentationInputSignature,
 };
-use crate::command_journal::OpenGpuiCommandSink;
 use crate::command_journal::{OpenGpuiAdmittedCommand, OpenGpuiCommandEnqueueError};
+use crate::command_journal::{OpenGpuiCommandPrefixPermit, OpenGpuiCommandSink};
 pub use crate::managed_mutation::{
     MutationAbandonment, MutationDiagnostic, MutationDiagnosticSource, MutationDispatchError,
     MutationLayoutEffect, MutationLayoutSettlement, MutationRequest, MutationRetry,
@@ -317,6 +317,14 @@ impl OpenGpuiNodeAuthoring {
             .expect("an authoring view keeps its validated immutable node")
     }
 
+    pub(crate) fn node_lifetime(&self, node: NodeId) -> Option<NodeLifetimeKey> {
+        self.snapshot.node_lifetime_key(node)
+    }
+
+    pub(crate) fn node_size(&self, node: NodeId) -> Option<Option<CanvasSize>> {
+        self.snapshot.graph().node(&node).map(|node| node.size)
+    }
+
     #[must_use]
     pub fn viewport_transform(&self) -> ViewportTransform {
         self.viewport_transform
@@ -402,6 +410,16 @@ impl OpenGpuiNodeAuthoring {
         self,
         command: GraphCommand,
     ) -> Result<OpenGpuiAdmittedCommand, OpenGpuiCommandAdmissionError> {
+        self.validate_admission(&command)?;
+        self.commands
+            .admit(command)
+            .map_err(OpenGpuiCommandAdmissionError::Journal)
+    }
+
+    pub(crate) fn validate_admission(
+        &self,
+        command: &GraphCommand,
+    ) -> Result<(), OpenGpuiCommandAdmissionError> {
         self.context
             .ensure_exact_view()
             .map_err(map_mount_error)
@@ -434,8 +452,17 @@ impl OpenGpuiNodeAuthoring {
             .ensure_exact_view()
             .map_err(map_mount_error)
             .map_err(OpenGpuiCommandAdmissionError::Authoring)?;
+        Ok(())
+    }
+
+    pub(crate) fn admit_reserved(
+        self,
+        command: GraphCommand,
+        permit: OpenGpuiCommandPrefixPermit,
+    ) -> Result<OpenGpuiAdmittedCommand, OpenGpuiCommandAdmissionError> {
+        self.validate_admission(&command)?;
         self.commands
-            .admit(command)
+            .admit_reserved(command, permit)
             .map_err(OpenGpuiCommandAdmissionError::Journal)
     }
 }

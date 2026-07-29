@@ -1062,6 +1062,17 @@ pub(super) fn publish_layouts(
                     expected.incident_edges.iter().copied(),
                 )
             });
+        let preserves_last_complete_geometry = !global_stale
+            && impact_stale
+            && expected.is_some_and(|expected| {
+                geometry_impact.preserves_last_complete_layout(
+                    node,
+                    expected.ports.iter().copied(),
+                    expected.incident_edges.iter().copied(),
+                )
+            });
+        let preserves_pending_complete_geometry =
+            !global_stale && state.derived.retains_last_complete_layout(node);
         let (status, candidate) = if node_layout_counts.get(&node).copied().unwrap_or_default() > 1
         {
             (LayoutNodeStatus::DuplicateNode, None)
@@ -1108,6 +1119,8 @@ pub(super) fn publish_layouts(
                 | LayoutNodeStatus::DuplicateNode
                 | LayoutNodeStatus::Stale
         ) && !preserves_translated_geometry
+            && !preserves_last_complete_geometry
+            && !preserves_pending_complete_geometry
             && let Some(expected) = expected
         {
             withdrawals.insert(node, expected.incident_edges.clone());
