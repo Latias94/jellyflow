@@ -19,12 +19,11 @@ pub use crate::product_theme::NATIVE_FLOAT_STYLE_SLOT as SHADER_FLOAT_STYLE_SLOT
 
 pub use blueprint_call::{
     BLUEPRINT_ADD_INPUT_SELECTOR, BLUEPRINT_CALL_DEFAULT_SIZE, BLUEPRINT_CALL_KIND,
-    BLUEPRINT_CALL_RENDERER, BLUEPRINT_NODE_SELECTOR, BlueprintCallNode, BlueprintPin,
-    BlueprintPinAction, blueprint_body_selector, blueprint_header_metadata_selector,
+    BLUEPRINT_CALL_RENDERER, BLUEPRINT_DISCARD_SELECTOR, BLUEPRINT_NODE_SELECTOR,
+    BlueprintCallNode, blueprint_body_selector, blueprint_header_metadata_selector,
     blueprint_header_title_selector, blueprint_pin_down_selector, blueprint_pin_label_selector,
     blueprint_pin_remove_selector, blueprint_pin_row_selector, blueprint_pin_scroll_selector,
-    blueprint_pin_up_selector, blueprint_pins, blueprint_port_label_selector,
-    blueprint_port_selector, plan_blueprint_pin_action,
+    blueprint_pin_up_selector, blueprint_port_label_selector, blueprint_port_selector,
 };
 pub use multiply::{
     SHADER_FACTOR_FIELD, SHADER_MULTIPLY_DEFAULT_SIZE, SHADER_MULTIPLY_KIND,
@@ -38,9 +37,6 @@ pub use multiply::{
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShaderNodeError {
-    MissingNode {
-        node: NodeId,
-    },
     WrongNodeKind {
         node: NodeId,
         expected: &'static str,
@@ -49,32 +45,6 @@ pub enum ShaderNodeError {
     InvalidData {
         node: NodeId,
         field: &'static str,
-    },
-    MissingPort {
-        node: NodeId,
-        port: PortId,
-    },
-    DuplicateBlueprintPin {
-        port: PortId,
-    },
-    DuplicateBlueprintPinId {
-        pin_id: String,
-    },
-    DuplicateBlueprintPinName {
-        name: String,
-    },
-    EmptyBlueprintPinId,
-    EmptyBlueprintPinName,
-    BlueprintPinNotFound {
-        pin_id: String,
-    },
-    InvalidBlueprintPinIndex {
-        pin_id: String,
-        index: usize,
-        len: usize,
-    },
-    InvalidBlueprintPortOrder {
-        node: NodeId,
     },
     BindingUnavailable {
         message: String,
@@ -88,7 +58,6 @@ pub enum ShaderNodeError {
 impl std::fmt::Display for ShaderNodeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::MissingNode { node } => write!(f, "shader node is missing: {node:?}"),
             Self::WrongNodeKind {
                 node,
                 expected,
@@ -99,35 +68,6 @@ impl std::fmt::Display for ShaderNodeError {
             ),
             Self::InvalidData { node, field } => {
                 write!(f, "shader node {node:?} has invalid {field} data")
-            }
-            Self::MissingPort { node, port } => {
-                write!(f, "shader node {node:?} is missing port {port:?}")
-            }
-            Self::DuplicateBlueprintPin { port } => {
-                write!(f, "blueprint pin id is duplicated: {port:?}")
-            }
-            Self::DuplicateBlueprintPinId { pin_id } => {
-                write!(f, "blueprint logical pin id is duplicated: {pin_id:?}")
-            }
-            Self::DuplicateBlueprintPinName { name } => {
-                write!(f, "blueprint pin name is duplicated: {name:?}")
-            }
-            Self::EmptyBlueprintPinId => f.write_str("blueprint logical pin id must not be empty"),
-            Self::EmptyBlueprintPinName => f.write_str("blueprint pin name must not be empty"),
-            Self::BlueprintPinNotFound { pin_id } => {
-                write!(f, "blueprint pin does not exist: {pin_id:?}")
-            }
-            Self::InvalidBlueprintPinIndex { pin_id, index, len } => {
-                write!(
-                    f,
-                    "blueprint pin {pin_id:?} cannot move to index {index}; pin count is {len}"
-                )
-            }
-            Self::InvalidBlueprintPortOrder { node } => {
-                write!(
-                    f,
-                    "blueprint node {node:?} has invalid static/dynamic port order"
-                )
             }
             Self::BindingUnavailable { message } => {
                 write!(f, "shader binding is unavailable: {message}")

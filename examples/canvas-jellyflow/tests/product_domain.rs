@@ -8,6 +8,10 @@ use jellyflow_runtime::commands::{CommandExecutionKind, GraphCommand, IncidentEd
 use jellyflow_runtime::graph::{GraphRuntime, GraphSnapshot};
 use jellyflow_runtime::reconciliation::{MutationCommandResult, MutationPhase, MutationReconciler};
 use jellyflow_runtime::view::ViewSessionOptions;
+use open_gpui_canvas_jellyflow::product_domain::blueprint::{
+    BLUEPRINT_CALL_KIND, BlueprintError, BlueprintIntent, BlueprintObservation, BlueprintPin,
+    blueprint_default_data,
+};
 use open_gpui_canvas_jellyflow::product_domain::condition::{
     CONDITION_ELSE_PORT_KEY, CONDITION_INPUT_PORT_KEY, CONDITION_KIND, ConditionCase,
     ConditionError, ConditionIntent, ConditionObservation, ConditionOperator, ConditionPredicate,
@@ -946,4 +950,505 @@ fn data_source_output() -> PortId {
 
 fn connected_data_edge() -> EdgeId {
     EdgeId::from_u128(CONNECTED_DATA_EDGE)
+}
+
+const BLUEPRINT_GRAPH: u128 = 0xb10e_0001;
+const BLUEPRINT_NODE: u128 = 0xb10e_0002;
+const BLUEPRINT_EXEC_IN: u128 = 0xb10e_0003;
+const BLUEPRINT_EXEC_OUT: u128 = 0xb10e_0004;
+const BLUEPRINT_VALUE: u128 = 0xb10e_0005;
+const BLUEPRINT_FIRST_PIN: u128 = 0xb10e_0006;
+const BLUEPRINT_SECOND_PIN: u128 = 0xb10e_0007;
+const BLUEPRINT_ADDED_PIN: u128 = 0xb10e_0008;
+const BLUEPRINT_SOURCE_NODE: u128 = 0xb10e_0009;
+const BLUEPRINT_SOURCE_PORT: u128 = 0xb10e_000a;
+const BLUEPRINT_COLLISION_PORT: u128 = 0xb10e_000b;
+const BLUEPRINT_EDGE: u128 = 0xb10e_000c;
+
+#[test]
+fn blueprint_observation_parses_complete_pins_and_checks_intent_postconditions() {
+    let runtime = blueprint_runtime(false);
+    let snapshot = runtime.snapshot().expect("Blueprint snapshot");
+    let observation = observe_blueprint(&snapshot);
+
+    assert_eq!(observation.version(), snapshot.version());
+    assert_eq!(observation.node_id(), blueprint_node());
+    assert_eq!(observation.title(), "Material function");
+    assert_eq!(
+        observation.static_ports(),
+        &[blueprint_exec_in(), blueprint_exec_out(), blueprint_value()]
+    );
+    assert_eq!(observation.pins(), &[blueprint_first(), blueprint_second()]);
+    assert_eq!(
+        observation
+            .port(blueprint_first_pin())
+            .and_then(|port| port.data.get("custom")),
+        Some(&serde_json::json!("preserve")),
+    );
+
+    assert!(observation.satisfies(&BlueprintIntent::add(blueprint_first())));
+    assert!(observation.satisfies(&BlueprintIntent::reorder("roughness", 0)));
+    assert!(!observation.satisfies(&BlueprintIntent::reorder("roughness", 1)));
+    assert!(observation.satisfies(&BlueprintIntent::remove(
+        "absent",
+        IncidentEdgePolicy::Reject,
+    )));
+    assert!(!observation.satisfies(&BlueprintIntent::remove(
+        "metallic",
+        IncidentEdgePolicy::Cascade,
+    )));
+}
+
+#[test]
+fn blueprint_schema_and_topology_fail_with_typed_errors() {
+    assert_eq!(
+        BlueprintPin::new(" ", PortId::from_u128(1), "Input", TypeDesc::Float),
+        Err(BlueprintError::EmptyPinId),
+    );
+    assert_eq!(
+        BlueprintPin::new("input", PortId::from_u128(1), " ", TypeDesc::Float),
+        Err(BlueprintError::EmptyPinName),
+    );
+
+    let runtime = blueprint_runtime(false);
+    let snapshot = runtime.snapshot().unwrap();
+    let (mut blueprint, ports) = blueprint_parts(&snapshot);
+    blueprint.data.as_object_mut().unwrap().remove("pins");
+    assert!(matches!(
+        BlueprintObservation::from_parts(snapshot.version(), blueprint_node(), &blueprint, ports),
+        Err(BlueprintError::InvalidData { field: "pins", .. })
+    ));
+
+    let (mut blueprint, ports) = blueprint_parts(&snapshot);
+    blueprint.data["pins"][0]["order"] = serde_json::json!(1);
+    assert!(matches!(
+        BlueprintObservation::from_parts(snapshot.version(), blueprint_node(), &blueprint, ports),
+        Err(BlueprintError::InvalidData {
+            field: "pins[].order",
+            ..
+        })
+    ));
+
+    let (blueprint, mut ports) = blueprint_parts(&snapshot);
+    ports.get_mut(&blueprint_first_pin()).unwrap().ty = Some(TypeDesc::String);
+    assert_eq!(
+        BlueprintObservation::from_parts(snapshot.version(), blueprint_node(), &blueprint, ports,)
+            .unwrap_err(),
+        BlueprintError::InvalidPinPort {
+            node: blueprint_node(),
+            port: blueprint_first_pin(),
+        }
+    );
+
+    let (mut blueprint, ports) = blueprint_parts(&snapshot);
+    blueprint.ports.swap(0, 3);
+    assert_eq!(
+        BlueprintObservation::from_parts(snapshot.version(), blueprint_node(), &blueprint, ports,)
+            .unwrap_err(),
+        BlueprintError::InvalidPortOrder {
+            node: blueprint_node(),
+        }
+    );
+
+    let (mut blueprint, ports) = blueprint_parts(&snapshot);
+    blueprint.kind = NodeKindKey::new("shader.not-blueprint");
+    assert!(matches!(
+        BlueprintObservation::from_parts(snapshot.version(), blueprint_node(), &blueprint, ports),
+        Err(BlueprintError::WrongNodeKind { .. })
+    ));
+}
+
+#[test]
+fn blueprint_add_reorder_remove_are_atomic_and_preserve_existing_port_facts() {
+    let runtime = blueprint_runtime(false);
+    let initial = runtime.snapshot().unwrap();
+    let added_pin =
+        BlueprintPin::new("normal", blueprint_added_pin(), "Normal", TypeDesc::Float).unwrap();
+    let command = observe_blueprint(&initial)
+        .plan(&BlueprintIntent::add(added_pin.clone()))
+        .unwrap();
+    assert_eq!(
+        runtime.execute(command).kind(),
+        CommandExecutionKind::Applied
+    );
+
+    let added = runtime.snapshot().unwrap();
+    assert_eq!(
+        observe_blueprint(&added).pins(),
+        &[blueprint_first(), blueprint_second(), added_pin.clone()]
+    );
+    let preserved = added.graph().port(&blueprint_first_pin()).unwrap();
+    assert_eq!(preserved.connectable, Some(false));
+    assert_eq!(preserved.data["custom"], "preserve");
+
+    let command = observe_blueprint(&added)
+        .plan(&BlueprintIntent::reorder(added_pin.id(), 0))
+        .unwrap();
+    assert_eq!(
+        runtime.execute(command).kind(),
+        CommandExecutionKind::Applied
+    );
+    let reordered = runtime.snapshot().unwrap();
+    assert_eq!(
+        observe_blueprint(&reordered).pins(),
+        &[added_pin.clone(), blueprint_first(), blueprint_second()]
+    );
+    assert_eq!(
+        &reordered.graph().node(&blueprint_node()).unwrap().ports[3..],
+        &[
+            blueprint_added_pin(),
+            blueprint_first_pin(),
+            blueprint_second_pin()
+        ]
+    );
+
+    let command = observe_blueprint(&reordered)
+        .plan(&BlueprintIntent::remove(
+            "metallic",
+            IncidentEdgePolicy::Cascade,
+        ))
+        .unwrap();
+    assert_eq!(
+        runtime.execute(command).kind(),
+        CommandExecutionKind::Applied
+    );
+    let removed = runtime.snapshot().unwrap();
+    assert_eq!(
+        observe_blueprint(&removed).pins(),
+        &[added_pin, blueprint_first()]
+    );
+    assert!(removed.graph().port(&blueprint_second_pin()).is_none());
+    assert_eq!(runtime.history_state().unwrap().undo_len(), 3);
+}
+
+#[test]
+fn blueprint_planning_rejects_graph_wide_collisions_duplicates_and_stale_intents() {
+    let runtime = blueprint_runtime(false);
+    let snapshot = runtime.snapshot().unwrap();
+    let observation = observe_blueprint(&snapshot);
+
+    let colliding = BlueprintPin::new(
+        "collision",
+        blueprint_collision_port(),
+        "Collision",
+        TypeDesc::Float,
+    )
+    .unwrap();
+    assert_eq!(
+        observation
+            .plan(&BlueprintIntent::add(colliding))
+            .unwrap_err(),
+        BlueprintError::PinPortAlreadyExists {
+            port: blueprint_collision_port(),
+        }
+    );
+    let duplicate_name = BlueprintPin::new(
+        "different-id",
+        blueprint_added_pin(),
+        "Roughness",
+        TypeDesc::Float,
+    )
+    .unwrap();
+    assert_eq!(
+        observation
+            .plan(&BlueprintIntent::add(duplicate_name))
+            .unwrap_err(),
+        BlueprintError::DuplicatePinName {
+            name: "Roughness".to_owned(),
+        }
+    );
+    assert!(matches!(
+        observation.plan(&BlueprintIntent::reorder("missing", 0)),
+        Err(BlueprintError::PinNotFound { pin_id }) if pin_id == "missing"
+    ));
+    assert!(matches!(
+        observation.plan(&BlueprintIntent::reorder("roughness", 99)),
+        Err(BlueprintError::PinIndexOutOfBounds {
+            index: 99,
+            pin_count: 2,
+            ..
+        })
+    ));
+    assert!(matches!(
+        observation.plan(&BlueprintIntent::remove(
+            "missing",
+            IncidentEdgePolicy::Cascade,
+        )),
+        Err(BlueprintError::PinNotFound { pin_id }) if pin_id == "missing"
+    ));
+    assert_eq!(runtime.snapshot().unwrap().revision(), snapshot.revision());
+    assert_eq!(runtime.history_state().unwrap().undo_len(), 0);
+}
+
+#[test]
+fn blueprint_connected_remove_rejects_or_cascades_as_one_history_step() {
+    let runtime = blueprint_runtime(true);
+    let initial = runtime.snapshot().unwrap();
+    let reject = observe_blueprint(&initial)
+        .plan(&BlueprintIntent::remove(
+            "metallic",
+            IncidentEdgePolicy::Reject,
+        ))
+        .unwrap();
+    assert_eq!(
+        runtime.execute(reject).kind(),
+        CommandExecutionKind::Rejected
+    );
+    assert_eq!(runtime.snapshot().unwrap().revision(), initial.revision());
+
+    let cascade = observe_blueprint(&initial)
+        .plan(&BlueprintIntent::remove(
+            "metallic",
+            IncidentEdgePolicy::Cascade,
+        ))
+        .unwrap();
+    assert_eq!(
+        runtime.execute(cascade).kind(),
+        CommandExecutionKind::Applied
+    );
+    let removed = runtime.snapshot().unwrap();
+    assert!(removed.graph().edge(&blueprint_edge()).is_none());
+    assert!(removed.graph().port(&blueprint_second_pin()).is_none());
+    assert_eq!(runtime.history_state().unwrap().undo_len(), 1);
+
+    assert_eq!(
+        runtime
+            .execute(GraphCommand::undo(removed.version()))
+            .kind(),
+        CommandExecutionKind::Applied,
+    );
+    let restored = runtime.snapshot().unwrap();
+    assert!(restored.graph().edge(&blueprint_edge()).is_some());
+    assert_eq!(observe_blueprint(&restored).pins().len(), 2);
+}
+
+#[test]
+fn blueprint_default_schema_and_source_are_renderer_independent() {
+    assert_eq!(
+        blueprint_default_data(),
+        serde_json::json!({ "title": "Function Call", "pins": [] })
+    );
+    let source = include_str!("../src/product_domain/blueprint.rs");
+    assert!(!source.contains("open_gpui"));
+    assert!(!source.contains("TopologyAttempt"));
+    let renderer = include_str!("../src/nodes/shader/blueprint_call.rs");
+    assert!(!renderer.contains("TopologyAttempt"));
+}
+
+fn blueprint_runtime(connected: bool) -> GraphRuntime {
+    GraphRuntime::builder(Default::default())
+        .build(blueprint_graph(connected))
+        .expect("valid pure Blueprint graph")
+}
+
+fn observe_blueprint(snapshot: &GraphSnapshot) -> BlueprintObservation {
+    BlueprintObservation::from_snapshot(snapshot, blueprint_node())
+        .expect("valid Blueprint observation")
+}
+
+fn blueprint_parts(snapshot: &GraphSnapshot) -> (Node, BTreeMap<PortId, Port>) {
+    let node = snapshot
+        .graph()
+        .node(&blueprint_node())
+        .expect("Blueprint node")
+        .clone();
+    let ports = node
+        .ports
+        .iter()
+        .map(|port| (*port, snapshot.graph().port(port).unwrap().clone()))
+        .collect();
+    (node, ports)
+}
+
+fn blueprint_graph(connected: bool) -> Graph {
+    let pins = [blueprint_first(), blueprint_second()];
+    let mut graph = GraphBuilder::new(GraphId::from_u128(BLUEPRINT_GRAPH));
+    graph.insert_node(
+        blueprint_node(),
+        node(
+            BLUEPRINT_CALL_KIND,
+            vec![
+                blueprint_exec_in(),
+                blueprint_exec_out(),
+                blueprint_value(),
+                blueprint_first_pin(),
+                blueprint_second_pin(),
+            ],
+            blueprint_data("Material function", &pins),
+        ),
+    );
+    graph.insert_port(blueprint_exec_in(), input(blueprint_node(), "exec_in"));
+    graph.insert_port(
+        blueprint_exec_out(),
+        output(blueprint_node(), "exec_out", serde_json::Value::Null),
+    );
+    graph.insert_port(
+        blueprint_value(),
+        blueprint_data_input(blueprint_node(), "value", serde_json::Value::Null),
+    );
+    graph.insert_port(
+        blueprint_first_pin(),
+        blueprint_dynamic_input(blueprint_node(), &pins[0], true),
+    );
+    graph.insert_port(
+        blueprint_second_pin(),
+        blueprint_dynamic_input(blueprint_node(), &pins[1], false),
+    );
+    graph.insert_node(
+        blueprint_source_node(),
+        node(
+            "shader.source",
+            vec![blueprint_source_port(), blueprint_collision_port()],
+            serde_json::Value::Null,
+        ),
+    );
+    graph.insert_port(
+        blueprint_source_port(),
+        blueprint_data_output(blueprint_source_node(), "source"),
+    );
+    graph.insert_port(
+        blueprint_collision_port(),
+        blueprint_data_output(blueprint_source_node(), "occupied"),
+    );
+    if connected {
+        graph.insert_edge(
+            blueprint_edge(),
+            Edge::new(
+                EdgeKind::Data,
+                blueprint_source_port(),
+                blueprint_second_pin(),
+            ),
+        );
+    }
+    graph.build().expect("valid Blueprint fixture graph")
+}
+
+fn blueprint_data(title: &str, pins: &[BlueprintPin]) -> serde_json::Value {
+    serde_json::json!({
+        "title": title,
+        "pins": pins
+            .iter()
+            .enumerate()
+            .map(|(order, pin)| serde_json::json!({
+                "id": pin.id(),
+                "port_id": pin.port_id(),
+                "name": pin.name(),
+                "type": pin.ty(),
+                "order": order,
+            }))
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn blueprint_dynamic_input(node: NodeId, pin: &BlueprintPin, custom: bool) -> Port {
+    Port {
+        node,
+        key: PortKey::new(format!("arg.{}", pin.id())),
+        dir: PortDirection::In,
+        kind: PortKind::Data,
+        capacity: PortCapacity::Single,
+        connectable: custom.then_some(false),
+        connectable_start: None,
+        connectable_end: None,
+        ty: Some(pin.ty().clone()),
+        data: serde_json::json!({
+            "pin_id": pin.id(),
+            "label": pin.name(),
+            "custom": custom.then_some("preserve"),
+        }),
+    }
+}
+
+fn blueprint_data_input(node: NodeId, key: &str, data: serde_json::Value) -> Port {
+    Port {
+        node,
+        key: PortKey::new(key),
+        dir: PortDirection::In,
+        kind: PortKind::Data,
+        capacity: PortCapacity::Single,
+        connectable: None,
+        connectable_start: None,
+        connectable_end: None,
+        ty: Some(TypeDesc::Float),
+        data,
+    }
+}
+
+fn blueprint_data_output(node: NodeId, key: &str) -> Port {
+    Port {
+        node,
+        key: PortKey::new(key),
+        dir: PortDirection::Out,
+        kind: PortKind::Data,
+        capacity: PortCapacity::Multi,
+        connectable: None,
+        connectable_start: None,
+        connectable_end: None,
+        ty: Some(TypeDesc::Float),
+        data: serde_json::Value::Null,
+    }
+}
+
+fn blueprint_first() -> BlueprintPin {
+    BlueprintPin::new(
+        "roughness",
+        blueprint_first_pin(),
+        "Roughness",
+        TypeDesc::Float,
+    )
+    .unwrap()
+}
+
+fn blueprint_second() -> BlueprintPin {
+    BlueprintPin::new(
+        "metallic",
+        blueprint_second_pin(),
+        "Metallic",
+        TypeDesc::Float,
+    )
+    .unwrap()
+}
+
+fn blueprint_node() -> NodeId {
+    NodeId::from_u128(BLUEPRINT_NODE)
+}
+
+fn blueprint_exec_in() -> PortId {
+    PortId::from_u128(BLUEPRINT_EXEC_IN)
+}
+
+fn blueprint_exec_out() -> PortId {
+    PortId::from_u128(BLUEPRINT_EXEC_OUT)
+}
+
+fn blueprint_value() -> PortId {
+    PortId::from_u128(BLUEPRINT_VALUE)
+}
+
+fn blueprint_first_pin() -> PortId {
+    PortId::from_u128(BLUEPRINT_FIRST_PIN)
+}
+
+fn blueprint_second_pin() -> PortId {
+    PortId::from_u128(BLUEPRINT_SECOND_PIN)
+}
+
+fn blueprint_added_pin() -> PortId {
+    PortId::from_u128(BLUEPRINT_ADDED_PIN)
+}
+
+fn blueprint_source_node() -> NodeId {
+    NodeId::from_u128(BLUEPRINT_SOURCE_NODE)
+}
+
+fn blueprint_source_port() -> PortId {
+    PortId::from_u128(BLUEPRINT_SOURCE_PORT)
+}
+
+fn blueprint_collision_port() -> PortId {
+    PortId::from_u128(BLUEPRINT_COLLISION_PORT)
+}
+
+fn blueprint_edge() -> EdgeId {
+    EdgeId::from_u128(BLUEPRINT_EDGE)
 }

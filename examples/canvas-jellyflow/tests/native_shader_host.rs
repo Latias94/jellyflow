@@ -41,19 +41,21 @@ use open_gpui_canvas_jellyflow::connection_search::{
 };
 use open_gpui_canvas_jellyflow::nodes::{
     BLUEPRINT_ADD_INPUT_SELECTOR, BLUEPRINT_CALL_DEFAULT_SIZE, BLUEPRINT_CALL_KIND,
-    BLUEPRINT_CALL_RENDERER, BLUEPRINT_NODE_SELECTOR, BlueprintPin, BlueprintPinAction,
+    BLUEPRINT_CALL_RENDERER, BLUEPRINT_DISCARD_SELECTOR, BLUEPRINT_NODE_SELECTOR,
     NativeNodeResources, SHADER_MULTIPLY_DEFAULT_SIZE, SHADER_MULTIPLY_KIND,
     SHADER_MULTIPLY_RENDERER, SHADER_NODE_SELECTOR, SHADER_PREVIEW_CONTROL_SELECTOR,
     SHADER_PREVIEW_VALUE_SELECTOR, WORKFLOW_CONDITION_DEFAULT_SIZE, WORKFLOW_CONDITION_KIND,
     WORKFLOW_CONDITION_RENDERER, WORKFLOW_LLM_DEFAULT_SIZE, WORKFLOW_LLM_KIND,
     WORKFLOW_LLM_RENDERER, blueprint_body_selector, blueprint_header_metadata_selector,
     blueprint_header_title_selector, blueprint_pin_down_selector, blueprint_pin_label_selector,
-    blueprint_pin_remove_selector, blueprint_pin_up_selector, blueprint_pins,
-    blueprint_port_label_selector, blueprint_port_selector, native_node_catalog,
-    native_node_registry, plan_blueprint_pin_action, shader_body_selector,
+    blueprint_pin_remove_selector, blueprint_pin_up_selector, blueprint_port_label_selector,
+    blueprint_port_selector, native_node_catalog, native_node_registry, shader_body_selector,
     shader_connected_input_selector, shader_header_metadata_selector, shader_header_title_selector,
     shader_inline_editor_selector, shader_inline_value_selector, shader_port_label_selector,
     shader_port_selector,
+};
+use open_gpui_canvas_jellyflow::product_domain::blueprint::{
+    BlueprintError, BlueprintIntent, BlueprintObservation, BlueprintPin,
 };
 use open_gpui_ui_components::gpui_adapter::init_text_input;
 
@@ -1869,13 +1871,8 @@ fn blueprint_dynamic_pin_keeps_its_port_id_through_one_step_undo_and_redo() {
     let original = runtime.snapshot().expect("original blueprint snapshot");
     let pin = BlueprintPin::new("roughness", dynamic_pin_id(), "roughness", TypeDesc::Float)
         .expect("valid blueprint pin");
-    let command = plan_blueprint_pin_action(
-        &original,
-        blueprint_node_id(),
-        BlueprintPinAction::Add(pin.clone()),
-        IncidentEdgePolicy::Reject,
-    )
-    .expect("blueprint add-pin command");
+    let command = plan_blueprint_intent(&original, BlueprintIntent::add(pin.clone()))
+        .expect("blueprint add-pin command");
 
     runtime
         .execute(command)
@@ -1884,10 +1881,7 @@ fn blueprint_dynamic_pin_keeps_its_port_id_through_one_step_undo_and_redo() {
     let added = runtime.snapshot().expect("added pin snapshot");
     let added_node = added.graph().node(&blueprint_node_id()).unwrap();
     assert_eq!(added_node.ports.last(), Some(&dynamic_pin_id()));
-    assert_eq!(
-        blueprint_pins(&added, blueprint_node_id()).unwrap(),
-        vec![pin.clone()]
-    );
+    assert_eq!(blueprint_pin_snapshot(&added).unwrap(), vec![pin.clone()]);
     let added_port = added.graph().port(&dynamic_pin_id()).expect("dynamic pin");
     assert_eq!(added_port.node, blueprint_node_id());
     assert_eq!(added_port.dir, PortDirection::In);
@@ -1937,8 +1931,8 @@ fn blueprint_connected_pin_reorder_and_remove_are_one_atomic_history_step() {
         BlueprintPin::new("roughness", dynamic_pin_id(), "Roughness", TypeDesc::Float).unwrap();
     let metallic =
         BlueprintPin::new("metallic", sparse_input_1_id(), "Metallic", TypeDesc::Float).unwrap();
-    apply_blueprint_pin_action(&runtime, BlueprintPinAction::Add(roughness.clone()));
-    apply_blueprint_pin_action(&runtime, BlueprintPinAction::Add(metallic.clone()));
+    apply_blueprint_intent(&runtime, BlueprintIntent::add(roughness.clone()));
+    apply_blueprint_intent(&runtime, BlueprintIntent::add(metallic.clone()));
     let version = runtime.snapshot().unwrap().version();
     runtime
         .execute(GraphCommand::connect(
@@ -1950,17 +1944,11 @@ fn blueprint_connected_pin_reorder_and_remove_are_one_atomic_history_step() {
         ))
         .applied_revision()
         .expect("connect dynamic blueprint pin");
-    apply_blueprint_pin_action(
-        &runtime,
-        BlueprintPinAction::Reorder {
-            pin_id: metallic.id().to_owned(),
-            index: 0,
-        },
-    );
+    apply_blueprint_intent(&runtime, BlueprintIntent::reorder(metallic.id(), 0));
 
     let connected = runtime.snapshot().unwrap();
     assert_eq!(
-        blueprint_pins(&connected, blueprint_node_id()).unwrap(),
+        blueprint_pin_snapshot(&connected).unwrap(),
         vec![metallic.clone(), roughness.clone()]
     );
     assert_eq!(
@@ -1973,13 +1961,9 @@ fn blueprint_connected_pin_reorder_and_remove_are_one_atomic_history_step() {
         "reorder must retain connection ownership by stable PortId"
     );
     let history_before_reject = runtime.history_state().unwrap();
-    let reject = plan_blueprint_pin_action(
+    let reject = plan_blueprint_intent(
         &connected,
-        blueprint_node_id(),
-        BlueprintPinAction::Remove {
-            pin_id: roughness.id().to_owned(),
-        },
-        IncidentEdgePolicy::Reject,
+        BlueprintIntent::remove(roughness.id(), IncidentEdgePolicy::Reject),
     )
     .unwrap();
     assert_eq!(
@@ -1990,13 +1974,9 @@ fn blueprint_connected_pin_reorder_and_remove_are_one_atomic_history_step() {
     assert!(connected.ptr_eq(&after_reject));
     assert_eq!(runtime.history_state().unwrap(), history_before_reject);
 
-    let cascade = plan_blueprint_pin_action(
+    let cascade = plan_blueprint_intent(
         &after_reject,
-        blueprint_node_id(),
-        BlueprintPinAction::Remove {
-            pin_id: roughness.id().to_owned(),
-        },
-        IncidentEdgePolicy::Cascade,
+        BlueprintIntent::remove(roughness.id(), IncidentEdgePolicy::Cascade),
     )
     .unwrap();
     runtime
@@ -2005,7 +1985,7 @@ fn blueprint_connected_pin_reorder_and_remove_are_one_atomic_history_step() {
         .expect("cascade dynamic pin removal");
     let removed = runtime.snapshot().unwrap();
     assert_eq!(
-        blueprint_pins(&removed, blueprint_node_id()).unwrap(),
+        blueprint_pin_snapshot(&removed).unwrap(),
         vec![metallic.clone()]
     );
     assert!(removed.graph().port(&roughness.port_id()).is_none());
@@ -2017,7 +1997,7 @@ fn blueprint_connected_pin_reorder_and_remove_are_one_atomic_history_step() {
         .expect("undo atomic pin removal");
     let restored = runtime.snapshot().unwrap();
     assert_eq!(
-        blueprint_pins(&restored, blueprint_node_id()).unwrap(),
+        blueprint_pin_snapshot(&restored).unwrap(),
         vec![metallic.clone(), roughness.clone()]
     );
     assert_eq!(
@@ -2034,10 +2014,7 @@ fn blueprint_connected_pin_reorder_and_remove_are_one_atomic_history_step() {
         .applied_revision()
         .expect("redo atomic pin removal");
     let redone = runtime.snapshot().unwrap();
-    assert_eq!(
-        blueprint_pins(&redone, blueprint_node_id()).unwrap(),
-        vec![metallic]
-    );
+    assert_eq!(blueprint_pin_snapshot(&redone).unwrap(), vec![metallic]);
     assert!(redone.graph().port(&roughness.port_id()).is_none());
     assert!(redone.graph().edge(&blueprint_dynamic_edge_id()).is_none());
 }
@@ -2085,7 +2062,7 @@ fn blueprint_add_input_control_mounts_one_real_dynamic_port_without_remounting(
     let dynamic = *node.ports.last().expect("dynamic port id");
     let dynamic_port = snapshot.graph().port(&dynamic).expect("dynamic real port");
     assert_eq!(dynamic_port.node, blueprint_node_id());
-    let persisted = blueprint_pins(&snapshot, blueprint_node_id()).unwrap();
+    let persisted = blueprint_pin_snapshot(&snapshot).unwrap();
     assert_eq!(persisted.len(), 1);
     assert_eq!(persisted[0].port_id(), dynamic);
     assert_eq!(persisted[0].name(), "input_1");
@@ -2109,8 +2086,8 @@ fn blueprint_native_pin_rows_reorder_remove_and_republish_real_geometry(
     let first = BlueprintPin::new("first", dynamic_pin_id(), "First", TypeDesc::Float).unwrap();
     let second =
         BlueprintPin::new("second", sparse_input_1_id(), "Second", TypeDesc::Float).unwrap();
-    apply_blueprint_pin_action(&runtime, BlueprintPinAction::Add(first.clone()));
-    apply_blueprint_pin_action(&runtime, BlueprintPinAction::Add(second.clone()));
+    apply_blueprint_intent(&runtime, BlueprintIntent::add(first.clone()));
+    apply_blueprint_intent(&runtime, BlueprintIntent::add(second.clone()));
     let view = runtime
         .attach_view(ViewSessionOptions::default())
         .expect("blueprint row view");
@@ -2150,7 +2127,7 @@ fn blueprint_native_pin_rows_reorder_remove_and_republish_real_geometry(
     draw(cx);
     draw(cx);
     assert_eq!(
-        blueprint_pins(&runtime.snapshot().unwrap(), blueprint_node_id()).unwrap(),
+        blueprint_pin_snapshot(&runtime.snapshot().unwrap()).unwrap(),
         vec![second.clone(), first.clone()]
     );
 
@@ -2164,7 +2141,7 @@ fn blueprint_native_pin_rows_reorder_remove_and_republish_real_geometry(
     draw(cx);
     draw(cx);
     assert_eq!(
-        blueprint_pins(&runtime.snapshot().unwrap(), blueprint_node_id()).unwrap(),
+        blueprint_pin_snapshot(&runtime.snapshot().unwrap()).unwrap(),
         vec![first.clone(), second.clone()]
     );
 
@@ -2179,7 +2156,7 @@ fn blueprint_native_pin_rows_reorder_remove_and_republish_real_geometry(
     draw(cx);
     let removed = runtime.snapshot().unwrap();
     assert_eq!(
-        blueprint_pins(&removed, blueprint_node_id()).unwrap(),
+        blueprint_pin_snapshot(&removed).unwrap(),
         vec![second.clone()]
     );
     assert!(removed.graph().port(&first.port_id()).is_none());
@@ -2248,11 +2225,7 @@ fn blueprint_rejected_add_requires_explicit_retry_and_never_resubmits_from_rende
         rejected.graph().node(&blueprint_node_id()).unwrap().data,
         baseline_data,
     );
-    assert!(
-        blueprint_pins(&rejected, blueprint_node_id())
-            .unwrap()
-            .is_empty()
-    );
+    assert!(blueprint_pin_snapshot(&rejected).unwrap().is_empty());
     assert_eq!(runtime.history_state().unwrap(), baseline_history);
     assert!(
         cx.debug_bounds(BLUEPRINT_COMMAND_DIAGNOSTIC_SELECTOR)
@@ -2269,11 +2242,7 @@ fn blueprint_rejected_add_requires_explicit_retry_and_never_resubmits_from_rende
         stable.graph().node(&blueprint_node_id()).unwrap().ports,
         baseline_ports
     );
-    assert!(
-        blueprint_pins(&stable, blueprint_node_id())
-            .unwrap()
-            .is_empty()
-    );
+    assert!(blueprint_pin_snapshot(&stable).unwrap().is_empty());
     assert_eq!(runtime.history_state().unwrap(), baseline_history);
 
     cx.simulate_click(retry.center(), Default::default());
@@ -2284,13 +2253,105 @@ fn blueprint_rejected_add_requires_explicit_retry_and_never_resubmits_from_rende
         retried.graph().node(&blueprint_node_id()).unwrap().ports,
         baseline_ports
     );
-    assert!(
-        blueprint_pins(&retried, blueprint_node_id())
-            .unwrap()
-            .is_empty()
-    );
+    assert!(blueprint_pin_snapshot(&retried).unwrap().is_empty());
     assert_eq!(runtime.history_state().unwrap(), baseline_history);
     assert!(cx.debug_bounds(BLUEPRINT_RETRY_SELECTOR).is_some());
+}
+
+#[open_gpui::test]
+fn blueprint_unparseable_observation_drains_completion_and_allows_explicit_discard(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let runtime = Rc::new(native_runtime(blueprint_graph()).expect("blueprint runtime"));
+    let host_view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("Blueprint host view");
+    let remote_view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("Blueprint remote view");
+    let (host, cx) = cx.add_window_view(move |_, cx| {
+        OpenGpuiSceneHost::new(host_view, native_registry(cx), blueprint_viewport())
+    });
+    draw(cx);
+
+    let remote_snapshot = remote_view.graph_snapshot().unwrap();
+    let mut malformed_data = remote_snapshot
+        .graph()
+        .node(&blueprint_node_id())
+        .unwrap()
+        .data
+        .clone();
+    malformed_data["pins"] = serde_json::json!("not-an-array");
+    let remote_update = GraphCommand::set_node_data(
+        remote_snapshot.version(),
+        blueprint_node_id(),
+        malformed_data.clone(),
+    );
+    let _interleave_remote_command = cx.update(|_, cx| {
+        let mut remote_update = Some(remote_update);
+        cx.observe(&host, move |_, _| {
+            let Some(remote_update) = remote_update.take() else {
+                return;
+            };
+            remote_view
+                .execute(remote_update)
+                .unwrap()
+                .applied_revision()
+                .expect("remote malformed Blueprint data applies before the local command");
+        })
+    });
+
+    let add = cx
+        .debug_bounds(BLUEPRINT_ADD_INPUT_SELECTOR)
+        .expect("local add before malformed remote update");
+    cx.simulate_click(add.center(), Default::default());
+    draw(cx);
+    draw(cx);
+
+    assert!(
+        cx.debug_bounds(BLUEPRINT_DISCARD_SELECTOR).is_some(),
+        "definitive completion remains explicitly discardable when Blueprint facts cannot parse"
+    );
+    assert!(cx.debug_bounds(BLUEPRINT_RETRY_SELECTOR).is_none());
+    let before_discard = runtime.snapshot().unwrap();
+    let before_discard_history = runtime.history_state().unwrap();
+    assert_eq!(
+        before_discard
+            .graph()
+            .node(&blueprint_node_id())
+            .unwrap()
+            .data,
+        malformed_data
+    );
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(host.resource_snapshot().protected_instances(), 1);
+        assert_eq!(host.resource_snapshot().protected_leases(), 1);
+    });
+
+    let discard = cx
+        .debug_bounds(BLUEPRINT_DISCARD_SELECTOR)
+        .expect("discard unavailable Blueprint mutation");
+    cx.simulate_click(discard.center(), Default::default());
+    draw(cx);
+    draw(cx);
+
+    assert!(cx.debug_bounds(BLUEPRINT_DISCARD_SELECTOR).is_none());
+    assert_eq!(
+        runtime
+            .snapshot()
+            .unwrap()
+            .graph()
+            .node(&blueprint_node_id())
+            .unwrap()
+            .data,
+        malformed_data,
+        "discard only releases local mutation supervision"
+    );
+    assert_eq!(runtime.history_state().unwrap(), before_discard_history);
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(host.resource_snapshot().protected_instances(), 0);
+        assert_eq!(host.resource_snapshot().protected_leases(), 0);
+    });
 }
 
 #[open_gpui::test]
@@ -2389,9 +2450,9 @@ fn blueprint_semantic_zoom_preserves_sparse_dynamic_port_geometry_without_remoun
 ) {
     let runtime = native_runtime(blueprint_graph()).expect("blueprint semantic zoom runtime");
     prepare_sparse_blueprint_inputs(&runtime);
-    apply_blueprint_pin_action(
+    apply_blueprint_intent(
         &runtime,
-        BlueprintPinAction::Add(
+        BlueprintIntent::add(
             BlueprintPin::new("roughness", dynamic_pin_id(), "roughness", TypeDesc::Float)
                 .expect("valid named dynamic pin"),
         ),
@@ -2563,7 +2624,7 @@ fn assert_shader_layout_contract(
         TypeDesc::Float,
     )
     .expect("valid long Blueprint layout pin");
-    apply_blueprint_pin_action(&runtime, BlueprintPinAction::Add(long_pin.clone()));
+    apply_blueprint_intent(&runtime, BlueprintIntent::add(long_pin.clone()));
     let view = runtime
         .attach_view(ViewSessionOptions::default())
         .expect("shader layout view");
@@ -3243,25 +3304,19 @@ fn sparse_input_2_id() -> PortId {
     PortId::from_u128(0x6216)
 }
 
-fn apply_blueprint_pin_action(runtime: &GraphRuntime, action: BlueprintPinAction) {
+fn apply_blueprint_intent(runtime: &GraphRuntime, intent: BlueprintIntent) {
     let snapshot = runtime.snapshot().expect("blueprint action snapshot");
-    let command = plan_blueprint_pin_action(
-        &snapshot,
-        blueprint_node_id(),
-        action,
-        IncidentEdgePolicy::Reject,
-    )
-    .expect("blueprint pin action command");
+    let command = plan_blueprint_intent(&snapshot, intent).expect("blueprint pin intent command");
     runtime
         .execute(command)
         .applied_revision()
-        .expect("blueprint pin action applies");
+        .expect("blueprint pin intent applies");
 }
 
 fn prepare_sparse_blueprint_inputs(runtime: &GraphRuntime) {
-    apply_blueprint_pin_action(
+    apply_blueprint_intent(
         runtime,
-        BlueprintPinAction::Add(
+        BlueprintIntent::add(
             BlueprintPin::new(
                 "sparse-input-1",
                 sparse_input_1_id(),
@@ -3271,9 +3326,9 @@ fn prepare_sparse_blueprint_inputs(runtime: &GraphRuntime) {
             .expect("valid first sparse pin"),
         ),
     );
-    apply_blueprint_pin_action(
+    apply_blueprint_intent(
         runtime,
-        BlueprintPinAction::Add(
+        BlueprintIntent::add(
             BlueprintPin::new(
                 "sparse-input-2",
                 sparse_input_2_id(),
@@ -3283,12 +3338,24 @@ fn prepare_sparse_blueprint_inputs(runtime: &GraphRuntime) {
             .expect("valid second sparse pin"),
         ),
     );
-    apply_blueprint_pin_action(
+    apply_blueprint_intent(
         runtime,
-        BlueprintPinAction::Remove {
-            pin_id: "sparse-input-1".to_owned(),
-        },
+        BlueprintIntent::remove("sparse-input-1", IncidentEdgePolicy::Reject),
     );
+}
+
+fn blueprint_pin_snapshot(
+    snapshot: &jellyflow_runtime::graph::GraphSnapshot,
+) -> Result<Vec<BlueprintPin>, BlueprintError> {
+    BlueprintObservation::from_snapshot(snapshot, blueprint_node_id())
+        .map(|observation| observation.pins().to_vec())
+}
+
+fn plan_blueprint_intent(
+    snapshot: &jellyflow_runtime::graph::GraphSnapshot,
+    intent: BlueprintIntent,
+) -> Result<GraphCommand, BlueprintError> {
+    BlueprintObservation::from_snapshot(snapshot, blueprint_node_id())?.plan(&intent)
 }
 
 fn shader_node_data() -> serde_json::Value {

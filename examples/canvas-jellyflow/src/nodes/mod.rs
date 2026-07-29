@@ -1,7 +1,6 @@
 //! Retained native node entities used by the Open GPUI product example.
 
 mod shader;
-mod topology_attempt;
 mod workflow;
 
 use jellyflow_open_gpui::activity::{
@@ -74,20 +73,19 @@ impl Default for NativeGraphVisualProfile {
 
 pub use shader::{
     BLUEPRINT_ADD_INPUT_SELECTOR, BLUEPRINT_CALL_DEFAULT_SIZE, BLUEPRINT_CALL_KIND,
-    BLUEPRINT_CALL_RENDERER, BLUEPRINT_NODE_SELECTOR, BlueprintCallNode, BlueprintPin,
-    BlueprintPinAction, SHADER_FACTOR_FIELD, SHADER_FLOAT_STYLE_SLOT, SHADER_MULTIPLY_DEFAULT_SIZE,
+    BLUEPRINT_CALL_RENDERER, BLUEPRINT_DISCARD_SELECTOR, BLUEPRINT_NODE_SELECTOR,
+    BlueprintCallNode, SHADER_FACTOR_FIELD, SHADER_FLOAT_STYLE_SLOT, SHADER_MULTIPLY_DEFAULT_SIZE,
     SHADER_MULTIPLY_KIND, SHADER_MULTIPLY_RENDERER, SHADER_NODE_SELECTOR,
     SHADER_PREVIEW_CONTROL_SELECTOR, SHADER_PREVIEW_VALUE_SELECTOR, ShaderFieldStore,
     ShaderMultiplyNode, ShaderNodeError, blueprint_body_selector,
     blueprint_header_metadata_selector, blueprint_header_title_selector,
     blueprint_pin_down_selector, blueprint_pin_label_selector, blueprint_pin_remove_selector,
     blueprint_pin_row_selector, blueprint_pin_scroll_selector, blueprint_pin_up_selector,
-    blueprint_pins, blueprint_port_label_selector, blueprint_port_selector,
-    plan_blueprint_pin_action, shader_body_selector, shader_connected_input_selector,
-    shader_factor_accept_remote_selector, shader_factor_conflict_selector,
-    shader_factor_reapply_selector, shader_header_metadata_selector, shader_header_title_selector,
-    shader_inline_editor_selector, shader_inline_value_selector, shader_port_label_selector,
-    shader_port_selector,
+    blueprint_port_label_selector, blueprint_port_selector, shader_body_selector,
+    shader_connected_input_selector, shader_factor_accept_remote_selector,
+    shader_factor_conflict_selector, shader_factor_reapply_selector,
+    shader_header_metadata_selector, shader_header_title_selector, shader_inline_editor_selector,
+    shader_inline_value_selector, shader_port_label_selector, shader_port_selector,
 };
 pub use workflow::{
     WORKFLOW_CONDITION_DEFAULT_SIZE, WORKFLOW_CONDITION_KIND, WORKFLOW_CONDITION_RENDERER,
