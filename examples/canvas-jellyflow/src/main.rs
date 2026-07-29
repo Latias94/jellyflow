@@ -13,7 +13,8 @@ use open_gpui::{
     WindowBounds, WindowOptions, div, px, size,
 };
 use open_gpui_canvas_jellyflow::NativeProductTheme;
-use open_gpui_canvas_jellyflow::blackboard::{GraphRuntimeBlackboardSource, NativeBlackboard};
+use open_gpui_canvas_jellyflow::blackboard::NativeBlackboard;
+use open_gpui_canvas_jellyflow::product_domain::blackboard::GraphRuntimeBlackboardSource;
 use open_gpui_canvas_jellyflow::connection_search::NativeGraphSurface;
 use open_gpui_canvas_jellyflow::nodes::{
     NativeGraphVisualProfile, NativeNodeResources, ShaderFieldStore, WorkflowFieldStore,

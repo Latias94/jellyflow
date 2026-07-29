@@ -4,17 +4,20 @@ use std::rc::Rc;
 
 use jellyflow_core::types::TypeDesc;
 use jellyflow_core::{GraphBuilder, GraphId, Symbol, SymbolId};
-use jellyflow_runtime::commands::{CommandExecutionCompletion, GraphCommand};
+use jellyflow_runtime::commands::GraphCommand;
 use jellyflow_runtime::graph::GraphRuntime;
 use open_gpui::{AppContext, ScrollDelta, ScrollWheelEvent, TouchPhase, point};
 use open_gpui_canvas_jellyflow::blackboard::{
-    BlackboardCommandError, BlackboardResourceStatus, BlackboardSource, BlackboardSourceCallback,
-    BlackboardSourceError, BlackboardSourceInvalidation, BlackboardSourceSnapshot,
-    BlackboardSourceSubscription, GraphRuntimeBlackboardSource, NativeBlackboard,
-    blackboard_empty_selector, blackboard_failed_selector, blackboard_loading_selector,
-    blackboard_retry_selector, blackboard_scroll_selector,
+    BlackboardResourceStatus, NativeBlackboard, blackboard_empty_selector,
+    blackboard_failed_selector, blackboard_loading_selector, blackboard_retry_selector,
+    blackboard_scroll_selector,
     blackboard_symbol_accept_remote_selector, blackboard_symbol_apply_selector,
     blackboard_symbol_name_selector,
+};
+use open_gpui_canvas_jellyflow::product_domain::blackboard::{
+    BlackboardDispatchOutcome, BlackboardSource, BlackboardSourceCallback, BlackboardSourceError,
+    BlackboardSourceInvalidation, BlackboardSourceSnapshot, BlackboardSourceSubscription,
+    GraphRuntimeBlackboardSource,
 };
 use open_gpui_ui_components::gpui_adapter::init_text_input;
 
@@ -170,6 +173,53 @@ fn failed_blackboard_source_waits_for_explicit_retry_before_loading_symbols(
 
     assert_eq!(source.attempts(), 2);
     assert!(cx.debug_bounds(blackboard_failed_selector()).is_none());
+    assert!(
+        cx.debug_bounds(&blackboard_symbol_name_selector(symbol_id))
+            .is_some()
+    );
+}
+
+#[open_gpui::test]
+fn callback_from_retired_source_attempt_cannot_refresh_its_successor(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    cx.update(init_text_input);
+    let symbol_id = SymbolId::from_u128(0xb1ac_0011);
+    let graph = GraphBuilder::new(GraphId::from_u128(0xb1b8))
+        .with_symbol(symbol_id, symbol("successor"))
+        .build()
+        .expect("valid successor source graph");
+    let runtime = Rc::new(
+        GraphRuntime::builder(Default::default())
+            .build(graph)
+            .expect("successor source runtime"),
+    );
+    let source = Rc::new(LateCallbackBlackboardSource::new(runtime));
+    let panel_source: Rc<dyn BlackboardSource> = source.clone();
+    let (_blackboard, cx) = cx.add_window_view(move |_, _| NativeBlackboard::new(panel_source));
+
+    draw(cx);
+    assert!(cx.debug_bounds(blackboard_failed_selector()).is_some());
+    assert_eq!(source.snapshot_calls(), 1);
+
+    let retry = cx
+        .debug_bounds(blackboard_retry_selector())
+        .expect("failed predecessor exposes retry");
+    cx.simulate_click(retry.center(), Default::default());
+    draw(cx);
+    assert_eq!(source.snapshot_calls(), 2);
+    assert!(
+        cx.debug_bounds(&blackboard_symbol_name_selector(symbol_id))
+            .is_some()
+    );
+
+    source.publish_from_attempt(0);
+    draw(cx);
+    assert_eq!(
+        source.snapshot_calls(),
+        2,
+        "a predecessor callback must not poll or mutate the active source attempt"
+    );
     assert!(
         cx.debug_bounds(&blackboard_symbol_name_selector(symbol_id))
             .is_some()
@@ -635,6 +685,60 @@ fn uncertain_blackboard_command_stays_single_flight_until_authoritative_refresh(
 }
 
 #[open_gpui::test]
+fn rejected_blackboard_source_requires_an_explicit_retry_before_dispatch(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    cx.update(init_text_input);
+    let symbol_id = SymbolId::from_u128(0xb1ac_0010);
+    let graph = GraphBuilder::new(GraphId::from_u128(0xb1b7))
+        .with_symbol(symbol_id, symbol("base"))
+        .build()
+        .expect("valid rejected blackboard graph");
+    let runtime = Rc::new(
+        GraphRuntime::builder(Default::default())
+            .build(graph)
+            .expect("rejected blackboard runtime"),
+    );
+    let source = Rc::new(RejectOnceBlackboardSource::new(Rc::clone(&runtime)));
+    let panel_source: Rc<dyn BlackboardSource> = source.clone();
+    let (_blackboard, cx) = cx.add_window_view(move |_, _| NativeBlackboard::new(panel_source));
+    draw(cx);
+
+    let name = cx
+        .debug_bounds(&blackboard_symbol_name_selector(symbol_id))
+        .expect("rejected symbol name input");
+    cx.simulate_click(name.center(), Default::default());
+    cx.simulate_keystrokes("end");
+    cx.simulate_input(" local");
+    draw(cx);
+
+    let apply_selector = blackboard_symbol_apply_selector(symbol_id);
+    let apply = cx
+        .debug_bounds(&apply_selector)
+        .expect("initial rejected source apply");
+    cx.simulate_click(apply.center(), Default::default());
+    draw(cx);
+    assert_eq!(source.execute_calls(), 1);
+    assert_eq!(runtime.snapshot().unwrap().revision(), 0);
+    assert_eq!(
+        runtime.snapshot().unwrap().graph().symbol(&symbol_id).unwrap().name,
+        "base"
+    );
+
+    let retry = cx
+        .debug_bounds(&apply_selector)
+        .expect("explicit source retry remains available");
+    cx.simulate_click(retry.center(), Default::default());
+    draw(cx);
+    assert_eq!(source.execute_calls(), 2);
+    assert_eq!(runtime.snapshot().unwrap().revision(), 1);
+    assert_eq!(
+        runtime.snapshot().unwrap().graph().symbol(&symbol_id).unwrap().name,
+        "base local"
+    );
+}
+
+#[open_gpui::test]
 fn coalesced_remove_and_readd_does_not_restore_the_removed_symbol_draft(
     cx: &mut open_gpui::TestAppContext,
 ) {
@@ -751,6 +855,57 @@ fn closing_blackboard_window_releases_its_source_subscription(cx: &mut open_gpui
 
 type BlackboardCallbackSlot = Rc<RefCell<Option<BlackboardSourceCallback>>>;
 
+struct LateCallbackBlackboardSource {
+    runtime: Rc<GraphRuntime>,
+    callbacks: Rc<RefCell<Vec<BlackboardSourceCallback>>>,
+    snapshot_calls: Cell<usize>,
+}
+
+impl LateCallbackBlackboardSource {
+    fn new(runtime: Rc<GraphRuntime>) -> Self {
+        Self {
+            runtime,
+            callbacks: Rc::default(),
+            snapshot_calls: Cell::new(0),
+        }
+    }
+
+    fn snapshot_calls(&self) -> usize {
+        self.snapshot_calls.get()
+    }
+
+    fn publish_from_attempt(&self, attempt: usize) {
+        self.callbacks.borrow()[attempt](BlackboardSourceInvalidation::refresh());
+    }
+}
+
+impl BlackboardSource for LateCallbackBlackboardSource {
+    fn subscribe(
+        &self,
+        callback: BlackboardSourceCallback,
+    ) -> Result<BlackboardSourceSubscription, BlackboardSourceError> {
+        self.callbacks.borrow_mut().push(callback);
+        Ok(BlackboardSourceSubscription::new(|| {}))
+    }
+
+    fn snapshot(&self) -> Result<BlackboardSourceSnapshot, BlackboardSourceError> {
+        let calls = self.snapshot_calls.get().saturating_add(1);
+        self.snapshot_calls.set(calls);
+        if calls == 1 {
+            Err(BlackboardSourceError::new("predecessor source failed"))
+        } else {
+            self.runtime
+                .snapshot()
+                .map(BlackboardSourceSnapshot::Ready)
+                .map_err(|error| BlackboardSourceError::new(error.to_string()))
+        }
+    }
+
+    fn execute(&self, command: GraphCommand) -> BlackboardDispatchOutcome {
+        BlackboardDispatchOutcome::completed(self.runtime.execute(command))
+    }
+}
+
 struct ControlledBlackboardSource {
     runtime: Rc<GraphRuntime>,
     subscribe_outcomes: RefCell<VecDeque<Option<&'static str>>>,
@@ -819,8 +974,8 @@ impl BlackboardSource for ControlledBlackboardSource {
     fn execute(
         &self,
         command: GraphCommand,
-    ) -> Result<CommandExecutionCompletion, BlackboardCommandError> {
-        Ok(self.runtime.execute(command))
+    ) -> BlackboardDispatchOutcome {
+        BlackboardDispatchOutcome::completed(self.runtime.execute(command))
     }
 }
 
@@ -908,8 +1063,8 @@ impl BlackboardSource for FaultInjectingBlackboardSource {
     fn execute(
         &self,
         command: GraphCommand,
-    ) -> Result<CommandExecutionCompletion, BlackboardCommandError> {
-        Ok(self.runtime.execute(command))
+    ) -> BlackboardDispatchOutcome {
+        BlackboardDispatchOutcome::completed(self.runtime.execute(command))
     }
 }
 
@@ -918,6 +1073,56 @@ struct UncertainCommitBlackboardSource {
     visible: RefCell<jellyflow_runtime::graph::GraphSnapshot>,
     callback: BlackboardCallbackSlot,
     execute_calls: Cell<usize>,
+}
+
+struct RejectOnceBlackboardSource {
+    runtime: Rc<GraphRuntime>,
+    callback: BlackboardCallbackSlot,
+    execute_calls: Cell<usize>,
+}
+
+impl RejectOnceBlackboardSource {
+    fn new(runtime: Rc<GraphRuntime>) -> Self {
+        Self {
+            runtime,
+            callback: Rc::default(),
+            execute_calls: Cell::new(0),
+        }
+    }
+
+    fn execute_calls(&self) -> usize {
+        self.execute_calls.get()
+    }
+}
+
+impl BlackboardSource for RejectOnceBlackboardSource {
+    fn subscribe(
+        &self,
+        callback: BlackboardSourceCallback,
+    ) -> Result<BlackboardSourceSubscription, BlackboardSourceError> {
+        *self.callback.borrow_mut() = Some(callback);
+        let callback = Rc::clone(&self.callback);
+        Ok(BlackboardSourceSubscription::new(move || {
+            callback.borrow_mut().take();
+        }))
+    }
+
+    fn snapshot(&self) -> Result<BlackboardSourceSnapshot, BlackboardSourceError> {
+        self.runtime
+            .snapshot()
+            .map(BlackboardSourceSnapshot::Ready)
+            .map_err(|error| BlackboardSourceError::new(error.to_string()))
+    }
+
+    fn execute(&self, command: GraphCommand) -> BlackboardDispatchOutcome {
+        let calls = self.execute_calls.get().saturating_add(1);
+        self.execute_calls.set(calls);
+        if calls == 1 {
+            BlackboardDispatchOutcome::not_dispatched("source refused dispatch")
+        } else {
+            BlackboardDispatchOutcome::completed(self.runtime.execute(command))
+        }
+    }
 }
 
 impl UncertainCommitBlackboardSource {
@@ -969,13 +1174,11 @@ impl BlackboardSource for UncertainCommitBlackboardSource {
     fn execute(
         &self,
         command: GraphCommand,
-    ) -> Result<CommandExecutionCompletion, BlackboardCommandError> {
+    ) -> BlackboardDispatchOutcome {
         self.execute_calls
             .set(self.execute_calls.get().saturating_add(1));
         let _completion = self.runtime.execute(command);
-        Err(BlackboardCommandError::new(
-            "transport failed after dispatch",
-        ))
+        BlackboardDispatchOutcome::uncertain("transport failed after dispatch")
     }
 }
 

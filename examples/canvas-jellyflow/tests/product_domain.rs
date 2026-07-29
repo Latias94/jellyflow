@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use jellyflow_core::{
     CanvasPoint, Edge, EdgeId, EdgeKind, Graph, GraphBuilder, GraphId, Node, NodeId, NodeKindKey,
-    Port, PortCapacity, PortDirection, PortId, PortKey, PortKind, TypeDesc,
+    Port, PortCapacity, PortDirection, PortId, PortKey, PortKind, Symbol, SymbolId, TypeDesc,
 };
 use jellyflow_runtime::commands::{CommandExecutionKind, GraphCommand, IncidentEdgePolicy};
 use jellyflow_runtime::graph::{GraphRuntime, GraphSnapshot};
@@ -11,6 +11,11 @@ use jellyflow_runtime::view::ViewSessionOptions;
 use open_gpui_canvas_jellyflow::product_domain::blueprint::{
     BLUEPRINT_CALL_KIND, BlueprintError, BlueprintIntent, BlueprintObservation, BlueprintPin,
     blueprint_default_data,
+};
+use open_gpui_canvas_jellyflow::product_domain::blackboard::{
+    BlackboardApplyAction, BlackboardAuthoring, BlackboardDispatchOutcome, BlackboardDraftPhase,
+    BlackboardError, BlackboardIntent, BlackboardObservation, BlackboardRetryReason,
+    BlackboardSubmissionPhase, BlackboardSymbol,
 };
 use open_gpui_canvas_jellyflow::product_domain::condition::{
     CONDITION_ELSE_PORT_KEY, CONDITION_INPUT_PORT_KEY, CONDITION_KIND, ConditionCase,
@@ -33,6 +38,397 @@ const DATA_SOURCE_NODE: u128 = 0xc011_d17b;
 const DATA_SOURCE_OUTPUT: u128 = 0xc011_d17c;
 const CONNECTED_DATA_EDGE: u128 = 0xc011_d17d;
 const CASE_VALUE_PORT_OFFSET: u128 = 0x100;
+const BLACKBOARD_GRAPH: u128 = 0xb1ac_d001;
+const BLACKBOARD_PRIMARY: u128 = 0xb1ac_d002;
+const BLACKBOARD_OTHER: u128 = 0xb1ac_d003;
+const BLACKBOARD_ADDED: u128 = 0xb1ac_d004;
+
+#[test]
+fn blackboard_intents_validate_and_plan_atomic_add_update_remove_commands() {
+    let runtime = blackboard_runtime();
+    let initial = runtime.snapshot().unwrap();
+    let observation = BlackboardObservation::from_snapshot(&initial).unwrap();
+    let added = BlackboardSymbol::new(
+        "temperature",
+        Some(TypeDesc::Float),
+        Some(serde_json::json!(0.5)),
+        serde_json::json!({ "group": "material" }),
+    )
+    .unwrap();
+    let add = BlackboardIntent::add(blackboard_added(), added.clone());
+    assert!(!observation.satisfies(&add));
+    assert_eq!(
+        runtime.execute(observation.plan(&add).unwrap()).kind(),
+        CommandExecutionKind::Applied
+    );
+
+    let after_add = runtime.snapshot().unwrap();
+    let added_observation = BlackboardObservation::from_snapshot(&after_add).unwrap();
+    assert!(added_observation.satisfies(&add));
+    let rename = BlackboardIntent::update_name(blackboard_added(), " temperature_c ").unwrap();
+    assert_eq!(
+        runtime
+            .execute(added_observation.plan(&rename).unwrap())
+            .kind(),
+        CommandExecutionKind::Applied
+    );
+    let renamed = runtime.snapshot().unwrap();
+    let renamed_observation = BlackboardObservation::from_snapshot(&renamed).unwrap();
+    assert!(renamed_observation.satisfies(&rename));
+    let renamed_symbol = renamed.graph().symbol(&blackboard_added()).unwrap();
+    assert_eq!(renamed_symbol.name, "temperature_c");
+    assert_eq!(renamed_symbol.ty, Some(TypeDesc::Float));
+    assert_eq!(renamed_symbol.default_value, Some(serde_json::json!(0.5)));
+    assert_eq!(renamed_symbol.meta, serde_json::json!({ "group": "material" }));
+
+    let remove = BlackboardIntent::remove(blackboard_added());
+    assert_eq!(
+        runtime
+            .execute(renamed_observation.plan(&remove).unwrap())
+            .kind(),
+        CommandExecutionKind::Applied
+    );
+    assert!(
+        BlackboardObservation::from_snapshot(&runtime.snapshot().unwrap())
+            .unwrap()
+            .satisfies(&remove)
+    );
+    assert_eq!(runtime.history_state().unwrap().undo_len(), 3);
+
+    assert_eq!(
+        BlackboardSymbol::new("  ", None, None, serde_json::Value::Null),
+        Err(BlackboardError::EmptySymbolName)
+    );
+    assert_eq!(
+        BlackboardIntent::update_name(blackboard_primary(), "\t"),
+        Err(BlackboardError::EmptySymbolName)
+    );
+    assert!(matches!(
+        observation.plan(&BlackboardIntent::remove(blackboard_added())),
+        Err(BlackboardError::MissingSymbol { symbol }) if symbol == blackboard_added()
+    ));
+}
+
+#[test]
+fn stale_blackboard_draft_preserves_local_value_until_explicit_reapply() {
+    let runtime = blackboard_runtime();
+    let initial = runtime.snapshot().unwrap();
+    let initial_observation = BlackboardObservation::from_snapshot(&initial).unwrap();
+    let mut authoring = BlackboardAuthoring::new();
+    authoring.observe(&initial_observation).unwrap();
+    authoring
+        .edit_name(
+            &initial_observation,
+            blackboard_primary(),
+            "local winner".to_owned(),
+        )
+        .unwrap();
+
+    let remote = Symbol {
+        name: "remote winner".to_owned(),
+        ..blackboard_symbol("exposure")
+    };
+    assert_eq!(
+        runtime
+            .execute(GraphCommand::symbols(
+                initial.version(),
+                jellyflow_runtime::commands::SymbolEdit::new()
+                    .update(blackboard_primary(), remote),
+            ))
+            .kind(),
+        CommandExecutionKind::Applied
+    );
+    let conflicted_snapshot = runtime.snapshot().unwrap();
+    let conflicted = BlackboardObservation::from_snapshot(&conflicted_snapshot).unwrap();
+    authoring.observe(&conflicted).unwrap();
+    let projection = authoring
+        .projection(&conflicted, blackboard_primary())
+        .unwrap();
+    assert_eq!(projection.value(), "local winner");
+    assert_eq!(projection.phase(), BlackboardDraftPhase::Conflict);
+    assert!(projection.can_accept_remote());
+    assert_eq!(
+        projection.apply_action(),
+        Some(BlackboardApplyAction::Reapply)
+    );
+
+    let submission = authoring
+        .plan_name(
+            &conflicted,
+            blackboard_primary(),
+            BlackboardApplyAction::Reapply,
+        )
+        .unwrap();
+    let completion = runtime.execute(submission.command().clone());
+    assert_eq!(completion.kind(), CommandExecutionKind::Applied);
+    authoring
+        .complete(
+            submission,
+            BlackboardDispatchOutcome::completed(completion),
+        )
+        .unwrap();
+    let reapplied_snapshot = runtime.snapshot().unwrap();
+    let reapplied = BlackboardObservation::from_snapshot(&reapplied_snapshot).unwrap();
+    assert!(authoring.observe(&reapplied).unwrap().became_satisfied());
+    let projection = authoring
+        .projection(&reapplied, blackboard_primary())
+        .unwrap();
+    assert_eq!(projection.phase(), BlackboardDraftPhase::Clean);
+    assert_eq!(projection.value(), "local winner");
+    assert_eq!(runtime.history_state().unwrap().undo_len(), 2);
+}
+
+#[test]
+fn blackboard_source_rejection_runtime_conflict_and_uncertainty_are_distinct() {
+    let runtime = blackboard_runtime();
+    let initial = runtime.snapshot().unwrap();
+    let initial_observation = BlackboardObservation::from_snapshot(&initial).unwrap();
+
+    let mut rejected = BlackboardAuthoring::new();
+    rejected.observe(&initial_observation).unwrap();
+    rejected
+        .edit_name(
+            &initial_observation,
+            blackboard_primary(),
+            "rejected local".to_owned(),
+        )
+        .unwrap();
+    let rejected_submission = rejected
+        .plan_name(
+            &initial_observation,
+            blackboard_primary(),
+            BlackboardApplyAction::Commit,
+        )
+        .unwrap();
+    assert!(
+        !rejected
+            .complete(
+                rejected_submission,
+                BlackboardDispatchOutcome::not_dispatched("source refused dispatch"),
+            )
+            .unwrap()
+            .became_satisfied()
+    );
+    rejected.observe(&initial_observation).unwrap();
+    let rejected_projection = rejected
+        .projection(&initial_observation, blackboard_primary())
+        .unwrap();
+    assert_eq!(rejected_projection.phase(), BlackboardDraftPhase::Edited);
+    assert_eq!(
+        rejected_projection.submission_phase(),
+        BlackboardSubmissionPhase::Retryable
+    );
+    assert_eq!(
+        rejected_projection.apply_action(),
+        Some(BlackboardApplyAction::Retry)
+    );
+    assert!(!rejected_projection.can_accept_remote());
+    assert_eq!(rejected_projection.notice(), Some("source refused dispatch"));
+    rejected
+        .edit_name(
+            &initial_observation,
+            blackboard_primary(),
+            "exposure".to_owned(),
+        )
+        .unwrap();
+    let reverted = rejected
+        .projection(&initial_observation, blackboard_primary())
+        .unwrap();
+    assert_eq!(reverted.phase(), BlackboardDraftPhase::Clean);
+    assert_eq!(reverted.apply_action(), None);
+    assert!(reverted.can_discard_submission());
+    rejected
+        .discard_submission(&initial_observation, blackboard_primary())
+        .unwrap();
+    let discarded = rejected
+        .projection(&initial_observation, blackboard_primary())
+        .unwrap();
+    assert_eq!(discarded.submission_phase(), BlackboardSubmissionPhase::Idle);
+    assert!(!discarded.can_discard_submission());
+
+    let mut conflicted = BlackboardAuthoring::new();
+    conflicted.observe(&initial_observation).unwrap();
+    conflicted
+        .edit_name(
+            &initial_observation,
+            blackboard_primary(),
+            "conflicted local".to_owned(),
+        )
+        .unwrap();
+    let conflict_submission = conflicted
+        .plan_name(
+            &initial_observation,
+            blackboard_primary(),
+            BlackboardApplyAction::Commit,
+        )
+        .unwrap();
+    let unrelated = Symbol {
+        name: "other changed".to_owned(),
+        ..blackboard_symbol("other")
+    };
+    assert_eq!(
+        runtime
+            .execute(GraphCommand::symbols(
+                initial.version(),
+                jellyflow_runtime::commands::SymbolEdit::new()
+                    .update(blackboard_other(), unrelated),
+            ))
+            .kind(),
+        CommandExecutionKind::Applied
+    );
+    let completion = runtime.execute(conflict_submission.command().clone());
+    assert_eq!(completion.kind(), CommandExecutionKind::Conflict);
+    conflicted
+        .complete(
+            conflict_submission,
+            BlackboardDispatchOutcome::completed(completion),
+        )
+        .unwrap();
+    let conflict_snapshot = runtime.snapshot().unwrap();
+    let conflict_observation = BlackboardObservation::from_snapshot(&conflict_snapshot).unwrap();
+    conflicted.observe(&conflict_observation).unwrap();
+    let conflict_projection = conflicted
+        .projection(&conflict_observation, blackboard_primary())
+        .unwrap();
+    assert_eq!(conflict_projection.phase(), BlackboardDraftPhase::Edited);
+    assert_eq!(
+        conflict_projection.submission_phase(),
+        BlackboardSubmissionPhase::Retryable
+    );
+    assert_eq!(
+        conflict_projection.retry_reason(),
+        Some(BlackboardRetryReason::RuntimeConflict)
+    );
+    assert_eq!(
+        conflict_projection.apply_action(),
+        Some(BlackboardApplyAction::Retry)
+    );
+    assert!(!conflict_projection.can_accept_remote());
+
+    let mut uncertain = BlackboardAuthoring::new();
+    uncertain.observe(&conflict_observation).unwrap();
+    uncertain
+        .edit_name(
+            &conflict_observation,
+            blackboard_primary(),
+            "authoritative after uncertainty".to_owned(),
+        )
+        .unwrap();
+    let uncertain_submission = uncertain
+        .plan_name(
+            &conflict_observation,
+            blackboard_primary(),
+            BlackboardApplyAction::Commit,
+        )
+        .unwrap();
+    let completion = runtime.execute(uncertain_submission.command().clone());
+    assert_eq!(completion.kind(), CommandExecutionKind::Applied);
+    assert!(
+        !uncertain
+            .complete(
+                uncertain_submission,
+                BlackboardDispatchOutcome::uncertain("transport lost completion"),
+            )
+            .unwrap()
+            .became_satisfied()
+    );
+    let authoritative_snapshot = runtime.snapshot().unwrap();
+    let authoritative = BlackboardObservation::from_snapshot(&authoritative_snapshot).unwrap();
+    assert!(uncertain
+        .observe(&authoritative)
+        .unwrap()
+        .became_satisfied());
+    let uncertain_projection = uncertain
+        .projection(&authoritative, blackboard_primary())
+        .unwrap();
+    assert_eq!(uncertain_projection.phase(), BlackboardDraftPhase::Clean);
+    assert_eq!(
+        uncertain_projection.value(),
+        "authoritative after uncertainty"
+    );
+}
+
+#[test]
+fn blackboard_snapshot_first_and_receipt_first_each_satisfy_exactly_once() {
+    let runtime = blackboard_runtime();
+    let initial = runtime.snapshot().unwrap();
+    let initial_observation = BlackboardObservation::from_snapshot(&initial).unwrap();
+    let mut authoring = BlackboardAuthoring::new();
+    authoring.observe(&initial_observation).unwrap();
+    authoring
+        .edit_name(
+            &initial_observation,
+            blackboard_primary(),
+            "snapshot first".to_owned(),
+        )
+        .unwrap();
+    let submission = authoring
+        .plan_name(
+            &initial_observation,
+            blackboard_primary(),
+            BlackboardApplyAction::Commit,
+        )
+        .unwrap();
+    let completion = runtime.execute(submission.command().clone());
+    let applied = BlackboardObservation::from_snapshot(&runtime.snapshot().unwrap()).unwrap();
+
+    assert!(!authoring.observe(&applied).unwrap().became_satisfied());
+    assert!(
+        authoring
+            .complete(
+                submission,
+                BlackboardDispatchOutcome::completed(completion),
+            )
+            .unwrap()
+            .became_satisfied()
+    );
+    assert!(!authoring.observe(&applied).unwrap().became_satisfied());
+    let projection = authoring
+        .projection(&applied, blackboard_primary())
+        .unwrap();
+    assert_eq!(projection.phase(), BlackboardDraftPhase::Clean);
+    assert_eq!(projection.submission_phase(), BlackboardSubmissionPhase::Idle);
+}
+
+#[test]
+fn blackboard_authoring_rejects_foreign_authority_and_ignores_stale_observations() {
+    let runtime = blackboard_runtime();
+    let initial = runtime.snapshot().unwrap();
+    let initial_observation = BlackboardObservation::from_snapshot(&initial).unwrap();
+    let mut authoring = BlackboardAuthoring::new();
+    authoring.observe(&initial_observation).unwrap();
+
+    assert_eq!(
+        runtime
+            .execute(GraphCommand::symbols(
+                initial.version(),
+                jellyflow_runtime::commands::SymbolEdit::new().update(
+                    blackboard_other(),
+                    Symbol {
+                        name: "advanced".to_owned(),
+                        ..blackboard_symbol("other")
+                    },
+                ),
+            ))
+            .kind(),
+        CommandExecutionKind::Applied
+    );
+    let latest = BlackboardObservation::from_snapshot(&runtime.snapshot().unwrap()).unwrap();
+    authoring.observe(&latest).unwrap();
+    assert!(
+        authoring
+            .observe(&initial_observation)
+            .unwrap()
+            .ignored_stale_observation()
+    );
+
+    let foreign_runtime = blackboard_runtime();
+    let foreign = BlackboardObservation::from_snapshot(&foreign_runtime.snapshot().unwrap()).unwrap();
+    assert!(matches!(
+        authoring.observe(&foreign),
+        Err(BlackboardError::ForeignAuthority { .. })
+    ));
+}
 
 #[test]
 fn observation_parses_complete_typed_condition_and_checks_intent_postconditions() {
@@ -1451,4 +1847,37 @@ fn blueprint_collision_port() -> PortId {
 
 fn blueprint_edge() -> EdgeId {
     EdgeId::from_u128(BLUEPRINT_EDGE)
+}
+
+fn blackboard_runtime() -> GraphRuntime {
+    GraphRuntime::builder(Default::default())
+        .build(
+            GraphBuilder::new(GraphId::from_u128(BLACKBOARD_GRAPH))
+                .with_symbol(blackboard_primary(), blackboard_symbol("exposure"))
+                .with_symbol(blackboard_other(), blackboard_symbol("other"))
+                .build()
+                .expect("valid pure Blackboard graph"),
+        )
+        .expect("pure Blackboard runtime")
+}
+
+fn blackboard_symbol(name: &str) -> Symbol {
+    Symbol {
+        name: name.to_owned(),
+        ty: Some(TypeDesc::Float),
+        default_value: Some(serde_json::json!(1.0)),
+        meta: serde_json::json!({ "group": "material" }),
+    }
+}
+
+fn blackboard_primary() -> SymbolId {
+    SymbolId::from_u128(BLACKBOARD_PRIMARY)
+}
+
+fn blackboard_other() -> SymbolId {
+    SymbolId::from_u128(BLACKBOARD_OTHER)
+}
+
+fn blackboard_added() -> SymbolId {
+    SymbolId::from_u128(BLACKBOARD_ADDED)
 }
