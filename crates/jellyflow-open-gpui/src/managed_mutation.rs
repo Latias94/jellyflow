@@ -5,8 +5,9 @@ use std::rc::Rc;
 use jellyflow_runtime::commands::GraphCommand;
 use jellyflow_runtime::graph::GraphRevision;
 use jellyflow_runtime::reconciliation::{
-    MutationAttemptId, MutationBeginError, MutationCommandResult, MutationPhase,
-    MutationReconciler, MutationRetry as RuntimeMutationRetry, MutationRetryReason,
+    MutationAbandonment as RuntimeMutationAbandonment, MutationAttemptId, MutationBeginError,
+    MutationCommandResult, MutationPhase, MutationReconciler,
+    MutationRetry as RuntimeMutationRetry, MutationRetryReason,
 };
 use jellyflow_runtime::view::{FeedbackSubmissionError, ViewCloseReason};
 use open_gpui::Context;
@@ -121,6 +122,10 @@ impl<I> MutationRetry<I> {
     }
 }
 
+/// Attempt-bound capability for discarding definitive completion without product facts.
+#[derive(Debug)]
+pub struct MutationAbandonment(RuntimeMutationAbandonment);
+
 /// One new product intent or an explicit retry of the current intent.
 #[derive(Debug)]
 pub enum MutationRequest<I> {
@@ -233,6 +238,7 @@ pub struct OpenGpuiManagedMutation<I> {
     task: Rc<RefCell<Option<AdmittedCommandTask<MutationAttemptId>>>>,
     retention_lease: Option<OpenGpuiActivityLease>,
     layout_effect: Option<(MutationAttemptId, MutationLayoutEffect)>,
+    layout_failure: Option<MutationDiagnostic>,
     diagnostic_source: Option<(MutationAttemptId, MutationDiagnosticSource)>,
     #[cfg(test)]
     post_admission_fault: Cell<Option<ManagedMutationPostAdmissionFault>>,
@@ -275,6 +281,7 @@ impl<I> OpenGpuiManagedMutation<I> {
             task: Rc::new(RefCell::new(None)),
             retention_lease: None,
             layout_effect: None,
+            layout_failure: None,
             diagnostic_source: None,
             #[cfg(test)]
             post_admission_fault: Cell::new(None),
@@ -347,6 +354,76 @@ where
         self.is_live() && self.reconciler.can_confirm_uncertain_retry()
     }
 
+    /// Returns the last layout failure until another explicit mutation starts.
+    #[must_use]
+    pub fn layout_failure(&self) -> Option<&MutationDiagnostic> {
+        self.layout_failure.as_ref()
+    }
+
+    /// Abandons an exact retry after the product can no longer plan its retained intent.
+    ///
+    /// Pending commands cannot be abandoned through this API. A successful abandonment releases
+    /// the native mutation retention immediately and leaves the owner ready for a new intent.
+    pub fn abandon_retry(&mut self, retry: MutationRetry<I>) -> bool {
+        self.synchronize_terminal();
+        if !self.is_live() || !self.reconciler.abandon_retry(retry.0) {
+            return false;
+        }
+        self.synchronize_resources();
+        true
+    }
+
+    /// Drains native completion while product facts are temporarily unavailable.
+    ///
+    /// This does not invent a satisfaction result. Applied or noop completion remains awaiting an
+    /// authoritative product observation; rejection and uncertainty retain their normal phase.
+    pub fn observe_unavailable<N: 'static>(
+        &mut self,
+        authoring: &OpenGpuiNodeAuthoring,
+        cx: &mut Context<N>,
+    ) -> MutationSettlement {
+        self.synchronize_terminal();
+        if self.terminal.is_some() {
+            return self.current_settlement();
+        }
+        if !self.same_owner(authoring) {
+            self.retire("mutation observation belongs to another native mount".to_owned());
+            return self.current_settlement();
+        }
+        if let Some(settlement) = self.drain_task_completion(cx) {
+            return settlement;
+        }
+        self.synchronize_resources();
+        self.current_settlement()
+    }
+
+    /// Returns an exact capability when definitive completion cannot be observed by the product.
+    #[must_use]
+    pub fn unobservable_abandonment(&self) -> Option<MutationAbandonment> {
+        if !self.is_live() || self.task.borrow().is_some() {
+            return None;
+        }
+        self.reconciler
+            .unobservable_abandonment()
+            .map(MutationAbandonment)
+    }
+
+    /// Explicitly abandons a completed attempt that cannot be reconciled with product facts.
+    ///
+    /// Pending and uncertain commands never mint this capability. Exact attempt matching prevents
+    /// a stale UI action from discarding a successor mutation.
+    pub fn abandon_unobservable(&mut self, abandonment: MutationAbandonment) -> bool {
+        self.synchronize_terminal();
+        if !self.is_live()
+            || self.task.borrow().is_some()
+            || !self.reconciler.abandon_unobservable(abandonment.0)
+        {
+            return false;
+        }
+        self.synchronize_resources();
+        true
+    }
+
     /// Returns the current projection, including asynchronous mount revocation signals.
     #[must_use]
     pub fn settlement(&self) -> MutationSettlement {
@@ -383,6 +460,7 @@ where
                 return Err(map_begin_error(error));
             }
         };
+        self.layout_failure = None;
         self.layout_effect = Some((attempt, layout_effect));
         self.diagnostic_source = None;
 
@@ -800,6 +878,12 @@ where
                 }
             }
         };
+        self.layout_failure = match &layout {
+            MutationLayoutSettlement::Failed { diagnostic } => Some(diagnostic.clone()),
+            MutationLayoutSettlement::NotRequested
+            | MutationLayoutSettlement::Invalidated
+            | MutationLayoutSettlement::NoLongerMounted => None,
+        };
         MutationSettlement::Satisfied { layout }
     }
 
@@ -873,6 +957,7 @@ where
         AdmittedCommandTask::shutdown(&mut self.task.borrow_mut());
         self.retention_lease.take();
         self.layout_effect.take();
+        self.layout_failure.take();
         self.diagnostic_source.take();
     }
 }

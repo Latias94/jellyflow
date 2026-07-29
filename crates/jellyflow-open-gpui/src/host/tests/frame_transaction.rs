@@ -558,6 +558,84 @@ fn managed_mutation_satisfies_late_unknown_outcome_without_reinvalidating_layout
 }
 
 #[open_gpui::test]
+fn managed_mutation_drains_unavailable_completion_before_explicit_abandonment(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let (runtime, host, cx) = mount_gesture_scene_for_graph(cx, unconnected_graph());
+    draw(cx);
+    let node = NodeId::from_u128(10);
+    let binding = mounted_binding(cx, &host, node);
+    let mut mutation = cx.read_entity(&binding, |binding, _| {
+        binding.managed_mutation::<serde_json::Value>()
+    });
+    let intent = serde_json::json!({ "managed": "unavailable-observation" });
+
+    let mut result = dispatch_and_submit_managed_data_mutation(
+        cx,
+        &host,
+        &binding,
+        &mut mutation,
+        MutationRequest::new(intent.clone()),
+        intent,
+        MutationLayoutEffect::InvalidateWhenSatisfied,
+        None,
+    )
+    .expect("unavailable-observation command submission does not unwind");
+    assert_eq!(runtime.snapshot().expect("submitted graph").revision(), 1);
+    assert!(mutation.unobservable_abandonment().is_none());
+    assert!(!cx.update_entity(&binding, |binding, cx| {
+        let authoring = binding.authoring().expect("pending unavailable authoring");
+        assert_eq!(
+            mutation.observe_unavailable(&authoring, cx),
+            MutationSettlement::Pending {
+                awaiting_authority: false,
+            }
+        );
+        mutation.unobservable_abandonment().is_some()
+    }));
+
+    result
+        .take_command_batch_result()
+        .expect("unavailable-observation command batch settles");
+    let completed = cx.read_entity(&host, |host, _| host.commands.take_deferred_completions());
+    resolve_binding_commands(completed);
+    cx.run_until_parked();
+    let generation_before_abandon = node_layout_generation(cx, &host, node);
+
+    let settlement = cx.update_entity(&binding, |binding, cx| {
+        let authoring = binding
+            .authoring()
+            .expect("completed unavailable authoring");
+        mutation.observe_unavailable(&authoring, cx)
+    });
+    assert_eq!(
+        settlement,
+        MutationSettlement::Pending {
+            awaiting_authority: true,
+        }
+    );
+    let abandonment = mutation
+        .unobservable_abandonment()
+        .expect("definitive completion exposes one exact abandonment");
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(host.commands.capacity_usage(), (0, 0, 0));
+        assert_managed_activity(host, node, 1, 1);
+    });
+
+    assert!(cx.update_entity(&binding, |_, _| mutation.abandon_unobservable(abandonment)));
+    assert_eq!(mutation.settlement(), MutationSettlement::Ready);
+    assert_eq!(
+        node_layout_generation(cx, &host, node),
+        generation_before_abandon,
+        "discarding unavailable product facts consumes the pending layout effect"
+    );
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(host.commands.capacity_usage(), (0, 0, 0));
+        assert_managed_activity(host, node, 0, 0);
+    });
+}
+
+#[open_gpui::test]
 fn managed_mutation_preserves_intent_when_activity_admission_rejects(
     cx: &mut open_gpui::TestAppContext,
 ) {
@@ -687,7 +765,9 @@ fn managed_mutation_preserves_intent_when_activity_admission_rejects(
 }
 
 #[open_gpui::test]
-fn managed_mutation_reports_panicking_layout_settlement_once(cx: &mut open_gpui::TestAppContext) {
+fn managed_mutation_persists_panicking_layout_diagnostic_without_replaying(
+    cx: &mut open_gpui::TestAppContext,
+) {
     let (runtime, host, cx) = mount_gesture_scene_for_graph(cx, unconnected_graph());
     draw(cx);
     let node = NodeId::from_u128(10);
@@ -747,6 +827,13 @@ fn managed_mutation_reports_panicking_layout_settlement_once(cx: &mut open_gpui:
     assert_eq!(
         observe_managed_data_mutation(cx, &binding, &mut mutation),
         MutationSettlement::Ready
+    );
+    assert_eq!(
+        mutation
+            .layout_failure()
+            .expect("layout failure remains observable")
+            .source(),
+        MutationDiagnosticSource::NativeLayout
     );
     assert_eq!(calls.get(), 1, "layout invalidation is never replayed");
     cx.read_entity(&host, |host, _| {
@@ -1026,6 +1113,7 @@ fn assert_managed_post_admission_unwind(
         settlement => panic!("unexpected post-admission unwind settlement: {settlement:?}"),
     }
     assert!(mutation.confirm_uncertain_retry().is_none());
+    assert!(mutation.unobservable_abandonment().is_none());
     cx.read_entity(&host, |host, _| {
         assert_eq!(host.commands.capacity_usage(), (1, 0, 0));
         assert_managed_activity(host, node, 1, 1);

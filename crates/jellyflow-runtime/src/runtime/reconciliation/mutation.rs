@@ -146,6 +146,21 @@ pub enum MutationRetryKind {
     ConfirmedUncertain,
 }
 
+/// Opaque capability for explicitly forgetting one definitive, unobservable attempt.
+///
+/// The capability is never minted for an uncertain execution outcome.
+#[derive(Debug)]
+pub struct MutationAbandonment {
+    source_attempt: MutationAttemptId,
+    kind: MutationAbandonmentKind,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MutationAbandonmentKind {
+    AwaitingSnapshot,
+    Retryable,
+}
+
 /// Why a definitive mutation attempt is eligible for an explicit retry.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MutationRetryReason {
@@ -443,6 +458,62 @@ impl<I: Clone> MutationReconciler<I> {
             }
             _ => None,
         }
+    }
+
+    /// Abandons the exact retry capability after current product facts make its intent invalid.
+    ///
+    /// This cannot cancel a pending command. It only consumes a capability that was already
+    /// eligible for an explicit retry and returns the reducer to idle.
+    pub fn abandon_retry(&mut self, retry: MutationRetry<I>) -> bool {
+        let matches_active = match &self.state {
+            State::Retryable { attempt, .. } => {
+                retry.kind == MutationRetryKind::Retryable && *attempt == retry.source_attempt
+            }
+            State::Uncertain { attempt, .. } => {
+                retry.kind == MutationRetryKind::ConfirmedUncertain
+                    && *attempt == retry.source_attempt
+            }
+            State::Idle | State::Pending { .. } | State::AwaitingSnapshot { .. } => false,
+        };
+        if matches_active {
+            self.state = State::Idle;
+        }
+        matches_active
+    }
+
+    /// Returns an attempt-bound capability when execution is definitive but facts cannot parse.
+    #[must_use]
+    pub fn unobservable_abandonment(&self) -> Option<MutationAbandonment> {
+        match &self.state {
+            State::AwaitingSnapshot { attempt, .. } => Some(MutationAbandonment {
+                source_attempt: *attempt,
+                kind: MutationAbandonmentKind::AwaitingSnapshot,
+            }),
+            State::Retryable { attempt, .. } => Some(MutationAbandonment {
+                source_attempt: *attempt,
+                kind: MutationAbandonmentKind::Retryable,
+            }),
+            State::Idle | State::Pending { .. } | State::Uncertain { .. } => None,
+        }
+    }
+
+    /// Consumes an exact capability without cancelling pending or uncertain execution.
+    pub fn abandon_unobservable(&mut self, abandonment: MutationAbandonment) -> bool {
+        let matches_active = match &self.state {
+            State::AwaitingSnapshot { attempt, .. } => {
+                abandonment.kind == MutationAbandonmentKind::AwaitingSnapshot
+                    && *attempt == abandonment.source_attempt
+            }
+            State::Retryable { attempt, .. } => {
+                abandonment.kind == MutationAbandonmentKind::Retryable
+                    && *attempt == abandonment.source_attempt
+            }
+            State::Idle | State::Pending { .. } | State::Uncertain { .. } => false,
+        };
+        if matches_active {
+            self.state = State::Idle;
+        }
+        matches_active
     }
 
     pub fn complete(
@@ -860,6 +931,71 @@ mod tests {
         reducer.observe(7, |_| false);
         assert!(reducer.retry(false).is_some());
         assert!(!reducer.can_confirm_uncertain_retry());
+    }
+
+    #[test]
+    fn abandoning_an_exact_retry_returns_to_idle_and_expires_duplicate_capabilities() {
+        let mut reducer = MutationReconciler::default();
+        let attempt = reducer.begin("reorder-case", 7).expect("begin");
+        reducer
+            .complete(
+                attempt,
+                MutationCommandResult::Conflict {
+                    revision: 8,
+                    diagnostic: "stale topology".to_owned(),
+                },
+            )
+            .expect("complete");
+        reducer.observe(8, |_| false);
+        let retry = reducer.retry(false).expect("eligible retry");
+        let duplicate = reducer.retry(false).expect("duplicate read capability");
+
+        assert!(reducer.abandon_retry(retry));
+        assert_eq!(reducer.phase(), MutationPhase::Idle);
+        assert!(reducer.active_intent().is_none());
+        assert!(!reducer.abandon_retry(duplicate));
+    }
+
+    #[test]
+    fn unobservable_abandonment_never_cancels_pending_but_releases_a_completed_attempt() {
+        let mut reducer = MutationReconciler::default();
+        let attempt = reducer.begin("add-case", 7).expect("begin");
+
+        assert!(reducer.unobservable_abandonment().is_none());
+        assert_eq!(reducer.phase(), MutationPhase::Pending);
+        reducer
+            .complete(attempt, MutationCommandResult::Applied { revision: 8 })
+            .expect("complete");
+        assert_eq!(reducer.phase(), MutationPhase::AwaitingSnapshot);
+
+        let abandonment = reducer
+            .unobservable_abandonment()
+            .expect("definitive completion can be explicitly abandoned");
+        let duplicate = reducer
+            .unobservable_abandonment()
+            .expect("capability reads do not mutate reducer state");
+        assert!(reducer.abandon_unobservable(abandonment));
+        assert_eq!(reducer.phase(), MutationPhase::Idle);
+        assert!(reducer.active_intent().is_none());
+        assert!(!reducer.abandon_unobservable(duplicate));
+    }
+
+    #[test]
+    fn uncertain_execution_never_mints_an_unobservable_abandonment() {
+        let mut reducer = MutationReconciler::default();
+        let attempt = reducer.begin("add-case", 7).expect("begin");
+        reducer
+            .complete(
+                attempt,
+                MutationCommandResult::Uncertain {
+                    diagnostic: "callback lost".to_owned(),
+                },
+            )
+            .expect("complete");
+
+        assert_eq!(reducer.phase(), MutationPhase::Uncertain);
+        assert!(reducer.unobservable_abandonment().is_none());
+        assert_eq!(reducer.active_intent(), Some(&"add-case"));
     }
 
     #[test]

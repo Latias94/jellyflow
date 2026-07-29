@@ -17,9 +17,9 @@ use crate::binding::{
 use crate::command_journal::OpenGpuiCommandSink;
 use crate::command_journal::{OpenGpuiAdmittedCommand, OpenGpuiCommandEnqueueError};
 pub use crate::managed_mutation::{
-    MutationDiagnostic, MutationDiagnosticSource, MutationDispatchError, MutationLayoutEffect,
-    MutationLayoutSettlement, MutationRequest, MutationRetry, MutationSettlement,
-    OpenGpuiManagedMutation,
+    MutationAbandonment, MutationDiagnostic, MutationDiagnosticSource, MutationDispatchError,
+    MutationLayoutEffect, MutationLayoutSettlement, MutationRequest, MutationRetry,
+    MutationSettlement, OpenGpuiManagedMutation,
 };
 pub use crate::node_drag_handle::OpenGpuiNodeDragHandle;
 pub use crate::port_handle::{OpenGpuiPortAnchor, OpenGpuiPortHandle, OpenGpuiPortSide};
@@ -367,6 +367,15 @@ impl OpenGpuiNodeAuthoring {
         self.ports
             .get(index)
             .map(|state| self.port_from_state(state))
+    }
+
+    /// Returns whether this authoring revision already contains `id` anywhere in the graph.
+    ///
+    /// Dynamic-node products use this narrow graph-wide query to reject generated port identity
+    /// collisions without receiving the adapter's underlying snapshot.
+    #[must_use]
+    pub fn port_id_is_occupied(&self, id: PortId) -> bool {
+        self.snapshot.graph().port(&id).is_some()
     }
 
     fn port_from_state<'a>(

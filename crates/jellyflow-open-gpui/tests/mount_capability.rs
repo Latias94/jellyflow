@@ -172,6 +172,49 @@ impl Render for ExternalDragScene {
 }
 
 #[open_gpui::test]
+fn authoring_port_occupancy_is_graph_wide_without_exposing_foreign_port_capabilities(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let runtime = GraphRuntime::builder(catalog())
+        .build(graph_with_foreign_port())
+        .expect("graph with a foreign dynamic port");
+    let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    let captured = Rc::new(RefCell::new(None::<Entity<OpenGpuiNodeBinding>>));
+    let factory_capture = Rc::clone(&captured);
+    let mut registry = OpenGpuiNodeRegistry::builder();
+    registry.register(RENDERER, move |binding, _window, cx| {
+        if binding
+            .read(cx)
+            .authoring()
+            .expect("factory binding authoring")
+            .node_id()
+            == node_id()
+        {
+            *factory_capture.borrow_mut() = Some(binding.clone());
+        }
+        cx.new(|_| ProbeNode { _binding: binding })
+    });
+    let (_host, cx) = cx.add_window_view(move |_, _| {
+        OpenGpuiSceneHost::new(
+            view,
+            registry.seal().expect("valid test registry"),
+            visible_viewport(),
+        )
+    });
+    draw(cx);
+
+    let binding = captured.borrow().clone().expect("primary binding");
+    cx.read_entity(&binding, |binding, _| {
+        let authoring = binding.authoring().expect("live primary authoring");
+        assert!(authoring.port(port_id()).is_some());
+        assert!(authoring.port(foreign_port_id()).is_none());
+        assert!(authoring.port_id_is_occupied(port_id()));
+        assert!(authoring.port_id_is_occupied(foreign_port_id()));
+        assert!(!authoring.port_id_is_occupied(PortId::from_u128(0xdead_beef)));
+    });
+}
+
+#[open_gpui::test]
 fn eligible_lru_eviction_revokes_old_binding_before_same_instance_remount(
     cx: &mut open_gpui::TestAppContext,
 ) {
@@ -219,7 +262,10 @@ fn eligible_lru_eviction_revokes_old_binding_before_same_instance_remount(
     let stale_facts = binding_authoring(cx, &old);
     let stale_mutation = mutation_harness(cx, &old);
     cx.read_entity(&old, |binding, _| {
-        assert!(binding.authoring().unwrap().port(port_id()).is_some());
+        let authoring = binding.authoring().unwrap();
+        assert!(authoring.port(port_id()).is_some());
+        assert!(authoring.port_id_is_occupied(port_id()));
+        assert!(!authoring.port_id_is_occupied(PortId::from_u128(0xdead_beef)));
     });
 
     cx.update_entity(&host, |host, cx| {
@@ -1259,6 +1305,20 @@ fn graph_with_nodes(count: usize) -> jellyflow_core::Graph {
     graph.build().unwrap()
 }
 
+fn graph_with_foreign_port() -> jellyflow_core::Graph {
+    let mut graph = GraphBuilder::new(GraphId::from_u128(0x6d_6f_75_6e_75));
+    graph.insert_node(node_id(), node(true));
+    let mut foreign_node = node(false);
+    foreign_node.ports.push(foreign_port_id());
+    graph.insert_node(NodeId::from_u128(2), foreign_node);
+    graph.insert_port(port_id(), port());
+    let mut foreign_port = port();
+    foreign_port.node = NodeId::from_u128(2);
+    foreign_port.key = PortKey::new("foreign-output");
+    graph.insert_port(foreign_port_id(), foreign_port);
+    graph.build().unwrap()
+}
+
 fn node(owns_port: bool) -> Node {
     Node {
         kind: NodeKindKey::new(KIND),
@@ -1304,6 +1364,10 @@ fn node_id() -> NodeId {
 
 fn port_id() -> PortId {
     PortId::from_u128(0x70_6f_72_74)
+}
+
+fn foreign_port_id() -> PortId {
+    PortId::from_u128(0x66_6f_72_65_69_67_6e)
 }
 
 fn catalog() -> NodeCatalog {

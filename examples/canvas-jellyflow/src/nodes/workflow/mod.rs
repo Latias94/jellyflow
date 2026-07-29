@@ -17,18 +17,23 @@ use open_gpui::{
 };
 
 use crate::model_options::WorkflowModelOptionsState;
+use crate::product_domain::condition::{
+    ConditionCase, ConditionPredicate, condition_case_route_port, condition_case_value_port,
+    condition_data,
+};
 use crate::product_theme::{NativeProductTheme, NativeToneTokens};
 
 pub use condition::{
-    ConditionCaseAction, WORKFLOW_CONDITION_DEFAULT_SIZE, WORKFLOW_CONDITION_KIND,
-    WORKFLOW_CONDITION_RENDERER, WorkflowCase, WorkflowConditionNode, WorkflowConditionOutputs,
-    WorkflowElseBranch, condition_cases, condition_outputs, plan_condition_case_action,
-    workflow_condition_add_selector, workflow_condition_body_selector,
+    WORKFLOW_CONDITION_DEFAULT_SIZE, WORKFLOW_CONDITION_KIND, WORKFLOW_CONDITION_RENDERER,
+    WorkflowConditionNode, workflow_condition_add_selector, workflow_condition_body_selector,
     workflow_condition_case_actions_selector, workflow_condition_case_label_selector,
-    workflow_condition_case_selector, workflow_condition_else_label_selector,
-    workflow_condition_else_selector, workflow_condition_node_id, workflow_condition_node_selector,
-    workflow_condition_pending_selector, workflow_condition_remove_selector,
-    workflow_condition_scroll_selector, workflow_condition_up_selector,
+    workflow_condition_case_selector, workflow_condition_case_value_selector,
+    workflow_condition_diagnostic_selector, workflow_condition_else_label_selector,
+    workflow_condition_else_selector, workflow_condition_field_selector,
+    workflow_condition_node_id, workflow_condition_node_selector,
+    workflow_condition_pending_selector, workflow_condition_provider_failed_selector,
+    workflow_condition_remove_selector, workflow_condition_scroll_selector,
+    workflow_condition_up_selector, workflow_condition_value_selector,
 };
 pub use llm::{
     WORKFLOW_LLM_DEFAULT_SIZE, WORKFLOW_LLM_KIND, WORKFLOW_LLM_RENDERER, WORKFLOW_MODEL_FIELD,
@@ -50,6 +55,8 @@ const WORKFLOW_CONDITION_INPUT_ID: u128 = 0xd1fa_0201;
 const WORKFLOW_MATCH_PORT_ID: u128 = 0xd1fa_0202;
 const WORKFLOW_ELSE_PORT_ID: u128 = 0xd1fa_0203;
 const WORKFLOW_REVIEW_PORT_ID: u128 = 0xd1fa_0204;
+const WORKFLOW_MATCH_VALUE_PORT_ID: u128 = 0xd1fa_0205;
+const WORKFLOW_REVIEW_VALUE_PORT_ID: u128 = 0xd1fa_0206;
 const WORKFLOW_RESPONSE_LLM_NODE_ID: u128 = 0xd1fa_0003;
 const WORKFLOW_RESPONSE_LLM_INPUT_ID: u128 = 0xd1fa_0401;
 const WORKFLOW_RESPONSE_LLM_OUTPUT_ID: u128 = 0xd1fa_0402;
@@ -74,44 +81,6 @@ pub enum WorkflowNodeError {
     InvalidData {
         node: NodeId,
         field: &'static str,
-    },
-    EmptyCaseId,
-    ReservedCaseId {
-        case_id: String,
-    },
-    EmptyCaseLabel {
-        case_id: String,
-    },
-    DuplicateCaseId {
-        case_id: String,
-    },
-    DuplicateCasePort {
-        port: PortId,
-    },
-    CaseNotFound {
-        case_id: String,
-    },
-    CaseReorderIndexOutOfBounds {
-        index: usize,
-        case_count: usize,
-    },
-    MissingCasePort {
-        node: NodeId,
-        port: PortId,
-    },
-    InvalidCasePort {
-        node: NodeId,
-        port: PortId,
-    },
-    MissingElsePort {
-        node: NodeId,
-    },
-    InvalidElsePort {
-        node: NodeId,
-        port: PortId,
-    },
-    InvalidConditionPortOrder {
-        node: NodeId,
     },
     BindingUnavailable {
         message: String,
@@ -139,51 +108,6 @@ impl std::fmt::Display for WorkflowNodeError {
             Self::InvalidData { node, field } => {
                 write!(f, "workflow node {node:?} has invalid {field} data")
             }
-            Self::EmptyCaseId => f.write_str("workflow condition case id must not be empty"),
-            Self::ReservedCaseId { case_id } => write!(
-                f,
-                "workflow condition case id {case_id:?} is reserved for the immutable Else branch"
-            ),
-            Self::EmptyCaseLabel { case_id } => {
-                write!(f, "workflow condition case {case_id:?} must have a label")
-            }
-            Self::DuplicateCaseId { case_id } => {
-                write!(f, "workflow condition case id is duplicated: {case_id:?}")
-            }
-            Self::DuplicateCasePort { port } => {
-                write!(f, "workflow condition case port is duplicated: {port:?}")
-            }
-            Self::CaseNotFound { case_id } => {
-                write!(f, "workflow condition case does not exist: {case_id:?}")
-            }
-            Self::CaseReorderIndexOutOfBounds { index, case_count } => write!(
-                f,
-                "workflow condition case reorder index {index} is outside {case_count} cases"
-            ),
-            Self::MissingCasePort { node, port } => {
-                write!(
-                    f,
-                    "workflow node {node:?} is missing condition case port {port:?}"
-                )
-            }
-            Self::InvalidCasePort { node, port } => write!(
-                f,
-                "workflow node {node:?} has an invalid condition case port {port:?}"
-            ),
-            Self::MissingElsePort { node } => {
-                write!(
-                    f,
-                    "workflow condition node {node:?} is missing its Else port"
-                )
-            }
-            Self::InvalidElsePort { node, port } => write!(
-                f,
-                "workflow condition node {node:?} has invalid Else port {port:?}"
-            ),
-            Self::InvalidConditionPortOrder { node } => write!(
-                f,
-                "workflow condition node {node:?} must order case ports before Else"
-            ),
             Self::BindingUnavailable { message } => {
                 write!(f, "workflow binding is unavailable: {message}")
             }
@@ -403,16 +327,32 @@ pub fn workflow_demo_graph() -> Result<Graph, Vec<GraphValidationError>> {
     let response_input = PortId::from_u128(WORKFLOW_RESPONSE_LLM_INPUT_ID);
     let response_output = PortId::from_u128(WORKFLOW_RESPONSE_LLM_OUTPUT_ID);
     let cases = [
-        WorkflowCase {
-            id: MATCH_CASE_ID.to_owned(),
-            label: "Intent matches".to_owned(),
-            port_id: match_output,
-        },
-        WorkflowCase {
-            id: REVIEW_CASE_ID.to_owned(),
-            label: "Needs review".to_owned(),
-            port_id: review_output,
-        },
+        ConditionCase::new(
+            MATCH_CASE_ID,
+            "Intent matches",
+            match_output,
+            PortId::from_u128(WORKFLOW_MATCH_VALUE_PORT_ID),
+            ConditionPredicate::equals(
+                "customer_intent",
+                serde_json::json!("match"),
+                TypeDesc::String,
+            )
+            .expect("workflow match predicate is valid"),
+        )
+        .expect("workflow match case is valid"),
+        ConditionCase::new(
+            REVIEW_CASE_ID,
+            "Needs review",
+            review_output,
+            PortId::from_u128(WORKFLOW_REVIEW_VALUE_PORT_ID),
+            ConditionPredicate::equals(
+                "customer_intent",
+                serde_json::json!("review"),
+                TypeDesc::String,
+            )
+            .expect("workflow review predicate is valid"),
+        )
+        .expect("workflow review case is valid"),
     ];
     let mut catalog = NodeCatalog::new();
     for spec in catalog_specs() {
@@ -466,18 +406,24 @@ pub fn workflow_demo_graph() -> Result<Graph, Vec<GraphValidationError>> {
     }
 
     let (condition_id, mut condition_node, condition_ports) = condition_creation.into_parts();
-    condition_node.data = condition::condition_data("Route by intent", &cases);
+    condition_node.data = condition_data("Route by intent", &cases);
     condition_node.ports.retain(|port| *port != else_output);
-    condition_node
-        .ports
-        .extend(cases.iter().map(WorkflowCase::port_id));
+    condition_node.ports.extend(
+        cases
+            .iter()
+            .flat_map(|case| [case.value_port_id(), case.port_id()]),
+    );
     condition_node.ports.push(else_output);
     graph.insert_node(condition_id, condition_node);
     for (port_id, port) in condition_ports {
         graph.insert_port(port_id, port);
     }
     for case in &cases {
-        graph.insert_port(case.port_id(), condition::case_port(condition, case));
+        graph.insert_port(
+            case.value_port_id(),
+            condition_case_value_port(condition, case),
+        );
+        graph.insert_port(case.port_id(), condition_case_route_port(condition, case));
     }
     let (response_id, mut response_node, response_ports) = response_creation.into_parts();
     response_node.data = serde_json::json!({

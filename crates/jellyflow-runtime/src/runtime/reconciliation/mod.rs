@@ -15,7 +15,7 @@ pub use field::{
     FieldSubmissionIntent, FieldSubmissionKind, FieldSubmissionRejectionDecision,
 };
 pub use mutation::{
-    MutationAttemptId, MutationBeginError, MutationCommandResult, MutationCompletionError,
-    MutationPhase, MutationReconciler, MutationRetry, MutationRetryKind, MutationRetryReason,
-    MutationTransition,
+    MutationAbandonment, MutationAttemptId, MutationBeginError, MutationCommandResult,
+    MutationCompletionError, MutationPhase, MutationReconciler, MutationRetry, MutationRetryKind,
+    MutationRetryReason, MutationTransition,
 };
