@@ -570,51 +570,6 @@ pub fn canonical_scenarios() -> Vec<ConformanceScenario> {
     scenarios
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn mismatch_reports_each_drifted_semantic_field() {
-        let scenario = new_connection_scenario(ConformanceCommandOutcome::Applied);
-        let mut actual = scenario
-            .steps()
-            .iter()
-            .map(ConformanceStep::expected)
-            .collect::<Vec<_>>();
-        actual[1].phase = ConformancePhase::Candidate;
-        actual[1].effect = ConformanceEffect::None;
-        actual[1].geometry = ConformanceGeometry::Unavailable;
-
-        let Err(ConformanceMismatch::Observation { fields, .. }) =
-            compare_observations(&scenario, &actual)
-        else {
-            panic!("semantic drift must report a field-level observation mismatch");
-        };
-        assert!(fields.iter().any(|field| matches!(
-            field,
-            ConformanceFieldMismatch::Phase {
-                expected: ConformancePhase::ConnectionDrag,
-                actual: ConformancePhase::Candidate,
-            }
-        )));
-        assert!(fields.iter().any(|field| matches!(
-            field,
-            ConformanceFieldMismatch::Effect {
-                expected: ConformanceEffect::ProbeConnection,
-                actual: ConformanceEffect::None,
-            }
-        )));
-        assert!(fields.iter().any(|field| matches!(
-            field,
-            ConformanceFieldMismatch::Geometry {
-                expected: ConformanceGeometry::Baseline,
-                actual: ConformanceGeometry::Unavailable,
-            }
-        )));
-    }
-}
-
 #[must_use]
 pub fn new_connection_scenario(outcome: ConformanceCommandOutcome) -> ConformanceScenario {
     connection_scenario(
@@ -1302,5 +1257,50 @@ const fn geometry_for_graph(graph: ConformanceGraph) -> ConformanceGeometry {
         ConformanceGraph::ReconnectTarget => ConformanceGeometry::ReconnectTargetRouted,
         ConformanceGraph::CreateFromWire => ConformanceGeometry::CreateFromWireAwaitingLayout,
         ConformanceGraph::NodeMoved => ConformanceGeometry::NodeMoved,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mismatch_reports_each_drifted_semantic_field() {
+        let scenario = new_connection_scenario(ConformanceCommandOutcome::Applied);
+        let mut actual = scenario
+            .steps()
+            .iter()
+            .map(ConformanceStep::expected)
+            .collect::<Vec<_>>();
+        actual[1].phase = ConformancePhase::Candidate;
+        actual[1].effect = ConformanceEffect::None;
+        actual[1].geometry = ConformanceGeometry::Unavailable;
+
+        let Err(ConformanceMismatch::Observation { fields, .. }) =
+            compare_observations(&scenario, &actual)
+        else {
+            panic!("semantic drift must report a field-level observation mismatch");
+        };
+        assert!(fields.iter().any(|field| matches!(
+            field,
+            ConformanceFieldMismatch::Phase {
+                expected: ConformancePhase::ConnectionDrag,
+                actual: ConformancePhase::Candidate,
+            }
+        )));
+        assert!(fields.iter().any(|field| matches!(
+            field,
+            ConformanceFieldMismatch::Effect {
+                expected: ConformanceEffect::ProbeConnection,
+                actual: ConformanceEffect::None,
+            }
+        )));
+        assert!(fields.iter().any(|field| matches!(
+            field,
+            ConformanceFieldMismatch::Geometry {
+                expected: ConformanceGeometry::Baseline,
+                actual: ConformanceGeometry::Unavailable,
+            }
+        )));
     }
 }
