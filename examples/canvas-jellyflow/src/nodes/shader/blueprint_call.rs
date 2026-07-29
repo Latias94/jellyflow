@@ -7,11 +7,15 @@ use jellyflow_open_gpui::authoring::{
     MutationLayoutEffect, MutationLayoutSettlement, MutationRequest, MutationSettlement,
     OpenGpuiManagedMutation, OpenGpuiNodeAuthoring, OpenGpuiNodeBinding, OpenGpuiPortHandle,
 };
-use jellyflow_open_gpui::registry::{OpenGpuiNodeRegistrationPolicy, OpenGpuiNodeRegistryBuilder};
+use jellyflow_open_gpui::registry::{
+    OpenGpuiNodeAdapterPresentation, OpenGpuiNodeRegistrationPolicy, OpenGpuiNodeRegistryBuilder,
+    OpenGpuiNodeRendererDescriptor,
+};
 use jellyflow_open_gpui::size_policy::{OpenGpuiContentHeightPolicy, OpenGpuiNodeSizePolicy};
 use jellyflow_runtime::commands::IncidentEdgePolicy;
 use jellyflow_runtime::schema::{NodeKindSpec, NodePortSpec};
 use jellyflow_runtime::view::NodeInstanceKey;
+use jellyflow_runtime::view::RendererStamp;
 use open_gpui::{
     AppContext, Context, Entity, InteractiveElement, ParentElement, Render,
     StatefulInteractiveElement, Styled, Window, div, px,
@@ -716,22 +720,33 @@ pub(super) fn register(
                 .expect("blueprint content-height bounds must be valid"),
         ),
     );
-    registry.register_with_policy(
-        BLUEPRINT_CALL_RENDERER,
-        policy,
-        move |binding, _window, cx| {
-            let (instance, mutation) = {
-                let binding = binding.read(cx);
-                let instance = binding
-                    .authoring()
-                    .expect("a Blueprint node factory must receive a live authoring binding")
-                    .instance()
-                    .clone();
-                (instance, binding.managed_mutation())
-            };
-            cx.new(|_| BlueprintCallNode::new(binding, instance, mutation, product_theme))
-        },
-    );
+    registry
+        .register(
+            OpenGpuiNodeRendererDescriptor::new(
+                BLUEPRINT_CALL_KIND,
+                1,
+                RendererStamp::new(BLUEPRINT_CALL_RENDERER, 1),
+                OpenGpuiNodeAdapterPresentation::new("Blueprint Call"),
+                move |binding, _window, cx| {
+                    let (instance, mutation) = {
+                        let binding = binding.read(cx);
+                        let instance = binding
+                            .authoring()
+                            .expect(
+                                "a Blueprint node factory must receive a live authoring binding",
+                            )
+                            .instance()
+                            .clone();
+                        (instance, binding.managed_mutation())
+                    };
+                    Ok(cx.new(|_| {
+                        BlueprintCallNode::new(binding, instance, mutation, product_theme)
+                    }))
+                },
+            )
+            .with_policy(policy),
+        )
+        .expect("unique Blueprint renderer descriptor");
 }
 
 #[must_use]

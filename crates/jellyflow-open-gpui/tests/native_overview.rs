@@ -8,16 +8,16 @@ use jellyflow_core::{
 use jellyflow_open_gpui::authoring::OpenGpuiNodeBinding;
 use jellyflow_open_gpui::host::{OpenGpuiSceneHost, OpenGpuiSceneHostDiagnosticKind};
 use jellyflow_open_gpui::registry::{
-    OpenGpuiNodeMountError, OpenGpuiNodeOverviewMount, OpenGpuiNodeRegistry,
+    OpenGpuiNodeAdapterPresentation, OpenGpuiNodeMountError, OpenGpuiNodeOverviewMount,
+    OpenGpuiNodeRegistry, OpenGpuiNodeRendererDescriptor,
 };
 use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec};
 use jellyflow_runtime::{
-    graph::GraphRuntime, view::NodeInstanceKey, view::ViewSessionOptions,
+    graph::GraphRuntime, view::NodeInstanceKey, view::RendererStamp, view::ViewSessionOptions,
     viewport::ViewportTransform,
 };
 use open_gpui::{
-    AnyView, AppContext, Context, Entity, InteractiveElement, ParentElement, Render, Styled,
-    Window, div, px,
+    AppContext, Context, Entity, InteractiveElement, ParentElement, Render, Styled, Window, div, px,
 };
 
 const KIND: &str = "test.native-overview";
@@ -117,7 +117,10 @@ fn port_surface(
 fn application_overview_reuses_one_mount_and_publishes_real_ports(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    let runtime = GraphRuntime::builder(catalog()).build(graph()).unwrap();
+    let node_catalog = catalog();
+    let runtime = GraphRuntime::builder(node_catalog.clone())
+        .build(graph())
+        .unwrap();
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     view.set_viewport(
         ViewportTransform::new(CanvasPoint::default(), 0.5)
@@ -137,28 +140,37 @@ fn application_overview_reuses_one_mount_and_publishes_real_ports(
     let factory_overview_mounts = Rc::clone(&overview_mounts);
     let factory_overview_renders = Rc::clone(&overview_renders);
     let factory_mounted_instance = Rc::clone(&mounted_instance);
-    registry.register_with_overview(
-        RENDERER,
-        move |binding, _window, cx| {
-            factory_detail_mounts.set(factory_detail_mounts.get().saturating_add(1));
-            cx.new(|_| DetailNode {
-                binding,
-                renders: Rc::clone(&factory_detail_renders),
-            })
-        },
-        move |mount, _window, cx| {
-            factory_overview_mounts.set(factory_overview_mounts.get().saturating_add(1));
-            *factory_mounted_instance.borrow_mut() = Some(mount.facts().instance().clone());
-            AnyView::from(cx.new(|_| NativeOverviewNode {
-                mount,
-                renders: Rc::clone(&factory_overview_renders),
-            }))
-        },
-    );
+    registry
+        .register(
+            OpenGpuiNodeRendererDescriptor::new(
+                KIND,
+                1,
+                RendererStamp::new(RENDERER, 1),
+                OpenGpuiNodeAdapterPresentation::new("Native overview"),
+                move |binding, _window, cx| {
+                    factory_detail_mounts.set(factory_detail_mounts.get().saturating_add(1));
+                    Ok(cx.new(|_| DetailNode {
+                        binding,
+                        renders: Rc::clone(&factory_detail_renders),
+                    }))
+                },
+            )
+            .with_overview(move |mount, _window, cx| {
+                factory_overview_mounts.set(factory_overview_mounts.get().saturating_add(1));
+                *factory_mounted_instance.borrow_mut() = Some(mount.facts().instance().clone());
+                Ok(cx.new(|_| NativeOverviewNode {
+                    mount,
+                    renders: Rc::clone(&factory_overview_renders),
+                }))
+            }),
+        )
+        .expect("unique native-overview renderer");
     let (host, cx) = cx.add_window_view(move |_, _| {
         OpenGpuiSceneHost::new(
             view,
-            registry.seal().expect("valid native overview registry"),
+            registry
+                .seal(&node_catalog)
+                .expect("valid native overview registry"),
             visible_viewport(),
         )
     });
@@ -230,7 +242,10 @@ fn application_overview_reuses_one_mount_and_publishes_real_ports(
 fn overview_factory_error_keeps_detail_and_uses_generic_overview(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    let runtime = GraphRuntime::builder(catalog()).build(graph()).unwrap();
+    let node_catalog = catalog();
+    let runtime = GraphRuntime::builder(node_catalog.clone())
+        .build(graph())
+        .unwrap();
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     view.set_viewport(
         ViewportTransform::new(CanvasPoint::default(), 0.5)
@@ -241,24 +256,35 @@ fn overview_factory_error_keeps_detail_and_uses_generic_overview(
     let detail_renders = Rc::new(Cell::new(0_u32));
     let factory_detail_renders = Rc::clone(&detail_renders);
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.try_register_with_overview(
-        RENDERER,
-        move |binding, _window, cx| {
-            Ok(cx.new(|_| DetailNode {
-                binding,
-                renders: Rc::clone(&factory_detail_renders),
-            }))
-        },
-        |_mount, _window, _cx| -> Result<Entity<NativeOverviewNode>, _> {
-            Err(OpenGpuiNodeMountError::new(
-                "overview dependency unavailable",
-            ))
-        },
-    );
+    registry
+        .register(
+            OpenGpuiNodeRendererDescriptor::new(
+                KIND,
+                1,
+                RendererStamp::new(RENDERER, 1),
+                OpenGpuiNodeAdapterPresentation::new("Native overview"),
+                move |binding, _window, cx| {
+                    Ok(cx.new(|_| DetailNode {
+                        binding,
+                        renders: Rc::clone(&factory_detail_renders),
+                    }))
+                },
+            )
+            .with_overview(
+                |_mount, _window, _cx| -> Result<Entity<NativeOverviewNode>, _> {
+                    Err(OpenGpuiNodeMountError::new(
+                        "overview dependency unavailable",
+                    ))
+                },
+            ),
+        )
+        .expect("unique fallible native-overview renderer");
     let (host, cx) = cx.add_window_view(move |_, _| {
         OpenGpuiSceneHost::new(
             view,
-            registry.seal().expect("valid fallible overview registry"),
+            registry
+                .seal(&node_catalog)
+                .expect("valid fallible overview registry"),
             visible_viewport(),
         )
     });
@@ -302,7 +328,10 @@ fn overview_factory_error_keeps_detail_and_uses_generic_overview(
 
 #[open_gpui::test]
 fn panicking_overview_factory_isolated_to_generic_overview(cx: &mut open_gpui::TestAppContext) {
-    let runtime = GraphRuntime::builder(catalog()).build(graph()).unwrap();
+    let node_catalog = catalog();
+    let runtime = GraphRuntime::builder(node_catalog.clone())
+        .build(graph())
+        .unwrap();
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     view.set_viewport(
         ViewportTransform::new(CanvasPoint::default(), 0.5)
@@ -312,22 +341,36 @@ fn panicking_overview_factory_isolated_to_generic_overview(cx: &mut open_gpui::T
     let detail_renders = Rc::new(Cell::new(0_u32));
     let factory_detail_renders = Rc::clone(&detail_renders);
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register_with_overview(
-        RENDERER,
-        move |binding, _window, cx| {
-            cx.new(|_| DetailNode {
-                binding,
-                renders: Rc::clone(&factory_detail_renders),
-            })
-        },
-        |_mount, _window, _cx| -> Entity<NativeOverviewNode> {
-            panic!("injected native overview mount panic")
-        },
-    );
+    registry
+        .register(
+            OpenGpuiNodeRendererDescriptor::new(
+                KIND,
+                1,
+                RendererStamp::new(RENDERER, 1),
+                OpenGpuiNodeAdapterPresentation::new("Native overview"),
+                move |binding, _window, cx| {
+                    Ok(cx.new(|_| DetailNode {
+                        binding,
+                        renders: Rc::clone(&factory_detail_renders),
+                    }))
+                },
+            )
+            .with_overview(
+                |_mount,
+                 _window,
+                 _cx|
+                 -> Result<Entity<NativeOverviewNode>, OpenGpuiNodeMountError> {
+                    panic!("injected native overview mount panic")
+                },
+            ),
+        )
+        .expect("unique panicking native-overview renderer");
     let (host, cx) = cx.add_window_view(move |_, _| {
         OpenGpuiSceneHost::new(
             view,
-            registry.seal().expect("valid panicking overview registry"),
+            registry
+                .seal(&node_catalog)
+                .expect("valid panicking overview registry"),
             visible_viewport(),
         )
     });

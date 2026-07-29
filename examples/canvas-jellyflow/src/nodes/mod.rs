@@ -203,11 +203,14 @@ pub fn register_native_nodes(
 ///
 /// [`OpenGpuiSceneHost`]: jellyflow_open_gpui::host::OpenGpuiSceneHost
 #[must_use]
-pub fn native_node_registry(resources: NativeNodeResources) -> OpenGpuiNodeRegistry {
+pub fn native_node_registry(
+    resources: NativeNodeResources,
+    catalog: &NodeCatalog,
+) -> OpenGpuiNodeRegistry {
     let mut registry = OpenGpuiNodeRegistry::builder();
     register_native_nodes(&mut registry, resources);
     registry
-        .seal()
+        .seal(catalog)
         .expect("native node registrations must be valid")
 }
 

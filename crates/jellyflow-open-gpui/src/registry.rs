@@ -2,10 +2,15 @@ use std::{
     collections::BTreeMap,
     fmt,
     panic::{AssertUnwindSafe, catch_unwind},
+    sync::Arc,
 };
 
-use jellyflow_core::{CanvasRect, PortId};
-use jellyflow_runtime::{graph::GraphRevision, view::FrameNode, view::NodeInstanceKey};
+use jellyflow_core::{CanvasRect, NodeKindKey, PortId};
+use jellyflow_runtime::{
+    graph::GraphRevision,
+    schema::NodeCatalog,
+    view::{FrameNode, NodeInstanceKey, RendererStamp},
+};
 use open_gpui::{AnyView, App, Entity, Render, Window};
 
 use crate::binding::OpenGpuiNodeBinding;
@@ -23,30 +28,6 @@ type ErasedNodeFactory = dyn Fn(
 
 type ErasedOverviewFactory = dyn Fn(OpenGpuiNodeOverviewMount, &mut Window, &mut App) -> Result<AnyView, OpenGpuiNodeMountError>
     + 'static;
-
-/// Converts an application-native retained view into the registry's erased storage.
-///
-/// Both concrete [`Entity<V>`] values and an already erased [`AnyView`] implement this trait. It is
-/// only a native type-erasure boundary; Jellyflow does not inspect or describe the component tree.
-pub trait IntoOpenGpuiNodeView {
-    /// Erases the concrete Open GPUI render type while retaining the same entity.
-    fn into_open_gpui_node_view(self) -> AnyView;
-}
-
-impl<V> IntoOpenGpuiNodeView for Entity<V>
-where
-    V: Render + 'static,
-{
-    fn into_open_gpui_node_view(self) -> AnyView {
-        AnyView::from(self)
-    }
-}
-
-impl IntoOpenGpuiNodeView for AnyView {
-    fn into_open_gpui_node_view(self) -> AnyView {
-        self
-    }
-}
 
 /// Immutable frame facts captured when one exact native node mount is created.
 ///
@@ -164,59 +145,241 @@ impl OpenGpuiNodeMountError {
     }
 }
 
-/// A configuration problem found while sealing an Open GPUI node registry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OpenGpuiNodeRegistryIssueKind {
-    /// A renderer key contained only whitespace.
-    EmptyRendererKey,
-    /// More than one factory was registered for the same renderer key.
-    DuplicateRendererKey,
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct SemanticRendererKey {
+    kind: NodeKindKey,
+    kind_version: u32,
 }
 
-/// The registration state for a renderer key in a sealed registry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OpenGpuiRendererRegistrationStatus {
-    /// The key has one retained renderer factory.
-    Registered,
-    /// The key is present but cannot be mounted because its registration is invalid.
-    Invalid(OpenGpuiNodeRegistryIssueKind),
-    /// No registration was supplied for the key.
-    Missing,
+/// Minimal adapter-owned presentation required around an application-native node view.
+///
+/// Product discovery metadata and graph-port layout hints intentionally live outside this type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenGpuiNodeAdapterPresentation {
+    accessible_name: Arc<str>,
+}
+
+impl OpenGpuiNodeAdapterPresentation {
+    /// Creates the presentation used by host accessibility and generic overview chrome.
+    #[must_use]
+    pub fn new(accessible_name: impl Into<Arc<str>>) -> Self {
+        Self {
+            accessible_name: accessible_name.into(),
+        }
+    }
+
+    /// Returns the application-facing accessible node name.
+    #[must_use]
+    pub fn accessible_name(&self) -> &str {
+        &self.accessible_name
+    }
+}
+
+/// One complete semantic-to-native renderer registration.
+///
+/// Factories return a typed mount result so recoverable application failures remain explicit. The
+/// descriptor is the only registration input; policy and overview configuration cannot drift into
+/// separate builder paths.
+pub struct OpenGpuiNodeRendererDescriptor {
+    key: SemanticRendererKey,
+    renderer: RendererStamp,
+    presentation: OpenGpuiNodeAdapterPresentation,
+    factory: Box<ErasedNodeFactory>,
+    overview_factory: Option<Box<ErasedOverviewFactory>>,
+    policy: OpenGpuiNodeRegistrationPolicy,
+}
+
+impl OpenGpuiNodeRendererDescriptor {
+    /// Creates one complete fallible native renderer descriptor.
+    #[must_use]
+    pub fn new<K, F, V>(
+        kind: K,
+        kind_version: u32,
+        renderer: RendererStamp,
+        presentation: OpenGpuiNodeAdapterPresentation,
+        factory: F,
+    ) -> Self
+    where
+        K: Into<NodeKindKey>,
+        F: Fn(
+                Entity<OpenGpuiNodeBinding>,
+                &mut Window,
+                &mut App,
+            ) -> Result<Entity<V>, OpenGpuiNodeMountError>
+            + 'static,
+        V: Render + 'static,
+    {
+        Self {
+            key: SemanticRendererKey {
+                kind: kind.into(),
+                kind_version,
+            },
+            renderer,
+            presentation,
+            factory: Box::new(move |binding, window, cx| {
+                factory(binding, window, cx).map(AnyView::from)
+            }),
+            overview_factory: None,
+            policy: OpenGpuiNodeRegistrationPolicy::default(),
+        }
+    }
+
+    /// Replaces the host scale and size policy for this native renderer.
+    #[must_use]
+    pub fn with_policy(mut self, policy: OpenGpuiNodeRegistrationPolicy) -> Self {
+        self.policy = policy;
+        self
+    }
+
+    /// Installs an application-native semantic-LOD overview factory.
+    #[must_use]
+    pub fn with_overview<O, V>(mut self, factory: O) -> Self
+    where
+        O: Fn(
+                OpenGpuiNodeOverviewMount,
+                &mut Window,
+                &mut App,
+            ) -> Result<Entity<V>, OpenGpuiNodeMountError>
+            + 'static,
+        V: Render + 'static,
+    {
+        self.overview_factory = Some(Box::new(move |mount, window, cx| {
+            factory(mount, window, cx).map(AnyView::from)
+        }));
+        self
+    }
+
+    /// Returns the canonical semantic kind supplied by the application.
+    #[must_use]
+    pub fn kind(&self) -> &NodeKindKey {
+        &self.key.kind
+    }
+
+    /// Returns the exact semantic kind version supplied by the application.
+    #[must_use]
+    pub const fn kind_version(&self) -> u32 {
+        self.key.kind_version
+    }
+
+    /// Returns the opaque native renderer identity.
+    #[must_use]
+    pub const fn renderer_stamp(&self) -> &RendererStamp {
+        &self.renderer
+    }
+
+    /// Returns the adapter-owned presentation paired with this renderer.
+    #[must_use]
+    pub const fn presentation(&self) -> &OpenGpuiNodeAdapterPresentation {
+        &self.presentation
+    }
+
+    /// Returns the host scale and size policy paired with this renderer.
+    #[must_use]
+    pub const fn policy(&self) -> OpenGpuiNodeRegistrationPolicy {
+        self.policy
+    }
+
+    /// Returns whether this renderer supplies an application-native overview.
+    #[must_use]
+    pub const fn has_overview(&self) -> bool {
+        self.overview_factory.is_some()
+    }
+}
+
+/// A descriptor rejected before it can mutate the registry builder.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum OpenGpuiNodeRegistryRegistrationError {
+    /// The semantic kind is empty or whitespace-only.
+    #[error("renderer semantic kind must not be empty")]
+    EmptyKind,
+    /// The semantic kind version is zero.
+    #[error("renderer semantic kind {kind:?} must declare a positive version")]
+    InvalidKindVersion { kind: NodeKindKey },
+    /// The renderer stamp key is empty or whitespace-only.
+    #[error("renderer stamp for {kind:?}@{kind_version} must not have an empty key")]
+    EmptyRendererKey {
+        kind: NodeKindKey,
+        kind_version: u32,
+    },
+    /// The adapter presentation has no accessible name.
+    #[error("renderer presentation for {kind:?}@{kind_version} must have an accessible name")]
+    EmptyAccessibleName {
+        kind: NodeKindKey,
+        kind_version: u32,
+    },
+    /// The builder already contains this semantic kind and version.
+    #[error("renderer semantic kind {kind:?}@{kind_version} is already registered")]
+    DuplicateKindVersion {
+        kind: NodeKindKey,
+        kind_version: u32,
+    },
+    /// The builder already maps this complete renderer stamp to another semantic kind.
+    #[error(
+        "renderer stamp {renderer:?} is already registered for {registered_kind:?}@{registered_version}"
+    )]
+    DuplicateRendererStamp {
+        renderer: RendererStamp,
+        registered_kind: NodeKindKey,
+        registered_version: u32,
+    },
+}
+
+/// A semantic-catalog mismatch found while sealing the registry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OpenGpuiNodeRegistryIssueKind {
+    /// The descriptor kind is not registered in the semantic catalog.
+    MissingSemanticKind,
+    /// The descriptor used a catalog alias instead of its canonical kind.
+    NonCanonicalSemanticKind { canonical: NodeKindKey },
+    /// The descriptor version does not equal the catalog's latest version.
+    SemanticVersionMismatch { catalog_version: u32 },
 }
 
 /// A deterministic registry configuration diagnostic.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenGpuiNodeRegistryIssue {
-    renderer_key: String,
-    kind: OpenGpuiNodeRegistryIssueKind,
+    kind: NodeKindKey,
+    kind_version: u32,
+    issue: OpenGpuiNodeRegistryIssueKind,
 }
 
 impl OpenGpuiNodeRegistryIssue {
-    /// Returns the exact renderer key supplied to the builder.
+    /// Returns the descriptor's semantic kind.
     #[must_use]
-    pub fn renderer_key(&self) -> &str {
-        &self.renderer_key
+    pub fn semantic_kind(&self) -> &NodeKindKey {
+        &self.kind
     }
 
-    /// Returns the configuration problem associated with the key.
+    /// Returns the descriptor's semantic kind version.
     #[must_use]
-    pub fn kind(&self) -> OpenGpuiNodeRegistryIssueKind {
-        self.kind
+    pub const fn semantic_version(&self) -> u32 {
+        self.kind_version
+    }
+
+    /// Returns the catalog mismatch for this descriptor.
+    #[must_use]
+    pub const fn issue(&self) -> &OpenGpuiNodeRegistryIssueKind {
+        &self.issue
     }
 }
 
 impl fmt::Display for OpenGpuiNodeRegistryIssue {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.kind {
-            OpenGpuiNodeRegistryIssueKind::EmptyRendererKey => write!(
+        match &self.issue {
+            OpenGpuiNodeRegistryIssueKind::MissingSemanticKind => write!(
                 formatter,
-                "renderer key {:?} is empty or contains only whitespace",
-                self.renderer_key
+                "renderer references missing semantic kind {:?}@{}",
+                self.kind, self.kind_version
             ),
-            OpenGpuiNodeRegistryIssueKind::DuplicateRendererKey => write!(
+            OpenGpuiNodeRegistryIssueKind::NonCanonicalSemanticKind { canonical } => write!(
                 formatter,
-                "renderer key {:?} has duplicate registrations",
-                self.renderer_key
+                "renderer semantic kind {:?}@{} is an alias for canonical kind {canonical:?}",
+                self.kind, self.kind_version
+            ),
+            OpenGpuiNodeRegistryIssueKind::SemanticVersionMismatch { catalog_version } => write!(
+                formatter,
+                "renderer semantic kind {:?}@{} does not match catalog version {catalog_version}",
+                self.kind, self.kind_version
             ),
         }
     }
@@ -229,7 +392,7 @@ pub struct OpenGpuiNodeRegistryConfigError {
 }
 
 impl OpenGpuiNodeRegistryConfigError {
-    /// Returns every configuration issue ordered by renderer key.
+    /// Returns every mismatch in deterministic semantic-key order.
     #[must_use]
     pub fn issues(&self) -> &[OpenGpuiNodeRegistryIssue] {
         &self.issues
@@ -251,17 +414,6 @@ impl fmt::Display for OpenGpuiNodeRegistryConfigError {
 }
 
 impl std::error::Error for OpenGpuiNodeRegistryConfigError {}
-
-enum PendingRegistration {
-    Renderer(OpenGpuiNodeRendererRegistration),
-    Invalid(OpenGpuiNodeRegistryIssueKind),
-}
-
-struct OpenGpuiNodeRendererRegistration {
-    factory: Box<ErasedNodeFactory>,
-    overview_factory: Option<Box<ErasedOverviewFactory>>,
-    policy: OpenGpuiNodeRegistrationPolicy,
-}
 
 /// Host policy attached to one native renderer registration.
 ///
@@ -304,281 +456,122 @@ impl OpenGpuiNodeRegistrationPolicy {
 /// Mutable construction phase for a host-scoped Open GPUI node registry.
 #[derive(Default)]
 pub struct OpenGpuiNodeRegistryBuilder {
-    registrations: BTreeMap<String, PendingRegistration>,
+    registrations: BTreeMap<SemanticRendererKey, OpenGpuiNodeRendererDescriptor>,
+    stamps: BTreeMap<RendererStamp, SemanticRendererKey>,
 }
 
 impl OpenGpuiNodeRegistryBuilder {
-    /// Registers a retained Open GPUI entity factory for a semantic renderer key.
-    ///
-    /// Registering the same non-empty key more than once invalidates that key; neither factory
-    /// wins and unrelated registrations remain usable after [`Self::seal`].
-    pub fn register<K, F, V>(&mut self, renderer_key: K, factory: F)
-    where
-        K: Into<String>,
-        F: Fn(Entity<OpenGpuiNodeBinding>, &mut Window, &mut App) -> V + 'static,
-        V: IntoOpenGpuiNodeView,
-    {
-        self.register_with_policy(
-            renderer_key,
-            OpenGpuiNodeRegistrationPolicy::default(),
-            factory,
-        );
-    }
-
-    /// Registers a retained entity factory with explicit adapter scale and size policy.
-    pub fn register_with_policy<K, F, V>(
-        &mut self,
-        renderer_key: K,
-        policy: OpenGpuiNodeRegistrationPolicy,
-        factory: F,
-    ) where
-        K: Into<String>,
-        F: Fn(Entity<OpenGpuiNodeBinding>, &mut Window, &mut App) -> V + 'static,
-        V: IntoOpenGpuiNodeView,
-    {
-        let factory = Box::new(move |binding, window: &mut Window, cx: &mut App| {
-            Ok(factory(binding, window, cx).into_open_gpui_node_view())
-        });
-        self.insert(renderer_key.into(), factory, None, policy);
-    }
-
-    /// Registers retained detail and application-native semantic-LOD overview factories.
-    ///
-    /// Both factories share one binding and native mount lifetime. The overview replaces only the
-    /// adapter's generic overview presentation; detail rendering and all headless graph semantics
-    /// remain unchanged.
-    pub fn register_with_overview<K, F, V, O, W>(
-        &mut self,
-        renderer_key: K,
-        factory: F,
-        overview_factory: O,
-    ) where
-        K: Into<String>,
-        F: Fn(Entity<OpenGpuiNodeBinding>, &mut Window, &mut App) -> V + 'static,
-        V: IntoOpenGpuiNodeView,
-        O: Fn(OpenGpuiNodeOverviewMount, &mut Window, &mut App) -> W + 'static,
-        W: IntoOpenGpuiNodeView,
-    {
-        self.register_with_policy_and_overview(
-            renderer_key,
-            OpenGpuiNodeRegistrationPolicy::default(),
-            factory,
-            overview_factory,
-        );
-    }
-
-    /// Registers retained detail and overview factories with explicit adapter policy.
-    pub fn register_with_policy_and_overview<K, F, V, O, W>(
-        &mut self,
-        renderer_key: K,
-        policy: OpenGpuiNodeRegistrationPolicy,
-        factory: F,
-        overview_factory: O,
-    ) where
-        K: Into<String>,
-        F: Fn(Entity<OpenGpuiNodeBinding>, &mut Window, &mut App) -> V + 'static,
-        V: IntoOpenGpuiNodeView,
-        O: Fn(OpenGpuiNodeOverviewMount, &mut Window, &mut App) -> W + 'static,
-        W: IntoOpenGpuiNodeView,
-    {
-        let factory = Box::new(move |binding, window: &mut Window, cx: &mut App| {
-            Ok(factory(binding, window, cx).into_open_gpui_node_view())
-        });
-        let overview_factory = Box::new(
-            move |mount: OpenGpuiNodeOverviewMount, window: &mut Window, cx: &mut App| {
-                Ok(overview_factory(mount, window, cx).into_open_gpui_node_view())
-            },
-        );
-        self.insert(renderer_key.into(), factory, Some(overview_factory), policy);
-    }
-
-    /// Registers a retained entity factory that can report a recoverable mount failure.
-    ///
-    /// A returned error is handled by the host's renderer fallback. Panics are not converted into
-    /// mount failures because a panicking factory may have left its Open GPUI context inconsistent.
-    pub fn try_register<K, F, V>(&mut self, renderer_key: K, factory: F)
-    where
-        K: Into<String>,
-        F: Fn(
-                Entity<OpenGpuiNodeBinding>,
-                &mut Window,
-                &mut App,
-            ) -> Result<V, OpenGpuiNodeMountError>
-            + 'static,
-        V: IntoOpenGpuiNodeView,
-    {
-        self.try_register_with_policy(
-            renderer_key,
-            OpenGpuiNodeRegistrationPolicy::default(),
-            factory,
-        );
-    }
-
-    /// Registers a fallible retained factory with explicit adapter scale and size policy.
-    pub fn try_register_with_policy<K, F, V>(
-        &mut self,
-        renderer_key: K,
-        policy: OpenGpuiNodeRegistrationPolicy,
-        factory: F,
-    ) where
-        K: Into<String>,
-        F: Fn(
-                Entity<OpenGpuiNodeBinding>,
-                &mut Window,
-                &mut App,
-            ) -> Result<V, OpenGpuiNodeMountError>
-            + 'static,
-        V: IntoOpenGpuiNodeView,
-    {
-        let factory = Box::new(move |binding, window: &mut Window, cx: &mut App| {
-            factory(binding, window, cx).map(IntoOpenGpuiNodeView::into_open_gpui_node_view)
-        });
-        self.insert(renderer_key.into(), factory, None, policy);
-    }
-
-    /// Registers fallible retained detail and application-native overview factories.
-    pub fn try_register_with_overview<K, F, V, O, W>(
-        &mut self,
-        renderer_key: K,
-        factory: F,
-        overview_factory: O,
-    ) where
-        K: Into<String>,
-        F: Fn(
-                Entity<OpenGpuiNodeBinding>,
-                &mut Window,
-                &mut App,
-            ) -> Result<V, OpenGpuiNodeMountError>
-            + 'static,
-        V: IntoOpenGpuiNodeView,
-        O: Fn(
-                OpenGpuiNodeOverviewMount,
-                &mut Window,
-                &mut App,
-            ) -> Result<W, OpenGpuiNodeMountError>
-            + 'static,
-        W: IntoOpenGpuiNodeView,
-    {
-        self.try_register_with_policy_and_overview(
-            renderer_key,
-            OpenGpuiNodeRegistrationPolicy::default(),
-            factory,
-            overview_factory,
-        );
-    }
-
-    /// Registers fallible retained detail and overview factories with explicit adapter policy.
-    pub fn try_register_with_policy_and_overview<K, F, V, O, W>(
-        &mut self,
-        renderer_key: K,
-        policy: OpenGpuiNodeRegistrationPolicy,
-        factory: F,
-        overview_factory: O,
-    ) where
-        K: Into<String>,
-        F: Fn(
-                Entity<OpenGpuiNodeBinding>,
-                &mut Window,
-                &mut App,
-            ) -> Result<V, OpenGpuiNodeMountError>
-            + 'static,
-        V: IntoOpenGpuiNodeView,
-        O: Fn(
-                OpenGpuiNodeOverviewMount,
-                &mut Window,
-                &mut App,
-            ) -> Result<W, OpenGpuiNodeMountError>
-            + 'static,
-        W: IntoOpenGpuiNodeView,
-    {
-        let factory = Box::new(move |binding, window: &mut Window, cx: &mut App| {
-            factory(binding, window, cx).map(IntoOpenGpuiNodeView::into_open_gpui_node_view)
-        });
-        let overview_factory = Box::new(
-            move |mount: OpenGpuiNodeOverviewMount, window: &mut Window, cx: &mut App| {
-                overview_factory(mount, window, cx)
-                    .map(IntoOpenGpuiNodeView::into_open_gpui_node_view)
-            },
-        );
-        self.insert(renderer_key.into(), factory, Some(overview_factory), policy);
-    }
-
-    fn insert(
-        &mut self,
-        renderer_key: String,
-        factory: Box<ErasedNodeFactory>,
-        overview_factory: Option<Box<ErasedOverviewFactory>>,
-        policy: OpenGpuiNodeRegistrationPolicy,
-    ) {
-        if renderer_key.trim().is_empty() {
-            self.registrations.insert(
-                renderer_key,
-                PendingRegistration::Invalid(OpenGpuiNodeRegistryIssueKind::EmptyRendererKey),
-            );
-            return;
-        }
-
-        match self.registrations.entry(renderer_key) {
-            std::collections::btree_map::Entry::Vacant(entry) => {
-                entry.insert(PendingRegistration::Renderer(
-                    OpenGpuiNodeRendererRegistration {
-                        factory,
-                        overview_factory,
-                        policy,
-                    },
-                ));
-            }
-            std::collections::btree_map::Entry::Occupied(mut entry) => {
-                entry.insert(PendingRegistration::Invalid(
-                    OpenGpuiNodeRegistryIssueKind::DuplicateRendererKey,
-                ));
-            }
-        }
-    }
-
-    /// Validates and seals the registry, making all renderer registrations immutable.
+    /// Registers one complete descriptor without mutating the builder on validation failure.
     ///
     /// # Errors
     ///
-    /// Returns every configuration issue ordered by renderer key when any whitespace-only key
-    /// prevents sealing. Duplicate non-empty keys remain isolated invalid entries in the sealed
-    /// registry; when sealing also fails, they are included in the aggregate diagnostic.
-    pub fn seal(self) -> Result<OpenGpuiNodeRegistry, OpenGpuiNodeRegistryConfigError> {
-        let mut renderers = BTreeMap::new();
-        let mut invalid = BTreeMap::new();
-        let mut issues = Vec::new();
-        let mut prevents_seal = false;
+    /// Returns a typed validation or duplicate-identity error before inserting any descriptor.
+    pub fn register(
+        &mut self,
+        descriptor: OpenGpuiNodeRendererDescriptor,
+    ) -> Result<(), OpenGpuiNodeRegistryRegistrationError> {
+        if descriptor.key.kind.0.trim().is_empty() {
+            return Err(OpenGpuiNodeRegistryRegistrationError::EmptyKind);
+        }
+        if descriptor.key.kind_version == 0 {
+            return Err(OpenGpuiNodeRegistryRegistrationError::InvalidKindVersion {
+                kind: descriptor.key.kind.clone(),
+            });
+        }
+        if descriptor.renderer.key().trim().is_empty() {
+            return Err(OpenGpuiNodeRegistryRegistrationError::EmptyRendererKey {
+                kind: descriptor.key.kind.clone(),
+                kind_version: descriptor.key.kind_version,
+            });
+        }
+        if descriptor.presentation.accessible_name().trim().is_empty() {
+            return Err(OpenGpuiNodeRegistryRegistrationError::EmptyAccessibleName {
+                kind: descriptor.key.kind.clone(),
+                kind_version: descriptor.key.kind_version,
+            });
+        }
+        if self.registrations.contains_key(&descriptor.key) {
+            return Err(
+                OpenGpuiNodeRegistryRegistrationError::DuplicateKindVersion {
+                    kind: descriptor.key.kind.clone(),
+                    kind_version: descriptor.key.kind_version,
+                },
+            );
+        }
+        if let Some(registered) = self.stamps.get(&descriptor.renderer) {
+            return Err(
+                OpenGpuiNodeRegistryRegistrationError::DuplicateRendererStamp {
+                    renderer: descriptor.renderer.clone(),
+                    registered_kind: registered.kind.clone(),
+                    registered_version: registered.kind_version,
+                },
+            );
+        }
 
-        for (renderer_key, registration) in self.registrations {
-            match registration {
-                PendingRegistration::Renderer(renderer) => {
-                    renderers.insert(renderer_key, renderer);
+        self.stamps
+            .insert(descriptor.renderer.clone(), descriptor.key.clone());
+        self.registrations
+            .insert(descriptor.key.clone(), descriptor);
+        Ok(())
+    }
+
+    /// Validates every descriptor against one immutable semantic catalog and seals the mapping.
+    ///
+    /// # Errors
+    ///
+    /// Returns every unknown, aliased, or version-mismatched descriptor in deterministic order.
+    pub fn seal(
+        self,
+        catalog: &NodeCatalog,
+    ) -> Result<OpenGpuiNodeRegistry, OpenGpuiNodeRegistryConfigError> {
+        let mut issues = Vec::new();
+        for key in self.registrations.keys() {
+            let issue = match catalog.resolve_kind(&key.kind) {
+                None => Some(OpenGpuiNodeRegistryIssueKind::MissingSemanticKind),
+                Some(canonical) if canonical != &key.kind => {
+                    Some(OpenGpuiNodeRegistryIssueKind::NonCanonicalSemanticKind {
+                        canonical: canonical.clone(),
+                    })
                 }
-                PendingRegistration::Invalid(kind) => {
-                    let issue = OpenGpuiNodeRegistryIssue { renderer_key, kind };
-                    match kind {
-                        OpenGpuiNodeRegistryIssueKind::EmptyRendererKey => prevents_seal = true,
-                        OpenGpuiNodeRegistryIssueKind::DuplicateRendererKey => {
-                            invalid.insert(issue.renderer_key.clone(), issue.clone());
-                        }
-                    }
-                    issues.push(issue);
-                }
+                Some(_) => catalog
+                    .get(&key.kind)
+                    .filter(|spec| spec.latest_kind_version() != key.kind_version)
+                    .map(
+                        |spec| OpenGpuiNodeRegistryIssueKind::SemanticVersionMismatch {
+                            catalog_version: spec.latest_kind_version(),
+                        },
+                    ),
+            };
+            if let Some(issue) = issue {
+                issues.push(OpenGpuiNodeRegistryIssue {
+                    kind: key.kind.clone(),
+                    kind_version: key.kind_version,
+                    issue,
+                });
             }
         }
-
-        if prevents_seal {
-            Err(OpenGpuiNodeRegistryConfigError { issues })
-        } else {
-            Ok(OpenGpuiNodeRegistry { renderers, invalid })
+        if !issues.is_empty() {
+            return Err(OpenGpuiNodeRegistryConfigError { issues });
         }
+        Ok(OpenGpuiNodeRegistry {
+            renderers: self.registrations,
+        })
     }
 }
 
 /// A sealed, host-scoped registry of retained Open GPUI node factories.
+///
+/// Sealing consumes the mutable builder, and the sealed registry exposes no registration method.
+///
+/// ```compile_fail
+/// use jellyflow_open_gpui::registry::OpenGpuiNodeRegistry;
+///
+/// fn mutate_after_seal(registry: &mut OpenGpuiNodeRegistry) {
+///     registry.register(());
+/// }
+/// ```
 pub struct OpenGpuiNodeRegistry {
-    renderers: BTreeMap<String, OpenGpuiNodeRendererRegistration>,
-    invalid: BTreeMap<String, OpenGpuiNodeRegistryIssue>,
+    renderers: BTreeMap<SemanticRendererKey, OpenGpuiNodeRendererDescriptor>,
 }
 
 impl OpenGpuiNodeRegistry {
@@ -600,16 +593,40 @@ impl OpenGpuiNodeRegistry {
         self.renderers.is_empty()
     }
 
-    /// Returns the sealed registration state for an exact renderer key.
+    /// Resolves the opaque native renderer identity for one exact semantic kind and version.
     #[must_use]
-    pub fn status(&self, renderer_key: &str) -> OpenGpuiRendererRegistrationStatus {
-        if self.renderers.contains_key(renderer_key) {
-            OpenGpuiRendererRegistrationStatus::Registered
-        } else if let Some(issue) = self.invalid.get(renderer_key) {
-            OpenGpuiRendererRegistrationStatus::Invalid(issue.kind())
-        } else {
-            OpenGpuiRendererRegistrationStatus::Missing
-        }
+    pub fn renderer_stamp(&self, kind: &NodeKindKey, kind_version: u32) -> Option<&RendererStamp> {
+        self.renderers
+            .get(&SemanticRendererKey {
+                kind: kind.clone(),
+                kind_version,
+            })
+            .map(|descriptor| &descriptor.renderer)
+    }
+
+    /// Resolves adapter presentation for one exact canonical semantic kind and version.
+    #[must_use]
+    pub fn presentation(
+        &self,
+        kind: &NodeKindKey,
+        kind_version: u32,
+    ) -> Option<&OpenGpuiNodeAdapterPresentation> {
+        self.renderers
+            .get(&SemanticRendererKey {
+                kind: kind.clone(),
+                kind_version,
+            })
+            .map(|descriptor| &descriptor.presentation)
+    }
+
+    pub(crate) fn mappings(&self) -> impl Iterator<Item = (&NodeKindKey, u32, &RendererStamp)> {
+        self.renderers.values().map(|descriptor| {
+            (
+                &descriptor.key.kind,
+                descriptor.key.kind_version,
+                &descriptor.renderer,
+            )
+        })
     }
 
     pub(crate) fn mount(
@@ -619,13 +636,18 @@ impl OpenGpuiNodeRegistry {
         window: &mut Window,
         cx: &mut App,
     ) -> OpenGpuiNodeMountOutcome {
-        let renderer_key = frame.renderer().key();
-        if let Some(issue) = self.invalid.get(renderer_key) {
-            return OpenGpuiNodeMountOutcome::Invalid(issue.clone());
-        }
-        let Some(renderer) = self.renderers.get(renderer_key) else {
+        let Some(node) = frame.node() else {
             return OpenGpuiNodeMountOutcome::Missing;
         };
+        let Some(renderer) = self.renderers.get(&SemanticRendererKey {
+            kind: node.kind.clone(),
+            kind_version: node.kind_version,
+        }) else {
+            return OpenGpuiNodeMountOutcome::Missing;
+        };
+        if &renderer.renderer != frame.renderer() {
+            return OpenGpuiNodeMountOutcome::Missing;
+        }
 
         match (renderer.factory)(binding.clone(), window, cx) {
             Ok(view) => {
@@ -642,7 +664,7 @@ impl OpenGpuiNodeRegistry {
 
     fn mount_overview(
         &self,
-        renderer: &OpenGpuiNodeRendererRegistration,
+        renderer: &OpenGpuiNodeRendererDescriptor,
         frame: &FrameNode,
         binding: Entity<OpenGpuiNodeBinding>,
         window: &mut Window,
@@ -681,7 +703,6 @@ pub(crate) enum OpenGpuiNodeMountOutcome {
         overview: OpenGpuiNodeOverviewMountOutcome,
         policy: OpenGpuiNodeRegistrationPolicy,
     },
-    Invalid(OpenGpuiNodeRegistryIssue),
     Missing,
     FactoryFailed(OpenGpuiNodeMountError),
 }

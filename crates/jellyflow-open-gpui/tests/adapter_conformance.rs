@@ -11,13 +11,15 @@ use jellyflow_open_gpui::authoring::{
     OpenGpuiManagedMutation, OpenGpuiNodeAuthoring, OpenGpuiNodeBinding, OpenGpuiPortSide,
 };
 use jellyflow_open_gpui::host::OpenGpuiSceneHost;
-use jellyflow_open_gpui::registry::OpenGpuiNodeRegistry;
+use jellyflow_open_gpui::registry::{
+    OpenGpuiNodeAdapterPresentation, OpenGpuiNodeRegistry, OpenGpuiNodeRendererDescriptor,
+};
 use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec};
 use jellyflow_runtime::{
     commands::GraphCommand, commands::IncidentEdgePolicy, commands::TopologyEdit,
     commands::TopologyPort, graph::GraphRuntime, view::AdapterEnvironment,
-    view::PublishedPortOutcome, view::ViewSessionEvent, view::ViewSessionOptions,
-    view::WeakViewSession,
+    view::PublishedPortOutcome, view::RendererStamp, view::ViewSessionEvent,
+    view::ViewSessionOptions, view::WeakViewSession,
 };
 use open_gpui::{
     AppContext, Context, Entity, InteractiveElement, ParentElement, Render, Styled, Window, div, px,
@@ -288,25 +290,33 @@ fn native_vertical_tracer_runs_commands_and_layout_through_one_real_host_frame(
     let factory_node = Rc::clone(&captured_node);
     let factory_prompt = Rc::clone(&captured_prompt);
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(TRACER_RENDERER, move |binding, _window, cx| {
-        let prompt = cx.new(|cx| TextInputController::with_value(String::new(), cx));
-        let topology_mutation = binding.read(cx).managed_mutation::<NativeTopologyIntent>();
-        let node = cx.new(|_| NativeTracerNode {
-            binding,
-            topology_mutation,
-            prompt: prompt.clone(),
-            ids,
-            fast_mode: false,
-            observations: Rc::clone(&factory_observations),
-        });
-        *factory_node.borrow_mut() = Some(node.clone());
-        *factory_prompt.borrow_mut() = Some(prompt);
-        node
-    });
+    registry
+        .register(OpenGpuiNodeRendererDescriptor::new(
+            TRACER_KIND,
+            1,
+            RendererStamp::new(TRACER_RENDERER, 1),
+            OpenGpuiNodeAdapterPresentation::new("Adapter tracer"),
+            move |binding, _window, cx| {
+                let prompt = cx.new(|cx| TextInputController::with_value(String::new(), cx));
+                let topology_mutation = binding.read(cx).managed_mutation::<NativeTopologyIntent>();
+                let node = cx.new(|_| NativeTracerNode {
+                    binding,
+                    topology_mutation,
+                    prompt: prompt.clone(),
+                    ids,
+                    fast_mode: false,
+                    observations: Rc::clone(&factory_observations),
+                });
+                *factory_node.borrow_mut() = Some(node.clone());
+                *factory_prompt.borrow_mut() = Some(prompt);
+                Ok(node)
+            },
+        ))
+        .expect("register adapter tracer renderer");
     let (host, cx) = cx.add_window_view(move |_, _| {
         OpenGpuiSceneHost::new(
             host_view,
-            registry.seal().expect("valid test registry"),
+            registry.seal(&catalog()).expect("valid test registry"),
             viewport(),
         )
     });

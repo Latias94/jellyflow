@@ -7,19 +7,23 @@ use jellyflow_core::{
     CanvasPoint, CanvasRect, CanvasSize, GraphBuilder, GraphId, Node, NodeId, NodeKindKey, PortId,
 };
 use jellyflow_open_gpui::activity::{OpenGpuiActivityKind, OpenGpuiActivityLease};
+use jellyflow_open_gpui::authoring::OpenGpuiNodeBinding;
 use jellyflow_open_gpui::host::{
     OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY, OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY,
     OpenGpuiSceneHost,
 };
-use jellyflow_open_gpui::registry::OpenGpuiNodeRegistry;
+use jellyflow_open_gpui::registry::{
+    OpenGpuiNodeAdapterPresentation, OpenGpuiNodeRegistry, OpenGpuiNodeRegistryBuilder,
+    OpenGpuiNodeRendererDescriptor,
+};
 use jellyflow_open_gpui::retained_field::{
     RetainedField, RetainedFieldError, RetainedFieldKey, RetainedFieldPhase,
     RetainedFieldRetention, RetainedFieldStoreError,
 };
 use jellyflow_runtime::graph::GraphRuntime;
 use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec};
-use jellyflow_runtime::view::ViewSessionOptions;
-use open_gpui::{AppContext, Context, Entity, ParentElement, Render, Styled, Window, div};
+use jellyflow_runtime::view::{RendererStamp, ViewSessionOptions};
+use open_gpui::{App, AppContext, Context, Entity, ParentElement, Render, Styled, Window, div};
 use open_gpui_canvas_jellyflow::nodes::{
     NativeNodeResources, WORKFLOW_LLM_KIND, native_node_catalog, register_native_nodes,
     workflow_prompt_selector,
@@ -37,11 +41,28 @@ struct OverflowNode {
     _field: RetainedField<String>,
 }
 
+fn register_overflow_renderer<F, V>(registry: &mut OpenGpuiNodeRegistryBuilder, factory: F)
+where
+    F: Fn(Entity<OpenGpuiNodeBinding>, &mut Window, &mut App) -> Entity<V> + 'static,
+    V: Render + 'static,
+{
+    registry
+        .register(OpenGpuiNodeRendererDescriptor::new(
+            KIND,
+            1,
+            RendererStamp::new(RENDERER, 1),
+            OpenGpuiNodeAdapterPresentation::new("Workflow overflow"),
+            move |binding, window, cx| Ok(factory(binding, window, cx)),
+        ))
+        .expect("unique workflow overflow renderer descriptor");
+}
+
 #[open_gpui::test]
 fn edit_is_rejected_before_publish_when_host_and_external_field_budgets_are_full(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    let runtime = GraphRuntime::builder(catalog())
+    let node_catalog = catalog();
+    let runtime = GraphRuntime::builder(node_catalog.clone())
         .build(atomic_capacity_graph())
         .expect("valid atomic capacity graph");
     let view = runtime
@@ -52,7 +73,7 @@ fn edit_is_rejected_before_publish_when_host_and_external_field_budgets_are_full
     let factory_targets = targets.clone();
     let factory_store = store.clone();
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
+    register_overflow_renderer(&mut registry, move |binding, _window, cx| {
         let authoring = binding.read(cx).authoring().expect("live atomic binding");
         let node = authoring.node_id();
         let index = node_index(node);
@@ -76,7 +97,9 @@ fn edit_is_rejected_before_publish_when_host_and_external_field_budgets_are_full
     let (host, cx) = cx.add_window_view(move |_, _| {
         OpenGpuiSceneHost::new(
             view,
-            registry.seal().expect("valid atomic capacity registry"),
+            registry
+                .seal(&node_catalog)
+                .expect("valid atomic capacity registry"),
             initial_bounds(),
         )
     });
@@ -153,7 +176,8 @@ impl Render for OverflowNode {
 fn sixty_fifth_dirty_draft_survives_real_host_capacity_and_lru_churn(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    let runtime = GraphRuntime::builder(catalog())
+    let node_catalog = catalog();
+    let runtime = GraphRuntime::builder(node_catalog.clone())
         .build(overflow_graph())
         .expect("valid overflow graph");
     let view = runtime
@@ -170,7 +194,7 @@ fn sixty_fifth_dirty_draft_survives_real_host_capacity_and_lru_churn(
     let factory_mounted_overflow = mounted_overflow.clone();
     let factory_overflow_values = overflow_values.clone();
     let factory_initial_mounts = initial_mounts.clone();
-    registry.register(RENDERER, move |binding, _window, cx| {
+    register_overflow_renderer(&mut registry, move |binding, _window, cx| {
         let authoring = binding
             .read(cx)
             .authoring()
@@ -220,7 +244,7 @@ fn sixty_fifth_dirty_draft_survives_real_host_capacity_and_lru_churn(
     let (host, cx) = cx.add_window_view(move |_, _| {
         OpenGpuiSceneHost::new(
             view,
-            registry.seal().expect("valid test registry"),
+            registry.seal(&node_catalog).expect("valid test registry"),
             initial_bounds(),
         )
     });
@@ -311,7 +335,7 @@ fn sixty_fifth_workflow_focus_is_rejected_before_the_node_can_park(
 ) {
     cx.update(init_text_input);
     let catalog = focus_overflow_catalog();
-    let runtime = GraphRuntime::builder(catalog)
+    let runtime = GraphRuntime::builder(catalog.clone())
         .build(focus_overflow_graph())
         .expect("valid workflow focus overflow graph");
     let view = runtime
@@ -320,7 +344,7 @@ fn sixty_fifth_workflow_focus_is_rejected_before_the_node_can_park(
     let mut registry = OpenGpuiNodeRegistry::builder();
     let resources = cx.update(NativeNodeResources::ready_default);
     register_native_nodes(&mut registry, resources);
-    registry.register(RENDERER, |binding, _window, cx| {
+    register_overflow_renderer(&mut registry, |binding, _window, cx| {
         let lease = binding
             .read(cx)
             .activity()
@@ -331,7 +355,9 @@ fn sixty_fifth_workflow_focus_is_rejected_before_the_node_can_park(
     let (host, cx) = cx.add_window_view(move |_, _| {
         OpenGpuiSceneHost::new(
             view,
-            registry.seal().expect("valid focus overflow registry"),
+            registry
+                .seal(&catalog)
+                .expect("valid focus overflow registry"),
             initial_bounds(),
         )
     });

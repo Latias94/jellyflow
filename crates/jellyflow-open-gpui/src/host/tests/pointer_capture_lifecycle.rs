@@ -181,7 +181,7 @@ fn mount_pointer_capture_scene(
     let releases = Rc::new(Cell::new(0));
     let factory_releases = releases.clone();
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
+    register_test_renderer(&mut registry, move |binding, _window, cx| {
         *factory_binding.borrow_mut() = Some(binding.clone());
         let activity = binding.read(cx).activity();
         cx.new(|_| PointerCaptureNode {
@@ -197,7 +197,9 @@ fn mount_pointer_capture_scene(
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new(
                 view,
-                registry.seal().expect("valid pointer-capture registry"),
+                registry
+                    .seal(&catalog())
+                    .expect("valid pointer-capture registry"),
                 viewport(),
             )
         });

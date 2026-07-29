@@ -12,7 +12,7 @@ use jellyflow_core::{
     NodeGraphConnectionMode, NodeId, NodeKindKey, PortCapacity, PortDirection, PortId, PortKind,
 };
 use jellyflow_open_gpui::host::OpenGpuiSceneHost;
-use jellyflow_open_gpui::registry::{OpenGpuiNodeRegistry, OpenGpuiRendererRegistrationStatus};
+use jellyflow_open_gpui::registry::OpenGpuiNodeRegistry;
 use jellyflow_runtime::commands::{
     CommandExecutionKind, ConnectionEdit, GraphCommand, IncidentEdgePolicy, TopologyEdit,
 };
@@ -70,7 +70,8 @@ fn native_runtime(graph: Graph) -> Result<GraphRuntime, GraphRuntimeError> {
 }
 
 fn native_registry(cx: &mut open_gpui::App) -> OpenGpuiNodeRegistry {
-    native_node_registry(NativeNodeResources::ready_default(cx))
+    let catalog = native_node_catalog().expect("native node catalog");
+    native_node_registry(NativeNodeResources::ready_default(cx), &catalog)
 }
 
 fn native_profiled_runtime(
@@ -93,8 +94,10 @@ fn native_shader_entity_mounts_through_scene_host_and_submits_real_port_feedback
     let weak_view = view.downgrade();
     let registry = cx.update(native_registry);
     assert_eq!(
-        registry.status(SHADER_MULTIPLY_RENDERER),
-        OpenGpuiRendererRegistrationStatus::Registered,
+        registry
+            .renderer_stamp(&NodeKindKey::new(SHADER_MULTIPLY_KIND), 1)
+            .map(|renderer| renderer.key()),
+        Some(SHADER_MULTIPLY_RENDERER),
     );
 
     let (host, cx) =

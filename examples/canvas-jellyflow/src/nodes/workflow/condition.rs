@@ -12,11 +12,15 @@ use jellyflow_open_gpui::authoring::{
     OpenGpuiManagedMutation, OpenGpuiNodeAuthoring, OpenGpuiNodeBinding, OpenGpuiPortHandle,
 };
 use jellyflow_open_gpui::chrome::{OpenGpuiPortMarker, OpenGpuiPortTone};
-use jellyflow_open_gpui::registry::{OpenGpuiNodeRegistrationPolicy, OpenGpuiNodeRegistryBuilder};
+use jellyflow_open_gpui::registry::{
+    OpenGpuiNodeAdapterPresentation, OpenGpuiNodeRegistrationPolicy, OpenGpuiNodeRegistryBuilder,
+    OpenGpuiNodeRendererDescriptor,
+};
 use jellyflow_open_gpui::size_policy::{OpenGpuiContentHeightPolicy, OpenGpuiNodeSizePolicy};
 use jellyflow_runtime::commands::IncidentEdgePolicy;
 use jellyflow_runtime::schema::{NodeKindSpec, NodePortSpec};
 use jellyflow_runtime::view::NodeInstanceKey;
+use jellyflow_runtime::view::RendererStamp;
 use open_gpui::{
     App, AppContext, Context, Entity, Focusable, InteractiveElement, ParentElement, Render,
     StatefulInteractiveElement, Styled, Task, Window, div, px,
@@ -1089,11 +1093,18 @@ pub(super) fn register(
                 .expect("workflow condition content-height bounds must be valid"),
         ),
     );
-    registry.register_with_policy(
-        WORKFLOW_CONDITION_RENDERER,
-        policy,
-        move |binding, _window, cx| mount_condition(binding, product_theme, cx),
-    );
+    registry
+        .register(
+            OpenGpuiNodeRendererDescriptor::new(
+                WORKFLOW_CONDITION_KIND,
+                1,
+                RendererStamp::new(WORKFLOW_CONDITION_RENDERER, 1),
+                OpenGpuiNodeAdapterPresentation::new("Condition"),
+                move |binding, _window, cx| Ok(mount_condition(binding, product_theme, cx)),
+            )
+            .with_policy(policy),
+        )
+        .expect("unique workflow condition renderer descriptor");
 }
 
 fn mount_condition(

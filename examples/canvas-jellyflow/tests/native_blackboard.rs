@@ -10,9 +10,8 @@ use open_gpui::{AppContext, ScrollDelta, ScrollWheelEvent, TouchPhase, point};
 use open_gpui_canvas_jellyflow::blackboard::{
     BlackboardResourceStatus, NativeBlackboard, blackboard_empty_selector,
     blackboard_failed_selector, blackboard_loading_selector, blackboard_retry_selector,
-    blackboard_scroll_selector,
-    blackboard_symbol_accept_remote_selector, blackboard_symbol_apply_selector,
-    blackboard_symbol_name_selector,
+    blackboard_scroll_selector, blackboard_symbol_accept_remote_selector,
+    blackboard_symbol_apply_selector, blackboard_symbol_name_selector,
 };
 use open_gpui_canvas_jellyflow::product_domain::blackboard::{
     BlackboardDispatchOutcome, BlackboardSource, BlackboardSourceCallback, BlackboardSourceError,
@@ -721,7 +720,13 @@ fn rejected_blackboard_source_requires_an_explicit_retry_before_dispatch(
     assert_eq!(source.execute_calls(), 1);
     assert_eq!(runtime.snapshot().unwrap().revision(), 0);
     assert_eq!(
-        runtime.snapshot().unwrap().graph().symbol(&symbol_id).unwrap().name,
+        runtime
+            .snapshot()
+            .unwrap()
+            .graph()
+            .symbol(&symbol_id)
+            .unwrap()
+            .name,
         "base"
     );
 
@@ -733,7 +738,13 @@ fn rejected_blackboard_source_requires_an_explicit_retry_before_dispatch(
     assert_eq!(source.execute_calls(), 2);
     assert_eq!(runtime.snapshot().unwrap().revision(), 1);
     assert_eq!(
-        runtime.snapshot().unwrap().graph().symbol(&symbol_id).unwrap().name,
+        runtime
+            .snapshot()
+            .unwrap()
+            .graph()
+            .symbol(&symbol_id)
+            .unwrap()
+            .name,
         "base local"
     );
 }
@@ -971,10 +982,7 @@ impl BlackboardSource for ControlledBlackboardSource {
             .map_err(|error| BlackboardSourceError::new(error.to_string()))
     }
 
-    fn execute(
-        &self,
-        command: GraphCommand,
-    ) -> BlackboardDispatchOutcome {
+    fn execute(&self, command: GraphCommand) -> BlackboardDispatchOutcome {
         BlackboardDispatchOutcome::completed(self.runtime.execute(command))
     }
 }
@@ -1060,10 +1068,7 @@ impl BlackboardSource for FaultInjectingBlackboardSource {
         }
     }
 
-    fn execute(
-        &self,
-        command: GraphCommand,
-    ) -> BlackboardDispatchOutcome {
+    fn execute(&self, command: GraphCommand) -> BlackboardDispatchOutcome {
         BlackboardDispatchOutcome::completed(self.runtime.execute(command))
     }
 }
@@ -1171,10 +1176,7 @@ impl BlackboardSource for UncertainCommitBlackboardSource {
         ))
     }
 
-    fn execute(
-        &self,
-        command: GraphCommand,
-    ) -> BlackboardDispatchOutcome {
+    fn execute(&self, command: GraphCommand) -> BlackboardDispatchOutcome {
         self.execute_calls
             .set(self.execute_calls.get().saturating_add(1));
         let _completion = self.runtime.execute(command);

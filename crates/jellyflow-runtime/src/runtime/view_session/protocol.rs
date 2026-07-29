@@ -198,7 +198,7 @@ impl ViewSession {
                     if node.hidden {
                         return None;
                     }
-                    let renderer = request.renderer_for(node_id, &node.kind);
+                    let renderer = request.renderer_for(node_id, &node.kind, node.kind_version);
                     let layout_generation = state.derived.layout_generation(node_id);
                     let binding_revision = state.derived.binding_revision(node_id);
                     let (bounds, bounds_source) = state

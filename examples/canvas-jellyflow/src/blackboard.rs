@@ -336,10 +336,7 @@ impl NativeBlackboard {
         })
     }
 
-    fn execute_source(
-        &self,
-        command: GraphCommand,
-    ) -> BlackboardDispatchOutcome {
+    fn execute_source(&self, command: GraphCommand) -> BlackboardDispatchOutcome {
         catch_unwind(AssertUnwindSafe(|| self.source.execute(command))).unwrap_or_else(|_| {
             BlackboardDispatchOutcome::uncertain(
                 "blackboard source command panicked after entering the source boundary",
@@ -366,8 +363,7 @@ impl Render for NativeBlackboard {
                     .expect("iterated Blackboard symbol has a projection");
                 let phase = projection.phase();
                 let submission_phase = projection.submission_phase();
-                let dirty = phase.is_dirty()
-                    || submission_phase != BlackboardSubmissionPhase::Idle;
+                let dirty = phase.is_dirty() || submission_phase != BlackboardSubmissionPhase::Idle;
                 let conflicted = projection.can_accept_remote();
                 let apply_action = projection.apply_action();
                 let can_discard = projection.can_discard_submission();
@@ -395,8 +391,7 @@ impl Render for NativeBlackboard {
                 let apply_label = match apply_action {
                     Some(BlackboardApplyAction::Reapply) => "Reapply",
                     Some(
-                        BlackboardApplyAction::Retry
-                        | BlackboardApplyAction::ConfirmUncertainRetry,
+                        BlackboardApplyAction::Retry | BlackboardApplyAction::ConfirmUncertainRetry,
                     ) => "Retry",
                     Some(BlackboardApplyAction::Commit) | None => "Apply",
                 };
@@ -523,9 +518,8 @@ impl Render for NativeBlackboard {
                             .variant(ButtonVariant::Ghost)
                             .xsmall()
                             .on_click(move |_, window, cx| {
-                                let _ = discard_panel.update(cx, |panel, cx| {
-                                    panel.discard_name_submission(id, cx)
-                                });
+                                let _ = discard_panel
+                                    .update(cx, |panel, cx| panel.discard_name_submission(id, cx));
                                 window.refresh();
                             })
                         }))

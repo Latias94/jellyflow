@@ -675,8 +675,9 @@ impl OpenGpuiSceneHost {
             return format!("Node {}", frame.id().0);
         };
         self.catalog
-            .get(&node.kind)
-            .map(|spec| spec.title().to_owned())
+            .resolve_kind(&node.kind)
+            .and_then(|kind| self.registry.presentation(kind, node.kind_version))
+            .map(|presentation| presentation.accessible_name().to_owned())
             .unwrap_or_else(|| node.kind.0.clone())
     }
 
@@ -692,7 +693,6 @@ impl OpenGpuiSceneHost {
         MountedNodeContentKind,
         OpenGpuiNodeRegistrationPolicy,
     ) {
-        let renderer_key = frame.renderer().key();
         match self.registry.mount(frame, binding.clone(), window, cx) {
             OpenGpuiNodeMountOutcome::Mounted {
                 view,
@@ -715,28 +715,19 @@ impl OpenGpuiSceneHost {
                 };
                 (view, overview, MountedNodeContentKind::Renderer, policy)
             }
-            OpenGpuiNodeMountOutcome::Invalid(issue) => {
-                let diagnostic = mount_diagnostic(
-                    frame,
-                    OpenGpuiSceneHostDiagnosticKind::InvalidRendererRegistration,
-                    issue.to_string(),
-                );
-                let view = self.diagnostic_fallback(&diagnostic, Some(binding), cx);
-                self.last_diagnostic = Some(diagnostic);
-                (
-                    view,
-                    None,
-                    MountedNodeContentKind::Diagnostic(
-                        OpenGpuiSceneHostDiagnosticKind::InvalidRendererRegistration,
-                    ),
-                    OpenGpuiNodeRegistrationPolicy::default(),
-                )
-            }
             OpenGpuiNodeMountOutcome::Missing => {
+                let identity = frame.node().map_or_else(
+                    || format!("node {}", frame.id().0),
+                    |node| format!("{}@{}", node.kind.0, node.kind_version),
+                );
                 let diagnostic = mount_diagnostic(
                     frame,
                     OpenGpuiSceneHostDiagnosticKind::MissingRenderer,
-                    format!("no renderer is registered for `{renderer_key}`"),
+                    format!(
+                        "no native renderer mapping matches semantic node `{identity}` and stamp `{}@{}`",
+                        frame.renderer().key(),
+                        frame.renderer().incarnation(),
+                    ),
                 );
                 let view = self.diagnostic_fallback(&diagnostic, Some(binding), cx);
                 self.last_diagnostic = Some(diagnostic);

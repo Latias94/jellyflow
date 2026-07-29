@@ -10,15 +10,17 @@ use jellyflow_open_gpui::host::{OpenGpuiConnectionOptions, OpenGpuiSceneHost};
 use jellyflow_open_gpui::interaction::{
     OpenGpuiPortDragCancelReason, OpenGpuiPortDragPhase, OpenGpuiPortEvent,
 };
-use jellyflow_open_gpui::registry::OpenGpuiNodeRegistry;
+use jellyflow_open_gpui::registry::{
+    OpenGpuiNodeAdapterPresentation, OpenGpuiNodeRegistry, OpenGpuiNodeRendererDescriptor,
+};
 use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec};
 use jellyflow_runtime::{
-    graph::GraphRuntime, interaction::CanvasInteractionPhase, view::ViewSessionOptions,
-    view::WeakViewSession, viewport::ViewportTransform,
+    graph::GraphRuntime, interaction::CanvasInteractionPhase, view::RendererStamp,
+    view::ViewSessionOptions, view::WeakViewSession, viewport::ViewportTransform,
 };
 use open_gpui::{
-    AppContext, Context, Entity, MouseButton, ParentElement, Render, Styled, Window, deferred, div,
-    point, prelude::*, px,
+    App, AppContext, Context, Entity, MouseButton, ParentElement, Render, Styled, Window, deferred,
+    div, point, prelude::*, px,
 };
 
 const KIND: &str = "test.overlay-owner";
@@ -27,6 +29,20 @@ const NODE_SELECTOR: &str = "jellyflow-test-overlay-underlay-node";
 const PORT_SELECTOR: &str = "jellyflow-test-overlay-underlay-port";
 const OVERLAY_SELECTOR: &str = "jellyflow-test-owned-overlay";
 const OVERLAY_CONTROL_SELECTOR: &str = "jellyflow-test-owned-overlay-control";
+
+fn renderer_descriptor<F, V>(factory: F) -> OpenGpuiNodeRendererDescriptor
+where
+    F: Fn(Entity<OpenGpuiNodeBinding>, &mut Window, &mut App) -> Entity<V> + 'static,
+    V: Render + 'static,
+{
+    OpenGpuiNodeRendererDescriptor::new(
+        KIND,
+        1,
+        RendererStamp::new(RENDERER, 1),
+        OpenGpuiNodeAdapterPresentation::new("Overlay underlay"),
+        move |binding, window, cx| Ok(factory(binding, window, cx)),
+    )
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ObservedEvent {
@@ -607,8 +623,9 @@ fn mount_scene(
     EventLog,
     WeakViewSession,
 ) {
+    let node_catalog = catalog();
     let runtime = Rc::new(
-        GraphRuntime::builder(catalog())
+        GraphRuntime::builder(node_catalog.clone())
             .build(graph())
             .expect("valid overlay ownership graph"),
     );
@@ -619,12 +636,14 @@ fn mount_scene(
     let events = Rc::new(RefCell::new(Vec::new()));
     let factory_events = events.clone();
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
-        cx.new(|_| UnderlayNode {
-            binding,
-            events: factory_events.clone(),
-        })
-    });
+    registry
+        .register(renderer_descriptor(move |binding, _window, cx| {
+            cx.new(|_| UnderlayNode {
+                binding,
+                events: factory_events.clone(),
+            })
+        }))
+        .expect("unique overlay-underlay renderer");
 
     let overlay_open = Rc::new(Cell::new(false));
     let scene_overlay_open = overlay_open.clone();
@@ -635,7 +654,7 @@ fn mount_scene(
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new(
                 view,
-                registry.seal().expect("valid test registry"),
+                registry.seal(&node_catalog).expect("valid test registry"),
                 viewport(),
             )
             .with_connection_options(OpenGpuiConnectionOptions {

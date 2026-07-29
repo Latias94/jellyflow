@@ -9,9 +9,15 @@ use jellyflow_open_gpui::host::{
     OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY, OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY,
     OpenGpuiSceneHost,
 };
-use jellyflow_open_gpui::registry::OpenGpuiNodeRegistry;
+use jellyflow_open_gpui::registry::{
+    OpenGpuiNodeAdapterPresentation, OpenGpuiNodeRegistry, OpenGpuiNodeRendererDescriptor,
+};
 use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec};
-use jellyflow_runtime::{commands::GraphCommand, graph::GraphRuntime, view::ViewSessionOptions};
+use jellyflow_runtime::{
+    commands::GraphCommand,
+    graph::GraphRuntime,
+    view::{RendererStamp, ViewSessionOptions},
+};
 use open_gpui::{AppContext, Context, Entity, ParentElement, Render, Styled, Window, div};
 
 const NODE_COUNT: usize = 10_000;
@@ -183,19 +189,33 @@ fn draw(cx: &mut open_gpui::VisualTestContext) {
 
 fn registry(bindings: Rc<RefCell<Vec<Entity<OpenGpuiNodeBinding>>>>) -> OpenGpuiNodeRegistry {
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
-        bindings.borrow_mut().push(binding.clone());
-        cx.new(|_| BindingProbeNode { binding })
-    });
-    registry.seal().expect("valid test registry")
+    registry
+        .register(OpenGpuiNodeRendererDescriptor::new(
+            KIND,
+            1,
+            RendererStamp::new(RENDERER, 1),
+            OpenGpuiNodeAdapterPresentation::new("Binding node"),
+            move |binding, _window, cx| {
+                bindings.borrow_mut().push(binding.clone());
+                Ok(cx.new(|_| BindingProbeNode { binding }))
+            },
+        ))
+        .expect("register captured binding renderer");
+    registry.seal(&catalog()).expect("valid test registry")
 }
 
 fn uncaptured_registry() -> OpenGpuiNodeRegistry {
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, |binding, _window, cx| {
-        cx.new(|_| BindingProbeNode { binding })
-    });
-    registry.seal().expect("valid test registry")
+    registry
+        .register(OpenGpuiNodeRendererDescriptor::new(
+            KIND,
+            1,
+            RendererStamp::new(RENDERER, 1),
+            OpenGpuiNodeAdapterPresentation::new("Binding node"),
+            |binding, _window, cx| Ok(cx.new(|_| BindingProbeNode { binding })),
+        ))
+        .expect("register binding renderer");
+    registry.seal(&catalog()).expect("valid test registry")
 }
 
 fn graph() -> jellyflow_core::Graph {

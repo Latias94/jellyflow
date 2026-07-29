@@ -20,13 +20,15 @@ use jellyflow_open_gpui::interaction::{
     OpenGpuiPortDragCancelReason, OpenGpuiPortDragPhase, OpenGpuiPortEvent,
 };
 use jellyflow_open_gpui::navigation::{OpenGpuiInputBindings, OpenGpuiNavigationConfig};
-use jellyflow_open_gpui::registry::OpenGpuiNodeRegistry;
+use jellyflow_open_gpui::registry::{
+    OpenGpuiNodeAdapterPresentation, OpenGpuiNodeRegistry, OpenGpuiNodeRendererDescriptor,
+};
 use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec};
 use jellyflow_runtime::{
     commands::GraphCommand, commands::IncidentEdgePolicy, commands::TopologyEdit,
     commands::TopologyPort, graph::GraphRuntime, interaction::CanvasInteractionPhase,
-    view::FrameMaterializationBudget, view::ViewCloseReason, view::ViewSessionError,
-    view::ViewSessionOptions, view::WeakViewSession,
+    view::FrameMaterializationBudget, view::RendererStamp, view::ViewCloseReason,
+    view::ViewSessionError, view::ViewSessionOptions, view::WeakViewSession,
 };
 use open_gpui::{
     AnyWeakEntity, App, AppContext, Context, Entity, InteractiveElement, MouseButton,
@@ -39,6 +41,25 @@ const REPLACEMENT_KIND: &str = "test.replacement-resource-node";
 const REPLACEMENT_RENDERER: &str = "test.native.replacement-resource-node";
 const CYCLE_PORT_SELECTOR: &str = "jellyflow-cycle-resource-port";
 const CAPACITY_PORT_SELECTOR: &str = "jellyflow-protected-capacity-port";
+
+fn renderer_descriptor<F, V>(
+    kind: &'static str,
+    renderer: &'static str,
+    accessible_name: &'static str,
+    factory: F,
+) -> OpenGpuiNodeRendererDescriptor
+where
+    F: Fn(Entity<OpenGpuiNodeBinding>, &mut Window, &mut App) -> Entity<V> + 'static,
+    V: Render + 'static,
+{
+    OpenGpuiNodeRendererDescriptor::new(
+        kind,
+        1,
+        RendererStamp::new(renderer, 1),
+        OpenGpuiNodeAdapterPresentation::new(accessible_name),
+        move |binding, window, cx| Ok(factory(binding, window, cx)),
+    )
+}
 
 struct ResourceNode {
     _binding: Entity<OpenGpuiNodeBinding>,
@@ -262,7 +283,12 @@ impl Render for ReplaceableHostScene {
 fn protected_nodes_ignore_zero_required_budget_then_resume_ordinary_culling(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    let runtime = Rc::new(GraphRuntime::builder(catalog()).build(graph()).unwrap());
+    let catalog = catalog();
+    let runtime = Rc::new(
+        GraphRuntime::builder(catalog.clone())
+            .build(graph())
+            .unwrap(),
+    );
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     let focus_lease = Rc::new(RefCell::new(None::<OpenGpuiActivityLease>));
     let capture_lease = Rc::new(RefCell::new(None::<OpenGpuiActivityLease>));
@@ -278,30 +304,38 @@ fn protected_nodes_ignore_zero_required_budget_then_resume_ordinary_culling(
     let scene_attached = attached.clone();
 
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
-        let activity = binding.read(cx).activity().clone();
-        *factory_focus.borrow_mut() = Some(activity.acquire(OpenGpuiActivityKind::Focus).unwrap());
-        *factory_capture.borrow_mut() = Some(
-            activity
-                .acquire(OpenGpuiActivityKind::GraphInteraction)
-                .unwrap(),
-        );
-        let revocations = factory_revocations.clone();
-        *factory_task.borrow_mut() = Some(
-            activity
-                .acquire_with_revocation(OpenGpuiActivityKind::Task, move || {
-                    revocations.set(revocations.get().saturating_add(1));
-                })
-                .unwrap(),
-        );
-        cx.new(|_| ResourceNode { _binding: binding })
-    });
+    registry
+        .register(renderer_descriptor(
+            KIND,
+            RENDERER,
+            "Resource node",
+            move |binding, _window, cx| {
+                let activity = binding.read(cx).activity().clone();
+                *factory_focus.borrow_mut() =
+                    Some(activity.acquire(OpenGpuiActivityKind::Focus).unwrap());
+                *factory_capture.borrow_mut() = Some(
+                    activity
+                        .acquire(OpenGpuiActivityKind::GraphInteraction)
+                        .unwrap(),
+                );
+                let revocations = factory_revocations.clone();
+                *factory_task.borrow_mut() = Some(
+                    activity
+                        .acquire_with_revocation(OpenGpuiActivityKind::Task, move || {
+                            revocations.set(revocations.get().saturating_add(1));
+                        })
+                        .unwrap(),
+                );
+                cx.new(|_| ResourceNode { _binding: binding })
+            },
+        ))
+        .expect("unique test renderer registration");
 
     let (scene, cx) = cx.add_window_view(move |_, cx| {
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new(
                 view,
-                registry.seal().expect("valid test registry"),
+                registry.seal(&catalog).expect("valid test registry"),
                 visible_viewport(),
             )
         });
@@ -400,7 +434,10 @@ fn protected_nodes_ignore_zero_required_budget_then_resume_ordinary_culling(
 fn coalesced_reincarnation_hard_retires_active_node_without_waiting_for_draw(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    let runtime = GraphRuntime::builder(catalog()).build(graph()).unwrap();
+    let catalog = catalog();
+    let runtime = GraphRuntime::builder(catalog.clone())
+        .build(graph())
+        .unwrap();
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     let revocations = Rc::new(Cell::new(0_u32));
     let weak_entity = Rc::new(RefCell::new(None::<AnyWeakEntity>));
@@ -412,27 +449,34 @@ fn coalesced_reincarnation_hard_retires_active_node_without_waiting_for_draw(
     let scene_attached = attached.clone();
 
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
-        let activity = binding.read(cx).activity().clone();
-        let revocations = factory_revocations.clone();
-        let lease = activity
-            .acquire_with_revocation(OpenGpuiActivityKind::GraphInteraction, move || {
-                revocations.set(revocations.get().saturating_add(1));
-            })
-            .unwrap();
-        let entity = cx.new(|_| ActivityResourceNode {
-            _binding: binding,
-            _activity: vec![lease],
-        });
-        *factory_weak_entity.borrow_mut() = Some(entity.downgrade().into());
-        entity
-    });
+    registry
+        .register(renderer_descriptor(
+            KIND,
+            RENDERER,
+            "Resource node",
+            move |binding, _window, cx| {
+                let activity = binding.read(cx).activity().clone();
+                let revocations = factory_revocations.clone();
+                let lease = activity
+                    .acquire_with_revocation(OpenGpuiActivityKind::GraphInteraction, move || {
+                        revocations.set(revocations.get().saturating_add(1));
+                    })
+                    .unwrap();
+                let entity = cx.new(|_| ActivityResourceNode {
+                    _binding: binding,
+                    _activity: vec![lease],
+                });
+                *factory_weak_entity.borrow_mut() = Some(entity.downgrade().into());
+                entity
+            },
+        ))
+        .expect("unique test renderer registration");
 
     let (scene, cx) = cx.add_window_view(move |_, cx| {
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new(
                 view,
-                registry.seal().expect("valid test registry"),
+                registry.seal(&catalog).expect("valid test registry"),
                 visible_viewport(),
             )
         });
@@ -488,7 +532,8 @@ fn coalesced_reincarnation_hard_retires_active_node_without_waiting_for_draw(
 #[open_gpui::test]
 fn protected_instance_budget_is_distinct_bounded_and_reusable(cx: &mut open_gpui::TestAppContext) {
     let node_count = OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY + 1;
-    let runtime = GraphRuntime::builder(catalog())
+    let catalog = catalog();
+    let runtime = GraphRuntime::builder(catalog.clone())
         .build(graph_with_nodes(node_count))
         .unwrap();
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
@@ -504,31 +549,38 @@ fn protected_instance_budget_is_distinct_bounded_and_reusable(cx: &mut open_gpui
     let factory_failures = failures.clone();
 
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
-        let binding_entity = binding;
-        let binding = binding_entity.read(cx);
-        let node = binding.authoring().expect("live authoring view").node_id();
-        let activity = binding.activity().clone();
-        factory_registries
-            .borrow_mut()
-            .insert(node, activity.clone());
-        match activity.acquire(OpenGpuiActivityKind::Focus) {
-            Ok(lease) => {
-                factory_leases.borrow_mut().insert(node, lease);
-            }
-            Err(error) => {
-                factory_failures.borrow_mut().insert(node, error);
-            }
-        }
-        cx.new(|_| ResourceNode {
-            _binding: binding_entity,
-        })
-    });
+    registry
+        .register(renderer_descriptor(
+            KIND,
+            RENDERER,
+            "Resource node",
+            move |binding, _window, cx| {
+                let binding_entity = binding;
+                let binding = binding_entity.read(cx);
+                let node = binding.authoring().expect("live authoring view").node_id();
+                let activity = binding.activity().clone();
+                factory_registries
+                    .borrow_mut()
+                    .insert(node, activity.clone());
+                match activity.acquire(OpenGpuiActivityKind::Focus) {
+                    Ok(lease) => {
+                        factory_leases.borrow_mut().insert(node, lease);
+                    }
+                    Err(error) => {
+                        factory_failures.borrow_mut().insert(node, error);
+                    }
+                }
+                cx.new(|_| ResourceNode {
+                    _binding: binding_entity,
+                })
+            },
+        ))
+        .expect("unique test renderer registration");
 
     let (host, cx) = cx.add_window_view(move |_, _| {
         OpenGpuiSceneHost::new(
             view,
-            registry.seal().expect("valid test registry"),
+            registry.seal(&catalog).expect("valid test registry"),
             visible_viewport(),
         )
     });
@@ -597,7 +649,8 @@ fn protected_instance_budget_is_distinct_bounded_and_reusable(cx: &mut open_gpui
 fn sixty_fifth_real_port_drag_cancels_without_side_effects_then_retries_after_release(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    let runtime = GraphRuntime::builder(catalog())
+    let catalog = catalog();
+    let runtime = GraphRuntime::builder(catalog.clone())
         .build(protected_capacity_port_graph())
         .unwrap();
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
@@ -608,27 +661,34 @@ fn sixty_fifth_real_port_drag_cancels_without_side_effects_then_retries_after_re
     let factory_leases = leases.clone();
     let factory_events = events.clone();
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
-        let node = binding
-            .read(cx)
-            .authoring()
-            .expect("live authoring view")
-            .node_id();
-        if node != capacity_port_node_id() {
-            let activity = binding.read(cx).activity().clone();
-            let lease = activity.acquire(OpenGpuiActivityKind::Focus).unwrap();
-            factory_leases.borrow_mut().insert(node, lease);
-        }
-        cx.new(|_| CapacityPortNode {
-            binding,
-            events: factory_events.clone(),
-        })
-    });
+    registry
+        .register(renderer_descriptor(
+            KIND,
+            RENDERER,
+            "Resource node",
+            move |binding, _window, cx| {
+                let node = binding
+                    .read(cx)
+                    .authoring()
+                    .expect("live authoring view")
+                    .node_id();
+                if node != capacity_port_node_id() {
+                    let activity = binding.read(cx).activity().clone();
+                    let lease = activity.acquire(OpenGpuiActivityKind::Focus).unwrap();
+                    factory_leases.borrow_mut().insert(node, lease);
+                }
+                cx.new(|_| CapacityPortNode {
+                    binding,
+                    events: factory_events.clone(),
+                })
+            },
+        ))
+        .expect("unique test renderer registration");
 
     let (host, cx) = cx.add_window_view(move |_, _| {
         OpenGpuiSceneHost::new(
             view,
-            registry.seal().expect("valid test registry"),
+            registry.seal(&catalog).expect("valid test registry"),
             visible_viewport(),
         )
         .with_navigation_config(
@@ -715,7 +775,8 @@ fn eligible_lru_evicts_oldest_instances_and_keeps_strong_references_bounded(
     cx: &mut open_gpui::TestAppContext,
 ) {
     let node_count = OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY + 2;
-    let runtime = GraphRuntime::builder(catalog())
+    let catalog = catalog();
+    let runtime = GraphRuntime::builder(catalog.clone())
         .build(graph_with_nodes(node_count))
         .unwrap();
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
@@ -723,23 +784,30 @@ fn eligible_lru_evicts_oldest_instances_and_keeps_strong_references_bounded(
     let factory_mounts = mounts.clone();
 
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
-        let node = binding
-            .read(cx)
-            .authoring()
-            .expect("live authoring view")
-            .node_id();
-        let count = factory_mounts.borrow().get(&node).copied().unwrap_or(0);
-        factory_mounts
-            .borrow_mut()
-            .insert(node, count.saturating_add(1));
-        cx.new(|_| ResourceNode { _binding: binding })
-    });
+    registry
+        .register(renderer_descriptor(
+            KIND,
+            RENDERER,
+            "Resource node",
+            move |binding, _window, cx| {
+                let node = binding
+                    .read(cx)
+                    .authoring()
+                    .expect("live authoring view")
+                    .node_id();
+                let count = factory_mounts.borrow().get(&node).copied().unwrap_or(0);
+                factory_mounts
+                    .borrow_mut()
+                    .insert(node, count.saturating_add(1));
+                cx.new(|_| ResourceNode { _binding: binding })
+            },
+        ))
+        .expect("unique test renderer registration");
 
     let (host, cx) = cx.add_window_view(move |_, _| {
         OpenGpuiSceneHost::new(
             view,
-            registry.seal().expect("valid test registry"),
+            registry.seal(&catalog).expect("valid test registry"),
             visible_viewport(),
         )
     });
@@ -826,7 +894,8 @@ fn thousand_lifecycle_cycles_return_native_resources_to_baseline(
 
     for cycle in 0..CYCLES {
         let graph_id = GraphId::from_u128(u128::from(cycle) + 3);
-        let runtime = GraphRuntime::builder(cycle_catalog())
+        let catalog = cycle_catalog();
+        let runtime = GraphRuntime::builder(catalog.clone())
             .build(cycle_graph(graph_id, KIND))
             .unwrap();
         let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
@@ -834,6 +903,7 @@ fn thousand_lifecycle_cycles_return_native_resources_to_baseline(
         let geometry_baseline = published_geometry_counts(&weak_view);
         assert_eq!(geometry_baseline, (0, 0, 0));
         let registry = cycle_registry(
+            &catalog,
             probes.clone(),
             primary_mounts.clone(),
             replacement_mounts.clone(),
@@ -1038,11 +1108,17 @@ fn dropping_last_host_entity_releases_live_native_resources_after_revocation_pan
         host_closures: Rc::new(Cell::new(0)),
         subscription_source: subscription_source.clone(),
     };
-    let runtime = GraphRuntime::builder(cycle_catalog())
+    let catalog = cycle_catalog();
+    let runtime = GraphRuntime::builder(catalog.clone())
         .build(cycle_graph(GraphId::from_u128(2), KIND))
         .unwrap();
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
-    let registry = cycle_registry(probes, Rc::new(Cell::new(0)), Rc::new(Cell::new(0)));
+    let registry = cycle_registry(
+        &catalog,
+        probes,
+        Rc::new(Cell::new(0)),
+        Rc::new(Cell::new(0)),
+    );
     let (scene, cx) = cx.add_window_view(|_, _| ReplaceableHostScene { host: None });
     let host =
         cx.update(|_, cx| cx.new(|_| OpenGpuiSceneHost::new(view, registry, visible_viewport())));
@@ -1099,20 +1175,29 @@ fn dropping_last_host_entity_releases_live_native_resources_after_revocation_pan
 }
 
 fn cycle_registry(
+    catalog: &NodeCatalog,
     probes: CycleResourceProbes,
     primary_mounts: Rc<Cell<u64>>,
     replacement_mounts: Rc<Cell<u64>>,
 ) -> OpenGpuiNodeRegistry {
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(
-        RENDERER,
-        cycle_resource_factory(probes.clone(), primary_mounts),
-    );
-    registry.register(
-        REPLACEMENT_RENDERER,
-        cycle_resource_factory(probes, replacement_mounts),
-    );
-    registry.seal().expect("valid test registry")
+    registry
+        .register(renderer_descriptor(
+            KIND,
+            RENDERER,
+            "Resource node",
+            cycle_resource_factory(probes.clone(), primary_mounts),
+        ))
+        .expect("unique primary renderer registration");
+    registry
+        .register(renderer_descriptor(
+            REPLACEMENT_KIND,
+            REPLACEMENT_RENDERER,
+            "Replacement resource node",
+            cycle_resource_factory(probes, replacement_mounts),
+        ))
+        .expect("unique replacement renderer registration");
+    registry.seal(catalog).expect("valid test registry")
 }
 
 fn cycle_resource_factory(

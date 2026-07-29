@@ -124,10 +124,7 @@ impl BlackboardIntent {
         }
     }
 
-    pub fn update_name(
-        id: SymbolId,
-        name: impl Into<String>,
-    ) -> Result<Self, BlackboardError> {
+    pub fn update_name(id: SymbolId, name: impl Into<String>) -> Result<Self, BlackboardError> {
         Ok(Self {
             kind: BlackboardIntentKind::UpdateName {
                 id,
@@ -182,8 +179,8 @@ impl BlackboardObservation {
             .collect::<Result<_, BlackboardError>>()?;
         Ok(Self {
             data: Rc::new(BlackboardObservationData {
-            version: snapshot.version(),
-            symbols,
+                version: snapshot.version(),
+                symbols,
             }),
         })
     }
@@ -231,20 +228,20 @@ impl BlackboardObservation {
                 SymbolEdit::new().remove(*id)
             }
         };
-        Ok(GraphCommand::symbols(self.data.version, edit).with_label(match &intent.kind {
-            BlackboardIntentKind::Add { .. } => "add blackboard symbol",
-            BlackboardIntentKind::UpdateName { .. } => "edit blackboard symbol",
-            BlackboardIntentKind::Remove { .. } => "remove blackboard symbol",
-        }))
+        Ok(
+            GraphCommand::symbols(self.data.version, edit).with_label(match &intent.kind {
+                BlackboardIntentKind::Add { .. } => "add blackboard symbol",
+                BlackboardIntentKind::UpdateName { .. } => "edit blackboard symbol",
+                BlackboardIntentKind::Remove { .. } => "remove blackboard symbol",
+            }),
+        )
     }
 
     /// Returns whether these complete authoritative facts fulfill an intent.
     #[must_use]
     pub fn satisfies(&self, intent: &BlackboardIntent) -> bool {
         match &intent.kind {
-            BlackboardIntentKind::Add { id, symbol } => {
-                self.data.symbols.get(id) == Some(symbol)
-            }
+            BlackboardIntentKind::Add { id, symbol } => self.data.symbols.get(id) == Some(symbol),
             BlackboardIntentKind::UpdateName { id, name } => self
                 .data
                 .symbols
@@ -440,9 +437,7 @@ impl BlackboardDraft {
             MutationPhase::Idle => match self.field.phase() {
                 FieldPhase::Dirty => Some(BlackboardApplyAction::Commit),
                 FieldPhase::Conflict => Some(BlackboardApplyAction::Reapply),
-                FieldPhase::Clean
-                | FieldPhase::Composing
-                | FieldPhase::ComposingConflict => None,
+                FieldPhase::Clean | FieldPhase::Composing | FieldPhase::ComposingConflict => None,
             },
             MutationPhase::Retryable if current_intent_matches && retry_available => {
                 Some(BlackboardApplyAction::Retry)
@@ -518,9 +513,10 @@ impl BlackboardAuthoring {
                     .is_some_and(|expected| revision > expected)
             {
                 if let Some(attempt) = draft.field.pending_attempt() {
-                    let decision = draft
-                        .field
-                        .reject_stale(attempt, revision, symbol.name().to_owned());
+                    let decision =
+                        draft
+                            .field
+                            .reject_stale(attempt, revision, symbol.name().to_owned());
                     validate_stale_rejection(*id, decision)?;
                     None
                 } else {
@@ -785,8 +781,7 @@ impl BlackboardAuthoring {
             FieldResolutionDecision::Rejected(reason) => {
                 return Err(BlackboardError::FieldIntentRejected { reason });
             }
-            FieldResolutionDecision::KeptLocal { .. }
-            | FieldResolutionDecision::Reapply(_) => {
+            FieldResolutionDecision::KeptLocal { .. } | FieldResolutionDecision::Reapply(_) => {
                 return Err(BlackboardError::InvalidFieldTransition);
             }
         }
@@ -858,10 +853,7 @@ impl BlackboardAuthoring {
         }
     }
 
-    fn ensure_current(
-        &self,
-        observation: &BlackboardObservation,
-    ) -> Result<(), BlackboardError> {
+    fn ensure_current(&self, observation: &BlackboardObservation) -> Result<(), BlackboardError> {
         let Some(current) = &self.observed else {
             return Err(BlackboardError::ObservationNotPublished);
         };
@@ -1112,7 +1104,9 @@ impl fmt::Display for BlackboardError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EmptySymbolName => formatter.write_str("symbol name must not be empty"),
-            Self::MissingSymbol { symbol } => write!(formatter, "symbol does not exist: {symbol:?}"),
+            Self::MissingSymbol { symbol } => {
+                write!(formatter, "symbol does not exist: {symbol:?}")
+            }
             Self::SymbolAlreadyExists { symbol } => {
                 write!(formatter, "symbol already exists: {symbol:?}")
             }
@@ -1133,7 +1127,10 @@ impl fmt::Display for BlackboardError {
                 "Blackboard facts changed inside authoritative revision {revision}"
             ),
             Self::FieldIntentRejected { reason } => {
-                write!(formatter, "blackboard field intent was rejected: {reason:?}")
+                write!(
+                    formatter,
+                    "blackboard field intent was rejected: {reason:?}"
+                )
             }
             Self::InvalidApplyAction { symbol, action } => write!(
                 formatter,
@@ -1143,16 +1140,28 @@ impl fmt::Display for BlackboardError {
                 write!(formatter, "symbol submission is still active: {symbol:?}")
             }
             Self::ForeignSubmission { symbol } => {
-                write!(formatter, "symbol submission is no longer active: {symbol:?}")
+                write!(
+                    formatter,
+                    "symbol submission is no longer active: {symbol:?}"
+                )
             }
             Self::ForeignCompletion { symbol } => {
-                write!(formatter, "symbol completion belongs to another command: {symbol:?}")
+                write!(
+                    formatter,
+                    "symbol completion belongs to another command: {symbol:?}"
+                )
             }
             Self::IncompleteCompletion { symbol } => {
-                write!(formatter, "symbol completion omitted applied revision: {symbol:?}")
+                write!(
+                    formatter,
+                    "symbol completion omitted applied revision: {symbol:?}"
+                )
             }
             Self::FieldCorrelation { symbol } => {
-                write!(formatter, "symbol field evidence did not correlate: {symbol:?}")
+                write!(
+                    formatter,
+                    "symbol field evidence did not correlate: {symbol:?}"
+                )
             }
             Self::InvalidFieldTransition => {
                 formatter.write_str("blackboard field entered an invalid transition")
@@ -1288,10 +1297,7 @@ pub trait BlackboardSource {
 
     fn snapshot(&self) -> Result<BlackboardSourceSnapshot, BlackboardSourceError>;
 
-    fn execute(
-        &self,
-        command: GraphCommand,
-    ) -> BlackboardDispatchOutcome;
+    fn execute(&self, command: GraphCommand) -> BlackboardDispatchOutcome;
 }
 
 /// Production source backed by one authoritative graph runtime.
@@ -1332,10 +1338,7 @@ impl BlackboardSource for GraphRuntimeBlackboardSource {
             .map_err(|error| BlackboardSourceError::new(error.to_string()))
     }
 
-    fn execute(
-        &self,
-        command: GraphCommand,
-    ) -> BlackboardDispatchOutcome {
+    fn execute(&self, command: GraphCommand) -> BlackboardDispatchOutcome {
         BlackboardDispatchOutcome::completed(self.runtime.execute(command))
     }
 }
@@ -1390,10 +1393,9 @@ mod tests {
                     .expect("valid Blackboard graph"),
             )
             .expect("Blackboard runtime");
-        let original = BlackboardObservation::from_snapshot(
-            &runtime.snapshot().expect("Blackboard snapshot"),
-        )
-        .expect("Blackboard observation");
+        let original =
+            BlackboardObservation::from_snapshot(&runtime.snapshot().expect("Blackboard snapshot"))
+                .expect("Blackboard observation");
         let mut symbols = original.symbols().clone();
         symbols.get_mut(&symbol_id).expect("symbol").name = "changed".to_owned();
         let changed = BlackboardObservation {

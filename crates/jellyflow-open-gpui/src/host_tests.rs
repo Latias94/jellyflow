@@ -22,7 +22,7 @@ use jellyflow_runtime::{
     view::ViewSession, view::ViewSessionError, view::ViewSessionEvent, view::ViewSessionOptions,
 };
 use open_gpui::{
-    AppContext, Context, Entity, FocusHandle, HitboxId, InteractiveElement, KeyDownEvent,
+    App, AppContext, Context, Entity, FocusHandle, HitboxId, InteractiveElement, KeyDownEvent,
     KeyUpEvent, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, ParentElement,
     PinchEvent, Render, ScrollDelta, ScrollWheelEvent, StatefulInteractiveElement, Styled,
     TouchPhase, VisualContext, Window, div, point, px,
@@ -38,7 +38,10 @@ use crate::interaction::{
     OpenGpuiSceneGestureKind, port_drag_owner,
 };
 use crate::navigation::{OpenGpuiInputPreset, OpenGpuiNavigationConfig};
-use crate::registry::OpenGpuiNodeRegistrationPolicy;
+use crate::registry::{
+    OpenGpuiNodeAdapterPresentation, OpenGpuiNodeRegistrationPolicy, OpenGpuiNodeRegistryBuilder,
+    OpenGpuiNodeRendererDescriptor,
+};
 use crate::size_policy::{
     OpenGpuiContentHeightPolicy, OpenGpuiNodeSizeEpoch, OpenGpuiNodeSizePolicy,
     OpenGpuiNodeSizeUpdate,
@@ -73,6 +76,57 @@ mod pointer_capture_lifecycle;
 const KIND: &str = "test.scene-layer-node";
 const EXEC_KIND: &str = "test.scene-layer-exec-node";
 const RENDERER: &str = "test.native.scene-layer-node";
+
+fn register_test_renderer<F, V>(registry: &mut OpenGpuiNodeRegistryBuilder, factory: F)
+where
+    F: Fn(Entity<OpenGpuiNodeBinding>, &mut Window, &mut App) -> Entity<V> + 'static,
+    V: Render + 'static,
+{
+    register_test_renderer_for_kind(registry, KIND, 1, "Scene layer node", factory);
+}
+
+fn register_test_renderer_for_kind<F, V>(
+    registry: &mut OpenGpuiNodeRegistryBuilder,
+    kind: &'static str,
+    renderer_incarnation: u64,
+    accessible_name: &'static str,
+    factory: F,
+) where
+    F: Fn(Entity<OpenGpuiNodeBinding>, &mut Window, &mut App) -> Entity<V> + 'static,
+    V: Render + 'static,
+{
+    registry
+        .register(OpenGpuiNodeRendererDescriptor::new(
+            kind,
+            1,
+            RendererStamp::new(RENDERER, renderer_incarnation),
+            OpenGpuiNodeAdapterPresentation::new(accessible_name),
+            move |binding, window, cx| Ok(factory(binding, window, cx)),
+        ))
+        .expect("unique test renderer registration");
+}
+
+fn register_test_renderer_with_policy<F, V>(
+    registry: &mut OpenGpuiNodeRegistryBuilder,
+    policy: OpenGpuiNodeRegistrationPolicy,
+    factory: F,
+) where
+    F: Fn(Entity<OpenGpuiNodeBinding>, &mut Window, &mut App) -> Entity<V> + 'static,
+    V: Render + 'static,
+{
+    registry
+        .register(
+            OpenGpuiNodeRendererDescriptor::new(
+                KIND,
+                1,
+                RendererStamp::new(RENDERER, 1),
+                OpenGpuiNodeAdapterPresentation::new("Scene layer node"),
+                move |binding, window, cx| Ok(factory(binding, window, cx)),
+            )
+            .with_policy(policy),
+        )
+        .expect("unique test renderer registration");
+}
 
 fn current_port_drag_owner(
     host: &OpenGpuiSceneHost,
@@ -437,7 +491,7 @@ fn mounted_host_scopes_environment_and_layout_invalidation_to_its_view(
     let source_binding = std::rc::Rc::new(std::cell::RefCell::new(None));
     let captured_binding = source_binding.clone();
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
+    register_test_renderer(&mut registry, move |binding, _window, cx| {
         if binding
             .read(cx)
             .authoring()
@@ -456,7 +510,7 @@ fn mounted_host_scopes_environment_and_layout_invalidation_to_its_view(
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new(
                 view,
-                registry.seal().expect("valid test registry"),
+                registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
         });
@@ -666,14 +720,16 @@ fn incomplete_real_port_measurement_preserves_authoritative_geometry_without_ret
         .geometry_snapshot()
         .expect("authoritative geometry");
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, |_binding, _window, cx| cx.new(|_| RootOnlyNode));
+    register_test_renderer(&mut registry, |_binding, _window, cx| {
+        cx.new(|_| RootOnlyNode)
+    });
     let captured_host = std::rc::Rc::new(std::cell::RefCell::new(None));
     let scene_host = captured_host.clone();
     let (_scene, cx) = cx.add_window_view(move |_, cx| {
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new(
                 view,
-                registry.seal().expect("valid test registry"),
+                registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
         });
@@ -735,7 +791,7 @@ fn retired_dynamic_port_handle_reports_prepaint_error_with_node_identity(
         .attach_view(ViewSessionOptions::default())
         .expect("attach view");
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, |binding, _window, cx| {
+    register_test_renderer(&mut registry, |binding, _window, cx| {
         cx.new(|_| StickyPortNode {
             binding,
             handle: None,
@@ -747,7 +803,7 @@ fn retired_dynamic_port_handle_reports_prepaint_error_with_node_identity(
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new(
                 view,
-                registry.seal().expect("valid test registry"),
+                registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
         });
@@ -817,7 +873,7 @@ fn fresh_route_is_painted_after_edges_and_before_retained_nodes(
         .expect("attach view");
     let weak_view = view.downgrade();
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
+    register_test_renderer(&mut registry, move |binding, _window, cx| {
         cx.new(|_| RoutedNode { binding })
     });
 
@@ -827,7 +883,7 @@ fn fresh_route_is_painted_after_edges_and_before_retained_nodes(
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new(
                 view,
-                registry.seal().expect("valid test registry"),
+                registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
         });
@@ -1166,7 +1222,7 @@ fn edge_layer_budget_is_clamped_to_the_defensive_native_limit() {
     let host = OpenGpuiSceneHost::new(
         view,
         OpenGpuiNodeRegistry::builder()
-            .seal()
+            .seal(&catalog())
             .expect("valid empty registry"),
         viewport(),
     )
@@ -1189,7 +1245,7 @@ fn endpoint_geometry_fallbacks_are_deduplicated_in_host_diagnostics_and_stats() 
     let mut host = OpenGpuiSceneHost::new(
         view,
         OpenGpuiNodeRegistry::builder()
-            .seal()
+            .seal(&catalog())
             .expect("valid empty registry"),
         viewport(),
     );
@@ -1247,7 +1303,7 @@ fn committed_wire_endpoints_match_the_exact_same_revision_port_publication() {
     let mut host = OpenGpuiSceneHost::new(
         view,
         OpenGpuiNodeRegistry::builder()
-            .seal()
+            .seal(&catalog())
             .expect("valid empty registry"),
         viewport(),
     );
@@ -1289,7 +1345,9 @@ fn edge_layer_stays_empty_without_fresh_endpoint_geometry(cx: &mut open_gpui::Te
         .expect("attach view");
     let weak_view = view.downgrade();
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, |_binding, _window, cx| cx.new(|_| RootOnlyNode));
+    register_test_renderer(&mut registry, |_binding, _window, cx| {
+        cx.new(|_| RootOnlyNode)
+    });
 
     let captured_host = std::rc::Rc::new(std::cell::RefCell::new(None));
     let scene_host = captured_host.clone();
@@ -1297,7 +1355,7 @@ fn edge_layer_stays_empty_without_fresh_endpoint_geometry(cx: &mut open_gpui::Te
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new(
                 view,
-                registry.seal().expect("valid test registry"),
+                registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
         });
@@ -1342,7 +1400,7 @@ fn edge_layer_culls_offscreen_routes_and_prioritizes_selection_within_its_own_bu
     let mut host = OpenGpuiSceneHost::new(
         view,
         OpenGpuiNodeRegistry::builder()
-            .seal()
+            .seal(&catalog())
             .expect("valid empty test registry"),
         viewport(),
     )
@@ -1454,7 +1512,7 @@ fn ten_thousand_routes_keep_each_visible_query_page_hard_bounded() {
     let host = OpenGpuiSceneHost::new(
         view,
         OpenGpuiNodeRegistry::builder()
-            .seal()
+            .seal(&catalog())
             .expect("valid empty test registry"),
         viewport(),
     );
@@ -1541,7 +1599,7 @@ fn ten_thousand_spatial_routes_materialize_only_the_local_hundred() {
     let mut host = OpenGpuiSceneHost::new(
         view,
         OpenGpuiNodeRegistry::builder()
-            .seal()
+            .seal(&catalog())
             .expect("valid empty test registry"),
         query_viewport,
     )
@@ -2301,11 +2359,13 @@ fn dynamic_port_reconciliation_preserves_order_index_and_retained_capabilities(
         .attach_view(ViewSessionOptions::default())
         .expect("attach many-port view");
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, |_binding, _window, cx| cx.new(|_| RootOnlyNode));
+    register_test_renderer(&mut registry, |_binding, _window, cx| {
+        cx.new(|_| RootOnlyNode)
+    });
     let (host, cx) = cx.add_window_view(move |_, _| {
         OpenGpuiSceneHost::new(
             view,
-            registry.seal().expect("valid many-port registry"),
+            registry.seal(&catalog()).expect("valid many-port registry"),
             viewport(),
         )
     });
@@ -2432,11 +2492,15 @@ fn coalesced_port_reincarnation_replaces_its_native_focus_handle(
         .attach_view(ViewSessionOptions::default())
         .expect("attach single-port view");
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, |_binding, _window, cx| cx.new(|_| RootOnlyNode));
+    register_test_renderer(&mut registry, |_binding, _window, cx| {
+        cx.new(|_| RootOnlyNode)
+    });
     let (host, cx) = cx.add_window_view(move |_, _| {
         OpenGpuiSceneHost::new(
             view,
-            registry.seal().expect("valid single-port registry"),
+            registry
+                .seal(&catalog())
+                .expect("valid single-port registry"),
             viewport(),
         )
     });
@@ -2513,11 +2577,15 @@ fn max_capacity_node_drag_builds_one_index_with_equivalent_offsets(
         .expect("attach maximum-capacity view");
     set_selection_by_id(&view, nodes.clone(), Vec::new()).expect("select every draggable node");
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, |_binding, _window, cx| cx.new(|_| RootOnlyNode));
+    register_test_renderer(&mut registry, |_binding, _window, cx| {
+        cx.new(|_| RootOnlyNode)
+    });
     let (host, cx) = cx.add_window_view(move |_, _| {
         OpenGpuiSceneHost::new(
             view,
-            registry.seal().expect("valid maximum-capacity registry"),
+            registry
+                .seal(&catalog())
+                .expect("valid maximum-capacity registry"),
             viewport(),
         )
     });
@@ -2590,11 +2658,15 @@ fn node_drag_cohort_materializes_never_mounted_and_parked_peers_until_applied_fr
         .attach_view(ViewSessionOptions::default())
         .expect("attach culled-peer view");
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, |_binding, _window, cx| cx.new(|_| RootOnlyNode));
+    register_test_renderer(&mut registry, |_binding, _window, cx| {
+        cx.new(|_| RootOnlyNode)
+    });
     let (host, cx) = cx.add_window_view(move |_, _| {
         OpenGpuiSceneHost::new(
             view,
-            registry.seal().expect("valid culled-peer registry"),
+            registry
+                .seal(&catalog())
+                .expect("valid culled-peer registry"),
             viewport(),
         )
         .with_navigation_config(
@@ -3866,7 +3938,7 @@ fn explicit_node_drag_and_dify_wheel_pan_and_pinch_zoom_stay_view_local(
         .attach_view(ViewSessionOptions::default())
         .expect("attach view");
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
+    register_test_renderer(&mut registry, move |binding, _window, cx| {
         cx.new(|_| RoutedNode { binding })
     });
     let captured_host = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -3875,7 +3947,7 @@ fn explicit_node_drag_and_dify_wheel_pan_and_pinch_zoom_stay_view_local(
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new(
                 view,
-                registry.seal().expect("valid test registry"),
+                registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
             .with_navigation_config(OpenGpuiNavigationConfig::for_preset(
@@ -3986,7 +4058,7 @@ fn host_overview_drag_surface_moves_node_while_public_native_handle_is_inert(
     let binding_capture = std::rc::Rc::new(std::cell::RefCell::new(None));
     let captured_binding = binding_capture.clone();
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
+    register_test_renderer(&mut registry, move |binding, _window, cx| {
         if binding
             .read(cx)
             .authoring()
@@ -4002,7 +4074,7 @@ fn host_overview_drag_surface_moves_node_while_public_native_handle_is_inert(
         host: cx.new(|_| {
             OpenGpuiSceneHost::new(
                 view,
-                registry.seal().expect("valid test registry"),
+                registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
         }),
@@ -4170,7 +4242,7 @@ fn routed_node_drag_keeps_release_position_and_published_route_until_commit(
         .expect("attach view");
     let weak_view = view.downgrade();
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
+    register_test_renderer(&mut registry, move |binding, _window, cx| {
         cx.new(|_| RoutedNode { binding })
     });
     let captured_host = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -4179,7 +4251,7 @@ fn routed_node_drag_keeps_release_position_and_published_route_until_commit(
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new(
                 view,
-                registry.seal().expect("valid test registry"),
+                registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
         });
@@ -5003,7 +5075,7 @@ fn sixty_fifth_real_node_gesture_cancels_without_side_effects_then_retries_after
     >::new()));
     let factory_leases = leases.clone();
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
+    register_test_renderer(&mut registry, move |binding, _window, cx| {
         let node = binding
             .read(cx)
             .authoring()
@@ -5022,7 +5094,7 @@ fn sixty_fifth_real_node_gesture_cancels_without_side_effects_then_retries_after
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new(
                 view,
-                registry.seal().expect("valid test registry"),
+                registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
         });
@@ -5429,7 +5501,7 @@ fn escape_cancels_node_drag_without_mutating_graph(cx: &mut open_gpui::TestAppCo
         .expect("source")
         .pos;
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
+    register_test_renderer(&mut registry, move |binding, _window, cx| {
         cx.new(|_| RoutedNode { binding })
     });
     let captured_host = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -5438,7 +5510,7 @@ fn escape_cancels_node_drag_without_mutating_graph(cx: &mut open_gpui::TestAppCo
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new(
                 view,
-                registry.seal().expect("valid test registry"),
+                registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
         });
@@ -5751,7 +5823,7 @@ fn coalesced_remove_undo_and_payload_patch_revoke_the_retired_incarnation_withou
     let old_activity = std::rc::Rc::new(std::cell::RefCell::new(None));
     let captured_activity = old_activity.clone();
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
+    register_test_renderer(&mut registry, move |binding, _window, cx| {
         *captured_activity.borrow_mut() = Some(binding.read(cx).activity().clone());
         cx.new(|_| RoutedNode { binding })
     });
@@ -5761,7 +5833,7 @@ fn coalesced_remove_undo_and_payload_patch_revoke_the_retired_incarnation_withou
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new(
                 view,
-                registry.seal().expect("valid test registry"),
+                registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
         });
@@ -5863,7 +5935,7 @@ fn blank_canvas_drag_selects_intersecting_nodes_without_graph_history(
         .attach_view(ViewSessionOptions::default())
         .expect("attach view");
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
+    register_test_renderer(&mut registry, move |binding, _window, cx| {
         cx.new(|_| RoutedNode { binding })
     });
     let captured_host = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -5872,7 +5944,7 @@ fn blank_canvas_drag_selects_intersecting_nodes_without_graph_history(
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new(
                 view,
-                registry.seal().expect("valid test registry"),
+                registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
         });
@@ -5939,7 +6011,7 @@ fn dragging_a_real_output_to_a_real_input_commits_through_the_scene_host(
     let mut registry = OpenGpuiNodeRegistry::builder();
     let events = std::rc::Rc::new(std::cell::Cell::new(0));
     let factory_events = events.clone();
-    registry.register(RENDERER, move |binding, _window, cx| {
+    register_test_renderer(&mut registry, move |binding, _window, cx| {
         cx.new(|_| InteractiveRoutedNode {
             binding,
             events: factory_events.clone(),
@@ -5951,7 +6023,7 @@ fn dragging_a_real_output_to_a_real_input_commits_through_the_scene_host(
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new(
                 view,
-                registry.seal().expect("valid test registry"),
+                registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
         });
@@ -6018,7 +6090,7 @@ fn output_connection_drag_keeps_press_time_anchor_when_current_geometry_moves(
         .attach_view(ViewSessionOptions::default())
         .expect("attach view");
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
+    register_test_renderer(&mut registry, move |binding, _window, cx| {
         cx.new(|_| InteractiveRoutedNode {
             binding,
             events: std::rc::Rc::new(std::cell::Cell::new(0)),
@@ -6030,7 +6102,7 @@ fn output_connection_drag_keeps_press_time_anchor_when_current_geometry_moves(
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new(
                 view,
-                registry.seal().expect("valid test registry"),
+                registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
         });
@@ -6145,7 +6217,7 @@ fn reconnect_preview_uses_fixed_port_anchor_and_only_suppresses_published_paint(
         .attach_view(ViewSessionOptions::default())
         .expect("attach view");
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
+    register_test_renderer(&mut registry, move |binding, _window, cx| {
         cx.new(|_| InteractiveRoutedNode {
             binding,
             events: std::rc::Rc::new(std::cell::Cell::new(0)),
@@ -6157,7 +6229,7 @@ fn reconnect_preview_uses_fixed_port_anchor_and_only_suppresses_published_paint(
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new(
                 view,
-                registry.seal().expect("valid test registry"),
+                registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
         });
@@ -6233,7 +6305,7 @@ fn input_preview_inverts_endpoints_through_offset_transform_and_ignores_edge_bud
     view.set_viewport(ViewportTransform::new(CanvasPoint { x: 12.0, y: -8.0 }, 1.5).unwrap())
         .expect("set non-identity viewport");
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
+    register_test_renderer(&mut registry, move |binding, _window, cx| {
         cx.new(|_| InteractiveRoutedNode {
             binding,
             events: std::rc::Rc::new(std::cell::Cell::new(0)),
@@ -6245,7 +6317,7 @@ fn input_preview_inverts_endpoints_through_offset_transform_and_ignores_edge_bud
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new(
                 view,
-                registry.seal().expect("valid test registry"),
+                registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
             .with_edge_layer_budget(0)
@@ -6309,7 +6381,7 @@ fn dragging_an_unconnected_input_to_a_real_output_commits_in_graph_order(
         .attach_view(ViewSessionOptions::default())
         .expect("attach view");
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
+    register_test_renderer(&mut registry, move |binding, _window, cx| {
         cx.new(|_| InteractiveRoutedNode {
             binding,
             events: std::rc::Rc::new(std::cell::Cell::new(0)),
@@ -6321,7 +6393,7 @@ fn dragging_an_unconnected_input_to_a_real_output_commits_in_graph_order(
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new(
                 view,
-                registry.seal().expect("valid test registry"),
+                registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
         });
@@ -6364,7 +6436,7 @@ fn overlapping_port_drop_targets_the_topmost_painted_node(cx: &mut open_gpui::Te
         .attach_view(ViewSessionOptions::default())
         .expect("attach view");
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
+    register_test_renderer(&mut registry, move |binding, _window, cx| {
         cx.new(|_| InteractiveRoutedNode {
             binding,
             events: std::rc::Rc::new(std::cell::Cell::new(0)),
@@ -6376,7 +6448,7 @@ fn overlapping_port_drop_targets_the_topmost_painted_node(cx: &mut open_gpui::Te
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new(
                 view,
-                registry.seal().expect("valid test registry"),
+                registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
         });
@@ -6433,7 +6505,7 @@ fn deferred_release_from_a_retired_instance_cannot_target_reused_node_and_port_i
         .attach_view(ViewSessionOptions::default())
         .expect("attach view");
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
+    register_test_renderer(&mut registry, move |binding, _window, cx| {
         cx.new(|_| InteractiveRoutedNode {
             binding,
             events: std::rc::Rc::new(std::cell::Cell::new(0)),
@@ -6445,7 +6517,7 @@ fn deferred_release_from_a_retired_instance_cannot_target_reused_node_and_port_i
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new(
                 view,
-                registry.seal().expect("valid test registry"),
+                registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
         });
@@ -6541,7 +6613,7 @@ fn windowless_close_rejects_active_pointer_ownership_before_closing_the_view(
         .attach_view(ViewSessionOptions::default())
         .expect("attach view");
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
+    register_test_renderer(&mut registry, move |binding, _window, cx| {
         cx.new(|_| InteractiveRoutedNode {
             binding,
             events: std::rc::Rc::new(std::cell::Cell::new(0)),
@@ -6553,7 +6625,7 @@ fn windowless_close_rejects_active_pointer_ownership_before_closing_the_view(
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new(
                 view,
-                registry.seal().expect("valid test registry"),
+                registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
         });
@@ -6629,7 +6701,7 @@ fn never_rendered_host_closes_windowlessly_without_pending_cleanup() {
     let mut host = OpenGpuiSceneHost::new(
         view,
         OpenGpuiNodeRegistry::builder()
-            .seal()
+            .seal(&catalog())
             .expect("valid empty test registry"),
         viewport(),
     );
@@ -6695,7 +6767,7 @@ fn windowless_close_rejects_node_owned_window_activity(cx: &mut open_gpui::TestA
     let leases = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let factory_leases = leases.clone();
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
+    register_test_renderer(&mut registry, move |binding, _window, cx| {
         factory_leases.borrow_mut().push(
             binding
                 .read(cx)
@@ -6711,7 +6783,7 @@ fn windowless_close_rejects_node_owned_window_activity(cx: &mut open_gpui::TestA
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new(
                 view,
-                registry.seal().expect("valid test registry"),
+                registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
         });
@@ -6750,7 +6822,7 @@ fn windowless_close_rejects_queued_commands_without_executing_or_resolving_them(
     let mut host = OpenGpuiSceneHost::new(
         view,
         OpenGpuiNodeRegistry::builder()
-            .seal()
+            .seal(&catalog())
             .expect("valid empty test registry"),
         viewport(),
     );
@@ -6999,7 +7071,7 @@ fn first_render_of_an_already_closed_view_terminalizes_a_queued_ticket(
             OpenGpuiSceneHost::new(
                 view,
                 OpenGpuiNodeRegistry::builder()
-                    .seal()
+                    .seal(&catalog())
                     .expect("valid empty test registry"),
                 viewport(),
             )
@@ -7073,7 +7145,7 @@ fn window_close_middleware_panic_does_not_strand_command_ticket(
             OpenGpuiSceneHost::new(
                 view,
                 OpenGpuiNodeRegistry::builder()
-                    .seal()
+                    .seal(&catalog())
                     .expect("valid empty test registry"),
                 viewport(),
             )
@@ -7266,7 +7338,7 @@ fn assert_ordinary_feedback_panic_isolated(
         .expect("subscribe panicking view callback");
     }
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
+    register_test_renderer(&mut registry, move |binding, _window, cx| {
         cx.new(|_| RoutedNode { binding })
     });
     let captured_host = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -7275,7 +7347,7 @@ fn assert_ordinary_feedback_panic_isolated(
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new(
                 view,
-                registry.seal().expect("valid test registry"),
+                registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
         });
@@ -7373,7 +7445,7 @@ fn dropping_host_closes_the_exact_view_session() {
     let host = OpenGpuiSceneHost::new(
         view,
         OpenGpuiNodeRegistry::builder()
-            .seal()
+            .seal(&catalog())
             .expect("valid empty test registry"),
         viewport(),
     );
@@ -7409,7 +7481,7 @@ fn dropping_a_real_wire_on_empty_space_requests_search_without_mutating_the_grap
     let mut registry = OpenGpuiNodeRegistry::builder();
     let events = std::rc::Rc::new(std::cell::Cell::new(0));
     let factory_events = events.clone();
-    registry.register(RENDERER, move |binding, _window, cx| {
+    register_test_renderer(&mut registry, move |binding, _window, cx| {
         cx.new(|_| InteractiveRoutedNode {
             binding,
             events: factory_events.clone(),
@@ -7421,7 +7493,7 @@ fn dropping_a_real_wire_on_empty_space_requests_search_without_mutating_the_grap
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new(
                 view,
-                registry.seal().expect("valid test registry"),
+                registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
         });
@@ -7660,7 +7732,7 @@ fn keyboard_activation_arms_an_exact_source_and_commits_through_an_exact_target(
         .attach_view(ViewSessionOptions::default())
         .expect("attach view");
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
+    register_test_renderer(&mut registry, move |binding, _window, cx| {
         cx.new(|_| RoutedNode { binding })
     });
     let captured_host = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -7669,7 +7741,7 @@ fn keyboard_activation_arms_an_exact_source_and_commits_through_an_exact_target(
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new(
                 view,
-                registry.seal().expect("valid test registry"),
+                registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
         });
@@ -7953,7 +8025,7 @@ fn high_fanout_output_pointer_and_keyboard_drag_skip_incident_edges(
         .attach_view(ViewSessionOptions::default())
         .expect("attach view");
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
+    register_test_renderer(&mut registry, move |binding, _window, cx| {
         cx.new(|_| InteractiveRoutedNode {
             binding,
             events: std::rc::Rc::new(std::cell::Cell::new(0)),
@@ -7965,7 +8037,7 @@ fn high_fanout_output_pointer_and_keyboard_drag_skip_incident_edges(
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new(
                 view,
-                registry.seal().expect("valid test registry"),
+                registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
             .with_edge_layer_budget(0)
@@ -8055,7 +8127,7 @@ fn pointer_empty_release_enters_search_while_semantic_activation_only_arms_the_s
         .attach_view(ViewSessionOptions::default())
         .expect("attach view");
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
+    register_test_renderer(&mut registry, move |binding, _window, cx| {
         cx.new(|_| InteractiveRoutedNode {
             binding,
             events: std::rc::Rc::new(std::cell::Cell::new(0)),
@@ -8067,7 +8139,7 @@ fn pointer_empty_release_enters_search_while_semantic_activation_only_arms_the_s
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new(
                 view,
-                registry.seal().expect("valid test registry"),
+                registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
         });
@@ -8143,7 +8215,7 @@ fn rejected_keyboard_reconnect_target_retains_the_exact_source_and_feedback(
         .attach_view(ViewSessionOptions::default())
         .expect("attach view");
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
+    register_test_renderer(&mut registry, move |binding, _window, cx| {
         cx.new(|_| RoutedNode { binding })
     });
     let captured_host = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -8152,7 +8224,7 @@ fn rejected_keyboard_reconnect_target_retains_the_exact_source_and_feedback(
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new(
                 view,
-                registry.seal().expect("valid test registry"),
+                registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
         });
@@ -8229,7 +8301,7 @@ fn create_from_wire_query_and_selection_add_one_node_and_edge_atomically(
         .attach_view(ViewSessionOptions::default())
         .expect("attach view");
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
+    register_test_renderer(&mut registry, move |binding, _window, cx| {
         cx.new(|_| InteractiveRoutedNode {
             binding,
             events: std::rc::Rc::new(std::cell::Cell::new(0)),
@@ -8241,7 +8313,7 @@ fn create_from_wire_query_and_selection_add_one_node_and_edge_atomically(
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new(
                 view,
-                registry.seal().expect("valid test registry"),
+                registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
         });
@@ -8328,7 +8400,7 @@ fn create_from_wire_selection_rebinds_after_an_unrelated_revision(
         .attach_view(ViewSessionOptions::default())
         .expect("attach view");
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
+    register_test_renderer(&mut registry, move |binding, _window, cx| {
         cx.new(|_| InteractiveRoutedNode {
             binding,
             events: std::rc::Rc::new(std::cell::Cell::new(0)),
@@ -8340,7 +8412,7 @@ fn create_from_wire_selection_rebinds_after_an_unrelated_revision(
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new(
                 view,
-                registry.seal().expect("valid test registry"),
+                registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
         });
@@ -8749,7 +8821,7 @@ fn create_from_wire_cancel_clears_search_and_leaves_graph_unchanged(
         .attach_view(ViewSessionOptions::default())
         .expect("attach view");
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
+    register_test_renderer(&mut registry, move |binding, _window, cx| {
         cx.new(|_| InteractiveRoutedNode {
             binding,
             events: std::rc::Rc::new(std::cell::Cell::new(0)),
@@ -8761,7 +8833,7 @@ fn create_from_wire_cancel_clears_search_and_leaves_graph_unchanged(
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new(
                 view,
-                registry.seal().expect("valid test registry"),
+                registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
         });
@@ -8841,7 +8913,7 @@ fn occupied_input_replacement_is_atomic_and_one_undo_restores_the_old_edge(
         .attach_view(ViewSessionOptions::default())
         .expect("attach view");
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
+    register_test_renderer(&mut registry, move |binding, _window, cx| {
         cx.new(|_| InteractiveRoutedNode {
             binding,
             events: std::rc::Rc::new(std::cell::Cell::new(0)),
@@ -8853,7 +8925,7 @@ fn occupied_input_replacement_is_atomic_and_one_undo_restores_the_old_edge(
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new(
                 view,
-                registry.seal().expect("valid test registry"),
+                registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
         });
@@ -9072,7 +9144,7 @@ fn explicit_input_reconnect_retains_edge_identity_and_undo_restores_the_endpoint
         .attach_view(ViewSessionOptions::default())
         .expect("attach view");
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
+    register_test_renderer(&mut registry, move |binding, _window, cx| {
         cx.new(|_| InteractiveRoutedNode {
             binding,
             events: std::rc::Rc::new(std::cell::Cell::new(0)),
@@ -9084,7 +9156,7 @@ fn explicit_input_reconnect_retains_edge_identity_and_undo_restores_the_endpoint
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new(
                 view,
-                registry.seal().expect("valid test registry"),
+                registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
         });
@@ -9144,7 +9216,7 @@ fn runtime_drop_during_input_reconnect_retires_the_preview_without_mutating_the_
         .attach_view(ViewSessionOptions::default())
         .expect("attach view");
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
+    register_test_renderer(&mut registry, move |binding, _window, cx| {
         cx.new(|_| InteractiveRoutedNode {
             binding,
             events: std::rc::Rc::new(std::cell::Cell::new(0)),
@@ -9156,7 +9228,7 @@ fn runtime_drop_during_input_reconnect_retires_the_preview_without_mutating_the_
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new(
                 view,
-                registry.seal().expect("valid test registry"),
+                registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
         });
@@ -9222,7 +9294,7 @@ fn runtime_drop_releases_registered_third_party_capture_while_host_is_detached(
     let capture_lease = std::rc::Rc::new(std::cell::RefCell::new(None));
     let factory_lease = capture_lease.clone();
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, window, cx| {
+    register_test_renderer(&mut registry, move |binding, window, cx| {
         if binding
             .read(cx)
             .authoring()
@@ -9244,7 +9316,7 @@ fn runtime_drop_releases_registered_third_party_capture_while_host_is_detached(
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new(
                 view,
-                registry.seal().expect("valid test registry"),
+                registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
         });
@@ -9364,7 +9436,7 @@ fn keyboard_connection_capacity_failure_aborts_then_retries_after_release(
     >::new()));
     let factory_leases = leases.clone();
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
+    register_test_renderer(&mut registry, move |binding, _window, cx| {
         let node = binding
             .read(cx)
             .authoring()
@@ -9389,7 +9461,7 @@ fn keyboard_connection_capacity_failure_aborts_then_retries_after_release(
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new(
                 view,
-                registry.seal().expect("valid test registry"),
+                registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
         });
@@ -9522,7 +9594,7 @@ fn mount_interactive_gesture_scene(
         .attach_view(ViewSessionOptions::default())
         .expect("attach view");
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
+    register_test_renderer(&mut registry, move |binding, _window, cx| {
         cx.new(|_| InteractiveRoutedNode {
             binding,
             events: std::rc::Rc::new(std::cell::Cell::new(0)),
@@ -9534,7 +9606,7 @@ fn mount_interactive_gesture_scene(
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new(
                 view,
-                registry.seal().expect("valid test registry"),
+                registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
         });
@@ -9560,7 +9632,7 @@ fn mount_replaceable_gesture_scene(
         .attach_view(ViewSessionOptions::default())
         .expect("attach view");
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
+    register_test_renderer(&mut registry, move |binding, _window, cx| {
         cx.new(|_| InteractiveRoutedNode {
             binding,
             events: Rc::new(Cell::new(0)),
@@ -9570,7 +9642,7 @@ fn mount_replaceable_gesture_scene(
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new(
                 view,
-                registry.seal().expect("valid test registry"),
+                registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
         });
@@ -9635,7 +9707,7 @@ fn mount_gesture_scene_for_graph(
         .attach_view(ViewSessionOptions::default())
         .expect("attach view");
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
+    register_test_renderer(&mut registry, move |binding, _window, cx| {
         cx.new(|_| RoutedNode { binding })
     });
     let captured_host = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -9644,7 +9716,7 @@ fn mount_gesture_scene_for_graph(
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new(
                 view,
-                registry.seal().expect("valid test registry"),
+                registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
         });
@@ -9674,7 +9746,7 @@ fn mount_content_size_scene(
         ),
     );
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register_with_policy(RENDERER, policy, |_binding, _window, cx| {
+    register_test_renderer_with_policy(&mut registry, policy, |_binding, _window, cx| {
         cx.new(|_| RootOnlyNode)
     });
     let captured_host = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -9683,7 +9755,7 @@ fn mount_content_size_scene(
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new(
                 view,
-                registry.seal().expect("valid test registry"),
+                registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
         });
@@ -9756,6 +9828,19 @@ fn mount_connection_scene_for_graph_with_context_handler(
     Entity<OpenGpuiSceneHost>,
     &mut open_gpui::VisualTestContext,
 ) {
+    let renderer_kind = graph
+        .nodes()
+        .values()
+        .next()
+        .map(|node| node.kind.clone())
+        .expect("connection scene graph contains at least one node");
+    assert!(
+        graph
+            .nodes()
+            .values()
+            .all(|node| node.kind == renderer_kind),
+        "connection scene helper expects one semantic node kind",
+    );
     let runtime = GraphRuntime::builder(catalog())
         .build(graph)
         .expect("valid graph");
@@ -9763,19 +9848,30 @@ fn mount_connection_scene_for_graph_with_context_handler(
         .attach_view(ViewSessionOptions::default())
         .expect("attach view");
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
-        cx.new(|_| InteractiveRoutedNode {
-            binding,
-            events: std::rc::Rc::new(std::cell::Cell::new(0)),
-        })
-    });
+    let (kind, incarnation, accessible_name) = if renderer_kind == NodeKindKey::new(EXEC_KIND) {
+        (EXEC_KIND, 2, "Scene layer exec node")
+    } else {
+        (KIND, 1, "Scene layer node")
+    };
+    register_test_renderer_for_kind(
+        &mut registry,
+        kind,
+        incarnation,
+        accessible_name,
+        move |binding, _window, cx| {
+            cx.new(|_| InteractiveRoutedNode {
+                binding,
+                events: std::rc::Rc::new(std::cell::Cell::new(0)),
+            })
+        },
+    );
     let captured_host = std::rc::Rc::new(std::cell::RefCell::new(None));
     let scene_host = captured_host.clone();
     let (_scene, cx) = cx.add_window_view(move |_, cx| {
         let host = cx.new(|_| {
             let mut host = OpenGpuiSceneHost::new(
                 view,
-                registry.seal().expect("valid test registry"),
+                registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             );
             host.blank_canvas_context_handler = context_handler;
@@ -9817,7 +9913,7 @@ fn mount_selection_delete_scene(
     let control_focus = Rc::new(std::cell::RefCell::new(None));
     let captured_control_focus = control_focus.clone();
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
+    register_test_renderer(&mut registry, move |binding, _window, cx| {
         let node = binding
             .read(cx)
             .authoring()
@@ -9840,7 +9936,9 @@ fn mount_selection_delete_scene(
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new(
                 view,
-                registry.seal().expect("valid selection-delete registry"),
+                registry
+                    .seal(&catalog())
+                    .expect("valid selection-delete registry"),
                 viewport(),
             )
         });
@@ -9870,7 +9968,7 @@ fn mount_selected_reconnect_scene(
     let port_events = std::rc::Rc::new(std::cell::Cell::new(0));
     let factory_events = port_events.clone();
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
+    register_test_renderer(&mut registry, move |binding, _window, cx| {
         cx.new(|_| InteractiveRoutedNode {
             binding,
             events: factory_events.clone(),
@@ -9882,7 +9980,7 @@ fn mount_selected_reconnect_scene(
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new(
                 view,
-                registry.seal().expect("valid test registry"),
+                registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
         });
@@ -10688,7 +10786,7 @@ fn fit_view_uses_canonical_graph_bounds_and_is_a_noop_before_surface_measurement
             OpenGpuiSceneHost::new(
                 view,
                 OpenGpuiNodeRegistry::builder()
-                    .seal()
+                    .seal(&catalog())
                     .expect("valid empty registry"),
                 viewport(),
             )

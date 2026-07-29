@@ -832,9 +832,11 @@ fn document_replacement_retires_frames_targets_and_geometry() {
 }
 
 #[test]
-fn frame_request_resolves_renderer_by_node_kind_without_per_node_registration() {
+fn frame_request_resolves_renderer_by_exact_node_kind_version() {
     let (graph, nodes) = graph_with_nodes(1);
-    let kind = graph.node(&nodes[0]).unwrap().kind.clone();
+    let node = graph.node(&nodes[0]).unwrap();
+    let kind = node.kind.clone();
+    let kind_version = node.kind_version;
     let runtime = GraphRuntime::builder(Default::default())
         .build(graph)
         .unwrap();
@@ -843,12 +845,40 @@ fn frame_request_resolves_renderer_by_node_kind_without_per_node_registration() 
     let frame = session
         .frame(
             FrameRequest::new(viewport(), RendererStamp::new("fallback", 1))
-                .with_kind_renderer(kind, RendererStamp::new("workflow.llm", 7)),
+                .with_kind_renderer(
+                    kind.clone(),
+                    kind_version + 1,
+                    RendererStamp::new("wrong-version", 2),
+                )
+                .with_kind_renderer(kind, kind_version, RendererStamp::new("workflow.llm", 7)),
         )
         .unwrap();
 
     assert_eq!(frame.nodes()[0].renderer().key(), "workflow.llm");
     assert_eq!(frame.nodes()[0].renderer().incarnation(), 7);
+}
+
+#[test]
+fn frame_request_node_override_precedes_kind_version_mapping() {
+    let (graph, nodes) = graph_with_nodes(1);
+    let node = graph.node(&nodes[0]).unwrap();
+    let kind = node.kind.clone();
+    let kind_version = node.kind_version;
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .unwrap();
+    let session = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+
+    let frame = session
+        .frame(
+            FrameRequest::new(viewport(), RendererStamp::new("fallback", 1))
+                .with_kind_renderer(kind, kind_version, RendererStamp::new("kind", 3))
+                .with_renderer(nodes[0], RendererStamp::new("node", 9)),
+        )
+        .unwrap();
+
+    assert_eq!(frame.nodes()[0].renderer().key(), "node");
+    assert_eq!(frame.nodes()[0].renderer().incarnation(), 9);
 }
 
 #[test]

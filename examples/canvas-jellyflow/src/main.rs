@@ -14,12 +14,12 @@ use open_gpui::{
 };
 use open_gpui_canvas_jellyflow::NativeProductTheme;
 use open_gpui_canvas_jellyflow::blackboard::NativeBlackboard;
-use open_gpui_canvas_jellyflow::product_domain::blackboard::GraphRuntimeBlackboardSource;
 use open_gpui_canvas_jellyflow::connection_search::NativeGraphSurface;
 use open_gpui_canvas_jellyflow::nodes::{
     NativeGraphVisualProfile, NativeNodeResources, ShaderFieldStore, WorkflowFieldStore,
     native_node_catalog, native_node_registry, workflow_demo_graph,
 };
+use open_gpui_canvas_jellyflow::product_domain::blackboard::GraphRuntimeBlackboardSource;
 use open_gpui_platform::application;
 use open_gpui_ui_components::ThemeMode;
 use open_gpui_ui_components::gpui_adapter::init_text_input;
@@ -230,10 +230,10 @@ fn launch_native_graph(
     }
     let runtime = Rc::new(
         match options.demo {
-            NativeDemo::Shader => GraphRuntime::builder(catalog)
+            NativeDemo::Shader => GraphRuntime::builder(catalog.clone())
                 .with_policy(GraphRuntimePolicy::default().with_cycles(EdgeKind::Data, false))
                 .build(document),
-            NativeDemo::Workflow => GraphRuntime::builder(catalog).build(document),
+            NativeDemo::Workflow => GraphRuntime::builder(catalog.clone()).build(document),
         }
         .map_err(|error| NativeLaunchError::new("runtime_initialization", format!("{error:?}")))?,
     );
@@ -255,7 +255,7 @@ fn launch_native_graph(
     let resources = NativeNodeResources::ready_default(cx)
         .with_field_stores(workflow_fields, shader_fields)
         .with_product_theme(product_theme);
-    let registry = native_node_registry(resources);
+    let registry = native_node_registry(resources, &catalog);
     let (window_width, window_height) = smoke_state
         .as_ref()
         .map_or((WINDOW_WIDTH, WINDOW_HEIGHT), |state| {

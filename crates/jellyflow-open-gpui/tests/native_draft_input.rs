@@ -11,7 +11,9 @@ use jellyflow_open_gpui::authoring::{
     OpenGpuiNodeAuthoring, OpenGpuiNodeBinding, OpenGpuiNodeObservation,
 };
 use jellyflow_open_gpui::host::OpenGpuiSceneHost;
-use jellyflow_open_gpui::registry::OpenGpuiNodeRegistry;
+use jellyflow_open_gpui::registry::{
+    OpenGpuiNodeAdapterPresentation, OpenGpuiNodeRegistry, OpenGpuiNodeRendererDescriptor,
+};
 use jellyflow_open_gpui::retained_field::{
     RetainedField, RetainedFieldAttemptState, RetainedFieldConflictChoice, RetainedFieldError,
     RetainedFieldKey, RetainedFieldPhase, RetainedFieldResolution, RetainedFieldRetention,
@@ -20,10 +22,10 @@ use jellyflow_open_gpui::retained_field::{
 use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec};
 use jellyflow_runtime::{
     commands::GraphCommand, commands::IncidentEdgePolicy, commands::TopologyEdit,
-    graph::GraphRuntime, view::ViewSessionOptions,
+    graph::GraphRuntime, view::RendererStamp, view::ViewSessionOptions,
 };
 use open_gpui::{
-    AppContext, Context, Entity, EntityInputHandler, Focusable, ParentElement, Render, Styled,
+    App, AppContext, Context, Entity, EntityInputHandler, Focusable, ParentElement, Render, Styled,
     Window, div, px,
 };
 use open_gpui_ui_components::{
@@ -35,6 +37,20 @@ const KIND: &str = "test.native-draft";
 const RENDERER: &str = "test.native.draft";
 const INPUT_SELECTOR: &str = "text-input:native-draft-prompt:root";
 const FIELD_KEY: &str = "prompt";
+
+fn renderer_descriptor<F, V>(factory: F) -> OpenGpuiNodeRendererDescriptor
+where
+    F: Fn(Entity<OpenGpuiNodeBinding>, &mut Window, &mut App) -> Entity<V> + 'static,
+    V: Render + 'static,
+{
+    OpenGpuiNodeRendererDescriptor::new(
+        KIND,
+        1,
+        RendererStamp::new(RENDERER, 1),
+        OpenGpuiNodeAdapterPresentation::new("Native draft"),
+        move |binding, window, cx| Ok(factory(binding, window, cx)),
+    )
+}
 
 struct NativeDraftNode {
     binding: Entity<OpenGpuiNodeBinding>,
@@ -525,7 +541,12 @@ fn mount_scene(
     RetainedFieldStore<String>,
     &mut open_gpui::VisualTestContext,
 ) {
-    let runtime = Rc::new(GraphRuntime::builder(catalog()).build(graph()).unwrap());
+    let node_catalog = catalog();
+    let runtime = Rc::new(
+        GraphRuntime::builder(node_catalog.clone())
+            .build(graph())
+            .unwrap(),
+    );
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     let captured_node = Rc::new(RefCell::new(None));
     let captured_controller = Rc::new(RefCell::new(None));
@@ -536,29 +557,32 @@ fn mount_scene(
     let field_store = RetainedFieldStore::new();
     let factory_field_store = field_store.clone();
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
-        let activity = binding.read(cx).activity().clone();
-        let (_authoring, observation) = binding_observation(&binding, cx);
-        let value = observation.value().clone();
-        let controller = cx.new(|cx| TextInputController::with_value(value.clone(), cx));
-        let field = RetainedField::mount(
-            observation,
-            RetainedFieldKey::new(FIELD_KEY).expect("valid native input field key"),
-            factory_field_store.clone(),
-        )
-        .expect("mount native retained field");
-        let node =
-            cx.new(|_| NativeDraftNode::new(binding, activity.clone(), controller.clone(), field));
-        *factory_node.borrow_mut() = Some(node.clone());
-        *factory_controller.borrow_mut() = Some(controller);
-        *factory_activity.borrow_mut() = Some(activity);
-        node
-    });
+    registry
+        .register(renderer_descriptor(move |binding, _window, cx| {
+            let activity = binding.read(cx).activity().clone();
+            let (_authoring, observation) = binding_observation(&binding, cx);
+            let value = observation.value().clone();
+            let controller = cx.new(|cx| TextInputController::with_value(value.clone(), cx));
+            let field = RetainedField::mount(
+                observation,
+                RetainedFieldKey::new(FIELD_KEY).expect("valid native input field key"),
+                factory_field_store.clone(),
+            )
+            .expect("mount native retained field");
+            let node = cx.new(|_| {
+                NativeDraftNode::new(binding, activity.clone(), controller.clone(), field)
+            });
+            *factory_node.borrow_mut() = Some(node.clone());
+            *factory_controller.borrow_mut() = Some(controller);
+            *factory_activity.borrow_mut() = Some(activity);
+            node
+        }))
+        .expect("unique native-draft renderer");
 
     let (host, cx) = cx.add_window_view(move |_, _| {
         OpenGpuiSceneHost::new(
             view,
-            registry.seal().expect("valid test registry"),
+            registry.seal(&node_catalog).expect("valid test registry"),
             viewport(),
         )
     });

@@ -12,9 +12,14 @@ use jellyflow_open_gpui::accessibility::{
 };
 use jellyflow_open_gpui::authoring::OpenGpuiNodeBinding;
 use jellyflow_open_gpui::host::OpenGpuiSceneHost;
-use jellyflow_open_gpui::registry::OpenGpuiNodeRegistry;
+use jellyflow_open_gpui::registry::{
+    OpenGpuiNodeAdapterPresentation, OpenGpuiNodeRegistry, OpenGpuiNodeRendererDescriptor,
+};
 use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec};
-use jellyflow_runtime::{graph::GraphRuntime, view::ViewSessionOptions};
+use jellyflow_runtime::{
+    graph::GraphRuntime,
+    view::{RendererStamp, ViewSessionOptions},
+};
 use open_gpui::{AppContext, Context, Entity, ParentElement, Render, Role, Styled, Window, div};
 
 const KIND: &str = "test.accessible-node";
@@ -52,15 +57,23 @@ fn retained_binding_exposes_a_semantic_port_name_with_an_application_override(
     let captured = Rc::new(RefCell::new(None::<Entity<OpenGpuiNodeBinding>>));
     let factory_capture = captured.clone();
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
-        *factory_capture.borrow_mut() = Some(binding);
-        cx.new(|_| AccessibleProbeNode)
-    });
+    registry
+        .register(OpenGpuiNodeRendererDescriptor::new(
+            KIND,
+            1,
+            RendererStamp::new(RENDERER, 1),
+            OpenGpuiNodeAdapterPresentation::new("Accessible node"),
+            move |binding, _window, cx| {
+                *factory_capture.borrow_mut() = Some(binding);
+                Ok(cx.new(|_| AccessibleProbeNode))
+            },
+        ))
+        .expect("register accessible node renderer");
 
     let (_host, cx) = cx.add_window_view(move |_window, _cx| {
         OpenGpuiSceneHost::new(
             view,
-            registry.seal().expect("valid test registry"),
+            registry.seal(&catalog()).expect("valid test registry"),
             viewport(),
         )
     });

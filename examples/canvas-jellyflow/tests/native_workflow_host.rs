@@ -54,7 +54,8 @@ fn native_runtime(graph: Graph) -> Result<GraphRuntime, GraphRuntimeError> {
 }
 
 fn native_registry(cx: &mut open_gpui::App) -> OpenGpuiNodeRegistry {
-    native_node_registry(NativeNodeResources::ready_default(cx))
+    let catalog = native_node_catalog().expect("native catalog");
+    native_node_registry(NativeNodeResources::ready_default(cx), &catalog)
 }
 
 fn frozen_graph_value(graph: &Graph) -> serde_json::Value {

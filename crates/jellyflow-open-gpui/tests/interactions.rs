@@ -11,12 +11,14 @@ use jellyflow_open_gpui::interaction::{
     OpenGpuiPortActivationSource, OpenGpuiPortDragCancelReason, OpenGpuiPortDragPhase,
     OpenGpuiPortEvent,
 };
-use jellyflow_open_gpui::registry::OpenGpuiNodeRegistry;
+use jellyflow_open_gpui::registry::{
+    OpenGpuiNodeAdapterPresentation, OpenGpuiNodeRegistry, OpenGpuiNodeRendererDescriptor,
+};
 use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec};
 use jellyflow_runtime::{
     commands::GraphCommand, commands::IncidentEdgePolicy, commands::TopologyEdit,
     commands::TopologyPort, graph::GraphRuntime, interaction::CanvasInteractionPhase,
-    view::ViewCloseReason, view::ViewSessionOptions, view::WeakViewSession,
+    view::RendererStamp, view::ViewCloseReason, view::ViewSessionOptions, view::WeakViewSession,
 };
 use open_gpui::{
     AppContext, Context, Entity, KeyUpEvent, Keystroke, Modifiers, MouseButton, ParentElement,
@@ -1220,20 +1222,28 @@ fn mount_scene_with_port_observer(
     let factory_control_focus = control_focus.clone();
     let factory_observer_host = captured_host.clone();
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
-        let control_focus = cx.focus_handle().tab_stop(true);
-        *factory_control_focus.borrow_mut() = Some(control_focus.downgrade());
-        cx.new(|_| InteractiveNode {
-            binding,
-            control_focus,
-            port: factory_port_events.clone(),
-            observer_host: factory_observer_host.clone(),
-            observe_port,
-            node_events: factory_node_events.clone(),
-            control_events: factory_control_events.clone(),
-            scroll_events: factory_scroll_events.clone(),
-        })
-    });
+    registry
+        .register(OpenGpuiNodeRendererDescriptor::new(
+            KIND,
+            1,
+            RendererStamp::new(RENDERER, 1),
+            OpenGpuiNodeAdapterPresentation::new("Interactive node"),
+            move |binding, _window, cx| {
+                let control_focus = cx.focus_handle().tab_stop(true);
+                *factory_control_focus.borrow_mut() = Some(control_focus.downgrade());
+                Ok(cx.new(|_| InteractiveNode {
+                    binding,
+                    control_focus,
+                    port: factory_port_events.clone(),
+                    observer_host: factory_observer_host.clone(),
+                    observe_port,
+                    node_events: factory_node_events.clone(),
+                    control_events: factory_control_events.clone(),
+                    scroll_events: factory_scroll_events.clone(),
+                }))
+            },
+        ))
+        .expect("register interactive node renderer");
 
     let scene_host = captured_host.clone();
     let scene_canvas_events = canvas_events.clone();
@@ -1241,7 +1251,7 @@ fn mount_scene_with_port_observer(
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new(
                 view,
-                registry.seal().expect("valid test registry"),
+                registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
         });

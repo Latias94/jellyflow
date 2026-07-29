@@ -8,14 +8,14 @@ use jellyflow_runtime::commands::{CommandExecutionKind, GraphCommand, IncidentEd
 use jellyflow_runtime::graph::{GraphRuntime, GraphSnapshot};
 use jellyflow_runtime::reconciliation::{MutationCommandResult, MutationPhase, MutationReconciler};
 use jellyflow_runtime::view::ViewSessionOptions;
-use open_gpui_canvas_jellyflow::product_domain::blueprint::{
-    BLUEPRINT_CALL_KIND, BlueprintError, BlueprintIntent, BlueprintObservation, BlueprintPin,
-    blueprint_default_data,
-};
 use open_gpui_canvas_jellyflow::product_domain::blackboard::{
     BlackboardApplyAction, BlackboardAuthoring, BlackboardDispatchOutcome, BlackboardDraftPhase,
     BlackboardError, BlackboardIntent, BlackboardObservation, BlackboardRetryReason,
     BlackboardSubmissionPhase, BlackboardSymbol,
+};
+use open_gpui_canvas_jellyflow::product_domain::blueprint::{
+    BLUEPRINT_CALL_KIND, BlueprintError, BlueprintIntent, BlueprintObservation, BlueprintPin,
+    blueprint_default_data,
 };
 use open_gpui_canvas_jellyflow::product_domain::condition::{
     CONDITION_ELSE_PORT_KEY, CONDITION_INPUT_PORT_KEY, CONDITION_KIND, ConditionCase,
@@ -79,7 +79,10 @@ fn blackboard_intents_validate_and_plan_atomic_add_update_remove_commands() {
     assert_eq!(renamed_symbol.name, "temperature_c");
     assert_eq!(renamed_symbol.ty, Some(TypeDesc::Float));
     assert_eq!(renamed_symbol.default_value, Some(serde_json::json!(0.5)));
-    assert_eq!(renamed_symbol.meta, serde_json::json!({ "group": "material" }));
+    assert_eq!(
+        renamed_symbol.meta,
+        serde_json::json!({ "group": "material" })
+    );
 
     let remove = BlackboardIntent::remove(blackboard_added());
     assert_eq!(
@@ -132,8 +135,7 @@ fn stale_blackboard_draft_preserves_local_value_until_explicit_reapply() {
         runtime
             .execute(GraphCommand::symbols(
                 initial.version(),
-                jellyflow_runtime::commands::SymbolEdit::new()
-                    .update(blackboard_primary(), remote),
+                jellyflow_runtime::commands::SymbolEdit::new().update(blackboard_primary(), remote),
             ))
             .kind(),
         CommandExecutionKind::Applied
@@ -162,10 +164,7 @@ fn stale_blackboard_draft_preserves_local_value_until_explicit_reapply() {
     let completion = runtime.execute(submission.command().clone());
     assert_eq!(completion.kind(), CommandExecutionKind::Applied);
     authoring
-        .complete(
-            submission,
-            BlackboardDispatchOutcome::completed(completion),
-        )
+        .complete(submission, BlackboardDispatchOutcome::completed(completion))
         .unwrap();
     let reapplied_snapshot = runtime.snapshot().unwrap();
     let reapplied = BlackboardObservation::from_snapshot(&reapplied_snapshot).unwrap();
@@ -223,7 +222,10 @@ fn blackboard_source_rejection_runtime_conflict_and_uncertainty_are_distinct() {
         Some(BlackboardApplyAction::Retry)
     );
     assert!(!rejected_projection.can_accept_remote());
-    assert_eq!(rejected_projection.notice(), Some("source refused dispatch"));
+    assert_eq!(
+        rejected_projection.notice(),
+        Some("source refused dispatch")
+    );
     rejected
         .edit_name(
             &initial_observation,
@@ -243,7 +245,10 @@ fn blackboard_source_rejection_runtime_conflict_and_uncertainty_are_distinct() {
     let discarded = rejected
         .projection(&initial_observation, blackboard_primary())
         .unwrap();
-    assert_eq!(discarded.submission_phase(), BlackboardSubmissionPhase::Idle);
+    assert_eq!(
+        discarded.submission_phase(),
+        BlackboardSubmissionPhase::Idle
+    );
     assert!(!discarded.can_discard_submission());
 
     let mut conflicted = BlackboardAuthoring::new();
@@ -334,10 +339,12 @@ fn blackboard_source_rejection_runtime_conflict_and_uncertainty_are_distinct() {
     );
     let authoritative_snapshot = runtime.snapshot().unwrap();
     let authoritative = BlackboardObservation::from_snapshot(&authoritative_snapshot).unwrap();
-    assert!(uncertain
-        .observe(&authoritative)
-        .unwrap()
-        .became_satisfied());
+    assert!(
+        uncertain
+            .observe(&authoritative)
+            .unwrap()
+            .became_satisfied()
+    );
     let uncertain_projection = uncertain
         .projection(&authoritative, blackboard_primary())
         .unwrap();
@@ -375,10 +382,7 @@ fn blackboard_snapshot_first_and_receipt_first_each_satisfy_exactly_once() {
     assert!(!authoring.observe(&applied).unwrap().became_satisfied());
     assert!(
         authoring
-            .complete(
-                submission,
-                BlackboardDispatchOutcome::completed(completion),
-            )
+            .complete(submission, BlackboardDispatchOutcome::completed(completion),)
             .unwrap()
             .became_satisfied()
     );
@@ -387,7 +391,10 @@ fn blackboard_snapshot_first_and_receipt_first_each_satisfy_exactly_once() {
         .projection(&applied, blackboard_primary())
         .unwrap();
     assert_eq!(projection.phase(), BlackboardDraftPhase::Clean);
-    assert_eq!(projection.submission_phase(), BlackboardSubmissionPhase::Idle);
+    assert_eq!(
+        projection.submission_phase(),
+        BlackboardSubmissionPhase::Idle
+    );
 }
 
 #[test]
@@ -423,7 +430,8 @@ fn blackboard_authoring_rejects_foreign_authority_and_ignores_stale_observations
     );
 
     let foreign_runtime = blackboard_runtime();
-    let foreign = BlackboardObservation::from_snapshot(&foreign_runtime.snapshot().unwrap()).unwrap();
+    let foreign =
+        BlackboardObservation::from_snapshot(&foreign_runtime.snapshot().unwrap()).unwrap();
     assert!(matches!(
         authoring.observe(&foreign),
         Err(BlackboardError::ForeignAuthority { .. })

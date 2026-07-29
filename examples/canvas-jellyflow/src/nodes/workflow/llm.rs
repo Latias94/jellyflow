@@ -6,7 +6,10 @@ use jellyflow_open_gpui::activity::{
     OpenGpuiActivityKind, OpenGpuiActivityLease, OpenGpuiNodeActivityHandle,
 };
 use jellyflow_open_gpui::authoring::{OpenGpuiNodeAuthoring, OpenGpuiNodeBinding};
-use jellyflow_open_gpui::registry::{OpenGpuiNodeRegistrationPolicy, OpenGpuiNodeRegistryBuilder};
+use jellyflow_open_gpui::registry::{
+    OpenGpuiNodeAdapterPresentation, OpenGpuiNodeRegistrationPolicy, OpenGpuiNodeRegistryBuilder,
+    OpenGpuiNodeRendererDescriptor,
+};
 #[cfg(test)]
 use jellyflow_open_gpui::retained_field::ApplicationRetainedField;
 use jellyflow_open_gpui::retained_field::{
@@ -19,6 +22,7 @@ use jellyflow_runtime::commands::GraphCommand;
 #[cfg(test)]
 use jellyflow_runtime::graph::GraphVersion;
 use jellyflow_runtime::schema::{NodeKindSpec, NodePortSpec};
+use jellyflow_runtime::view::RendererStamp;
 use open_gpui::{
     App, AppContext, Context, Entity, Focusable, InteractiveElement, ParentElement, Render,
     StatefulInteractiveElement, Styled, Subscription, Window, div, px,
@@ -905,19 +909,26 @@ pub(super) fn register(
     model_options: Entity<WorkflowModelOptionsState>,
     product_theme: NativeProductTheme,
 ) {
-    registry.register_with_policy(
-        WORKFLOW_LLM_RENDERER,
-        workflow_llm_registration_policy(),
-        move |binding, _window, cx| {
-            mount_workflow_llm(
-                binding,
-                field_store.clone(),
-                model_options.clone(),
-                product_theme,
-                cx,
+    registry
+        .register(
+            OpenGpuiNodeRendererDescriptor::new(
+                WORKFLOW_LLM_KIND,
+                1,
+                RendererStamp::new(WORKFLOW_LLM_RENDERER, 1),
+                OpenGpuiNodeAdapterPresentation::new("LLM"),
+                move |binding, _window, cx| {
+                    Ok(mount_workflow_llm(
+                        binding,
+                        field_store.clone(),
+                        model_options.clone(),
+                        product_theme,
+                        cx,
+                    ))
+                },
             )
-        },
-    );
+            .with_policy(workflow_llm_registration_policy()),
+        )
+        .expect("unique workflow LLM renderer descriptor");
 }
 
 fn workflow_llm_registration_policy() -> OpenGpuiNodeRegistrationPolicy {
@@ -1430,25 +1441,34 @@ mod tests {
         let factory_captured = Rc::clone(&captured);
         let factory_options = model_options.clone();
         let factory_store = WorkflowFieldStore::new();
-        registry.register_with_policy(
-            WORKFLOW_LLM_RENDERER,
-            workflow_llm_registration_policy(),
-            move |binding, _window, cx| {
-                let node = mount_workflow_llm(
-                    binding,
-                    factory_store.clone(),
-                    factory_options.clone(),
-                    NativeProductTheme::workflow_dify(),
-                    cx,
-                );
-                factory_captured.borrow_mut().replace(node.clone());
-                node
-            },
-        );
+        registry
+            .register(
+                OpenGpuiNodeRendererDescriptor::new(
+                    WORKFLOW_LLM_KIND,
+                    1,
+                    RendererStamp::new(WORKFLOW_LLM_RENDERER, 1),
+                    OpenGpuiNodeAdapterPresentation::new("LLM"),
+                    move |binding, _window, cx| {
+                        let node = mount_workflow_llm(
+                            binding,
+                            factory_store.clone(),
+                            factory_options.clone(),
+                            NativeProductTheme::workflow_dify(),
+                            cx,
+                        );
+                        factory_captured.borrow_mut().replace(node.clone());
+                        Ok(node)
+                    },
+                )
+                .with_policy(workflow_llm_registration_policy()),
+            )
+            .expect("unique saturated LLM renderer descriptor");
         let (_host, cx) = cx.add_window_view(move |_, _| {
             OpenGpuiSceneHost::new(
                 host_view,
-                registry.seal().expect("valid saturated LLM registry"),
+                registry
+                    .seal(&catalog)
+                    .expect("valid saturated LLM registry"),
                 saturated_llm_bounds(),
             )
         });
@@ -1709,38 +1729,54 @@ mod tests {
         let captured_for_factory = Rc::clone(&captured);
         let mounts_for_factory = Rc::clone(&mounts);
         let factory_store = draft_store.clone();
-        registry.register(WORKFLOW_LLM_RENDERER, move |binding, _window, cx| {
-            let node = mount_workflow_llm(
-                binding,
-                factory_store.clone(),
-                model_options.clone(),
-                NativeProductTheme::workflow_dify(),
-                cx,
-            );
-            captured_for_factory.borrow_mut().replace(node.clone());
-            mounts_for_factory.set(mounts_for_factory.get().saturating_add(1));
-            node
-        });
-        registry.register(PROTECTOR_RENDERER, |binding, _window, cx| {
-            let node = binding
-                .read(cx)
-                .authoring()
-                .expect("a protector factory must receive a live authoring binding")
-                .node_id();
-            let lease = is_transient_protector(node).then(|| {
-                binding
-                    .read(cx)
-                    .activity()
-                    .acquire(OpenGpuiActivityKind::Draft)
-                    .expect("the first 64 instances fit the protected budget")
-            });
-            cx.new(|_| ProtectorNode { _lease: lease })
-        });
+        registry
+            .register(OpenGpuiNodeRendererDescriptor::new(
+                WORKFLOW_LLM_KIND,
+                1,
+                RendererStamp::new(WORKFLOW_LLM_RENDERER, 1),
+                OpenGpuiNodeAdapterPresentation::new("LLM"),
+                move |binding, _window, cx| {
+                    let node = mount_workflow_llm(
+                        binding,
+                        factory_store.clone(),
+                        model_options.clone(),
+                        NativeProductTheme::workflow_dify(),
+                        cx,
+                    );
+                    captured_for_factory.borrow_mut().replace(node.clone());
+                    mounts_for_factory.set(mounts_for_factory.get().saturating_add(1));
+                    Ok(node)
+                },
+            ))
+            .expect("unique overflow LLM renderer descriptor");
+        registry
+            .register(OpenGpuiNodeRendererDescriptor::new(
+                PROTECTOR_KIND,
+                1,
+                RendererStamp::new(PROTECTOR_RENDERER, 1),
+                OpenGpuiNodeAdapterPresentation::new("Workflow transient protector"),
+                |binding, _window, cx| {
+                    let node = binding
+                        .read(cx)
+                        .authoring()
+                        .expect("a protector factory must receive a live authoring binding")
+                        .node_id();
+                    let lease = is_transient_protector(node).then(|| {
+                        binding
+                            .read(cx)
+                            .activity()
+                            .acquire(OpenGpuiActivityKind::Draft)
+                            .expect("the first 64 instances fit the protected budget")
+                    });
+                    Ok(cx.new(|_| ProtectorNode { _lease: lease }))
+                },
+            ))
+            .expect("unique transient protector renderer descriptor");
         let (host, cx) = cx.add_window_view(move |_, _| {
             OpenGpuiSceneHost::new(
                 view,
                 registry
-                    .seal()
+                    .seal(&catalog)
                     .expect("valid workflow transient overflow registry"),
                 transient_initial_bounds(),
             )

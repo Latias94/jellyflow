@@ -6,12 +6,15 @@ use jellyflow_core::{
 };
 use jellyflow_open_gpui::authoring::OpenGpuiNodeBinding;
 use jellyflow_open_gpui::host::OpenGpuiSceneHost;
-use jellyflow_open_gpui::registry::OpenGpuiNodeRegistry;
+use jellyflow_open_gpui::registry::{
+    OpenGpuiNodeAdapterPresentation, OpenGpuiNodeRegistry, OpenGpuiNodeRendererDescriptor,
+};
 use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec};
 use jellyflow_runtime::{
     graph::GraphRuntime,
     view::{
-        DEFAULT_FRAME_ROUTING_DEPENDENCY_BUDGET, FrameMaterializationOverflow, ViewSessionOptions,
+        DEFAULT_FRAME_ROUTING_DEPENDENCY_BUDGET, FrameMaterializationOverflow, RendererStamp,
+        ViewSessionOptions,
     },
 };
 use open_gpui::{AppContext, Context, Entity, ParentElement, Render, Window, div};
@@ -113,10 +116,16 @@ fn draw(cx: &mut open_gpui::VisualTestContext) {
 
 fn registry() -> OpenGpuiNodeRegistry {
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, |binding, _window, cx| {
-        cx.new(|_| FrameBudgetNode { binding })
-    });
-    registry.seal().expect("valid test registry")
+    registry
+        .register(OpenGpuiNodeRendererDescriptor::new(
+            KIND,
+            1,
+            RendererStamp::new(RENDERER, 1),
+            OpenGpuiNodeAdapterPresentation::new("Frame budget node"),
+            |binding, _window, cx| Ok(cx.new(|_| FrameBudgetNode { binding })),
+        ))
+        .expect("register frame budget renderer");
+    registry.seal(&catalog()).expect("valid test registry")
 }
 
 fn catalog() -> NodeCatalog {

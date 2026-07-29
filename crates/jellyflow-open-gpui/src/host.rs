@@ -169,7 +169,6 @@ impl Default for OpenGpuiConnectionOptions {
 }
 
 const DIAGNOSTIC_RENDERER_KEY: &str = "jellyflow.open-gpui.diagnostic";
-const RENDERER_INCARNATION: u64 = 1;
 
 /// Retained Open GPUI scene host backed by one headless [`ViewSession`].
 ///
@@ -257,16 +256,16 @@ struct OpenGpuiSceneHostWindowOwner {
     _release_subscription: Subscription,
 }
 
-fn catalog_frame_request(catalog: &NodeCatalog, viewport: CanvasRect) -> FrameRequest {
-    let mut request = FrameRequest::new(
-        viewport,
-        RendererStamp::new(DIAGNOSTIC_RENDERER_KEY, RENDERER_INCARNATION),
-    );
+fn registry_frame_request(
+    catalog: &NodeCatalog,
+    registry: &OpenGpuiNodeRegistry,
+    viewport: CanvasRect,
+) -> FrameRequest {
+    let mut request = FrameRequest::new(viewport, RendererStamp::new(DIAGNOSTIC_RENDERER_KEY, 1));
+    for (kind, kind_version, renderer) in registry.mappings() {
+        request = request.with_kind_renderer(kind.clone(), kind_version, renderer.clone());
+    }
     for spec in catalog.kinds() {
-        request = request.with_kind_renderer(
-            spec.kind().clone(),
-            RendererStamp::new(spec.renderer_key(), RENDERER_INCARNATION),
-        );
         if let Some(size) = spec.default_size() {
             request = request.with_kind_default(spec.kind().clone(), size);
         }
@@ -299,7 +298,7 @@ impl OpenGpuiSceneHost {
     #[must_use]
     pub fn new(view: ViewSession, registry: OpenGpuiNodeRegistry, viewport: CanvasRect) -> Self {
         let catalog = view.catalog_owned();
-        let frame_request_template = catalog_frame_request(&catalog, viewport);
+        let frame_request_template = registry_frame_request(&catalog, &registry, viewport);
         let navigation = OpenGpuiNavigationConfig::default();
         let canvas_interaction = CanvasInteractionSession::attach(&view, navigation.runtime_config())
             .expect("a newly constructed native host owns an open view with valid interaction configuration");

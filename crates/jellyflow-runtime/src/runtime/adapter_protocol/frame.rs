@@ -723,7 +723,7 @@ pub struct FrameRequest {
     pub(crate) overscan: f32,
     pub(crate) default_renderer: RendererStamp,
     pub(crate) renderers: BTreeMap<NodeId, RendererStamp>,
-    pub(crate) kind_renderers: Arc<BTreeMap<NodeKindKey, RendererStamp>>,
+    pub(crate) kind_renderers: Arc<BTreeMap<(NodeKindKey, u32), RendererStamp>>,
     pub(crate) routing_dependencies: BTreeSet<NodeId>,
     pub(crate) incident_routing_dependencies: bool,
     pub(crate) required_nodes: BTreeSet<NodeId>,
@@ -773,11 +773,16 @@ impl FrameRequest {
         self
     }
 
-    /// Registers one renderer for every node of a semantic kind.
+    /// Registers one renderer for every node of an exact semantic kind and version.
     ///
     /// A node-specific renderer registered through [`Self::with_renderer`] takes precedence.
-    pub fn with_kind_renderer(mut self, kind: NodeKindKey, renderer: RendererStamp) -> Self {
-        Arc::make_mut(&mut self.kind_renderers).insert(kind, renderer);
+    pub fn with_kind_renderer(
+        mut self,
+        kind: NodeKindKey,
+        kind_version: u32,
+        renderer: RendererStamp,
+    ) -> Self {
+        Arc::make_mut(&mut self.kind_renderers).insert((kind, kind_version), renderer);
         self
     }
 
@@ -826,10 +831,15 @@ impl FrameRequest {
         self
     }
 
-    pub(crate) fn renderer_for(&self, node: NodeId, kind: &NodeKindKey) -> RendererStamp {
+    pub(crate) fn renderer_for(
+        &self,
+        node: NodeId,
+        kind: &NodeKindKey,
+        kind_version: u32,
+    ) -> RendererStamp {
         self.renderers
             .get(&node)
-            .or_else(|| self.kind_renderers.get(kind))
+            .or_else(|| self.kind_renderers.get(&(kind.clone(), kind_version)))
             .cloned()
             .unwrap_or_else(|| self.default_renderer.clone())
     }

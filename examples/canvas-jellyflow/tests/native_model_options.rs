@@ -89,8 +89,9 @@ fn native_model_select_exposes_resource_states_without_clearing_persisted_value(
     cx: &mut open_gpui::TestAppContext,
 ) {
     cx.update(init_text_input);
+    let catalog = native_node_catalog().expect("native catalog");
     let runtime = Rc::new(
-        GraphRuntime::builder(native_node_catalog().expect("native catalog"))
+        GraphRuntime::builder(catalog.clone())
             .build(workflow_demo_graph().expect("workflow graph"))
             .expect("workflow runtime"),
     );
@@ -100,7 +101,7 @@ fn native_model_select_exposes_resource_states_without_clearing_persisted_value(
     let model_options = cx.update(|cx| cx.new(|_| WorkflowModelOptionsState::loading()));
     let resources = NativeNodeResources::new(model_options.clone());
     let (host, cx) = cx.add_window_view(move |_, _| {
-        OpenGpuiSceneHost::new(view, native_node_registry(resources), viewport())
+        OpenGpuiSceneHost::new(view, native_node_registry(resources, &catalog), viewport())
     });
     draw(cx);
 

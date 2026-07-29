@@ -15,19 +15,41 @@ use jellyflow_open_gpui::authoring::{
 use jellyflow_open_gpui::host::{OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY, OpenGpuiSceneHost};
 use jellyflow_open_gpui::interaction::{OpenGpuiPortDragPhase, OpenGpuiPortEvent};
 use jellyflow_open_gpui::navigation::{OpenGpuiInputBindings, OpenGpuiNavigationConfig};
-use jellyflow_open_gpui::registry::{OpenGpuiNodeMountError, OpenGpuiNodeRegistry};
+use jellyflow_open_gpui::registry::{
+    OpenGpuiNodeAdapterPresentation, OpenGpuiNodeMountError, OpenGpuiNodeRegistry,
+    OpenGpuiNodeRendererDescriptor,
+};
 use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec};
 use jellyflow_runtime::{
     commands::GraphCommand, graph::GraphRuntime, interaction::CanvasInteractionPhase,
-    view::ViewCloseReason, view::ViewSessionOptions,
+    view::RendererStamp, view::ViewCloseReason, view::ViewSessionOptions,
 };
 use open_gpui::{
-    AppContext, Context, Entity, InteractiveElement, IntoElement, MouseButton, ParentElement,
+    App, AppContext, Context, Entity, InteractiveElement, IntoElement, MouseButton, ParentElement,
     Render, Styled, VisualContext, Window, div, px,
 };
 
 const KIND: &str = "test.mount-capability-node";
 const RENDERER: &str = "test.native.mount-capability-node";
+
+fn renderer_descriptor<F, V>(factory: F) -> OpenGpuiNodeRendererDescriptor
+where
+    F: Fn(
+            Entity<OpenGpuiNodeBinding>,
+            &mut Window,
+            &mut App,
+        ) -> Result<Entity<V>, OpenGpuiNodeMountError>
+        + 'static,
+    V: Render + 'static,
+{
+    OpenGpuiNodeRendererDescriptor::new(
+        KIND,
+        1,
+        RendererStamp::new(RENDERER, 1),
+        OpenGpuiNodeAdapterPresentation::new("Mount capability node"),
+        factory,
+    )
+}
 
 struct ProbeNode {
     _binding: Entity<OpenGpuiNodeBinding>,
@@ -175,29 +197,32 @@ impl Render for ExternalDragScene {
 fn authoring_port_occupancy_is_graph_wide_without_exposing_foreign_port_capabilities(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    let runtime = GraphRuntime::builder(catalog())
+    let catalog = catalog();
+    let runtime = GraphRuntime::builder(catalog.clone())
         .build(graph_with_foreign_port())
         .expect("graph with a foreign dynamic port");
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     let captured = Rc::new(RefCell::new(None::<Entity<OpenGpuiNodeBinding>>));
     let factory_capture = Rc::clone(&captured);
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
-        if binding
-            .read(cx)
-            .authoring()
-            .expect("factory binding authoring")
-            .node_id()
-            == node_id()
-        {
-            *factory_capture.borrow_mut() = Some(binding.clone());
-        }
-        cx.new(|_| ProbeNode { _binding: binding })
-    });
+    registry
+        .register(renderer_descriptor(move |binding, _window, cx| {
+            if binding
+                .read(cx)
+                .authoring()
+                .expect("factory binding authoring")
+                .node_id()
+                == node_id()
+            {
+                *factory_capture.borrow_mut() = Some(binding.clone());
+            }
+            Ok(cx.new(|_| ProbeNode { _binding: binding }))
+        }))
+        .expect("unique test renderer registration");
     let (_host, cx) = cx.add_window_view(move |_, _| {
         OpenGpuiSceneHost::new(
             view,
-            registry.seal().expect("valid test registry"),
+            registry.seal(&catalog).expect("valid test registry"),
             visible_viewport(),
         )
     });
@@ -219,8 +244,9 @@ fn eligible_lru_eviction_revokes_old_binding_before_same_instance_remount(
     cx: &mut open_gpui::TestAppContext,
 ) {
     let node_count = OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY + 2;
+    let catalog = catalog();
     let runtime = Rc::new(
-        GraphRuntime::builder(catalog())
+        GraphRuntime::builder(catalog.clone())
             .build(graph_with_nodes(node_count))
             .unwrap(),
     );
@@ -231,24 +257,26 @@ fn eligible_lru_eviction_revokes_old_binding_before_same_instance_remount(
     >::new()));
     let factory_bindings = bindings.clone();
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
-        let node = binding
-            .read(cx)
-            .authoring()
-            .expect("new mount opens authoring")
-            .node_id();
-        factory_bindings
-            .borrow_mut()
-            .entry(node)
-            .or_default()
-            .push(binding.clone());
-        cx.new(|_| ProbeNode { _binding: binding })
-    });
+    registry
+        .register(renderer_descriptor(move |binding, _window, cx| {
+            let node = binding
+                .read(cx)
+                .authoring()
+                .expect("new mount opens authoring")
+                .node_id();
+            factory_bindings
+                .borrow_mut()
+                .entry(node)
+                .or_default()
+                .push(binding.clone());
+            Ok(cx.new(|_| ProbeNode { _binding: binding }))
+        }))
+        .expect("unique test renderer registration");
 
     let (host, cx) = cx.add_window_view(move |_, _| {
         OpenGpuiSceneHost::new(
             view,
-            registry.seal().expect("valid test registry"),
+            registry.seal(&catalog).expect("valid test registry"),
             visible_viewport(),
         )
     });
@@ -299,8 +327,9 @@ fn eligible_lru_eviction_revokes_old_binding_before_same_instance_remount(
 fn retry_mount_revokes_failed_factory_binding_before_same_instance_remount(
     cx: &mut open_gpui::TestAppContext,
 ) {
+    let catalog = catalog();
     let runtime = Rc::new(
-        GraphRuntime::builder(catalog())
+        GraphRuntime::builder(catalog.clone())
             .build(graph_with_nodes(1))
             .unwrap(),
     );
@@ -310,19 +339,21 @@ fn retry_mount_revokes_failed_factory_binding_before_same_instance_remount(
     let factory_attempts = attempts.clone();
     let factory_bindings = bindings.clone();
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.try_register(RENDERER, move |binding, _window, cx| {
-        factory_attempts.set(factory_attempts.get().saturating_add(1));
-        factory_bindings.borrow_mut().push(binding.clone());
-        if factory_attempts.get() == 1 {
-            return Err(OpenGpuiNodeMountError::new("retry fixture"));
-        }
-        Ok(cx.new(|_| ProbeNode { _binding: binding }))
-    });
+    registry
+        .register(renderer_descriptor(move |binding, _window, cx| {
+            factory_attempts.set(factory_attempts.get().saturating_add(1));
+            factory_bindings.borrow_mut().push(binding.clone());
+            if factory_attempts.get() == 1 {
+                return Err(OpenGpuiNodeMountError::new("retry fixture"));
+            }
+            Ok(cx.new(|_| ProbeNode { _binding: binding }))
+        }))
+        .expect("unique test renderer registration");
 
     let (host, cx) = cx.add_window_view(move |_, _| {
         OpenGpuiSceneHost::new(
             view,
-            registry.seal().expect("valid test registry"),
+            registry.seal(&catalog).expect("valid test registry"),
             visible_viewport(),
         )
     });
@@ -354,8 +385,9 @@ fn retry_mount_revokes_failed_factory_binding_before_same_instance_remount(
 fn authoring_rejects_mismatched_and_stale_commands_before_journal_admission(
     cx: &mut open_gpui::TestAppContext,
 ) {
+    let catalog = catalog();
     let runtime = Rc::new(
-        GraphRuntime::builder(catalog())
+        GraphRuntime::builder(catalog.clone())
             .build(graph_with_nodes(1))
             .unwrap(),
     );
@@ -363,15 +395,20 @@ fn authoring_rejects_mismatched_and_stale_commands_before_journal_admission(
     let captured_binding = Rc::new(RefCell::new(None::<Entity<OpenGpuiNodeBinding>>));
     let factory_binding = captured_binding.clone();
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
-        *factory_binding.borrow_mut() = Some(binding.clone());
-        cx.new(|_| ProbeNode { _binding: binding })
-    });
+    registry
+        .register(renderer_descriptor(move |binding, _window, cx| {
+            *factory_binding.borrow_mut() = Some(binding.clone());
+            Ok(cx.new(|_| ProbeNode { _binding: binding }))
+        }))
+        .expect("unique test renderer registration");
+    let registry_catalog = catalog.clone();
 
     let (_host, cx) = cx.add_window_view(move |_, _| {
         OpenGpuiSceneHost::new(
             view,
-            registry.seal().expect("valid test registry"),
+            registry
+                .seal(&registry_catalog)
+                .expect("valid test registry"),
             visible_viewport(),
         )
     });
@@ -381,7 +418,7 @@ fn authoring_rejects_mismatched_and_stale_commands_before_journal_admission(
         .clone()
         .expect("captured live binding");
 
-    let foreign_runtime = GraphRuntime::builder(catalog())
+    let foreign_runtime = GraphRuntime::builder(catalog.clone())
         .build(graph_with_nodes(1))
         .expect("foreign runtime");
     let foreign_version = foreign_runtime
@@ -456,8 +493,9 @@ fn authoring_rejects_mismatched_and_stale_commands_before_journal_admission(
 fn host_close_reason_is_preserved_for_binding_and_captured_authoring(
     cx: &mut open_gpui::TestAppContext,
 ) {
+    let catalog = catalog();
     let runtime = Rc::new(
-        GraphRuntime::builder(catalog())
+        GraphRuntime::builder(catalog.clone())
             .build(graph_with_nodes(1))
             .unwrap(),
     );
@@ -465,15 +503,17 @@ fn host_close_reason_is_preserved_for_binding_and_captured_authoring(
     let captured_binding = Rc::new(RefCell::new(None::<Entity<OpenGpuiNodeBinding>>));
     let factory_binding = captured_binding.clone();
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
-        *factory_binding.borrow_mut() = Some(binding.clone());
-        cx.new(|_| ProbeNode { _binding: binding })
-    });
+    registry
+        .register(renderer_descriptor(move |binding, _window, cx| {
+            *factory_binding.borrow_mut() = Some(binding.clone());
+            Ok(cx.new(|_| ProbeNode { _binding: binding }))
+        }))
+        .expect("unique test renderer registration");
 
     let (host, cx) = cx.add_window_view(move |_, _| {
         OpenGpuiSceneHost::new(
             view,
-            registry.seal().expect("valid test registry"),
+            registry.seal(&catalog).expect("valid test registry"),
             visible_viewport(),
         )
     });
@@ -714,7 +754,8 @@ fn dropping_pending_mutation_owner_releases_leases_and_host_settles_journal_once
 fn old_port_handle_cannot_dispatch_after_retry_or_same_instance_remount(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    let runtime = GraphRuntime::builder(catalog())
+    let catalog = catalog();
+    let runtime = GraphRuntime::builder(catalog.clone())
         .build(graph_with_nodes(1))
         .unwrap();
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
@@ -724,19 +765,21 @@ fn old_port_handle_cannot_dispatch_after_retry_or_same_instance_remount(
     let factory_attempts = attempts.clone();
     let factory_handle = stale_handle.clone();
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.try_register(RENDERER, move |binding, _window, cx| {
-        factory_attempts.set(factory_attempts.get().saturating_add(1));
-        if factory_handle.borrow().is_none() {
-            *factory_handle.borrow_mut() =
-                binding.read(cx).authoring().ok().and_then(|authoring| {
-                    authoring.port(port_id()).map(|port| port.handle().clone())
-                });
-        }
-        if factory_attempts.get() == 1 {
-            return Err(OpenGpuiNodeMountError::new("retry interaction fixture"));
-        }
-        Ok(cx.new(|_| ProbeNode { _binding: binding }))
-    });
+    registry
+        .register(renderer_descriptor(move |binding, _window, cx| {
+            factory_attempts.set(factory_attempts.get().saturating_add(1));
+            if factory_handle.borrow().is_none() {
+                *factory_handle.borrow_mut() =
+                    binding.read(cx).authoring().ok().and_then(|authoring| {
+                        authoring.port(port_id()).map(|port| port.handle().clone())
+                    });
+            }
+            if factory_attempts.get() == 1 {
+                return Err(OpenGpuiNodeMountError::new("retry interaction fixture"));
+            }
+            Ok(cx.new(|_| ProbeNode { _binding: binding }))
+        }))
+        .expect("unique test renderer registration");
 
     let captured_host = Rc::new(RefCell::new(None::<Entity<OpenGpuiSceneHost>>));
     let scene_host = captured_host.clone();
@@ -746,7 +789,7 @@ fn old_port_handle_cannot_dispatch_after_retry_or_same_instance_remount(
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new(
                 view,
-                registry.seal().expect("valid test registry"),
+                registry.seal(&catalog).expect("valid test registry"),
                 visible_viewport(),
             )
         });
@@ -796,7 +839,8 @@ fn old_port_handle_cannot_dispatch_after_retry_or_same_instance_remount(
 fn old_node_drag_handle_is_inert_after_same_instance_retry_and_replacement_drag_succeeds(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    let runtime = GraphRuntime::builder(catalog())
+    let catalog = catalog();
+    let runtime = GraphRuntime::builder(catalog.clone())
         .build(graph_with_nodes(1))
         .unwrap();
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
@@ -806,16 +850,18 @@ fn old_node_drag_handle_is_inert_after_same_instance_retry_and_replacement_drag_
     let factory_attempts = attempts.clone();
     let factory_handle = stale_handle.clone();
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.try_register(RENDERER, move |binding, _window, cx| {
-        factory_attempts.set(factory_attempts.get().saturating_add(1));
-        if factory_handle.borrow().is_none() {
-            *factory_handle.borrow_mut() = Some(binding.read(cx).drag_handle());
-        }
-        if factory_attempts.get() == 1 {
-            return Err(OpenGpuiNodeMountError::new("retry node drag fixture"));
-        }
-        Ok(cx.new(|_| InteractiveDragProbeNode { binding }))
-    });
+    registry
+        .register(renderer_descriptor(move |binding, _window, cx| {
+            factory_attempts.set(factory_attempts.get().saturating_add(1));
+            if factory_handle.borrow().is_none() {
+                *factory_handle.borrow_mut() = Some(binding.read(cx).drag_handle());
+            }
+            if factory_attempts.get() == 1 {
+                return Err(OpenGpuiNodeMountError::new("retry node drag fixture"));
+            }
+            Ok(cx.new(|_| InteractiveDragProbeNode { binding }))
+        }))
+        .expect("unique test renderer registration");
 
     let captured_host = Rc::new(RefCell::new(None::<Entity<OpenGpuiSceneHost>>));
     let scene_host = captured_host.clone();
@@ -824,7 +870,7 @@ fn old_node_drag_handle_is_inert_after_same_instance_retry_and_replacement_drag_
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new(
                 view,
-                registry.seal().expect("valid test registry"),
+                registry.seal(&catalog).expect("valid test registry"),
                 visible_viewport(),
             )
         });
@@ -930,7 +976,8 @@ fn old_node_drag_handle_is_inert_after_same_instance_retry_and_replacement_drag_
 
 #[open_gpui::test]
 fn revoked_port_prepaint_cannot_cancel_replacement_mount_drag(cx: &mut open_gpui::TestAppContext) {
-    let runtime = GraphRuntime::builder(catalog())
+    let catalog = catalog();
+    let runtime = GraphRuntime::builder(catalog.clone())
         .build(graph_with_nodes(1))
         .unwrap();
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
@@ -942,22 +989,24 @@ fn revoked_port_prepaint_cannot_cancel_replacement_mount_drag(cx: &mut open_gpui
     let factory_handle = stale_handle.clone();
     let factory_phases = live_phases.clone();
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.try_register(RENDERER, move |binding, _window, cx| {
-        factory_attempts.set(factory_attempts.get().saturating_add(1));
-        if factory_handle.borrow().is_none() {
-            *factory_handle.borrow_mut() =
-                binding.read(cx).authoring().ok().and_then(|authoring| {
-                    authoring.port(port_id()).map(|port| port.handle().clone())
-                });
-        }
-        if factory_attempts.get() == 1 {
-            return Err(OpenGpuiNodeMountError::new("retry interaction ABA fixture"));
-        }
-        Ok(cx.new(|_| InteractiveProbeNode {
-            binding,
-            phases: factory_phases.clone(),
+    registry
+        .register(renderer_descriptor(move |binding, _window, cx| {
+            factory_attempts.set(factory_attempts.get().saturating_add(1));
+            if factory_handle.borrow().is_none() {
+                *factory_handle.borrow_mut() =
+                    binding.read(cx).authoring().ok().and_then(|authoring| {
+                        authoring.port(port_id()).map(|port| port.handle().clone())
+                    });
+            }
+            if factory_attempts.get() == 1 {
+                return Err(OpenGpuiNodeMountError::new("retry interaction ABA fixture"));
+            }
+            Ok(cx.new(|_| InteractiveProbeNode {
+                binding,
+                phases: factory_phases.clone(),
+            }))
         }))
-    });
+        .expect("unique test renderer registration");
 
     let captured_host = Rc::new(RefCell::new(None::<Entity<OpenGpuiSceneHost>>));
     let scene_host = captured_host.clone();
@@ -967,7 +1016,7 @@ fn revoked_port_prepaint_cannot_cancel_replacement_mount_drag(cx: &mut open_gpui
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new(
                 view,
-                registry.seal().expect("valid test registry"),
+                registry.seal(&catalog).expect("valid test registry"),
                 visible_viewport(),
             )
             .with_navigation_config(
@@ -1046,8 +1095,9 @@ fn mount_managed_mutation_scene(
     Rc<Cell<u32>>,
     &mut open_gpui::VisualTestContext,
 ) {
+    let catalog = catalog();
     let runtime = Rc::new(
-        GraphRuntime::builder(catalog())
+        GraphRuntime::builder(catalog.clone())
             .build(graph_with_nodes(1))
             .expect("valid managed-mutation graph"),
     );
@@ -1059,20 +1109,24 @@ fn mount_managed_mutation_scene(
     let factory_attempts = Rc::clone(&attempts);
     let factory_bindings = Rc::clone(&bindings);
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.try_register(RENDERER, move |binding, _window, cx| {
-        factory_attempts.set(factory_attempts.get().saturating_add(1));
-        factory_bindings.borrow_mut().push(binding.clone());
-        if fail_first_mount && factory_attempts.get() == 1 {
-            return Err(OpenGpuiNodeMountError::new(
-                "pending mutation retirement fixture",
-            ));
-        }
-        Ok(cx.new(|_| ProbeNode { _binding: binding }))
-    });
+    registry
+        .register(renderer_descriptor(move |binding, _window, cx| {
+            factory_attempts.set(factory_attempts.get().saturating_add(1));
+            factory_bindings.borrow_mut().push(binding.clone());
+            if fail_first_mount && factory_attempts.get() == 1 {
+                return Err(OpenGpuiNodeMountError::new(
+                    "pending mutation retirement fixture",
+                ));
+            }
+            Ok(cx.new(|_| ProbeNode { _binding: binding }))
+        }))
+        .expect("unique test renderer registration");
     let (host, cx) = cx.add_window_view(move |_, _| {
         OpenGpuiSceneHost::new(
             view,
-            registry.seal().expect("valid managed-mutation registry"),
+            registry
+                .seal(&catalog)
+                .expect("valid managed-mutation registry"),
             visible_viewport(),
         )
     });

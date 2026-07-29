@@ -14,19 +14,22 @@ use jellyflow_open_gpui::host::{
     InitialViewportPolicy, OpenGpuiSceneHost, OpenGpuiSceneHostDiagnosticKind,
 };
 use jellyflow_open_gpui::interaction::{OpenGpuiPortDragPhase, OpenGpuiPortEvent};
-use jellyflow_open_gpui::registry::{OpenGpuiNodeRegistrationPolicy, OpenGpuiNodeRegistry};
+use jellyflow_open_gpui::registry::{
+    OpenGpuiNodeAdapterPresentation, OpenGpuiNodeRegistrationPolicy, OpenGpuiNodeRegistry,
+    OpenGpuiNodeRegistryRegistrationError, OpenGpuiNodeRendererDescriptor,
+};
 use jellyflow_open_gpui::scale_policy::OPEN_GPUI_DEFAULT_OVERVIEW_ENTER_ZOOM;
 use jellyflow_open_gpui::size_policy::{
     OpenGpuiContentHeightPolicy, OpenGpuiNodeSizeConvergence, OpenGpuiNodeSizePolicy,
 };
 use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec};
 use jellyflow_runtime::{
-    commands::GraphCommand, graph::GraphRuntime, view::PublishedPortOutcome, view::ViewCloseReason,
-    view::ViewSessionOptions, viewport::ViewportTransform,
+    commands::GraphCommand, graph::GraphRuntime, view::PublishedPortOutcome, view::RendererStamp,
+    view::ViewCloseReason, view::ViewSessionOptions, viewport::ViewportTransform,
 };
 use open_gpui::{
-    AppContext, Context, Entity, InteractiveElement, MouseButton, ParentElement, Render, Styled,
-    Window, div, point, px,
+    App, AppContext, Context, Entity, InteractiveElement, MouseButton, ParentElement, Render,
+    Styled, Window, div, point, px,
 };
 
 const KIND: &str = "test.measured-node";
@@ -37,6 +40,25 @@ const FIXED_NATIVE_CONTROL_SELECTOR: &str = "jellyflow-test-fixed-native-control
 const OVERVIEW_NODE_SELECTOR: &str = "jellyflow-overview-node";
 const CONTENT_MASK_NODE_SELECTOR: &str = "jellyflow-content-mask-node";
 const CONTENT_MASK_OUTPUT_SELECTOR: &str = "jellyflow-content-mask-output-port";
+
+fn renderer_descriptor<F, V>(
+    kind: &'static str,
+    renderer: &'static str,
+    accessible_name: &'static str,
+    factory: F,
+) -> OpenGpuiNodeRendererDescriptor
+where
+    F: Fn(Entity<OpenGpuiNodeBinding>, &mut Window, &mut App) -> Entity<V> + 'static,
+    V: Render + 'static,
+{
+    OpenGpuiNodeRendererDescriptor::new(
+        kind,
+        1,
+        RendererStamp::new(renderer, 1),
+        OpenGpuiNodeAdapterPresentation::new(accessible_name),
+        move |binding, window, cx| Ok(factory(binding, window, cx)),
+    )
+}
 
 struct MeasuredPortsNode {
     binding: Entity<OpenGpuiNodeBinding>,
@@ -532,16 +554,26 @@ impl Render for MeasuredPortsNode {
 fn measured_surface_bootstrap_requests_a_second_frame_and_mounts_visible_nodes(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    let runtime = GraphRuntime::builder(catalog()).build(graph()).unwrap();
+    let node_catalog = catalog();
+    let runtime = GraphRuntime::builder(node_catalog.clone())
+        .build(graph())
+        .unwrap();
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, |binding, _window, cx| {
-        cx.new(|_| MeasuredPortsNode {
-            binding,
-            measure_output: Rc::new(Cell::new(true)),
-            mutate_runtime_once: None,
-        })
-    });
+    registry
+        .register(renderer_descriptor(
+            KIND,
+            RENDERER,
+            "Measured node",
+            |binding, _window, cx| {
+                cx.new(|_| MeasuredPortsNode {
+                    binding,
+                    measure_output: Rc::new(Cell::new(true)),
+                    mutate_runtime_once: None,
+                })
+            },
+        ))
+        .expect("unique measured-node renderer");
 
     let host_slot = Rc::new(RefCell::new(None));
     let installed_host = Rc::clone(&host_slot);
@@ -549,7 +581,7 @@ fn measured_surface_bootstrap_requests_a_second_frame_and_mounts_visible_nodes(
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new_measured_surface(
                 view,
-                registry.seal().expect("valid test registry"),
+                registry.seal(&node_catalog).expect("valid test registry"),
             )
         });
         *installed_host.borrow_mut() = Some(host.clone());
@@ -567,22 +599,35 @@ fn measured_surface_bootstrap_requests_a_second_frame_and_mounts_visible_nodes(
 fn measured_initial_fit_applies_once_and_yields_to_later_user_navigation(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    let runtime = GraphRuntime::builder(catalog()).build(graph()).unwrap();
+    let node_catalog = catalog();
+    let runtime = GraphRuntime::builder(node_catalog.clone())
+        .build(graph())
+        .unwrap();
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     let initial = view.viewport_transform().unwrap();
     let weak_view = view.downgrade();
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, |binding, _window, cx| {
-        cx.new(|_| MeasuredPortsNode {
-            binding,
-            measure_output: Rc::new(Cell::new(true)),
-            mutate_runtime_once: None,
-        })
-    });
+    registry
+        .register(renderer_descriptor(
+            KIND,
+            RENDERER,
+            "Measured node",
+            |binding, _window, cx| {
+                cx.new(|_| MeasuredPortsNode {
+                    binding,
+                    measure_output: Rc::new(Cell::new(true)),
+                    mutate_runtime_once: None,
+                })
+            },
+        ))
+        .expect("unique measured-node renderer");
 
     let (host, cx) = cx.add_window_view(move |_, _| {
-        OpenGpuiSceneHost::new_measured_surface(view, registry.seal().expect("valid test registry"))
-            .with_initial_viewport_policy(InitialViewportPolicy::FitOnFirstMeasuredGeometry)
+        OpenGpuiSceneHost::new_measured_surface(
+            view,
+            registry.seal(&node_catalog).expect("valid test registry"),
+        )
+        .with_initial_viewport_policy(InitialViewportPolicy::FitOnFirstMeasuredGeometry)
     });
     draw(cx);
 
@@ -604,23 +649,36 @@ fn measured_initial_fit_applies_once_and_yields_to_later_user_navigation(
 
 #[open_gpui::test]
 fn measured_initial_fit_never_overwrites_a_user_owned_viewport(cx: &mut open_gpui::TestAppContext) {
-    let runtime = GraphRuntime::builder(catalog()).build(graph()).unwrap();
+    let node_catalog = catalog();
+    let runtime = GraphRuntime::builder(node_catalog.clone())
+        .build(graph())
+        .unwrap();
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     let user_viewport = ViewportTransform::new(CanvasPoint { x: 73.0, y: -29.0 }, 1.35).unwrap();
     view.set_viewport(user_viewport).unwrap();
     let weak_view = view.downgrade();
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, |binding, _window, cx| {
-        cx.new(|_| MeasuredPortsNode {
-            binding,
-            measure_output: Rc::new(Cell::new(true)),
-            mutate_runtime_once: None,
-        })
-    });
+    registry
+        .register(renderer_descriptor(
+            KIND,
+            RENDERER,
+            "Measured node",
+            |binding, _window, cx| {
+                cx.new(|_| MeasuredPortsNode {
+                    binding,
+                    measure_output: Rc::new(Cell::new(true)),
+                    mutate_runtime_once: None,
+                })
+            },
+        ))
+        .expect("unique measured-node renderer");
 
     let (_, cx) = cx.add_window_view(move |_, _| {
-        OpenGpuiSceneHost::new_measured_surface(view, registry.seal().expect("valid test registry"))
-            .with_initial_viewport_policy(InitialViewportPolicy::FitOnFirstMeasuredGeometry)
+        OpenGpuiSceneHost::new_measured_surface(
+            view,
+            registry.seal(&node_catalog).expect("valid test registry"),
+        )
+        .with_initial_viewport_policy(InitialViewportPolicy::FitOnFirstMeasuredGeometry)
     });
     draw(cx);
 
@@ -631,7 +689,10 @@ fn measured_initial_fit_never_overwrites_a_user_owned_viewport(cx: &mut open_gpu
 fn native_port_handles_publish_complete_geometry_after_prepaint(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    let runtime = GraphRuntime::builder(catalog()).build(graph()).unwrap();
+    let node_catalog = catalog();
+    let runtime = GraphRuntime::builder(node_catalog.clone())
+        .build(graph())
+        .unwrap();
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     view.set_viewport(
         ViewportTransform::new(CanvasPoint { x: 7.0, y: -3.0 }, 2.0)
@@ -643,18 +704,25 @@ fn native_port_handles_publish_complete_geometry_after_prepaint(
     let factory_measure_output = measure_output.clone();
 
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
-        cx.new(|_| MeasuredPortsNode {
-            binding,
-            measure_output: factory_measure_output.clone(),
-            mutate_runtime_once: None,
-        })
-    });
+    registry
+        .register(renderer_descriptor(
+            KIND,
+            RENDERER,
+            "Measured node",
+            move |binding, _window, cx| {
+                cx.new(|_| MeasuredPortsNode {
+                    binding,
+                    measure_output: factory_measure_output.clone(),
+                    mutate_runtime_once: None,
+                })
+            },
+        ))
+        .expect("unique measured-node renderer");
 
     let (host, cx) = cx.add_window_view(move |_, _| {
         OpenGpuiSceneHost::new(
             view,
-            registry.seal().expect("valid test registry"),
+            registry.seal(&node_catalog).expect("valid test registry"),
             viewport(),
         )
     });
@@ -721,7 +789,10 @@ fn native_port_handles_publish_complete_geometry_after_prepaint(
 fn native_content_mask_removes_and_restores_only_port_interaction_geometry(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    let runtime = GraphRuntime::builder(catalog()).build(graph()).unwrap();
+    let node_catalog = catalog();
+    let runtime = GraphRuntime::builder(node_catalog.clone())
+        .build(graph())
+        .unwrap();
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     let weak_view = view.downgrade();
     let output_top = Rc::new(Cell::new(53.0));
@@ -732,19 +803,28 @@ fn native_content_mask_removes_and_restores_only_port_interaction_geometry(
     let factory_output_top = Rc::clone(&output_top);
     let factory_output_events = Rc::clone(&output_events);
     let factory_node = Rc::clone(&captured_node);
-    registry.register(RENDERER, move |binding, _window, cx| {
-        let node = cx.new(|_| ContentMaskedPortsNode {
-            binding,
-            output_top: Rc::clone(&factory_output_top),
-            output_events: Rc::clone(&factory_output_events),
-        });
-        *factory_node.borrow_mut() = Some(node.clone());
-        node
-    });
+    registry
+        .register(renderer_descriptor(
+            KIND,
+            RENDERER,
+            "Measured node",
+            move |binding, _window, cx| {
+                let node = cx.new(|_| ContentMaskedPortsNode {
+                    binding,
+                    output_top: Rc::clone(&factory_output_top),
+                    output_events: Rc::clone(&factory_output_events),
+                });
+                *factory_node.borrow_mut() = Some(node.clone());
+                node
+            },
+        ))
+        .expect("unique measured-node renderer");
     let (host, cx) = cx.add_window_view(move |_, _| {
         OpenGpuiSceneHost::new(
             view,
-            registry.seal().expect("valid content-mask registry"),
+            registry
+                .seal(&node_catalog)
+                .expect("valid content-mask registry"),
             viewport(),
         )
     });
@@ -1002,7 +1082,7 @@ fn incomplete_layout_keeps_command_and_authoritative_route_until_atomic_refresh(
                 .build(),
         )
         .expect("unique sibling kind");
-    let runtime = GraphRuntime::builder(node_catalog)
+    let runtime = GraphRuntime::builder(node_catalog.clone())
         .build(graph_with_route_and_valid_sibling())
         .expect("valid routed graph");
     let view = runtime
@@ -1016,29 +1096,43 @@ fn incomplete_layout_keeps_command_and_authoritative_route_until_atomic_refresh(
     let mut registry = OpenGpuiNodeRegistry::builder();
     let factory_measure_output = Rc::clone(&measure_output);
     let factory_output_top = Rc::clone(&output_top);
-    registry.register(RENDERER, move |binding, _window, cx| {
-        cx.new(|_| TransactionalMeasuredPortsNode {
-            binding,
-            measure_output: Rc::clone(&factory_measure_output),
-            output_top: Rc::clone(&factory_output_top),
-        })
-    });
+    registry
+        .register(renderer_descriptor(
+            KIND,
+            RENDERER,
+            "Measured node",
+            move |binding, _window, cx| {
+                cx.new(|_| TransactionalMeasuredPortsNode {
+                    binding,
+                    measure_output: Rc::clone(&factory_measure_output),
+                    output_top: Rc::clone(&factory_output_top),
+                })
+            },
+        ))
+        .expect("unique measured-node renderer");
     let captured_sibling = Rc::clone(&sibling_node);
-    registry.register(VALID_SIBLING_RENDERER, move |binding, _window, cx| {
-        let mutation = binding.read(cx).managed_mutation();
-        let node = cx.new(|_| ValidSiblingNode {
-            binding,
-            mutation,
-            last_settlement: None,
-        });
-        *captured_sibling.borrow_mut() = Some(node.clone());
-        node
-    });
+    registry
+        .register(renderer_descriptor(
+            VALID_SIBLING_KIND,
+            VALID_SIBLING_RENDERER,
+            "Valid sibling",
+            move |binding, _window, cx| {
+                let mutation = binding.read(cx).managed_mutation();
+                let node = cx.new(|_| ValidSiblingNode {
+                    binding,
+                    mutation,
+                    last_settlement: None,
+                });
+                *captured_sibling.borrow_mut() = Some(node.clone());
+                node
+            },
+        ))
+        .expect("unique valid-sibling renderer");
 
     let (host, cx) = cx.add_window_view(move |_, _| {
         OpenGpuiSceneHost::new(
             view,
-            registry.seal().expect("valid routed registry"),
+            registry.seal(&node_catalog).expect("valid routed registry"),
             viewport(),
         )
     });
@@ -1115,7 +1209,8 @@ fn incomplete_layout_keeps_command_and_authoritative_route_until_atomic_refresh(
 fn content_height_policy_converges_through_revisioned_geometry_commands(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    let runtime = GraphRuntime::builder(catalog())
+    let node_catalog = catalog();
+    let runtime = GraphRuntime::builder(node_catalog.clone())
         .build(content_graph())
         .unwrap();
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
@@ -1129,16 +1224,26 @@ fn content_height_policy_converges_through_revisioned_geometry_commands(
     );
 
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register_with_policy(RENDERER, policy, move |binding, _window, cx| {
-        cx.new(|_| ContentMeasuredNode {
-            binding,
-            height: factory_height.clone(),
-        })
-    });
+    registry
+        .register(
+            renderer_descriptor(
+                KIND,
+                RENDERER,
+                "Measured node",
+                move |binding, _window, cx| {
+                    cx.new(|_| ContentMeasuredNode {
+                        binding,
+                        height: factory_height.clone(),
+                    })
+                },
+            )
+            .with_policy(policy),
+        )
+        .expect("unique measured-node renderer");
     let (host, cx) = cx.add_window_view(move |_, _| {
         OpenGpuiSceneHost::new(
             view,
-            registry.seal().expect("valid test registry"),
+            registry.seal(&node_catalog).expect("valid test registry"),
             viewport(),
         )
     });
@@ -1207,7 +1312,8 @@ fn content_height_policy_converges_through_revisioned_geometry_commands(
 fn content_size_waits_for_queued_prefix_and_binds_one_fresh_revision(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    let runtime = GraphRuntime::builder(catalog())
+    let node_catalog = catalog();
+    let runtime = GraphRuntime::builder(node_catalog.clone())
         .build(content_graph())
         .unwrap();
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
@@ -1217,18 +1323,23 @@ fn content_size_waits_for_queued_prefix_and_binds_one_fresh_revision(
         ),
     );
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register_with_policy(RENDERER, policy, |binding, _window, cx| {
-        let mutation = binding.read(cx).managed_mutation();
-        cx.new(|_| PrefixQueuedContentNode {
-            binding,
-            mutation,
-            render_count: 0,
-        })
-    });
+    registry
+        .register(
+            renderer_descriptor(KIND, RENDERER, "Measured node", |binding, _window, cx| {
+                let mutation = binding.read(cx).managed_mutation();
+                cx.new(|_| PrefixQueuedContentNode {
+                    binding,
+                    mutation,
+                    render_count: 0,
+                })
+            })
+            .with_policy(policy),
+        )
+        .expect("unique measured-node renderer");
     let (host, cx) = cx.add_window_view(move |_, _| {
         OpenGpuiSceneHost::new(
             view,
-            registry.seal().expect("valid test registry"),
+            registry.seal(&node_catalog).expect("valid test registry"),
             viewport(),
         )
     });
@@ -1256,7 +1367,8 @@ fn content_size_waits_for_queued_prefix_and_binds_one_fresh_revision(
 
 #[open_gpui::test]
 fn host_alternating_content_freezes_after_exact_attempt_bound(cx: &mut open_gpui::TestAppContext) {
-    let runtime = GraphRuntime::builder(catalog())
+    let node_catalog = catalog();
+    let runtime = GraphRuntime::builder(node_catalog.clone())
         .build(content_graph())
         .unwrap();
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
@@ -1270,13 +1382,18 @@ fn host_alternating_content_freezes_after_exact_attempt_bound(cx: &mut open_gpui
         ),
     );
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register_with_policy(RENDERER, policy, |binding, _window, cx| {
-        cx.new(|_| AlternatingContentNode { binding })
-    });
+    registry
+        .register(
+            renderer_descriptor(KIND, RENDERER, "Measured node", |binding, _window, cx| {
+                cx.new(|_| AlternatingContentNode { binding })
+            })
+            .with_policy(policy),
+        )
+        .expect("unique measured-node renderer");
     let (host, cx) = cx.add_window_view(move |_, _| {
         OpenGpuiSceneHost::new(
             view,
-            registry.seal().expect("valid test registry"),
+            registry.seal(&node_catalog).expect("valid test registry"),
             viewport(),
         )
     });
@@ -1310,7 +1427,8 @@ fn host_alternating_content_freezes_after_exact_attempt_bound(cx: &mut open_gpui
 fn content_sizes_from_one_frame_commit_as_one_atomic_geometry_revision(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    let runtime = GraphRuntime::builder(catalog())
+    let node_catalog = catalog();
+    let runtime = GraphRuntime::builder(node_catalog.clone())
         .build(graph_with_content_sibling())
         .unwrap();
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
@@ -1322,16 +1440,26 @@ fn content_sizes_from_one_frame_commit_as_one_atomic_geometry_revision(
     );
 
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register_with_policy(RENDERER, policy, move |binding, _window, cx| {
-        cx.new(|_| ContentMeasuredNode {
-            binding,
-            height: height.clone(),
-        })
-    });
+    registry
+        .register(
+            renderer_descriptor(
+                KIND,
+                RENDERER,
+                "Measured node",
+                move |binding, _window, cx| {
+                    cx.new(|_| ContentMeasuredNode {
+                        binding,
+                        height: height.clone(),
+                    })
+                },
+            )
+            .with_policy(policy),
+        )
+        .expect("unique measured-node renderer");
     let (_host, cx) = cx.add_window_view(move |_, _| {
         OpenGpuiSceneHost::new(
             view,
-            registry.seal().expect("valid test registry"),
+            registry.seal(&node_catalog).expect("valid test registry"),
             viewport(),
         )
     });
@@ -1356,24 +1484,36 @@ fn content_sizes_from_one_frame_commit_as_one_atomic_geometry_revision(
 fn stale_prepaint_feedback_refreshes_without_becoming_a_user_diagnostic(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    let runtime = Rc::new(GraphRuntime::builder(catalog()).build(graph()).unwrap());
+    let node_catalog = catalog();
+    let runtime = Rc::new(
+        GraphRuntime::builder(node_catalog.clone())
+            .build(graph())
+            .unwrap(),
+    );
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     let weak_view = view.downgrade();
     let factory_runtime = runtime.clone();
 
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
-        cx.new(|_| MeasuredPortsNode {
-            binding,
-            measure_output: Rc::new(Cell::new(true)),
-            mutate_runtime_once: Some(factory_runtime.clone()),
-        })
-    });
+    registry
+        .register(renderer_descriptor(
+            KIND,
+            RENDERER,
+            "Measured node",
+            move |binding, _window, cx| {
+                cx.new(|_| MeasuredPortsNode {
+                    binding,
+                    measure_output: Rc::new(Cell::new(true)),
+                    mutate_runtime_once: Some(factory_runtime.clone()),
+                })
+            },
+        ))
+        .expect("unique measured-node renderer");
 
     let (host, cx) = cx.add_window_view(move |_, _| {
         OpenGpuiSceneHost::new(
             view,
-            registry.seal().expect("valid test registry"),
+            registry.seal(&node_catalog).expect("valid test registry"),
             viewport(),
         )
     });
@@ -1390,8 +1530,9 @@ fn stale_prepaint_feedback_refreshes_without_becoming_a_user_diagnostic(
 
 #[open_gpui::test]
 fn stale_same_node_measurement_does_not_emit_a_size_command(cx: &mut open_gpui::TestAppContext) {
+    let node_catalog = catalog();
     let runtime = Rc::new(
-        GraphRuntime::builder(catalog())
+        GraphRuntime::builder(node_catalog.clone())
             .build(content_graph())
             .unwrap(),
     );
@@ -1403,17 +1544,27 @@ fn stale_same_node_measurement_does_not_emit_a_size_command(cx: &mut open_gpui::
     );
     let factory_runtime = Rc::clone(&runtime);
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register_with_policy(RENDERER, policy, move |binding, _window, cx| {
-        cx.new(|_| StaleContentMeasuredNode {
-            binding,
-            runtime: Rc::clone(&factory_runtime),
-            render_count: 0,
-        })
-    });
+    registry
+        .register(
+            renderer_descriptor(
+                KIND,
+                RENDERER,
+                "Measured node",
+                move |binding, _window, cx| {
+                    cx.new(|_| StaleContentMeasuredNode {
+                        binding,
+                        runtime: Rc::clone(&factory_runtime),
+                        render_count: 0,
+                    })
+                },
+            )
+            .with_policy(policy),
+        )
+        .expect("unique measured-node renderer");
     let (host, cx) = cx.add_window_view(move |_, _| {
         OpenGpuiSceneHost::new(
             view,
-            registry.seal().expect("valid test registry"),
+            registry.seal(&node_catalog).expect("valid test registry"),
             viewport(),
         )
     });
@@ -1441,7 +1592,10 @@ fn stale_same_node_measurement_does_not_emit_a_size_command(cx: &mut open_gpui::
 
 #[open_gpui::test]
 fn nested_scene_origin_is_removed_from_native_layout_feedback(cx: &mut open_gpui::TestAppContext) {
-    let runtime = GraphRuntime::builder(catalog()).build(graph()).unwrap();
+    let node_catalog = catalog();
+    let runtime = GraphRuntime::builder(node_catalog.clone())
+        .build(graph())
+        .unwrap();
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     view.set_viewport(
         ViewportTransform::new(CanvasPoint { x: 7.0, y: -3.0 }, 2.0)
@@ -1451,13 +1605,20 @@ fn nested_scene_origin_is_removed_from_native_layout_feedback(cx: &mut open_gpui
     let weak_view = view.downgrade();
 
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
-        cx.new(|_| MeasuredPortsNode {
-            binding,
-            measure_output: Rc::new(Cell::new(true)),
-            mutate_runtime_once: None,
-        })
-    });
+    registry
+        .register(renderer_descriptor(
+            KIND,
+            RENDERER,
+            "Measured node",
+            move |binding, _window, cx| {
+                cx.new(|_| MeasuredPortsNode {
+                    binding,
+                    measure_output: Rc::new(Cell::new(true)),
+                    mutate_runtime_once: None,
+                })
+            },
+        ))
+        .expect("unique measured-node renderer");
 
     let captured_host = Rc::new(RefCell::new(None));
     let factory_host = captured_host.clone();
@@ -1465,7 +1626,7 @@ fn nested_scene_origin_is_removed_from_native_layout_feedback(cx: &mut open_gpui
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new(
                 view,
-                registry.seal().expect("valid test registry"),
+                registry.seal(&node_catalog).expect("valid test registry"),
                 viewport(),
             )
         });
@@ -1492,7 +1653,10 @@ fn nested_scene_origin_is_removed_from_native_layout_feedback(cx: &mut open_gpui
 
 #[open_gpui::test]
 fn missing_renderer_fallback_measures_every_real_port(cx: &mut open_gpui::TestAppContext) {
-    let runtime = GraphRuntime::builder(catalog()).build(graph()).unwrap();
+    let node_catalog = catalog();
+    let runtime = GraphRuntime::builder(node_catalog.clone())
+        .build(graph())
+        .unwrap();
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     let weak_view = view.downgrade();
 
@@ -1500,7 +1664,7 @@ fn missing_renderer_fallback_measures_every_real_port(cx: &mut open_gpui::TestAp
         OpenGpuiSceneHost::new(
             view,
             OpenGpuiNodeRegistry::builder()
-                .seal()
+                .seal(&node_catalog)
                 .expect("valid empty test registry"),
             viewport(),
         )
@@ -1518,10 +1682,8 @@ fn missing_renderer_fallback_measures_every_real_port(cx: &mut open_gpui::TestAp
     });
 }
 
-#[open_gpui::test]
-fn duplicate_renderer_fallback_is_local_non_retryable_and_keeps_ports_interactive(
-    cx: &mut open_gpui::TestAppContext,
-) {
+#[test]
+fn duplicate_renderer_stamp_is_rejected_without_mutating_the_registry() {
     let mut node_catalog = catalog();
     node_catalog
         .register(
@@ -1533,126 +1695,109 @@ fn duplicate_renderer_fallback_is_local_non_retryable_and_keeps_ports_interactiv
                 .build(),
         )
         .unwrap();
-    let runtime = GraphRuntime::builder(node_catalog)
-        .build(graph_with_valid_sibling())
-        .unwrap();
-    let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
-    let weak_view = view.downgrade();
-    let first_factory_calls = Rc::new(Cell::new(0_u32));
-    let second_factory_calls = Rc::new(Cell::new(0_u32));
-    let valid_factory_calls = Rc::new(Cell::new(0_u32));
 
     let mut registry = OpenGpuiNodeRegistry::builder();
-    let first_calls = first_factory_calls.clone();
-    registry.register(RENDERER, move |binding, _window, cx| {
-        first_calls.set(first_calls.get().saturating_add(1));
-        cx.new(|_| MeasuredPortsNode {
-            binding,
-            measure_output: Rc::new(Cell::new(true)),
-            mutate_runtime_once: None,
-        })
-    });
-    let second_calls = second_factory_calls.clone();
-    registry.register(RENDERER, move |binding, _window, cx| {
-        second_calls.set(second_calls.get().saturating_add(1));
-        cx.new(|_| MeasuredPortsNode {
-            binding,
-            measure_output: Rc::new(Cell::new(true)),
-            mutate_runtime_once: None,
-        })
-    });
-    let valid_calls = valid_factory_calls.clone();
-    registry.register(VALID_SIBLING_RENDERER, move |binding, _window, cx| {
-        valid_calls.set(valid_calls.get().saturating_add(1));
-        let mutation = binding.read(cx).managed_mutation();
-        cx.new(|_| ValidSiblingNode {
-            binding,
-            mutation,
-            last_settlement: None,
-        })
-    });
+    registry
+        .register(renderer_descriptor(
+            KIND,
+            RENDERER,
+            "Measured node",
+            |binding, _window, cx| {
+                cx.new(|_| MeasuredPortsNode {
+                    binding,
+                    measure_output: Rc::new(Cell::new(true)),
+                    mutate_runtime_once: None,
+                })
+            },
+        ))
+        .expect("first renderer is valid");
 
-    let (host, cx) = cx.add_window_view(move |_, _| {
-        OpenGpuiSceneHost::new(
-            view,
-            registry
-                .seal()
-                .expect("duplicate non-empty key remains host-mountable"),
-            viewport(),
-        )
-    });
-    draw(cx);
-
-    assert_eq!(first_factory_calls.get(), 0);
-    assert_eq!(second_factory_calls.get(), 0);
-    assert_eq!(valid_factory_calls.get(), 1);
-    let geometry = weak_view.geometry_snapshot().unwrap();
-    assert!(geometry.node(NodeId::from_u128(11)).is_some());
-    assert!(geometry.port(input_id()).is_some());
-    let output = geometry
-        .port(output_id())
-        .expect("diagnostic fallback publishes the real output port");
-    let output_bounds = output.visual_bounds();
-    let output_center = point(
-        px(output_bounds.origin.x + output_bounds.size.width / 2.0),
-        px(output_bounds.origin.y + output_bounds.size.height / 2.0),
+    let duplicate = registry.register(renderer_descriptor(
+        VALID_SIBLING_KIND,
+        RENDERER,
+        "Valid sibling",
+        |binding, _window, cx| {
+            let mutation = binding.read(cx).managed_mutation();
+            cx.new(|_| ValidSiblingNode {
+                binding,
+                mutation,
+                last_settlement: None,
+            })
+        },
+    ));
+    let Err(error) = duplicate else {
+        panic!("duplicate renderer stamp must be rejected");
+    };
+    assert_eq!(
+        error,
+        OpenGpuiNodeRegistryRegistrationError::DuplicateRendererStamp {
+            renderer: RendererStamp::new(RENDERER, 1),
+            registered_kind: NodeKindKey(KIND.to_owned()),
+            registered_version: 1,
+        }
     );
 
-    cx.read_entity(&host, |host, _| {
-        let diagnostic = host.last_diagnostic().expect("duplicate diagnostic");
-        assert_eq!(
-            diagnostic.kind(),
-            OpenGpuiSceneHostDiagnosticKind::InvalidRendererRegistration,
-        );
-        assert_eq!(diagnostic.node(), Some(NodeId::from_u128(10)));
-        assert_eq!(diagnostic.renderer_key(), Some(RENDERER));
-        assert_eq!(
-            diagnostic.message(),
-            "renderer key \"test.native.measured-node\" has duplicate registrations",
-        );
-    });
-    assert!(!cx.update_entity(&host, |host, cx| {
-        host.retry_mount(NodeId::from_u128(10), cx)
-    }));
+    registry
+        .register(renderer_descriptor(
+            VALID_SIBLING_KIND,
+            VALID_SIBLING_RENDERER,
+            "Valid sibling",
+            |binding, _window, cx| {
+                let mutation = binding.read(cx).managed_mutation();
+                cx.new(|_| ValidSiblingNode {
+                    binding,
+                    mutation,
+                    last_settlement: None,
+                })
+            },
+        ))
+        .expect("failed registration left the builder unchanged");
 
-    cx.simulate_mouse_down(output_center, MouseButton::Left, Default::default());
-    assert!(cx.update(|window, _| window.captured_hitbox()).is_some());
-    cx.read_entity(&host, |host, _| {
-        let owner = host
-            .active_port_drag()
-            .expect("fallback port delegates connection ownership to the host");
-        assert_eq!(owner.port(), output_id());
-    });
-    cx.simulate_mouse_up(output_center, MouseButton::Left, Default::default());
-    cx.run_until_parked();
-
-    assert!(cx.update(|window, _| window.captured_hitbox()).is_none());
-    assert_eq!(first_factory_calls.get(), 0);
-    assert_eq!(second_factory_calls.get(), 0);
-    assert_eq!(valid_factory_calls.get(), 1);
+    let registry = registry
+        .seal(&node_catalog)
+        .expect("the remaining semantic renderer mappings are valid");
+    assert_eq!(registry.len(), 2);
+    assert_eq!(
+        registry.renderer_stamp(&NodeKindKey(KIND.to_owned()), 1),
+        Some(&RendererStamp::new(RENDERER, 1)),
+    );
+    assert_eq!(
+        registry.renderer_stamp(&NodeKindKey(VALID_SIBLING_KIND.to_owned()), 1),
+        Some(&RendererStamp::new(VALID_SIBLING_RENDERER, 1)),
+    );
 }
 
 #[open_gpui::test]
 fn duplicate_semantic_port_wrapper_preserves_authoritative_geometry(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    let runtime = GraphRuntime::builder(catalog()).build(graph()).unwrap();
+    let node_catalog = catalog();
+    let runtime = GraphRuntime::builder(node_catalog.clone())
+        .build(graph())
+        .unwrap();
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     let weak_view = view.downgrade();
 
     let duplicate_input = Rc::new(Cell::new(false));
     let factory_duplicate_input = Rc::clone(&duplicate_input);
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
-        cx.new(|_| RepeatedPrepaintPortNode {
-            binding,
-            duplicate_input: Rc::clone(&factory_duplicate_input),
-        })
-    });
+    registry
+        .register(renderer_descriptor(
+            KIND,
+            RENDERER,
+            "Measured node",
+            move |binding, _window, cx| {
+                cx.new(|_| RepeatedPrepaintPortNode {
+                    binding,
+                    duplicate_input: Rc::clone(&factory_duplicate_input),
+                })
+            },
+        ))
+        .expect("unique measured-node renderer");
     let (host, cx) = cx.add_window_view(move |_, _| {
         OpenGpuiSceneHost::new(
             view,
-            registry.seal().expect("valid test registry"),
+            registry.seal(&node_catalog).expect("valid test registry"),
             viewport(),
         )
     });
@@ -1685,23 +1830,33 @@ fn duplicate_semantic_port_wrapper_preserves_authoritative_geometry(
 fn semantic_zoom_uses_overview_below_one_and_native_pixels_at_or_above_one(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    let runtime = GraphRuntime::builder(catalog()).build(graph()).unwrap();
+    let node_catalog = catalog();
+    let runtime = GraphRuntime::builder(node_catalog.clone())
+        .build(graph())
+        .unwrap();
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     let weak_view = view.downgrade();
     let renders = Rc::new(Cell::new(0));
     let factory_renders = renders.clone();
 
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
-        cx.new(|_| FixedIntrinsicChildNode {
-            binding,
-            renders: factory_renders.clone(),
-        })
-    });
+    registry
+        .register(renderer_descriptor(
+            KIND,
+            RENDERER,
+            "Measured node",
+            move |binding, _window, cx| {
+                cx.new(|_| FixedIntrinsicChildNode {
+                    binding,
+                    renders: factory_renders.clone(),
+                })
+            },
+        ))
+        .expect("unique measured-node renderer");
     let (host, cx) = cx.add_window_view(move |_, _| {
         OpenGpuiSceneHost::new(
             view,
-            registry.seal().expect("valid test registry"),
+            registry.seal(&node_catalog).expect("valid test registry"),
             viewport(),
         )
     });
@@ -1832,7 +1987,10 @@ fn semantic_zoom_uses_overview_below_one_and_native_pixels_at_or_above_one(
 
 #[open_gpui::test]
 fn semantic_zoom_holds_presentation_inside_the_hysteresis_gap(cx: &mut open_gpui::TestAppContext) {
-    let runtime = GraphRuntime::builder(catalog()).build(graph()).unwrap();
+    let node_catalog = catalog();
+    let runtime = GraphRuntime::builder(node_catalog.clone())
+        .build(graph())
+        .unwrap();
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     view.set_viewport(
         ViewportTransform::new(CanvasPoint::default(), 1.2)
@@ -1844,16 +2002,23 @@ fn semantic_zoom_holds_presentation_inside_the_hysteresis_gap(cx: &mut open_gpui
     let factory_renders = renders.clone();
 
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
-        cx.new(|_| FixedIntrinsicChildNode {
-            binding,
-            renders: factory_renders.clone(),
-        })
-    });
+    registry
+        .register(renderer_descriptor(
+            KIND,
+            RENDERER,
+            "Measured node",
+            move |binding, _window, cx| {
+                cx.new(|_| FixedIntrinsicChildNode {
+                    binding,
+                    renders: factory_renders.clone(),
+                })
+            },
+        ))
+        .expect("unique measured-node renderer");
     let (host, cx) = cx.add_window_view(move |_, _| {
         OpenGpuiSceneHost::new(
             view,
-            registry.seal().expect("valid test registry"),
+            registry.seal(&node_catalog).expect("valid test registry"),
             viewport(),
         )
     });
@@ -1896,7 +2061,10 @@ fn semantic_zoom_holds_presentation_inside_the_hysteresis_gap(cx: &mut open_gpui
 fn protected_node_uses_graph_inert_interaction_island_at_low_zoom_without_remounting(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    let runtime = GraphRuntime::builder(catalog()).build(graph()).unwrap();
+    let node_catalog = catalog();
+    let runtime = GraphRuntime::builder(node_catalog.clone())
+        .build(graph())
+        .unwrap();
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     view.set_viewport(
         ViewportTransform::new(CanvasPoint::default(), 0.5)
@@ -1910,22 +2078,29 @@ fn protected_node_uses_graph_inert_interaction_island_at_low_zoom_without_remoun
     let factory_lease = lease.clone();
 
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
-        let focus = binding
-            .read(cx)
-            .activity()
-            .acquire(OpenGpuiActivityKind::Focus)
-            .expect("focus lease");
-        *factory_lease.borrow_mut() = Some(focus);
-        cx.new(|_| FixedIntrinsicChildNode {
-            binding,
-            renders: factory_renders.clone(),
-        })
-    });
+    registry
+        .register(renderer_descriptor(
+            KIND,
+            RENDERER,
+            "Measured node",
+            move |binding, _window, cx| {
+                let focus = binding
+                    .read(cx)
+                    .activity()
+                    .acquire(OpenGpuiActivityKind::Focus)
+                    .expect("focus lease");
+                *factory_lease.borrow_mut() = Some(focus);
+                cx.new(|_| FixedIntrinsicChildNode {
+                    binding,
+                    renders: factory_renders.clone(),
+                })
+            },
+        ))
+        .expect("unique measured-node renderer");
     let (host, cx) = cx.add_window_view(move |_, _| {
         OpenGpuiSceneHost::new(
             view,
-            registry.seal().expect("valid test registry"),
+            registry.seal(&node_catalog).expect("valid test registry"),
             viewport(),
         )
     });
@@ -1983,7 +2158,10 @@ fn protected_node_uses_graph_inert_interaction_island_at_low_zoom_without_remoun
 fn graph_interaction_protects_retention_without_creating_an_interaction_island(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    let runtime = GraphRuntime::builder(catalog()).build(graph()).unwrap();
+    let node_catalog = catalog();
+    let runtime = GraphRuntime::builder(node_catalog.clone())
+        .build(graph())
+        .unwrap();
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     view.set_viewport(
         ViewportTransform::new(CanvasPoint::default(), 0.5)
@@ -1996,23 +2174,30 @@ fn graph_interaction_protects_retention_without_creating_an_interaction_island(
     let factory_lease = lease.clone();
 
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
-        *factory_lease.borrow_mut() = Some(
-            binding
-                .read(cx)
-                .activity()
-                .acquire(OpenGpuiActivityKind::GraphInteraction)
-                .expect("graph-interaction lease"),
-        );
-        cx.new(|_| FixedIntrinsicChildNode {
-            binding,
-            renders: factory_renders.clone(),
-        })
-    });
+    registry
+        .register(renderer_descriptor(
+            KIND,
+            RENDERER,
+            "Measured node",
+            move |binding, _window, cx| {
+                *factory_lease.borrow_mut() = Some(
+                    binding
+                        .read(cx)
+                        .activity()
+                        .acquire(OpenGpuiActivityKind::GraphInteraction)
+                        .expect("graph-interaction lease"),
+                );
+                cx.new(|_| FixedIntrinsicChildNode {
+                    binding,
+                    renders: factory_renders.clone(),
+                })
+            },
+        ))
+        .expect("unique measured-node renderer");
     let (host, cx) = cx.add_window_view(move |_, _| {
         OpenGpuiSceneHost::new(
             view,
-            registry.seal().expect("valid test registry"),
+            registry.seal(&node_catalog).expect("valid test registry"),
             viewport(),
         )
     });
@@ -2032,21 +2217,33 @@ fn graph_interaction_protects_retention_without_creating_an_interaction_island(
 fn late_incomplete_feedback_after_runtime_drop_is_silently_discarded(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    let runtime = Rc::new(GraphRuntime::builder(catalog()).build(graph()).unwrap());
+    let node_catalog = catalog();
+    let runtime = Rc::new(
+        GraphRuntime::builder(node_catalog.clone())
+            .build(graph())
+            .unwrap(),
+    );
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     let runtime_owner = Rc::new(RefCell::new(Some(runtime)));
     let factory_runtime_owner = runtime_owner.clone();
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
-        cx.new(|_| RuntimeDroppingIncompleteNode {
-            binding,
-            runtime_owner: factory_runtime_owner.clone(),
-        })
-    });
+    registry
+        .register(renderer_descriptor(
+            KIND,
+            RENDERER,
+            "Measured node",
+            move |binding, _window, cx| {
+                cx.new(|_| RuntimeDroppingIncompleteNode {
+                    binding,
+                    runtime_owner: factory_runtime_owner.clone(),
+                })
+            },
+        ))
+        .expect("unique measured-node renderer");
     let (host, cx) = cx.add_window_view(move |_, _| {
         OpenGpuiSceneHost::new(
             view,
-            registry.seal().expect("valid test registry"),
+            registry.seal(&node_catalog).expect("valid test registry"),
             viewport(),
         )
     });

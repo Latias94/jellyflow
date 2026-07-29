@@ -10,17 +10,49 @@ use jellyflow_open_gpui::authoring::OpenGpuiNodeBinding;
 use jellyflow_open_gpui::host::{
     OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY, OpenGpuiSceneHost, OpenGpuiSceneHostCloseError,
 };
-use jellyflow_open_gpui::registry::{OpenGpuiNodeMountError, OpenGpuiNodeRegistry};
+use jellyflow_open_gpui::registry::{
+    OpenGpuiNodeAdapterPresentation, OpenGpuiNodeMountError, OpenGpuiNodeRegistry,
+    OpenGpuiNodeRendererDescriptor,
+};
 use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec};
 use jellyflow_runtime::{
     commands::GraphCommand, commands::IncidentEdgePolicy, commands::TopologyEdit,
-    graph::GraphRuntime, view::ViewCloseReason, view::ViewCloseRequest, view::ViewSessionError,
-    view::ViewSessionOptions,
+    graph::GraphRuntime, view::RendererStamp, view::ViewCloseReason, view::ViewCloseRequest,
+    view::ViewSessionError, view::ViewSessionOptions,
 };
-use open_gpui::{AppContext, Context, Entity, ParentElement, Render, VisualContext, Window, div};
+use open_gpui::{
+    App, AppContext, Context, Entity, ParentElement, Render, VisualContext, Window, div,
+};
 
 const KIND: &str = "test.workflow-node";
 const RENDERER: &str = "test.native.workflow-node";
+
+fn renderer_descriptor<F, V>(factory: F) -> OpenGpuiNodeRendererDescriptor
+where
+    F: Fn(Entity<OpenGpuiNodeBinding>, &mut Window, &mut App) -> Entity<V> + 'static,
+    V: Render + 'static,
+{
+    fallible_renderer_descriptor(move |binding, window, cx| Ok(factory(binding, window, cx)))
+}
+
+fn fallible_renderer_descriptor<F, V>(factory: F) -> OpenGpuiNodeRendererDescriptor
+where
+    F: Fn(
+            Entity<OpenGpuiNodeBinding>,
+            &mut Window,
+            &mut App,
+        ) -> Result<Entity<V>, OpenGpuiNodeMountError>
+        + 'static,
+    V: Render + 'static,
+{
+    OpenGpuiNodeRendererDescriptor::new(
+        KIND,
+        1,
+        RendererStamp::new(RENDERER, 1),
+        OpenGpuiNodeAdapterPresentation::new("Workflow node"),
+        factory,
+    )
+}
 
 struct RetainedProbeNode {
     _binding: Entity<OpenGpuiNodeBinding>,
@@ -55,21 +87,26 @@ impl Render for TerminalProbeNode {
 
 #[open_gpui::test]
 fn scene_host_parks_and_restores_the_same_retained_node(cx: &mut open_gpui::TestAppContext) {
-    let runtime = GraphRuntime::builder(catalog()).build(graph()).unwrap();
+    let node_catalog = catalog();
+    let runtime = GraphRuntime::builder(node_catalog.clone())
+        .build(graph())
+        .unwrap();
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     let mounts = Rc::new(Cell::new(0_u32));
     let renders = Rc::new(Cell::new(0_u32));
     let factory_mounts = mounts.clone();
     let factory_renders = renders.clone();
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
-        factory_mounts.set(factory_mounts.get().saturating_add(1));
-        cx.new(|_| RetainedProbeNode {
-            _binding: binding,
-            renders: factory_renders.clone(),
-        })
-    });
-    let registry = registry.seal().expect("valid test registry");
+    registry
+        .register(renderer_descriptor(move |binding, _window, cx| {
+            factory_mounts.set(factory_mounts.get().saturating_add(1));
+            cx.new(|_| RetainedProbeNode {
+                _binding: binding,
+                renders: factory_renders.clone(),
+            })
+        }))
+        .expect("unique workflow-node renderer");
+    let registry = registry.seal(&node_catalog).expect("valid test registry");
 
     let (host, cx) =
         cx.add_window_view(move |_, _| OpenGpuiSceneHost::new(view, registry, visible_viewport()));
@@ -110,7 +147,10 @@ fn scene_host_parks_and_restores_the_same_retained_node(cx: &mut open_gpui::Test
 
 #[open_gpui::test]
 fn factory_failure_recovers_only_after_an_explicit_mount_retry(cx: &mut open_gpui::TestAppContext) {
-    let runtime = GraphRuntime::builder(catalog()).build(graph()).unwrap();
+    let node_catalog = catalog();
+    let runtime = GraphRuntime::builder(node_catalog.clone())
+        .build(graph())
+        .unwrap();
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     let ready = Rc::new(Cell::new(false));
     let mount_attempts = Rc::new(Cell::new(0_u32));
@@ -119,21 +159,23 @@ fn factory_failure_recovers_only_after_an_explicit_mount_retry(cx: &mut open_gpu
     let factory_attempts = mount_attempts.clone();
     let factory_renders = renders.clone();
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.try_register(RENDERER, move |binding, _window, cx| {
-        factory_attempts.set(factory_attempts.get().saturating_add(1));
-        if !factory_ready.get() {
-            return Err(OpenGpuiNodeMountError::new("dependency unavailable"));
-        }
-        Ok(cx.new(|_| RetainedProbeNode {
-            _binding: binding,
-            renders: factory_renders.clone(),
+    registry
+        .register(fallible_renderer_descriptor(move |binding, _window, cx| {
+            factory_attempts.set(factory_attempts.get().saturating_add(1));
+            if !factory_ready.get() {
+                return Err(OpenGpuiNodeMountError::new("dependency unavailable"));
+            }
+            Ok(cx.new(|_| RetainedProbeNode {
+                _binding: binding,
+                renders: factory_renders.clone(),
+            }))
         }))
-    });
+        .expect("unique workflow-node renderer");
 
     let (host, cx) = cx.add_window_view(move |_, _| {
         OpenGpuiSceneHost::new(
             view,
-            registry.seal().expect("valid test registry"),
+            registry.seal(&node_catalog).expect("valid test registry"),
             visible_viewport(),
         )
     });
@@ -178,7 +220,10 @@ fn factory_failure_recovers_only_after_an_explicit_mount_retry(cx: &mut open_gpu
 fn panicking_factory_fallback_retirement_is_diagnosed_and_the_retry_continues(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    let runtime = GraphRuntime::builder(catalog()).build(graph()).unwrap();
+    let node_catalog = catalog();
+    let runtime = GraphRuntime::builder(node_catalog.clone())
+        .build(graph())
+        .unwrap();
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     let ready = Rc::new(Cell::new(false));
     let mount_attempts = Rc::new(Cell::new(0_u32));
@@ -187,28 +232,30 @@ fn panicking_factory_fallback_retirement_is_diagnosed_and_the_retry_continues(
     let factory_attempts = Rc::clone(&mount_attempts);
     let factory_leases = Rc::clone(&leases);
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.try_register(RENDERER, move |binding, _window, cx| {
-        factory_attempts.set(factory_attempts.get().saturating_add(1));
-        if !factory_ready.get() {
-            let lease = binding
-                .read(cx)
-                .activity()
-                .acquire_with_revocation(OpenGpuiActivityKind::Task, || {
-                    panic!("injected factory fallback retirement panic");
-                })
-                .expect("fallback retirement activity");
-            factory_leases.borrow_mut().push(lease);
-            return Err(OpenGpuiNodeMountError::new("dependency unavailable"));
-        }
-        Ok(cx.new(|_| RetainedProbeNode {
-            _binding: binding,
-            renders: Rc::new(Cell::new(0)),
+    registry
+        .register(fallible_renderer_descriptor(move |binding, _window, cx| {
+            factory_attempts.set(factory_attempts.get().saturating_add(1));
+            if !factory_ready.get() {
+                let lease = binding
+                    .read(cx)
+                    .activity()
+                    .acquire_with_revocation(OpenGpuiActivityKind::Task, || {
+                        panic!("injected factory fallback retirement panic");
+                    })
+                    .expect("fallback retirement activity");
+                factory_leases.borrow_mut().push(lease);
+                return Err(OpenGpuiNodeMountError::new("dependency unavailable"));
+            }
+            Ok(cx.new(|_| RetainedProbeNode {
+                _binding: binding,
+                renders: Rc::new(Cell::new(0)),
+            }))
         }))
-    });
+        .expect("unique workflow-node renderer");
     let (host, cx) = cx.add_window_view(move |_, _| {
         OpenGpuiSceneHost::new(
             view,
-            registry.seal().expect("valid test registry"),
+            registry.seal(&node_catalog).expect("valid test registry"),
             visible_viewport(),
         )
     });
@@ -238,10 +285,13 @@ fn panicking_factory_fallback_retirement_is_diagnosed_and_the_retry_continues(
 
 #[open_gpui::test]
 fn missing_renderer_fallback_is_not_mount_retryable(cx: &mut open_gpui::TestAppContext) {
-    let runtime = GraphRuntime::builder(catalog()).build(graph()).unwrap();
+    let node_catalog = catalog();
+    let runtime = GraphRuntime::builder(node_catalog.clone())
+        .build(graph())
+        .unwrap();
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     let registry = OpenGpuiNodeRegistry::builder()
-        .seal()
+        .seal(&node_catalog)
         .expect("valid empty test registry");
     let (host, cx) =
         cx.add_window_view(move |_, _| OpenGpuiSceneHost::new(view, registry, visible_viewport()));
@@ -266,29 +316,34 @@ fn missing_renderer_fallback_is_not_mount_retryable(cx: &mut open_gpui::TestAppC
 fn explicit_close_drains_final_command_once_then_retires_native_state(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    let runtime = GraphRuntime::builder(catalog()).build(graph()).unwrap();
+    let node_catalog = catalog();
+    let runtime = GraphRuntime::builder(node_catalog.clone())
+        .build(graph())
+        .unwrap();
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     let revocations = Rc::new(Cell::new(0_u32));
     let factory_revocations = revocations.clone();
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
-        let activity = binding.read(cx).activity().clone();
-        let revocations = factory_revocations.clone();
-        let lease = activity
-            .acquire_with_revocation(OpenGpuiActivityKind::Task, move || {
-                revocations.set(revocations.get().saturating_add(1));
+    registry
+        .register(renderer_descriptor(move |binding, _window, cx| {
+            let activity = binding.read(cx).activity().clone();
+            let revocations = factory_revocations.clone();
+            let lease = activity
+                .acquire_with_revocation(OpenGpuiActivityKind::Task, move || {
+                    revocations.set(revocations.get().saturating_add(1));
+                })
+                .unwrap();
+            cx.new(|_| TerminalProbeNode {
+                _binding: binding,
+                _activity: lease,
             })
-            .unwrap();
-        cx.new(|_| TerminalProbeNode {
-            _binding: binding,
-            _activity: lease,
-        })
-    });
+        }))
+        .expect("unique workflow-node renderer");
 
     let (host, cx) = cx.add_window_view(move |_, _| {
         OpenGpuiSceneHost::new(
             view,
-            registry.seal().expect("valid test registry"),
+            registry.seal(&node_catalog).expect("valid test registry"),
             visible_viewport(),
         )
     });
@@ -347,19 +402,24 @@ fn explicit_close_drains_final_command_once_then_retires_native_state(
 
 #[open_gpui::test]
 fn runtime_drop_retires_native_state_on_the_next_host_tick(cx: &mut open_gpui::TestAppContext) {
-    let runtime = GraphRuntime::builder(catalog()).build(graph()).unwrap();
+    let node_catalog = catalog();
+    let runtime = GraphRuntime::builder(node_catalog.clone())
+        .build(graph())
+        .unwrap();
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
-        cx.new(|_| RetainedProbeNode {
-            _binding: binding,
-            renders: Rc::new(Cell::new(0)),
-        })
-    });
+    registry
+        .register(renderer_descriptor(move |binding, _window, cx| {
+            cx.new(|_| RetainedProbeNode {
+                _binding: binding,
+                renders: Rc::new(Cell::new(0)),
+            })
+        }))
+        .expect("unique workflow-node renderer");
     let (host, cx) = cx.add_window_view(move |_, _| {
         OpenGpuiSceneHost::new(
             view,
-            registry.seal().expect("valid test registry"),
+            registry.seal(&node_catalog).expect("valid test registry"),
             visible_viewport(),
         )
     });
@@ -383,12 +443,17 @@ fn runtime_drop_retires_native_state_on_the_next_host_tick(cx: &mut open_gpui::T
 fn runtime_drop_bridge_retires_every_mount_after_the_first_revocation_panics(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    let runtime = GraphRuntime::builder(catalog())
+    let node_catalog = catalog();
+    let runtime = GraphRuntime::builder(node_catalog.clone())
         .build(graph_with_node_ids([10, 20]))
         .unwrap();
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     let revocations = Rc::new(RefCell::new(Vec::new()));
-    let registry = panicking_retirement_registry(Rc::clone(&revocations), NodeId::from_u128(10));
+    let registry = panicking_retirement_registry(
+        &node_catalog,
+        Rc::clone(&revocations),
+        NodeId::from_u128(10),
+    );
     let (host, cx) =
         cx.add_window_view(move |_, _| OpenGpuiSceneHost::new(view, registry, visible_viewport()));
     draw(cx);
@@ -419,12 +484,17 @@ fn runtime_drop_bridge_retires_every_mount_after_the_first_revocation_panics(
 fn nonterminal_retirement_panic_does_not_stop_the_lifecycle_bridge(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    let runtime = GraphRuntime::builder(catalog())
+    let node_catalog = catalog();
+    let runtime = GraphRuntime::builder(node_catalog.clone())
         .build(graph_with_node_ids([10, 20]))
         .unwrap();
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     let revocations = Rc::new(RefCell::new(Vec::new()));
-    let registry = panicking_retirement_registry(Rc::clone(&revocations), NodeId::from_u128(10));
+    let registry = panicking_retirement_registry(
+        &node_catalog,
+        Rc::clone(&revocations),
+        NodeId::from_u128(10),
+    );
     let (host, cx) =
         cx.add_window_view(move |_, _| OpenGpuiSceneHost::new(view, registry, visible_viewport()));
     draw(cx);
@@ -476,12 +546,17 @@ fn nonterminal_retirement_panic_does_not_stop_the_lifecycle_bridge(
 fn stale_parked_reconciliation_finishes_every_retirement_before_propagating_a_panic(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    let runtime = GraphRuntime::builder(catalog())
+    let node_catalog = catalog();
+    let runtime = GraphRuntime::builder(node_catalog.clone())
         .build(graph_with_node_ids([10, 20]))
         .unwrap();
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     let revocations = Rc::new(RefCell::new(Vec::new()));
-    let registry = panicking_retirement_registry(Rc::clone(&revocations), NodeId::from_u128(10));
+    let registry = panicking_retirement_registry(
+        &node_catalog,
+        Rc::clone(&revocations),
+        NodeId::from_u128(10),
+    );
     let (host, cx) =
         cx.add_window_view(move |_, _| OpenGpuiSceneHost::new(view, registry, visible_viewport()));
     draw(cx);
@@ -524,14 +599,16 @@ fn unseen_eviction_retires_every_overflow_mount_before_propagating_a_panic(
     cx: &mut open_gpui::TestAppContext,
 ) {
     let node_count = OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY + 2;
-    let runtime = GraphRuntime::builder(catalog())
+    let node_catalog = catalog();
+    let runtime = GraphRuntime::builder(node_catalog.clone())
         .build(graph_with_node_ids(
             (1..=node_count).map(|node| u128::try_from(node).unwrap()),
         ))
         .unwrap();
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     let revocations = Rc::new(RefCell::new(Vec::new()));
-    let registry = panicking_retirement_registry(Rc::clone(&revocations), NodeId::from_u128(1));
+    let registry =
+        panicking_retirement_registry(&node_catalog, Rc::clone(&revocations), NodeId::from_u128(1));
     let (host, cx) =
         cx.add_window_view(move |_, _| OpenGpuiSceneHost::new(view, registry, visible_viewport()));
     draw(cx);
@@ -567,31 +644,36 @@ fn draw_once(cx: &mut open_gpui::VisualTestContext) {
 }
 
 fn panicking_retirement_registry(
+    catalog: &NodeCatalog,
     revocations: Rc<RefCell<Vec<NodeId>>>,
     panic_node: NodeId,
 ) -> OpenGpuiNodeRegistry {
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
-        let node = binding
-            .read(cx)
-            .authoring()
-            .expect("live test binding")
-            .node_id();
-        let callback_revocations = Rc::clone(&revocations);
-        let activity = binding
-            .read(cx)
-            .activity()
-            .acquire_with_revocation(OpenGpuiActivityKind::Task, move || {
-                callback_revocations.borrow_mut().push(node);
-                assert_ne!(node, panic_node, "injected mount revocation panic");
+    registry
+        .register(renderer_descriptor(move |binding, _window, cx| {
+            let node = binding
+                .read(cx)
+                .authoring()
+                .expect("live test binding")
+                .node_id();
+            let callback_revocations = Rc::clone(&revocations);
+            let activity = binding
+                .read(cx)
+                .activity()
+                .acquire_with_revocation(OpenGpuiActivityKind::Task, move || {
+                    callback_revocations.borrow_mut().push(node);
+                    assert_ne!(node, panic_node, "injected mount revocation panic");
+                })
+                .unwrap();
+            cx.new(|_| TerminalProbeNode {
+                _binding: binding,
+                _activity: activity,
             })
-            .unwrap();
-        cx.new(|_| TerminalProbeNode {
-            _binding: binding,
-            _activity: activity,
-        })
-    });
-    registry.seal().expect("valid retirement test registry")
+        }))
+        .expect("unique workflow-node renderer");
+    registry
+        .seal(catalog)
+        .expect("valid retirement test registry")
 }
 
 fn factory_retry_selector(node: NodeId) -> String {

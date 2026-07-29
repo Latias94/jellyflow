@@ -224,7 +224,7 @@ impl CanonicalDriver {
         let control_hits = std::rc::Rc::new(std::cell::Cell::new(0));
         let factory_control_hits = control_hits.clone();
         let mut registry = OpenGpuiNodeRegistry::builder();
-        registry.register(RENDERER, move |binding, _window, cx| {
+        register_test_renderer(&mut registry, move |binding, _window, cx| {
             cx.new(|_| CanonicalNode {
                 binding,
                 control_hits: factory_control_hits.clone(),
@@ -237,7 +237,7 @@ impl CanonicalDriver {
             let host = cx.new(|_| {
                 let host = OpenGpuiSceneHost::new(
                     view,
-                    registry.seal().expect("valid canonical registry"),
+                    registry.seal(&catalog()).expect("valid canonical registry"),
                     viewport(),
                 );
                 if scenario_id == ConformanceScenarioId::OutsideClick {

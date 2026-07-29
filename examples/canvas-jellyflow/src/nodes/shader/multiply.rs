@@ -5,7 +5,9 @@ use jellyflow_core::{
 use jellyflow_open_gpui::authoring::{
     OpenGpuiNodeAuthoring, OpenGpuiNodeBinding, OpenGpuiNodeObservation,
 };
-use jellyflow_open_gpui::registry::OpenGpuiNodeRegistryBuilder;
+use jellyflow_open_gpui::registry::{
+    OpenGpuiNodeAdapterPresentation, OpenGpuiNodeRegistryBuilder, OpenGpuiNodeRendererDescriptor,
+};
 use jellyflow_open_gpui::retained_field::{
     RetainedField, RetainedFieldAttemptState, RetainedFieldConflictChoice, RetainedFieldError,
     RetainedFieldKey, RetainedFieldResolution, RetainedFieldStore, RetainedFieldSubmitMode,
@@ -15,6 +17,7 @@ use jellyflow_open_gpui::retained_field::{
 use jellyflow_open_gpui::retained_field::{RetainedFieldAttempt, RetainedFieldSettlement};
 use jellyflow_runtime::commands::GraphCommand;
 use jellyflow_runtime::schema::{NodeKindSpec, NodePortSpec};
+use jellyflow_runtime::view::RendererStamp;
 use open_gpui::{
     App, AppContext, Context, Entity, InteractiveElement, IntoElement, ParentElement, Render,
     Styled, Window, div, px,
@@ -655,9 +658,22 @@ pub(super) fn register(
     field_store: ShaderFieldStore,
     product_theme: NativeProductTheme,
 ) {
-    registry.register(SHADER_MULTIPLY_RENDERER, move |binding, _window, cx| {
-        mount_shader_multiply(binding, field_store.clone(), product_theme, cx)
-    });
+    registry
+        .register(OpenGpuiNodeRendererDescriptor::new(
+            SHADER_MULTIPLY_KIND,
+            1,
+            RendererStamp::new(SHADER_MULTIPLY_RENDERER, 1),
+            OpenGpuiNodeAdapterPresentation::new("Multiply"),
+            move |binding, _window, cx| {
+                Ok(mount_shader_multiply(
+                    binding,
+                    field_store.clone(),
+                    product_theme,
+                    cx,
+                ))
+            },
+        ))
+        .expect("unique shader multiply renderer descriptor");
 }
 
 fn mount_shader_multiply(
@@ -974,7 +990,7 @@ mod tests {
             .register(catalog_spec())
             .expect("register shader multiply kind");
         let graph = pending_factor_graph(&catalog);
-        let runtime = GraphRuntime::builder(catalog)
+        let runtime = GraphRuntime::builder(catalog.clone())
             .build(graph)
             .expect("valid shader receipt graph");
         let snapshot = runtime.snapshot().expect("initial shader snapshot");
@@ -1012,7 +1028,7 @@ mod tests {
             .register(catalog_spec())
             .expect("register shader multiply kind");
         let graph = pending_factor_graph(&catalog);
-        let runtime = GraphRuntime::builder(catalog)
+        let runtime = GraphRuntime::builder(catalog.clone())
             .build(graph)
             .expect("valid shader factor graph");
         let view = runtime
@@ -1022,20 +1038,30 @@ mod tests {
         let captured_for_factory = Rc::clone(&captured);
         let draft_store = ShaderFieldStore::new();
         let mut registry = OpenGpuiNodeRegistry::builder();
-        registry.register(SHADER_MULTIPLY_RENDERER, move |binding, _window, cx| {
-            let node = mount_shader_multiply(
-                binding,
-                draft_store.clone(),
-                NativeProductTheme::shader_blueprint(),
-                cx,
-            );
-            captured_for_factory.borrow_mut().replace(node.clone());
-            node
-        });
+        registry
+            .register(OpenGpuiNodeRendererDescriptor::new(
+                SHADER_MULTIPLY_KIND,
+                1,
+                RendererStamp::new(SHADER_MULTIPLY_RENDERER, 1),
+                OpenGpuiNodeAdapterPresentation::new("Multiply"),
+                move |binding, _window, cx| {
+                    let node = mount_shader_multiply(
+                        binding,
+                        draft_store.clone(),
+                        NativeProductTheme::shader_blueprint(),
+                        cx,
+                    );
+                    captured_for_factory.borrow_mut().replace(node.clone());
+                    Ok(node)
+                },
+            ))
+            .expect("unique shader factor renderer descriptor");
         let (_host, cx) = cx.add_window_view(move |_, _| {
             OpenGpuiSceneHost::new(
                 view,
-                registry.seal().expect("valid shader factor registry"),
+                registry
+                    .seal(&catalog)
+                    .expect("valid shader factor registry"),
                 pending_factor_viewport(),
             )
         });
@@ -1101,7 +1127,7 @@ mod tests {
             .register(catalog_spec())
             .expect("register shader multiply kind");
         let graph = pending_factor_graph(&catalog);
-        let runtime = GraphRuntime::builder(catalog)
+        let runtime = GraphRuntime::builder(catalog.clone())
             .build(graph)
             .expect("valid shader conflict graph");
         let view = runtime
@@ -1111,20 +1137,30 @@ mod tests {
         let captured_for_factory = Rc::clone(&captured);
         let draft_store = ShaderFieldStore::new();
         let mut registry = OpenGpuiNodeRegistry::builder();
-        registry.register(SHADER_MULTIPLY_RENDERER, move |binding, _window, cx| {
-            let node = mount_shader_multiply(
-                binding,
-                draft_store.clone(),
-                NativeProductTheme::shader_blueprint(),
-                cx,
-            );
-            captured_for_factory.borrow_mut().replace(node.clone());
-            node
-        });
+        registry
+            .register(OpenGpuiNodeRendererDescriptor::new(
+                SHADER_MULTIPLY_KIND,
+                1,
+                RendererStamp::new(SHADER_MULTIPLY_RENDERER, 1),
+                OpenGpuiNodeAdapterPresentation::new("Multiply"),
+                move |binding, _window, cx| {
+                    let node = mount_shader_multiply(
+                        binding,
+                        draft_store.clone(),
+                        NativeProductTheme::shader_blueprint(),
+                        cx,
+                    );
+                    captured_for_factory.borrow_mut().replace(node.clone());
+                    Ok(node)
+                },
+            ))
+            .expect("unique shader conflict renderer descriptor");
         let (_host, cx) = cx.add_window_view(move |_, _| {
             OpenGpuiSceneHost::new(
                 view,
-                registry.seal().expect("valid shader conflict registry"),
+                registry
+                    .seal(&catalog)
+                    .expect("valid shader conflict registry"),
                 pending_factor_viewport(),
             )
         });

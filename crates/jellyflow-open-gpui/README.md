@@ -33,12 +33,20 @@ portable widget tree or a cross-framework node UI DSL.
 
 ```rust,ignore
 use jellyflow_open_gpui::authoring::OpenGpuiNodeBinding;
+use jellyflow_open_gpui::registry::{
+    OpenGpuiNodeAdapterPresentation, OpenGpuiNodeRendererDescriptor,
+};
+use jellyflow_runtime::view::RendererStamp;
 
 let mut registry = OpenGpuiNodeRegistry::builder();
-registry.register("workflow.llm", |binding, window, cx| {
-    cx.new(|cx| MyLlmNode::new(binding, cx))
-});
-let registry = registry.seal()?;
+registry.register(OpenGpuiNodeRendererDescriptor::new(
+    "workflow.llm",
+    1,
+    RendererStamp::new("open-gpui.workflow.llm", 1),
+    OpenGpuiNodeAdapterPresentation::new("Language model"),
+    |binding, _window, cx| Ok(cx.new(|cx| MyLlmNode::new(binding, cx))),
+))?;
+let registry = registry.seal(&catalog)?;
 let host = OpenGpuiSceneHost::new(view, registry, viewport);
 ```
 
@@ -130,17 +138,25 @@ lifetime, host selection chrome, and real-port capabilities. This remains an ada
 factory, not a renderer-neutral UI description:
 
 ```rust,ignore
-registry.register_with_overview(
-    "shader.multiply",
-    |binding, _window, cx| cx.new(|_| MultiplyNode::new(binding)),
-    |mount, _window, cx| cx.new(|_| MultiplyOverview::new(mount)),
-);
+registry.register(
+    OpenGpuiNodeRendererDescriptor::new(
+        "shader.multiply",
+        1,
+        RendererStamp::new("open-gpui.shader.multiply", 3),
+        OpenGpuiNodeAdapterPresentation::new("Multiply"),
+        |binding, _window, cx| Ok(cx.new(|_| MultiplyNode::new(binding))),
+    )
+    .with_overview(|mount, _window, cx| {
+        Ok(cx.new(|_| MultiplyOverview::new(mount)))
+    }),
+)?;
 ```
 
 An overview component requests `mount.port_handle(port_id, cx)` during each render and wraps its
 native marker with `measure` or `interactive`. That handle shares the underlying semantic capability
 with detail while publishing overview geometry; requesting it again observes dynamic port topology
-and presentation changes. The factory may return either `Entity<V: Render>` or `AnyView`. It is
+and presentation changes. Each factory returns `Result<Entity<V: Render>,
+OpenGpuiNodeMountError>`. The overview is
 created at most once per retained mount, survives zoom transitions and parking, and is released with
 that mount. If no overview factory is registered, or if the factory returns an error or panics while
 mounting, the existing generic overview is used. A healthy detail entity is never replaced by an
@@ -159,9 +175,16 @@ let policy = OpenGpuiNodeRegistrationPolicy::default()
     .with_size_policy(OpenGpuiNodeSizePolicy::ContentHeight(
         OpenGpuiContentHeightPolicy::new(96.0, 720.0)?,
     ));
-registry.register_with_policy("workflow.condition", policy, |binding, _window, cx| {
-    cx.new(|_| ConditionNode::new(binding))
-});
+registry.register(
+    OpenGpuiNodeRendererDescriptor::new(
+        "workflow.condition",
+        1,
+        RendererStamp::new("open-gpui.workflow.condition", 2),
+        OpenGpuiNodeAdapterPresentation::new("Condition"),
+        |binding, _window, cx| Ok(cx.new(|_| ConditionNode::new(binding))),
+    )
+    .with_policy(policy),
+)?;
 ```
 
 The component wraps one naturally sized native root with `binding.measure_content(content)`. Two
@@ -172,11 +195,12 @@ changes start a separate convergence epoch. No graph mutation occurs during rend
 
 ## Lifecycle and fallback
 
-Renderer registrations are validated and sealed before a view is attached. A whitespace-only key
-makes `seal` return an aggregate configuration error. Duplicate non-empty keys are isolated as
-invalid entries while the remaining registry still seals. Missing renderers, isolated duplicates,
-and factories that fail while mounting produce an adapter-local diagnostic fallback while the
-runtime's opaque node data and real ports remain intact. A retained instance is identified by view,
+Renderer registrations are validated and sealed against the semantic catalog before a view is
+attached. Empty fields and duplicate semantic kind/version or exact renderer stamps are rejected
+atomically during registration. Alias, unknown-kind, and version mismatches reject sealing as one
+deterministic configuration error. Catalog kinds without a native descriptor and factories that
+fail while mounting produce an adapter-local diagnostic fallback while the runtime's opaque node
+data and real ports remain intact. A retained instance is identified by view,
 node, renderer, and incarnation. Normal culling may park an eligible instance; renderer replacement,
 node retirement, document replacement, and terminal view closure revoke leases, focus, registered
 exact capture, overlays, subscriptions, and geometry. The first render also installs a window-scoped

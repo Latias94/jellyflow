@@ -732,7 +732,7 @@ fn launch(cx: &mut App, outcome: Rc<Cell<WitnessOutcome>>) -> Result<(), String>
     let graph = workflow_demo_graph()
         .map_err(|errors| format!("failed to initialize workflow graph: {errors:?}"))?;
     let runtime = Rc::new(
-        GraphRuntime::builder(catalog)
+        GraphRuntime::builder(catalog.clone())
             .build(graph)
             .map_err(|error| format!("failed to initialize graph runtime: {error:?}"))?,
     );
@@ -743,6 +743,7 @@ fn launch(cx: &mut App, outcome: Rc<Cell<WitnessOutcome>>) -> Result<(), String>
     let visual_profile = NativeGraphVisualProfile::workflow();
     let registry = native_node_registry(
         NativeNodeResources::ready_default(cx).with_product_theme(visual_profile.product_theme()),
+        &catalog,
     );
     let (graph_theme, edge_painters) = visual_profile.into_host_parts();
     let bounds = Bounds::centered(None, size(px(WINDOW_WIDTH), px(WINDOW_HEIGHT)), cx);

@@ -165,10 +165,14 @@ class ExternalConsumerScenarioTests(unittest.TestCase):
 
         shared_recipe = external_smoke.open_gpui_adoption_main_rs()
         self.assertIn("fn build_product_registry", shared_recipe)
+        self.assertIn("OpenGpuiNodeRendererDescriptor::new", shared_recipe)
+        self.assertIn("OpenGpuiNodeAdapterPresentation::new", shared_recipe)
+        self.assertIn("RendererStamp::new", shared_recipe)
+        self.assertIn(".seal(catalog)", shared_recipe)
         self.assertIn("fn assert_invalid_registry_is_rejected", shared_recipe)
         self.assertIn("fn main() {", shared_recipe)
         self.assertIn("let registry = build_product_registry", shared_recipe)
-        self.assertIn("assert_invalid_registry_is_rejected();", shared_recipe)
+        self.assertIn("assert_invalid_registry_is_rejected(&catalog);", shared_recipe)
         self.assertIn("TextInput::new", shared_recipe)
         self.assertIn("Select::new", shared_recipe)
         self.assertIn("Button::new", shared_recipe)
@@ -180,6 +184,10 @@ class ExternalConsumerScenarioTests(unittest.TestCase):
         self.assertNotIn("OpenGpuiActivityKind::Task", shared_recipe)
         self.assertNotIn("command_task", shared_recipe)
         self.assertNotIn("invalidate_layout(", shared_recipe)
+        self.assertNotIn("register_with_policy", shared_recipe)
+        self.assertNotIn("register_with_overview", shared_recipe)
+        self.assertNotIn("try_register", shared_recipe)
+        self.assertNotIn("OpenGpuiRendererRegistrationStatus", shared_recipe)
         self.assertEqual(
             external_smoke.jellyflow_open_gpui_source_scenario(
                 Path("/tmp/source")

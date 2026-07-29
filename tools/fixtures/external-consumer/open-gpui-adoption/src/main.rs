@@ -16,15 +16,15 @@ use jellyflow_open_gpui::chrome::{
 };
 use jellyflow_open_gpui::host::{OpenGpuiSceneHost, OpenGpuiSceneHostDiagnosticKind};
 use jellyflow_open_gpui::registry::{
-    OpenGpuiNodeRegistrationPolicy, OpenGpuiNodeRegistry, OpenGpuiNodeRegistryIssueKind,
-    OpenGpuiRendererRegistrationStatus,
+    OpenGpuiNodeAdapterPresentation, OpenGpuiNodeRegistrationPolicy, OpenGpuiNodeRegistry,
+    OpenGpuiNodeRegistryRegistrationError, OpenGpuiNodeRendererDescriptor,
 };
 use jellyflow_open_gpui::size_policy::{OpenGpuiContentHeightPolicy, OpenGpuiNodeSizePolicy};
 use jellyflow_open_gpui::theme::OpenGpuiGraphTheme;
 use jellyflow_runtime::commands::{GraphCommand, IncidentEdgePolicy, TopologyEdit, TopologyPort};
 use jellyflow_runtime::graph::GraphRuntime;
 use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec, NodePortSpec};
-use jellyflow_runtime::view::{PublishedPortOutcome, ViewSessionOptions};
+use jellyflow_runtime::view::{PublishedPortOutcome, RendererStamp, ViewSessionOptions};
 use open_gpui::{
     AnyElement, AppContext, Context, Entity, InteractiveElement, IntoElement, MouseButton,
     ParentElement, Render, StatefulInteractiveElement, Styled, Window, div, px, rgb,
@@ -280,7 +280,47 @@ fn product_node_state() -> Rc<ProductNodeState> {
     })
 }
 
-fn build_product_registry(state: Rc<ProductNodeState>) -> OpenGpuiNodeRegistry {
+fn external_catalog() -> NodeCatalog {
+    let mut catalog = NodeCatalog::new();
+    catalog
+        .register(
+            NodeKindSpec::builder(KIND, "Dynamic workflow", "legacy.catalog.renderer")
+                .default_size(CanvasSize {
+                    width: 260.0,
+                    height: 180.0,
+                })
+                .port(NodePortSpec::new(
+                    "base",
+                    PortDirection::Out,
+                    PortKind::Data,
+                    PortCapacity::Multi,
+                ))
+                .build(),
+        )
+        .expect("register external dynamic node kind");
+    catalog
+        .register(
+            NodeKindSpec::builder(SINK_KIND, "Sink", SINK_RENDERER)
+                .default_size(CanvasSize {
+                    width: 160.0,
+                    height: 96.0,
+                })
+                .port(NodePortSpec::new(
+                    "input",
+                    PortDirection::In,
+                    PortKind::Data,
+                    PortCapacity::Single,
+                ))
+                .build(),
+        )
+        .expect("register external sink kind");
+    catalog
+}
+
+fn build_product_registry(
+    state: Rc<ProductNodeState>,
+    catalog: &NodeCatalog,
+) -> OpenGpuiNodeRegistry {
     let factory_state = Rc::clone(&state);
     let mut registry = OpenGpuiNodeRegistry::builder();
     let policy = OpenGpuiNodeRegistrationPolicy::default().with_size_policy(
@@ -288,43 +328,62 @@ fn build_product_registry(state: Rc<ProductNodeState>) -> OpenGpuiNodeRegistry {
             OpenGpuiContentHeightPolicy::new(108.0, 160.0).expect("external content-height policy"),
         ),
     );
-    registry.register_with_policy(RENDERER, policy, move |binding, _window, cx| {
-        let state = Rc::clone(&factory_state);
-        state
-            .mount_count
-            .set(state.mount_count.get().saturating_add(1));
-        let mutation = binding.read(cx).managed_mutation();
-        cx.new(|_| ProductNode {
-            binding,
-            state,
-            mutation,
-        })
-    });
     registry
-        .seal()
+        .register(
+            OpenGpuiNodeRendererDescriptor::new(
+                KIND,
+                1,
+                RendererStamp::new(RENDERER, 1),
+                OpenGpuiNodeAdapterPresentation::new("Dynamic workflow"),
+                move |binding, _window, cx| {
+                    let state = Rc::clone(&factory_state);
+                    state
+                        .mount_count
+                        .set(state.mount_count.get().saturating_add(1));
+                    let mutation = binding.read(cx).managed_mutation();
+                    Ok(cx.new(|_| ProductNode {
+                        binding,
+                        state,
+                        mutation,
+                    }))
+                },
+            )
+            .with_policy(policy),
+        )
+        .expect("unique external renderer descriptor");
+    registry
+        .seal(catalog)
         .expect("external renderer registrations must be valid")
 }
 
-fn assert_invalid_registry_is_rejected() {
+fn assert_invalid_registry_is_rejected(catalog: &NodeCatalog) {
     let state = product_node_state();
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register("   ", move |binding, _window, cx| {
-        let mutation = binding.read(cx).managed_mutation();
-        cx.new(|_| ProductNode {
-            binding,
-            state: Rc::clone(&state),
-            mutation,
-        })
-    });
-
-    let error = match registry.seal() {
-        Ok(_) => panic!("whitespace renderer key must prevent registry sealing"),
-        Err(error) => error,
-    };
-    assert_eq!(error.issues().len(), 1);
-    assert_eq!(
-        error.issues()[0].kind(),
-        OpenGpuiNodeRegistryIssueKind::EmptyRendererKey
+    let error = registry
+        .register(OpenGpuiNodeRendererDescriptor::new(
+            KIND,
+            1,
+            RendererStamp::new("   ", 1),
+            OpenGpuiNodeAdapterPresentation::new("Invalid renderer"),
+            move |binding, _window, cx| {
+                let mutation = binding.read(cx).managed_mutation();
+                Ok(cx.new(|_| ProductNode {
+                    binding,
+                    state: Rc::clone(&state),
+                    mutation,
+                }))
+            },
+        ))
+        .expect_err("whitespace renderer stamp must be rejected before builder mutation");
+    assert!(matches!(
+        error,
+        OpenGpuiNodeRegistryRegistrationError::EmptyRendererKey { .. }
+    ));
+    assert!(
+        registry
+            .seal(catalog)
+            .expect("rejected descriptor leaves the registry empty")
+            .is_empty()
     );
 }
 
@@ -359,40 +418,8 @@ fn external_retained_node_mounts_and_measures_real_ports(cx: &mut open_gpui::Tes
     let node = node_id();
     let base_port = base_port_id();
     let dynamic_port = dynamic_port_id();
-    let mut catalog = NodeCatalog::new();
-    catalog
-        .register(
-            NodeKindSpec::builder(kind.clone(), "Dynamic workflow", RENDERER)
-                .default_size(CanvasSize {
-                    width: 260.0,
-                    height: 180.0,
-                })
-                .port(NodePortSpec::new(
-                    "base",
-                    PortDirection::Out,
-                    PortKind::Data,
-                    PortCapacity::Multi,
-                ))
-                .build(),
-        )
-        .expect("register external dynamic node kind");
+    let catalog = external_catalog();
     let sink_kind = NodeKindKey::new(SINK_KIND);
-    catalog
-        .register(
-            NodeKindSpec::builder(sink_kind.clone(), "Sink", SINK_RENDERER)
-                .default_size(CanvasSize {
-                    width: 160.0,
-                    height: 96.0,
-                })
-                .port(NodePortSpec::new(
-                    "input",
-                    PortDirection::In,
-                    PortKind::Data,
-                    PortCapacity::Single,
-                ))
-                .build(),
-        )
-        .expect("register external sink kind");
 
     let creation = catalog
         .instantiate_node_with_ids(&kind, node, CanvasPoint { x: 40.0, y: 48.0 }, [base_port])
@@ -422,7 +449,7 @@ fn external_retained_node_mounts_and_measures_real_ports(cx: &mut open_gpui::Tes
         .with_label("payload")
         .with_style_token("data.primary");
     graph.insert_edge(edge_id(), edge);
-    let runtime = GraphRuntime::builder(catalog)
+    let runtime = GraphRuntime::builder(catalog.clone())
         .build(graph.build().expect("external fixture graph must validate"))
         .expect("create external graph runtime");
     let view = runtime
@@ -431,11 +458,11 @@ fn external_retained_node_mounts_and_measures_real_ports(cx: &mut open_gpui::Tes
     let weak_view = view.downgrade();
 
     let state = product_node_state();
-    assert_invalid_registry_is_rejected();
-    let registry = build_product_registry(Rc::clone(&state));
+    assert_invalid_registry_is_rejected(&catalog);
+    let registry = build_product_registry(Rc::clone(&state), &catalog);
     assert_eq!(
-        registry.status(RENDERER),
-        OpenGpuiRendererRegistrationStatus::Registered
+        registry.renderer_stamp(&kind, 1),
+        Some(&RendererStamp::new(RENDERER, 1))
     );
 
     let graph_theme = external_graph_theme();
@@ -556,10 +583,11 @@ fn draw(cx: &mut open_gpui::VisualTestContext) {
 }
 
 fn main() {
-    assert_invalid_registry_is_rejected();
-    let registry = build_product_registry(product_node_state());
+    let catalog = external_catalog();
+    assert_invalid_registry_is_rejected(&catalog);
+    let registry = build_product_registry(product_node_state(), &catalog);
     assert_eq!(
-        registry.status(RENDERER),
-        OpenGpuiRendererRegistrationStatus::Registered
+        registry.renderer_stamp(&NodeKindKey::new(KIND), 1),
+        Some(&RendererStamp::new(RENDERER, 1))
     );
 }

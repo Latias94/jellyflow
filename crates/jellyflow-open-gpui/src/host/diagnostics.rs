@@ -20,7 +20,6 @@ pub enum OpenGpuiSceneHostDiagnosticKind {
     FrameMaterialization,
     Binding,
     MissingRenderer,
-    InvalidRendererRegistration,
     FactoryFailure,
     Feedback,
     EdgePainter,
@@ -1304,9 +1303,6 @@ impl OpenGpuiSceneHost {
             OpenGpuiSceneHostDiagnosticKind::FrameMaterialization => "Scene unavailable",
             OpenGpuiSceneHostDiagnosticKind::Binding => "Node data unavailable",
             OpenGpuiSceneHostDiagnosticKind::MissingRenderer => "Renderer unavailable",
-            OpenGpuiSceneHostDiagnosticKind::InvalidRendererRegistration => {
-                "Renderer registration invalid"
-            }
             OpenGpuiSceneHostDiagnosticKind::FactoryFailure => "Renderer failed",
             OpenGpuiSceneHostDiagnosticKind::Feedback => "Layout feedback failed",
             OpenGpuiSceneHostDiagnosticKind::EdgePainter => "Edge painter fallback",
