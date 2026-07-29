@@ -997,7 +997,7 @@ fn mounted_binding(
     node: NodeId,
 ) -> open_gpui::Entity<OpenGpuiNodeBinding> {
     cx.read_entity(host, |host, _| {
-        host.mounts
+        host.retained_nodes
             .active_in_order()
             .find(|(instance, _)| instance.node() == node)
             .and_then(|(_, mounted)| mounted.binding.clone())
@@ -1194,7 +1194,7 @@ fn assert_managed_activity(
     protected_leases: usize,
 ) {
     let mounted = host
-        .mounts
+        .retained_nodes
         .active_in_order()
         .find(|(instance, _)| instance.node() == node)
         .map(|(_, mounted)| mounted)

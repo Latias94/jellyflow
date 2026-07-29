@@ -130,7 +130,7 @@ impl OpenGpuiSceneHost {
             .is_some_and(|focus| focus.is_focused(window));
         let exact_graph_target = self.interaction_owner.exact_focused_graph_target(window);
         if !root_focused && exact_graph_target.is_none() {
-            self.space_pan_held = false;
+            self.interaction_owner.clear_space_pan();
             return false;
         }
         if is_unmodified_tab(event) {
@@ -153,8 +153,7 @@ impl OpenGpuiSceneHost {
             && !event.keystroke.modifiers.modified()
             && self.navigation.input_bindings().space_left_pans()
         {
-            let changed = !self.space_pan_held;
-            self.space_pan_held = true;
+            let changed = self.interaction_owner.hold_space_pan();
             if changed {
                 cx.notify();
             }
@@ -216,7 +215,7 @@ impl OpenGpuiSceneHost {
         if !event.keystroke.key.eq_ignore_ascii_case("space") {
             return false;
         }
-        let was_held = std::mem::take(&mut self.space_pan_held);
+        let was_held = self.interaction_owner.clear_space_pan();
         if was_held {
             cx.notify();
         }
@@ -326,7 +325,7 @@ impl OpenGpuiSceneHost {
         let owner_node = start.owner_node();
         let binding = start.binding();
         let detached_instance = binding.detached_port_instance()?;
-        let node_instance = self.mounts.retained_instance(owner_node)?.clone();
+        let node_instance = self.retained_nodes.retained_instance(owner_node)?.clone();
         let mount = self.mount_capability(&node_instance)?.clone();
         let owner = port_drag_owner(node_instance, detached_instance)?;
         let admission = NativeConnectionAdmission::activation(owner, mount)?;

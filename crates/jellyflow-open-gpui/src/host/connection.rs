@@ -324,18 +324,11 @@ impl OpenGpuiSceneHost {
                 if !host.port_event_owner_is_current(&owner, &mount) {
                     return;
                 }
-                let port = port_instance.port();
                 let changed = if hovered {
-                    let changed = host.hovered_node != Some(instance.node())
-                        || host.hovered_port != Some(port);
-                    host.hovered_node = Some(instance.node());
-                    host.hovered_port = Some(port);
-                    changed
-                } else if host.hovered_port == Some(port) {
-                    host.hovered_port = None;
-                    true
+                    host.retained_nodes
+                        .set_hover(Some(instance.clone()), Some(port_instance))
                 } else {
-                    false
+                    host.retained_nodes.clear_hovered_port(port_instance)
                 };
                 if changed {
                     cx.notify();
@@ -487,7 +480,7 @@ impl OpenGpuiSceneHost {
     ) -> bool {
         let instance = owner.instance();
         if !mount.is_live()
-            || self.mounts.retained_instance(instance.node()) != Some(instance)
+            || self.retained_nodes.retained_instance(instance.node()) != Some(instance)
             || !self
                 .mount_capability(instance)
                 .is_some_and(|current| current.is_same_mount(mount))
@@ -897,12 +890,7 @@ impl OpenGpuiSceneHost {
                 (owner, mount, instance)
             });
         let lease = owner_data.as_ref().and_then(|(_, mount, instance)| {
-            self.mounts.get(instance).and_then(|mounted| {
-                mounted
-                    .mount
-                    .is_same_mount(mount)
-                    .then(|| mounted.activity.clone())
-            })
+            self.retained_nodes.activity_for_mount(instance, mount)
         });
         let lease = lease.and_then(|activity| {
             activity

@@ -1416,11 +1416,11 @@ impl OpenGpuiSceneHost {
         let host_id = cx.entity_id();
         let selection_bindings = self.navigation.input_bindings().selection();
         let mut nodes = div().absolute().size_full();
-        for (key, mounted) in self.mounts.active_in_order() {
+        for (key, mounted) in self.retained_nodes.active_in_order() {
             let presentation = mounted.graph_presentation();
             let interaction_island = mounted.has_interaction_island();
 
-            let mut bounds = mounted.bounds;
+            let mut bounds = mounted.canonical_bounds();
             if let Some(delta) = feedback.measurements().presentation_offset(key.node()) {
                 bounds.origin.x += delta.x;
                 bounds.origin.y += delta.y;
@@ -2048,7 +2048,8 @@ impl OpenGpuiSceneHost {
         let right_button_pans = input_bindings.right_button_pans();
         let requests_blank_context =
             !right_button_pans && self.blank_canvas_context_handler.is_some();
-        let space_left_pan = self.space_pan_held && input_bindings.space_left_pans();
+        let space_left_pan =
+            self.interaction_owner.space_pan_held() && input_bindings.space_left_pans();
         let presentation = self.interaction_owner.presentation();
         let hovered_edge_is_selectable = presentation.hovered_edge().is_some_and(|instance| {
             wires.geometry.route(instance.edge()).is_some_and(|route| {

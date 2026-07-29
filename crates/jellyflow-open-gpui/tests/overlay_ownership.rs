@@ -504,6 +504,13 @@ fn open_overlay_blocks_graph_shortcuts_until_its_owner_leaves_the_frame(
         .expect("viewport before overlay shortcut");
 
     open_overlay(&scene, &overlay_open, cx);
+    let focused_before_tab = cx.update(|window, cx| window.focused(cx));
+    cx.simulate_keystrokes("tab");
+    assert_eq!(
+        cx.update(|window, cx| window.focused(cx)),
+        focused_before_tab,
+        "the graph root must not traverse focus behind an open overlay",
+    );
     cx.simulate_keystrokes("f");
     assert_eq!(
         view.viewport_transform()

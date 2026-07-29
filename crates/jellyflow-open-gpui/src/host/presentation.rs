@@ -26,7 +26,7 @@ pub(super) struct OpenGpuiPresentationPortCache {
 }
 
 impl OpenGpuiPresentationPortCache {
-    fn refresh(
+    pub(super) fn refresh(
         &mut self,
         view: &ViewSession,
         revision: GraphRevision,
@@ -61,8 +61,14 @@ impl OpenGpuiPresentationPortCache {
         Ok(true)
     }
 
-    fn entries(&self) -> &[(PortId, Option<PortConnectionSummary>)] {
+    pub(super) fn entries(&self) -> &[(PortId, Option<PortConnectionSummary>)] {
         &self.entries
+    }
+
+    pub(super) fn clear(&mut self) {
+        self.revision = None;
+        self.requested.clear();
+        self.entries.clear();
     }
 }
 
@@ -103,36 +109,40 @@ impl OpenGpuiSceneHost {
         cx: &mut Context<Self>,
     ) -> Result<(), OpenGpuiPresentationSyncError> {
         let graph = self.view.graph_snapshot()?;
-        if self.hovered_node.is_some_and(|hovered| {
+        if self.retained_nodes.hovered_node().is_some_and(|hovered| {
             !self
-                .mounts
+                .retained_nodes
                 .active_in_order()
-                .any(|(instance, _)| instance.node() == hovered)
+                .any(|(instance, _)| instance == hovered)
         }) {
-            self.hovered_node = None;
-            self.hovered_port = None;
+            self.retained_nodes.clear_hover();
         }
-        if self.hovered_port.is_some_and(|hovered| {
-            graph
-                .graph()
-                .port(&hovered)
-                .is_none_or(|port| Some(port.node) != self.hovered_node)
+        if self.retained_nodes.hovered_port().is_some_and(|hovered| {
+            graph.port_instance_key(hovered.port()) != Some(hovered)
+                || self
+                    .retained_nodes
+                    .hovered_node()
+                    .is_none_or(|node| node.lifetime() != hovered.owner())
                 || self
                     .view
                     .geometry_snapshot()
                     .ok()
-                    .is_none_or(|geometry| geometry.port(hovered).is_none())
+                    .is_none_or(|geometry| geometry.port(hovered.port()).is_none())
         }) {
-            self.hovered_port = None;
+            self.retained_nodes.clear_hovered_port(
+                self.retained_nodes
+                    .hovered_port()
+                    .expect("validated hovered port remains present"),
+            );
         }
 
         let requested_ports = self
-            .mounts
+            .retained_nodes
             .active_in_order()
             .filter_map(|(_, mounted)| mounted.binding.as_ref())
             .flat_map(|binding| binding.read(cx).port_ids().collect::<Vec<_>>())
             .collect::<Vec<_>>();
-        if self.presentation_ports.refresh(
+        if self.retained_nodes.refresh_port_presentations(
             &self.view,
             graph.revision(),
             requested_ports.as_slice(),
@@ -152,12 +162,12 @@ impl OpenGpuiSceneHost {
             .cloned();
         let node_drag = interaction.node_drag();
         let projected_interaction = projected_interaction_input(&interaction);
-        let summaries = self.presentation_ports.entries();
+        let summaries = self.retained_nodes.port_presentations();
         let mut summary_cursor = 0_usize;
         let mut materializations = 0_u64;
         let mut updates = Vec::new();
 
-        for (instance, mounted) in self.mounts.active_in_order() {
+        for (instance, mounted) in self.retained_nodes.active_in_order() {
             let Some(binding) = mounted.binding.clone() else {
                 continue;
             };
@@ -179,7 +189,7 @@ impl OpenGpuiSceneHost {
             let node_pending = dragging && node_drag.is_some_and(|drag| drag.ticket().is_some());
             let node_state = OpenGpuiNodeInteractionState::idle()
                 .with_selected(mounted.selected)
-                .with_hovered(self.hovered_node == Some(instance.node()))
+                .with_hovered(self.retained_nodes.hovered_node() == Some(instance))
                 .with_focused(node_focused)
                 .with_dragging(dragging)
                 .with_disabled(!node.selectable.unwrap_or(true))
@@ -222,7 +232,7 @@ impl OpenGpuiSceneHost {
                     port,
                     summary,
                     interaction.phase() == CanvasInteractionPhase::Idle
-                        && self.hovered_port == Some(port),
+                        && binding_state.port_instance(port) == self.retained_nodes.hovered_port(),
                     binding_state
                         .port_focus_handle(port)
                         .is_some_and(|focus| focus.is_focused(window)),

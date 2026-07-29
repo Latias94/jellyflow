@@ -1014,8 +1014,9 @@ impl OpenGpuiSceneHost {
     /// Returns current retained resources and native interaction scheduling state.
     #[must_use]
     pub fn resource_snapshot(&self) -> OpenGpuiSceneHostResourceSnapshot {
-        let activity = self.activity_coordinator.stats();
-        let mounts = self.mounts.snapshot();
+        let retained = self.retained_nodes.snapshot();
+        let mounts = retained.mounts;
+        let activity = retained.activity;
         let interaction = self.interaction_owner.tick_diagnostics();
         let edge_cache = self
             .edge_paths
@@ -1061,8 +1062,9 @@ impl OpenGpuiSceneHost {
     #[allow(dead_code)]
     pub(crate) fn work_ledger_snapshot(&self) -> OpenGpuiSceneHostWorkLedger {
         let resources = self.resource_snapshot();
-        let mounts = self.mounts.snapshot();
-        let activity = self.activity_coordinator.stats();
+        let retained = self.retained_nodes.snapshot();
+        let mounts = retained.mounts;
+        let activity = retained.activity;
         let interaction_ticks = self.interaction_owner.tick_diagnostics();
         let path_cache = self
             .edge_paths
@@ -1279,7 +1281,7 @@ impl OpenGpuiSceneHost {
 
     pub(super) fn record_feedback_diagnostic(&mut self, node: Option<NodeId>, message: String) {
         let instance = node
-            .and_then(|node| self.mounts.retained_instance(node))
+            .and_then(|node| self.retained_nodes.retained_instance(node))
             .cloned();
         let renderer_key = instance
             .as_ref()

@@ -423,7 +423,7 @@ impl OpenGpuiSceneHost {
             if !accepted_nodes.contains(&instance.node()) {
                 continue;
             }
-            let Some(mounted) = self.mounts.get_mut(&instance) else {
+            let Some(mounted) = self.retained_nodes.get_mut(&instance) else {
                 continue;
             };
             if content_epoch != mounted.content_epoch {
@@ -565,7 +565,7 @@ impl OpenGpuiSceneHost {
         let mut valid = Vec::new();
         let mut retired = Vec::new();
         for (instance, command) in commands {
-            let current_epoch = self.mounts.get(&instance).map(|mounted| {
+            let current_epoch = self.retained_nodes.get(&instance).map(|mounted| {
                 OpenGpuiNodeSizeEpoch::new(mounted.content_epoch, self.adapter_environment_epoch)
             });
             let current_lifetime = self.view.node_lifetime_key(instance.node()).ok().flatten();
@@ -685,7 +685,7 @@ impl OpenGpuiSceneHost {
         jellyflow_runtime::view::NodeInstanceKey,
         OpenGpuiNodeSizeUpdate,
     )> {
-        let mounted = self.mounts.get_mut(&instance)?;
+        let mounted = self.retained_nodes.get_mut(&instance)?;
         let update = mounted.size_state.settle(
             mounted.registration_policy.size_policy(),
             ticket,
@@ -745,11 +745,7 @@ impl OpenGpuiSceneHost {
         measurements: &OpenGpuiPendingMeasurements,
     ) -> Vec<OpenGpuiMeasurementError> {
         let mut errors = measurements.take_errors();
-        errors.extend(
-            self.mounts
-                .active_values()
-                .flat_map(|mounted| mounted.measurement.take_errors()),
-        );
+        errors.extend(self.retained_nodes.take_active_measurement_errors());
         errors
     }
 

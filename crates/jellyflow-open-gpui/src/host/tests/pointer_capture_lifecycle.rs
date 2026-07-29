@@ -353,7 +353,7 @@ fn pointer_capture_retains_detail_across_overview_and_receives_outside_release(
     });
     cx.read_entity(&host, |host, _| {
         let mounted = host
-            .mounts
+            .retained_nodes
             .active_in_order()
             .find(|(instance, _)| instance.node() == NodeId::from_u128(10))
             .map(|(_, mounted)| mounted)
@@ -388,7 +388,7 @@ fn pointer_capture_retains_detail_across_overview_and_receives_outside_release(
     });
     cx.read_entity(&host, |host, _| {
         let mounted = host
-            .mounts
+            .retained_nodes
             .active_in_order()
             .find(|(instance, _)| instance.node() == NodeId::from_u128(10))
             .map(|(_, mounted)| mounted)

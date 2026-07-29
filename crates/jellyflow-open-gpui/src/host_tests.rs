@@ -52,6 +52,7 @@ use super::edge_semantics::{
     OPEN_GPUI_EDGE_SEMANTIC_SIZE_IN_VIEW, open_gpui_edge_semantic_selector,
 };
 use super::focus_navigation::OpenGpuiGraphFocusTarget;
+use super::retained_node_owner::RetainedFrameReconcileFault;
 use super::scene_render::{edge_path_endpoints, visit_edge_chrome_wires_in_paint_order};
 use super::{
     LayoutReceiptAction, OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY, OPEN_GPUI_SCENE_LAYER_ORDER,
@@ -134,7 +135,7 @@ fn current_port_drag_owner(
     port: PortId,
 ) -> OpenGpuiPortDragOwner {
     let instance = host
-        .mounts
+        .retained_nodes
         .retained_instance(node)
         .cloned()
         .expect("current mounted node instance");
@@ -1739,7 +1740,7 @@ fn retired_node_action_cannot_select_a_same_id_successor(cx: &mut open_gpui::Tes
     draw(cx);
     draw(cx);
     let retired = cx.read_entity(&host, |host, _| {
-        host.mounts
+        host.retained_nodes
             .retained_instance(node)
             .expect("retired node mount")
             .lifetime()
@@ -1766,7 +1767,7 @@ fn retired_node_action_cannot_select_a_same_id_successor(cx: &mut open_gpui::Tes
     draw(cx);
 
     let successor = cx.read_entity(&host, |host, _| {
-        host.mounts
+        host.retained_nodes
             .retained_instance(node)
             .expect("successor node mount")
             .lifetime()
@@ -2274,7 +2275,7 @@ fn binding_presentation_projects_real_node_and_port_focus(cx: &mut open_gpui::Te
     draw(cx);
     let (root_focus, binding) = cx.read_entity(&host, |host, _| {
         let binding = host
-            .mounts
+            .retained_nodes
             .active_in_order()
             .next()
             .and_then(|(_, mounted)| mounted.binding.clone())
@@ -2372,7 +2373,7 @@ fn dynamic_port_reconciliation_preserves_order_index_and_retained_capabilities(
     draw(cx);
 
     let binding = cx.read_entity(&host, |host, _| {
-        host.mounts
+        host.retained_nodes
             .active_in_order()
             .find(|(instance, _)| instance.node() == node)
             .and_then(|(_, mounted)| mounted.binding.clone())
@@ -2480,7 +2481,7 @@ fn dynamic_port_reconciliation_preserves_order_index_and_retained_capabilities(
 }
 
 #[open_gpui::test]
-fn coalesced_port_reincarnation_replaces_its_native_focus_handle(
+fn coalesced_port_reincarnation_replaces_focus_and_drops_retired_hover(
     cx: &mut open_gpui::TestAppContext,
 ) {
     let node = NodeId::from_u128(80_100);
@@ -2506,7 +2507,7 @@ fn coalesced_port_reincarnation_replaces_its_native_focus_handle(
     });
     draw(cx);
     let binding = cx.read_entity(&host, |host, _| {
-        host.mounts
+        host.retained_nodes
             .active_in_order()
             .find(|(instance, _)| instance.node() == node)
             .and_then(|(_, mounted)| mounted.binding.clone())
@@ -2520,6 +2521,18 @@ fn coalesced_port_reincarnation_replaces_its_native_focus_handle(
                 .expect("retired port focus")
                 .clone(),
         )
+    });
+    let node_instance = cx.read_entity(&host, |host, _| {
+        host.retained_nodes
+            .retained_instance(node)
+            .cloned()
+            .expect("retained node identity")
+    });
+    cx.update_entity(&host, |host, _| {
+        assert!(
+            host.retained_nodes
+                .set_hover(Some(node_instance), Some(retired_instance))
+        );
     });
     let removed = runtime
         .execute(GraphCommand::topology(
@@ -2558,6 +2571,10 @@ fn coalesced_port_reincarnation_replaces_its_native_focus_handle(
             .expect("successor port focus");
         assert_ne!(retired_instance, successor_instance);
         assert_ne!(&retired_focus, successor_focus);
+    });
+    draw(cx);
+    cx.read_entity(&host, |host, _| {
+        assert!(host.retained_nodes.hovered_port().is_none());
     });
 }
 
@@ -2679,7 +2696,7 @@ fn node_drag_cohort_materializes_never_mounted_and_parked_peers_until_applied_fr
     cx.read_entity(&host, |host, _| {
         assert_eq!(host.resource_snapshot().active_nodes(), 1);
         assert_eq!(host.resource_snapshot().parked_nodes(), 0);
-        assert!(host.mounts.retained_instance(offscreen).is_none());
+        assert!(host.retained_nodes.retained_instance(offscreen).is_none());
     });
 
     let arm = |host: &mut OpenGpuiSceneHost| {
@@ -2712,7 +2729,7 @@ fn node_drag_cohort_materializes_never_mounted_and_parked_peers_until_applied_fr
     cx.read_entity(&host, |host, _| {
         assert_eq!(host.resource_snapshot().active_nodes(), 2);
         assert_eq!(host.resource_snapshot().parked_nodes(), 0);
-        assert!(host.mounts.retained_instance(offscreen).is_some());
+        assert!(host.retained_nodes.retained_instance(offscreen).is_some());
         assert!(host.interaction_owner.has_node_drag_residency());
     });
 
@@ -2792,7 +2809,7 @@ fn node_drag_cohort_materializes_never_mounted_and_parked_peers_until_applied_fr
     cx.read_entity(&host, |host, _| {
         let stats = host.work_ledger_snapshot();
         assert_eq!(stats.active_nodes() + stats.parked_nodes(), 2);
-        assert!(host.mounts.retained_instance(offscreen).is_some());
+        assert!(host.retained_nodes.retained_instance(offscreen).is_some());
         assert!(!host.interaction_owner.has_node_drag_residency());
     });
 
@@ -2810,7 +2827,7 @@ fn binding_presentation_tracks_real_port_hit_bounds_hover(cx: &mut open_gpui::Te
     draw(cx);
     draw(cx);
     let binding = cx.read_entity(&host, |host, _| {
-        host.mounts
+        host.retained_nodes
             .active_in_order()
             .find(|(instance, _)| instance.node() == NodeId::from_u128(10))
             .and_then(|(_, mounted)| mounted.binding.clone())
@@ -2886,7 +2903,7 @@ fn settled_routed_scene_remains_quiescent_across_120_explicit_redraws(
     ) = cx.read_entity(&host, |host, _| {
         assert_settled_host_has_no_pending_work(host);
         let nodes = host
-            .mounts
+            .retained_nodes
             .active_in_order()
             .map(|(instance, mounted)| {
                 (
@@ -2899,7 +2916,7 @@ fn settled_routed_scene_remains_quiescent_across_120_explicit_redraws(
             .collect::<Vec<_>>();
         (
             nodes,
-            host.mounts.active_reconcile_usage(),
+            host.retained_nodes.active_reconcile_usage(),
             host.work_ledger_snapshot(),
             host.view
                 .geometry_snapshot()
@@ -2933,7 +2950,7 @@ fn settled_routed_scene_remains_quiescent_across_120_explicit_redraws(
 
     cx.read_entity(&host, |host, _| {
         let nodes = host
-            .mounts
+            .retained_nodes
             .active_in_order()
             .map(|(instance, mounted)| {
                 (
@@ -2946,7 +2963,7 @@ fn settled_routed_scene_remains_quiescent_across_120_explicit_redraws(
             .collect::<Vec<_>>();
         let stats = host.work_ledger_snapshot();
         assert_eq!(nodes, baseline_nodes);
-        assert_eq!(host.mounts.active_reconcile_usage(), baseline_usage);
+        assert_eq!(host.retained_nodes.active_reconcile_usage(), baseline_usage);
         assert_eq!(stats.mounts(), baseline_stats.mounts());
         assert_eq!(stats.restores(), baseline_stats.restores());
         assert_eq!(stats.evictions(), baseline_stats.evictions());
@@ -3099,7 +3116,7 @@ fn settled_routed_scene_remains_quiescent_across_120_explicit_redraws(
 
     cx.read_entity(&host, |host, _| {
         let nodes = host
-            .mounts
+            .retained_nodes
             .active_in_order()
             .map(|(instance, mounted)| {
                 (
@@ -3111,7 +3128,7 @@ fn settled_routed_scene_remains_quiescent_across_120_explicit_redraws(
             })
             .collect::<Vec<_>>();
         assert_eq!(nodes.last().map(|(node, ..)| *node), Some(selected));
-        assert_eq!(host.mounts.active_reconcile_usage(), baseline_usage);
+        assert_eq!(host.retained_nodes.active_reconcile_usage(), baseline_usage);
         for (node, address, content_epoch, semantic_usage) in nodes {
             let baseline = baseline_nodes
                 .iter()
@@ -3156,12 +3173,12 @@ fn overview_node_hover_uses_the_published_lod_footprint(cx: &mut open_gpui::Test
             .expect("published overview node")
             .bounds();
         let mounted = host
-            .mounts
+            .retained_nodes
             .active_in_order()
             .find(|(instance, _)| instance.node() == source)
             .map(|(_, mounted)| mounted)
             .expect("mounted overview node");
-        assert!(published.size.height > mounted.bounds.size.height);
+        assert!(published.size.height > mounted.canonical_bounds().size.height);
 
         let canvas = CanvasPoint {
             x: published.origin.x + published.size.width * 0.5,
@@ -3169,7 +3186,7 @@ fn overview_node_hover_uses_the_published_lod_footprint(cx: &mut open_gpui::Test
         };
         assert!(test_canvas_rect_contains(published, canvas));
         assert!(
-            !test_canvas_rect_contains(mounted.bounds, canvas),
+            !test_canvas_rect_contains(mounted.canonical_bounds(), canvas),
             "the probe must exercise the LOD-only part of the visible node",
         );
         let screen = transform
@@ -3187,8 +3204,11 @@ fn overview_node_hover_uses_the_published_lod_footprint(cx: &mut open_gpui::Test
     draw(cx);
 
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.hovered_node, Some(source));
-        assert_eq!(host.hovered_port, None);
+        assert_eq!(
+            host.retained_nodes.hovered_node().map(|node| node.node()),
+            Some(source),
+        );
+        assert_eq!(host.retained_nodes.hovered_port(), None);
     });
     cx.read_entity(&binding, |binding, _| {
         assert!(binding.presentation().node().hovered());
@@ -3212,16 +3232,21 @@ fn detail_edge_hover_passes_through_canonical_node_blank_space(cx: &mut open_gpu
         let transform = host.scene_transform.expect("detail scene transform");
         let geometry = host.view.geometry_snapshot().expect("detail geometry");
         let canonical_bounds = host
-            .mounts
+            .retained_nodes
             .active_in_order()
-            .map(|(_, mounted)| mounted.bounds)
+            .map(|(_, mounted)| mounted.canonical_bounds())
             .collect::<Vec<_>>();
-        assert!(host.mounts.active_in_order().any(|(instance, mounted)| {
-            geometry.node(instance.node()).is_some_and(|published| {
-                published.bounds().size.width < mounted.bounds.size.width
-                    && published.bounds().size.height < mounted.bounds.size.height
-            })
-        }));
+        assert!(
+            host.retained_nodes
+                .active_in_order()
+                .any(|(instance, mounted)| {
+                    geometry.node(instance.node()).is_some_and(|published| {
+                        published.bounds().size.width < mounted.canonical_bounds().size.width
+                            && published.bounds().size.height
+                                < mounted.canonical_bounds().size.height
+                    })
+                })
+        );
         let path = &geometry
             .route(edge)
             .expect("published routed edge")
@@ -3262,8 +3287,8 @@ fn detail_edge_hover_passes_through_canonical_node_blank_space(cx: &mut open_gpu
     draw(cx);
 
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.hovered_node, None);
-        assert_eq!(host.hovered_port, None);
+        assert_eq!(host.retained_nodes.hovered_node(), None);
+        assert_eq!(host.retained_nodes.hovered_port(), None);
         assert_eq!(
             host.interaction_presentation().hovered_edge(),
             host.view.edge_instance_key(edge).unwrap()
@@ -3277,7 +3302,7 @@ fn measured_port_wrapper_tracks_the_same_hover_presentation(cx: &mut open_gpui::
     draw(cx);
     draw(cx);
     let binding = cx.read_entity(&host, |host, _| {
-        host.mounts
+        host.retained_nodes
             .active_in_order()
             .find(|(instance, _)| instance.node() == NodeId::from_u128(10))
             .and_then(|(_, mounted)| mounted.binding.clone())
@@ -3815,14 +3840,14 @@ fn assert_exact_graph_focus_selection_delete(
 
     let focus = cx.update_window_entity(&host, |host, _window, cx| match target {
         ExactDeleteFocus::Node => host
-            .mounts
+            .retained_nodes
             .active_in_order()
             .find(|(instance, _)| instance.node() == source)
             .map(|(_, mounted)| mounted.focus.clone())
             .expect("source node focus"),
         ExactDeleteFocus::Port => {
             let binding = host
-                .mounts
+                .retained_nodes
                 .active_in_order()
                 .find(|(instance, _)| instance.node() == source)
                 .and_then(|(_, mounted)| mounted.binding.clone())
@@ -3891,7 +3916,9 @@ fn space_plus_left_drag_pans_only_while_the_graph_root_owns_focus(
         prefer_character_input: false,
     });
     draw(cx);
-    cx.read_entity(&host, |host, _| assert!(host.space_pan_held));
+    cx.read_entity(&host, |host, _| {
+        assert!(host.interaction_owner.space_pan_held())
+    });
 
     let before = cx.read_entity(&host, |host, _| {
         host.view
@@ -3914,17 +3941,23 @@ fn space_plus_left_drag_pans_only_while_the_graph_root_owns_focus(
     cx.simulate_event(KeyUpEvent {
         keystroke: Keystroke::parse("space").expect("space keystroke"),
     });
-    cx.read_entity(&host, |host, _| assert!(!host.space_pan_held));
+    cx.read_entity(&host, |host, _| {
+        assert!(!host.interaction_owner.space_pan_held())
+    });
 
     cx.simulate_event(KeyDownEvent {
         keystroke: Keystroke::parse("space").expect("space keystroke"),
         is_held: false,
         prefer_character_input: false,
     });
-    cx.read_entity(&host, |host, _| assert!(host.space_pan_held));
+    cx.read_entity(&host, |host, _| {
+        assert!(host.interaction_owner.space_pan_held())
+    });
     cx.update(|window, _| window.blur());
     draw(cx);
-    cx.read_entity(&host, |host, _| assert!(!host.space_pan_held));
+    cx.read_entity(&host, |host, _| {
+        assert!(!host.interaction_owner.space_pan_held())
+    });
 }
 
 #[open_gpui::test]
@@ -5847,10 +5880,16 @@ fn coalesced_remove_undo_and_payload_patch_revoke_the_retired_incarnation_withou
         .clone()
         .expect("old incarnation activity");
     let old_instance = cx.read_entity(&host, |host, _| {
-        host.mounts
+        host.retained_nodes
             .retained_instance(NodeId::from_u128(10))
             .cloned()
             .expect("old retained instance")
+    });
+    cx.update_entity(&host, |host, _| {
+        assert!(
+            host.retained_nodes
+                .set_hover(Some(old_instance.clone()), None)
+        );
     });
     let signal = super::HostLifecycleSignal::new();
 
@@ -5916,11 +5955,73 @@ fn coalesced_remove_undo_and_payload_patch_revoke_the_retired_incarnation_withou
     assert!(old_activity.is_revoked());
     assert_eq!(old_activity.active_count(), 0);
     cx.read_entity(&host, |host, _| {
+        assert!(host.retained_nodes.hovered_node().is_none());
         assert_eq!(host.resource_snapshot().active_nodes(), 0);
         assert_eq!(host.resource_snapshot().parked_nodes(), 0);
         assert_eq!(host.resource_snapshot().strong_instances(), 0);
         assert_eq!(host.work_ledger_snapshot().hard_retirements(), 1);
     });
+}
+
+#[open_gpui::test]
+fn reconcile_panic_revokes_inserted_mount_authority(cx: &mut open_gpui::TestAppContext) {
+    let runtime = GraphRuntime::builder(catalog())
+        .build(single_node_graph())
+        .expect("valid graph");
+    let view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("attach view");
+    let captured_activity = Rc::new(std::cell::RefCell::new(None));
+    let factory_activity = captured_activity.clone();
+    let mut registry = OpenGpuiNodeRegistry::builder();
+    register_test_renderer(&mut registry, move |binding, _window, cx| {
+        *factory_activity.borrow_mut() = Some(binding.read(cx).activity().clone());
+        cx.new(|_| RoutedNode { binding })
+    });
+    let captured_host = Rc::new(std::cell::RefCell::new(None));
+    let scene_host = captured_host.clone();
+    let (_scene, cx) = cx.add_window_view(move |_, cx| {
+        let host = cx.new(|_| {
+            OpenGpuiSceneHost::new(
+                view,
+                registry.seal(&catalog()).expect("valid test registry"),
+                CanvasRect {
+                    origin: CanvasPoint {
+                        x: 10_000.0,
+                        y: 10_000.0,
+                    },
+                    size: viewport().size,
+                },
+            )
+        });
+        *scene_host.borrow_mut() = Some(host.clone());
+        InteractiveScene { host }
+    });
+    let host = captured_host.borrow().clone().expect("captured host");
+    draw(cx);
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(host.resource_snapshot().strong_instances(), 0);
+    });
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        cx.update_entity(&host, |host, cx| {
+            host.set_frame_bounds(viewport());
+            host.retained_nodes
+                .inject_reconcile_fault(RetainedFrameReconcileFault::AfterNewMountInsert);
+            cx.notify();
+        });
+        draw_once(cx);
+    }));
+
+    assert!(
+        panic.is_err(),
+        "the injected reconcile panic remains observable"
+    );
+    let activity = captured_activity
+        .borrow()
+        .clone()
+        .expect("factory produced one mount-scoped activity registry");
+    assert!(activity.is_revoked());
+    assert_eq!(activity.active_count(), 0);
 }
 
 #[open_gpui::test]
@@ -6906,11 +7007,11 @@ fn window_close_revocation_panic_finishes_window_cleanup_and_does_not_strand_tic
     draw(cx);
     let _lease = cx.update_entity(&host, |host, _| {
         let instance = host
-            .mounts
+            .retained_nodes
             .retained_instance(NodeId::from_u128(10))
             .cloned()
             .expect("retained node instance");
-        host.mounts
+        host.retained_nodes
             .get(&instance)
             .expect("active node mount")
             .activity
@@ -7962,7 +8063,7 @@ fn escape_from_the_exact_source_focus_cancels_keyboard_connection_without_histor
     let (owner, focus) = cx.update_entity(&host, |host, cx| {
         let owner = current_port_drag_owner(host, NodeId::from_u128(10), source);
         let binding = host
-            .mounts
+            .retained_nodes
             .active_in_order()
             .find(|(instance, _)| instance.node() == NodeId::from_u128(10))
             .and_then(|(_, mounted)| mounted.binding.clone())
@@ -9787,13 +9888,13 @@ fn issue_content_height_update(
     OpenGpuiNodeSizeUpdate,
 ) {
     let instance = host
-        .mounts
+        .retained_nodes
         .retained_instance(node)
         .cloned()
         .expect("content-sized node instance");
     let environment_epoch = host.adapter_environment_epoch;
     let mounted = host
-        .mounts
+        .retained_nodes
         .get_mut(&instance)
         .expect("mounted content node");
     let document_size = mounted.semantic_zoom.canonical_size();

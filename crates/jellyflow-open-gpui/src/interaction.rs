@@ -360,6 +360,7 @@ struct NativeInteractionState {
     focus_handle: Option<FocusHandle>,
     port_focus: Option<PortFocusOwnership>,
     overlay_active: bool,
+    space_pan_held: bool,
     terminal: bool,
 }
 
@@ -456,6 +457,7 @@ impl OpenGpuiNativeInteractionHandle {
                 focus_handle: None,
                 port_focus: None,
                 overlay_active: false,
+                space_pan_held: false,
                 terminal: false,
             })),
         }
@@ -481,11 +483,29 @@ impl OpenGpuiNativeInteractionHandle {
         let mut state = self.state.borrow_mut();
         if !state.terminal {
             state.overlay_active = true;
+            state.space_pan_held = false;
         }
     }
 
     pub(crate) fn overlay_active(&self) -> bool {
         self.state.borrow().overlay_active
+    }
+
+    pub(crate) fn hold_space_pan(&self) -> bool {
+        let mut state = self.state.borrow_mut();
+        if state.terminal || state.overlay_active || state.space_pan_held {
+            return false;
+        }
+        state.space_pan_held = true;
+        true
+    }
+
+    pub(crate) fn space_pan_held(&self) -> bool {
+        self.state.borrow().space_pan_held
+    }
+
+    pub(crate) fn clear_space_pan(&self) -> bool {
+        std::mem::take(&mut self.state.borrow_mut().space_pan_held)
     }
 
     pub(crate) fn active_owner(&self) -> Option<OpenGpuiPortDragOwner> {
@@ -842,7 +862,7 @@ impl OpenGpuiNativeInteractionHandle {
             self.set_release_suppression_for_generation(generation, Some(suppression));
             return true;
         }
-        self.release_suppression_for_window(window).is_some()
+        false
     }
 
     pub(crate) fn disable_port_deferred(
@@ -1407,6 +1427,7 @@ impl OpenGpuiNativeInteractionAuthority {
             state.focus_handle = None;
             state.port_focus = None;
             state.overlay_active = false;
+            state.space_pan_held = false;
             state.capture.set_suppression(None);
             state.capture.take_active()
         };
@@ -1896,6 +1917,7 @@ impl Element for OpenGpuiInteractionRoot {
             }
             if phase == DispatchPhase::Bubble
                 && !window.default_prevented()
+                && !interactions.overlay_active()
                 && is_unmodified_tab(event)
             {
                 if event.keystroke.modifiers.shift {
@@ -1903,9 +1925,7 @@ impl Element for OpenGpuiInteractionRoot {
                 } else {
                     window.focus_next(cx);
                 }
-                if !interactions.overlay_active()
-                    && let Some(listener) = graph_key_down_after_focus.as_ref()
-                {
+                if let Some(listener) = graph_key_down_after_focus.as_ref() {
                     let _ = listener(event, window, cx);
                 }
                 window.prevent_default();
@@ -1926,8 +1946,12 @@ impl Element for OpenGpuiInteractionRoot {
             });
         }
         if let Some(listener) = self.graph_key_up_listener.clone() {
+            let interactions = self.interactions.clone();
             window.on_key_event(move |event: &KeyUpEvent, phase, window, cx| {
-                if phase == DispatchPhase::Capture && listener(event, window, cx) {
+                if phase == DispatchPhase::Capture
+                    && !interactions.overlay_active()
+                    && listener(event, window, cx)
+                {
                     window.prevent_default();
                     cx.stop_propagation();
                 }
@@ -2215,6 +2239,19 @@ mod capture_bookkeeping_tests {
         }
     }
 
+    #[test]
+    fn overlay_claim_clears_space_pan_and_blocks_rearm_until_the_next_graph_paint() {
+        let handle = OpenGpuiNativeInteractionHandle::new();
+
+        assert!(handle.hold_space_pan());
+        handle.mark_overlay_active();
+        assert!(!handle.space_pan_held());
+        assert!(!handle.hold_space_pan());
+
+        handle.begin_graph_paint();
+        assert!(handle.hold_space_pan());
+    }
+
     fn draw_non_placeholder_hitbox(cx: &mut open_gpui::VisualTestContext) -> HitboxId {
         let _ = cx.draw(
             open_gpui::point(open_gpui::px(0.0), open_gpui::px(0.0)),
@@ -2494,6 +2531,70 @@ mod capture_bookkeeping_tests {
                 cx,
             ));
             assert!(window.captured_hitbox().is_none());
+        });
+    }
+
+    #[open_gpui::test]
+    fn release_suppression_does_not_own_a_followup_escape(cx: &mut open_gpui::TestAppContext) {
+        let (_, cx) = cx.add_window_view(|_, _| FocusTestView);
+        let handle = OpenGpuiNativeInteractionHandle::new();
+        let cancellations = Rc::new(Cell::new(0_u32));
+        let listener: OpenGpuiSceneGestureListener = {
+            let cancellations = cancellations.clone();
+            Rc::new(move |event, _, _| {
+                assert_eq!(
+                    event.phase(),
+                    OpenGpuiSceneGesturePhase::Cancel(OpenGpuiSceneGestureCancelReason::Escape),
+                );
+                cancellations.set(cancellations.get().saturating_add(1));
+            })
+        };
+        let position = open_gpui::point(open_gpui::px(20.0), open_gpui::px(30.0));
+        let hitbox = HitboxId::placeholder();
+        let generation = handle.allocate_generation().expect("native generation");
+        handle
+            .state
+            .borrow_mut()
+            .capture
+            .activate(NativeCapture::Scene(ActiveSceneInteraction {
+                generation,
+                kind: OpenGpuiSceneGestureKind::Selection,
+                button: MouseButton::Left,
+                listener,
+                lease: None,
+                hitbox,
+                previous_focus: None,
+                position,
+                modifiers: Default::default(),
+            }));
+        let escape = KeyDownEvent {
+            keystroke: open_gpui::Keystroke::parse("escape").expect("valid keystroke"),
+            is_held: false,
+            prefer_character_input: false,
+        };
+
+        cx.update(|window, cx| {
+            window.capture_pointer(hitbox);
+            assert!(handle.handle_key_down(&escape, window, cx));
+            assert_eq!(cancellations.get(), 1);
+            assert!(handle.state.borrow().capture.suppression().is_some());
+
+            assert!(
+                !handle.handle_key_down(&escape, window, cx),
+                "release suppression must not claim the overlay's next Escape",
+            );
+            assert!(handle.state.borrow().capture.suppression().is_some());
+            assert!(handle.handle_mouse_up(
+                &MouseUpEvent {
+                    position,
+                    modifiers: Default::default(),
+                    button: MouseButton::Left,
+                    click_count: 1,
+                },
+                window,
+                cx,
+            ));
+            assert!(handle.state.borrow().capture.suppression().is_none());
         });
     }
 

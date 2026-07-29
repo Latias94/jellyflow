@@ -595,6 +595,88 @@ fn stale_parked_reconciliation_finishes_every_retirement_before_propagating_a_pa
 }
 
 #[open_gpui::test]
+fn later_factory_panic_revokes_current_and_previously_prepared_mounts(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let node_catalog = catalog();
+    let runtime = GraphRuntime::builder(node_catalog.clone())
+        .build(graph_with_node_ids([10, 20]))
+        .expect("valid two-node graph");
+    let view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("attach two-node view");
+    let activities = Rc::new(RefCell::new(Vec::new()));
+    let retained_leases = Rc::new(RefCell::new(Vec::new()));
+    let revocations = Rc::new(RefCell::new(Vec::new()));
+    let panic_armed = Rc::new(Cell::new(false));
+    let factory_activities = Rc::clone(&activities);
+    let factory_leases = Rc::clone(&retained_leases);
+    let factory_revocations = Rc::clone(&revocations);
+    let factory_panic_armed = Rc::clone(&panic_armed);
+    let mut registry = OpenGpuiNodeRegistry::builder();
+    registry
+        .register(renderer_descriptor(move |binding, _window, cx| {
+            let node = binding
+                .read(cx)
+                .authoring()
+                .expect("live test binding")
+                .node_id();
+            let activity = binding.read(cx).activity().clone();
+            factory_activities
+                .borrow_mut()
+                .push((node, activity.clone()));
+            let callback_revocations = Rc::clone(&factory_revocations);
+            let lease = activity
+                .acquire_with_revocation(OpenGpuiActivityKind::Task, move || {
+                    callback_revocations.borrow_mut().push(node);
+                })
+                .expect("mount activity lease");
+            if node == NodeId::from_u128(20) && factory_panic_armed.get() {
+                factory_leases.borrow_mut().push(lease);
+                panic!("injected second native factory panic");
+            }
+            cx.new(|_| TerminalProbeNode {
+                _binding: binding,
+                _activity: lease,
+            })
+        }))
+        .expect("unique workflow-node renderer");
+    let registry = registry
+        .seal(&node_catalog)
+        .expect("valid panic test registry");
+    let (host, cx) = cx
+        .add_window_view(move |_, _| OpenGpuiSceneHost::new(view, registry, offscreen_viewport()));
+
+    panic_armed.set(true);
+    let panic = catch_unwind(AssertUnwindSafe(|| {
+        cx.update_entity(&host, |host, cx| {
+            host.set_frame_bounds(visible_viewport());
+            cx.notify();
+        });
+        draw_once(cx);
+    }));
+
+    assert!(
+        panic.is_err(),
+        "the application factory panic remains observable"
+    );
+    let mut revoked_nodes = revocations.borrow().clone();
+    revoked_nodes.sort_unstable();
+    assert_eq!(
+        revoked_nodes,
+        [NodeId::from_u128(10), NodeId::from_u128(20)],
+        "both the in-progress mount and the prepared prefix must be revoked",
+    );
+    for (node, activity) in activities.borrow().iter() {
+        assert!(
+            activity.is_revoked(),
+            "activity for {node:?} must be revoked"
+        );
+        assert_eq!(activity.active_count(), 0);
+    }
+}
+
+#[open_gpui::test]
 fn unseen_eviction_retires_every_overflow_mount_before_propagating_a_panic(
     cx: &mut open_gpui::TestAppContext,
 ) {

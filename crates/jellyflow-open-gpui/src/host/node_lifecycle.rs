@@ -1,18 +1,15 @@
-use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use jellyflow_core::{CanvasRect, NodeId};
 use jellyflow_runtime::{
     graph::GraphRevision, interaction::CanvasInteractionPhase, interaction::InteractionOwner,
-    view::FrameNode, view::GeometrySnapshot, view::NodeInstanceKey, view::ViewCloseReason,
-    view::ViewSessionError,
+    view::FrameNode, view::NodeInstanceKey, view::ViewCloseReason, view::ViewSessionError,
 };
 use open_gpui::{AnyView, AppContext, Context, Entity, FocusHandle, Window};
 
 use crate::activity::OpenGpuiNodeActivityRegistry;
 use crate::binding::{
-    OpenGpuiBindingAdvance, OpenGpuiBindingMount, OpenGpuiLayoutInvalidator,
-    OpenGpuiMountCapability, OpenGpuiNodeBinding,
+    OpenGpuiBindingMount, OpenGpuiLayoutInvalidator, OpenGpuiMountCapability, OpenGpuiNodeBinding,
 };
 use crate::command_journal::OpenGpuiCommandSink;
 use crate::interaction::{OpenGpuiPortDragCancelReason, OpenGpuiSceneGestureCancelReason};
@@ -31,7 +28,11 @@ use crate::size_policy::{OpenGpuiNodeSizeEpoch, OpenGpuiNodeSizeState};
 use super::OpenGpuiSceneHost;
 use super::diagnostics::{OpenGpuiSceneHostDiagnosticKind, binding_diagnostic, mount_diagnostic};
 use super::lifecycle::NodeChanges;
-use super::retained_mount_store::{EvictedMount, RetiredMount};
+use super::retained_node_owner::{
+    RetainedFrameReconcileInput, RetainedFrameReconcileReceipt, RetainedNodeConstructionGuard,
+    RetainedNodeRelease, RetainedNodeReleaseKind, RetainedNodeRetirementBatch,
+    retire_mounted_nodes,
+};
 
 pub(super) struct MountedNode {
     pub(super) view: AnyView,
@@ -45,44 +46,10 @@ pub(super) struct MountedNode {
     pub(super) scale_state: OpenGpuiNodeScaleState,
     pub(super) size_state: OpenGpuiNodeSizeState,
     pub(super) content_epoch: u64,
-    binding_revision: jellyflow_runtime::graph::GraphRevision,
-    pub(super) bounds: CanvasRect,
+    pub(super) binding_revision: jellyflow_runtime::graph::GraphRevision,
     pub(super) accessible_name: String,
     pub(super) selected: bool,
     pub(super) mount: OpenGpuiMountCapability,
-}
-
-#[derive(Default)]
-struct PendingMountedNodeRetirements {
-    mounted_nodes: Vec<MountedNode>,
-}
-
-impl PendingMountedNodeRetirements {
-    fn with_capacity(capacity: usize) -> Self {
-        Self {
-            mounted_nodes: Vec::with_capacity(capacity),
-        }
-    }
-
-    fn push(&mut self, mounted: MountedNode) {
-        self.mounted_nodes.push(mounted);
-    }
-
-    fn release_pointer_capture_if_owned(&self, window: &mut Window) -> bool {
-        self.mounted_nodes
-            .iter()
-            .any(|mounted| mounted.activity.release_pointer_capture_if_owned(window))
-    }
-
-    fn retire(mut self) -> OpenGpuiPanicAccumulator {
-        retire_mounted_nodes(std::mem::take(&mut self.mounted_nodes))
-    }
-}
-
-impl Drop for PendingMountedNodeRetirements {
-    fn drop(&mut self) {
-        retire_mounted_nodes(std::mem::take(&mut self.mounted_nodes)).suppress();
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,6 +65,13 @@ impl MountedNodeContentKind {
 }
 
 impl MountedNode {
+    pub(super) fn canonical_bounds(&self) -> CanvasRect {
+        CanvasRect {
+            origin: self.semantic_zoom.canonical_origin(),
+            size: self.semantic_zoom.canonical_size(),
+        }
+    }
+
     pub(super) fn graph_presentation(&self) -> OpenGpuiNodePresentation {
         OpenGpuiNodePresentation::from_scale_state(self.scale_state)
     }
@@ -120,16 +94,6 @@ impl MountedNode {
     }
 }
 
-pub(super) fn retire_mounted_nodes(
-    mounted_nodes: impl IntoIterator<Item = MountedNode>,
-) -> OpenGpuiPanicAccumulator {
-    let mut panics = OpenGpuiPanicAccumulator::default();
-    for mounted in mounted_nodes {
-        panics.capture(|| mounted.retire());
-    }
-    panics
-}
-
 pub(super) fn suppress_host_panic(panic: Option<Box<dyn std::any::Any + Send + 'static>>) {
     let mut panics = OpenGpuiPanicAccumulator::default();
     panics.push(panic);
@@ -146,7 +110,7 @@ impl OpenGpuiSceneHost {
         node: NodeId,
         cx: &mut Context<Self>,
     ) -> Result<bool, ViewSessionError> {
-        let Some(instance) = self.mounts.retained_instance(node).cloned() else {
+        let Some(instance) = self.retained_nodes.retained_instance(node).cloned() else {
             return Ok(false);
         };
         let Some(mount) = self.mount_capability(&instance).cloned() else {
@@ -162,7 +126,7 @@ impl OpenGpuiSceneHost {
     /// that are not retained are deterministic no-ops. A panicking retirement callback is isolated
     /// as a host feedback diagnostic so it cannot roll back the redraw that performs the retry.
     pub fn retry_mount(&mut self, node: NodeId, cx: &mut Context<Self>) -> bool {
-        let Some(instance) = self.mounts.retained_instance(node).cloned() else {
+        let Some(instance) = self.retained_nodes.retained_instance(node).cloned() else {
             return false;
         };
         self.retry_mount_instance(&instance, cx)
@@ -173,11 +137,11 @@ impl OpenGpuiSceneHost {
         instance: &NodeInstanceKey,
         cx: &mut Context<Self>,
     ) -> bool {
-        if self.mounts.retained_instance(instance.node()) != Some(instance) {
+        if self.retained_nodes.retained_instance(instance.node()) != Some(instance) {
             return false;
         }
         let retryable = self
-            .mounts
+            .retained_nodes
             .get(instance)
             .is_some_and(|mounted| mounted.content_kind.is_retryable_factory_failure());
         if !retryable {
@@ -213,158 +177,66 @@ impl OpenGpuiSceneHost {
         cx: &mut Context<Self>,
     ) {
         self.cancel_invalid_node_drag_residency();
-        if self
-            .document_epoch
-            .is_some_and(|current| current != document_epoch)
-        {
+        let mut preparation = self
+            .retained_nodes
+            .prepare_frame(frame, document_epoch, &self.view);
+        if preparation.document_replaced() {
             self.interaction_owner
                 .cancel_scene_deferred(OpenGpuiSceneGestureCancelReason::OwnerRetired);
-            self.hard_retire_all(window);
         }
-        self.document_epoch = Some(document_epoch);
-
-        let frame_instances = frame
-            .iter()
-            .map(|node| (node.id(), node.instance()))
-            .collect::<BTreeMap<_, _>>();
-        let mut retired_nodes = self.retire_stale_parked(&frame_instances);
-
-        let previous_geometry = self.view.geometry_snapshot().ok();
-        self.mounts.begin_reconcile();
-
-        for frame_node in frame {
-            let key = frame_node.instance();
-            let retained = self.mounts.visit_active(key) || self.mounts.restore_active(key);
-            if retained {
-                let binding_advance = {
-                    let mounted = self
-                        .mounts
-                        .get_mut(key)
-                        .expect("a visited retained mount remains active");
-                    Self::remember_detail_geometry(
-                        mounted,
-                        frame_node.id(),
-                        previous_geometry.as_ref(),
-                    );
-                    Self::reconcile_mounted(mounted, frame_node, document_epoch, zoom)
-                };
-                if let Some(binding) = binding_advance {
-                    match self.advance_binding_from_frame(&binding, frame_node, cx) {
-                        Ok(OpenGpuiBindingAdvance::Applied) => {
-                            if let Some(mounted) = self.mounts.get_mut(key) {
-                                mounted.binding_revision = frame_node.binding_revision();
-                            }
-                        }
-                        Ok(OpenGpuiBindingAdvance::Retry) => {}
-                        Err(error) => {
-                            self.last_diagnostic = Some(binding_diagnostic(frame_node, error));
-                            if let Some(mounted) = self.detach_instance(key) {
-                                retired_nodes.push(mounted);
-                            }
-                            cx.notify();
-                            continue;
-                        }
-                    }
-                }
-                let activation = {
-                    let mounted = self
-                        .mounts
-                        .get(key)
-                        .expect("a reconciled retained mount remains active");
-                    mounted.measurement.activate(
-                        measurements,
-                        mounted.graph_measurement_source(),
-                        mounted.content_epoch,
-                    )
-                };
-                if let Err(error) = activation {
-                    self.record_measurement_failure(error);
-                }
-                continue;
-            }
-
-            let mounted = self.mount_node(frame_node, document_epoch, zoom, window, cx);
-            let activation = mounted.measurement.activate(
-                measurements,
-                mounted.graph_measurement_source(),
-                mounted.content_epoch,
-            );
-            if let Err(error) = activation {
-                self.record_measurement_failure(error);
-            }
-            if let Some(evicted) = self.mounts.insert_active(key.clone(), mounted) {
-                retired_nodes.push(self.settle_eviction(evicted));
-            }
+        let releases = preparation.take_releases();
+        let mut retired_nodes = RetainedNodeRetirementBatch::with_capacity(releases.len());
+        for release in releases {
+            retired_nodes.push(self.settle_release(release));
         }
-
-        for (key, mounted) in self.mounts.take_unseen_active() {
-            if self.instance_is_retired(&key, &frame_instances) {
-                retired_nodes.push(self.hard_retire(&key, mounted));
-            } else {
-                let protected = mounted.activity.protected_count() > 0;
-                if let Some(evicted) = self.mounts.park(key, mounted, protected) {
-                    retired_nodes.push(self.settle_eviction(evicted));
-                }
-            }
-        }
-        self.mounts
-            .refresh_eligibility(|mounted| mounted.activity.protected_count() > 0);
-        for evicted in self.mounts.evict_eligible_overflow() {
-            retired_nodes.push(self.settle_eviction(evicted));
-        }
-        self.mounts.finish_reconcile();
-        self.interaction_owner.observe_materialized_frame(
-            graph_revision,
-            frame.iter().map(|node| node.instance().lifetime()),
-        );
         retired_nodes.release_pointer_capture_if_owned(window);
-        retired_nodes.retire().resume();
-    }
+        let mut retirement_panics = retired_nodes.retire();
+        let mut retired_nodes = RetainedNodeRetirementBatch::default();
 
-    fn remember_detail_geometry(
-        mounted: &mut MountedNode,
-        node: NodeId,
-        geometry: Option<&GeometrySnapshot>,
-    ) {
-        if mounted.graph_presentation() != OpenGpuiNodePresentation::Detail {
-            return;
+        for frame_index in preparation.take_missing_frame_indices() {
+            let frame_node = &frame[frame_index];
+            let mounted = self.mount_node(frame_node, document_epoch, zoom, window, cx);
+            preparation.insert_mount(frame_node.instance().clone(), mounted);
         }
-        if let Some(geometry) = geometry {
-            mounted
-                .semantic_zoom
-                .remember_detail_geometry(node, geometry);
+        let previous_geometry = self.view.geometry_snapshot().ok();
+        let input = RetainedFrameReconcileInput::new(
+            frame,
+            &self.view,
+            zoom,
+            previous_geometry.as_ref(),
+            measurements,
+        );
+        let RetainedFrameReconcileReceipt {
+            releases,
+            binding_failures,
+            measurement_errors,
+            panic,
+        } = self
+            .retained_nodes
+            .reconcile_frame(preparation, input, &mut self.work_ledger, cx);
+        for failure in binding_failures {
+            self.last_diagnostic = Some(binding_diagnostic(
+                &frame[failure.frame_index],
+                failure.error,
+            ));
+            cx.notify();
         }
-    }
-
-    fn reconcile_mounted(
-        mounted: &mut MountedNode,
-        frame: &FrameNode,
-        document_epoch: jellyflow_runtime::graph::DocumentEpoch,
-        zoom: f32,
-    ) -> Option<Entity<OpenGpuiNodeBinding>> {
-        let previous_size = mounted.semantic_zoom.canonical_size();
-        mounted.semantic_zoom.reconcile(frame, document_epoch);
-        let canonical_size = mounted.semantic_zoom.canonical_size();
-        if canonical_size != previous_size
-            && !mounted.size_state.recognizes_authoritative_size(
-                mounted.registration_policy.size_policy(),
-                canonical_size,
-            )
-        {
-            mounted.content_epoch = mounted.content_epoch.saturating_add(1);
+        for error in measurement_errors {
+            self.record_measurement_failure(error);
         }
-        mounted
-            .scale_state
-            .reconcile(mounted.registration_policy.scale_policy(), zoom);
-        mounted.bounds = CanvasRect {
-            origin: mounted.semantic_zoom.canonical_origin(),
-            size: mounted.semantic_zoom.canonical_size(),
-        };
-        mounted.selected = frame.selected();
-        if mounted.binding_revision == frame.binding_revision() {
-            return None;
+        for release in releases {
+            retired_nodes.push(self.settle_release(release));
         }
-        mounted.binding.clone()
+        if panic.is_none() {
+            self.interaction_owner.observe_materialized_frame(
+                graph_revision,
+                frame.iter().map(|node| node.instance().lifetime()),
+            );
+        }
+        retired_nodes.release_pointer_capture_if_owned(window);
+        retirement_panics.merge(retired_nodes.retire());
+        retirement_panics.push(panic);
+        retirement_panics.resume();
     }
 
     pub(super) fn apply_node_changes(
@@ -391,55 +263,20 @@ impl OpenGpuiSceneHost {
                 OpenGpuiPortDragCancelReason::PortDisabled,
             );
         }
-        let mut bindings = Vec::new();
-        let mut retired = Vec::new();
-        for (node, change) in changes {
-            let Some(instance) = self.mounts.retained_instance(*node).cloned() else {
-                continue;
-            };
-            self.work_ledger.binding_reconciliation_visits = self
-                .work_ledger
-                .binding_reconciliation_visits
-                .saturating_add(1);
-
-            if change.is_stale_for(&instance) {
-                if let Some(mounted) = self.detach_instance(&instance) {
-                    retired.push(mounted);
-                }
-                continue;
-            }
-
-            let mounted = self.mounts.get_mut(&instance);
-            let Some(mounted) = mounted else {
-                continue;
-            };
-            if mounted.binding_revision >= change.revision() {
-                continue;
-            }
-            if let Some(binding) = &mounted.binding {
-                bindings.push((instance, binding.clone(), change.revision()));
-            }
+        let receipt = self
+            .retained_nodes
+            .apply_node_changes(changes, &mut self.work_ledger, cx);
+        for failure in receipt.binding_failures {
+            self.record_feedback_failure(
+                Some(failure.node),
+                format!("native binding refresh failed: {}", failure.error),
+            );
         }
-        for (instance, binding, revision) in bindings {
-            match self.advance_binding(&binding, revision, cx) {
-                Ok(OpenGpuiBindingAdvance::Applied) => {
-                    if let Some(mounted) = self.mounts.get_mut(&instance) {
-                        mounted.binding_revision = revision;
-                    }
-                }
-                Ok(OpenGpuiBindingAdvance::Retry) => {}
-                Err(error) => {
-                    self.record_feedback_failure(
-                        Some(instance.node()),
-                        format!("native binding refresh failed: {error}"),
-                    );
-                    if let Some(mounted) = self.detach_instance(&instance) {
-                        retired.push(mounted);
-                    }
-                }
-            }
-        }
-        retired
+        receipt
+            .releases
+            .into_iter()
+            .map(|release| self.settle_release(release))
+            .collect()
     }
 
     fn cancel_node_drag_with_retired_member(&mut self, changes: &NodeChanges) {
@@ -457,56 +294,6 @@ impl OpenGpuiSceneHost {
         self.interaction_owner
             .cancel_scene_deferred(OpenGpuiSceneGestureCancelReason::OwnerRetired);
         self.retire_canvas_interaction_owner(InteractionOwner::Node(instance));
-    }
-
-    fn advance_binding(
-        &mut self,
-        binding: &Entity<OpenGpuiNodeBinding>,
-        revision: jellyflow_runtime::graph::GraphRevision,
-        cx: &mut Context<Self>,
-    ) -> Result<OpenGpuiBindingAdvance, crate::binding::OpenGpuiNodeBindingError> {
-        let outcome = binding.update(cx, |binding, cx| {
-            let outcome = binding.advance(revision, cx);
-            cx.notify();
-            outcome
-        });
-        self.finish_binding_advance(outcome, cx)
-    }
-
-    fn advance_binding_from_frame(
-        &mut self,
-        binding: &Entity<OpenGpuiNodeBinding>,
-        frame: &FrameNode,
-        cx: &mut Context<Self>,
-    ) -> Result<OpenGpuiBindingAdvance, crate::binding::OpenGpuiNodeBindingError> {
-        let outcome = binding.update(cx, |binding, cx| {
-            let outcome = binding.advance_from_frame(frame, cx);
-            cx.notify();
-            outcome
-        });
-        self.finish_binding_advance(outcome, cx)
-    }
-
-    fn finish_binding_advance(
-        &mut self,
-        outcome: Result<OpenGpuiBindingAdvance, crate::binding::OpenGpuiNodeBindingError>,
-        cx: &mut Context<Self>,
-    ) -> Result<OpenGpuiBindingAdvance, crate::binding::OpenGpuiNodeBindingError> {
-        match outcome {
-            Ok(OpenGpuiBindingAdvance::Applied) => {
-                self.work_ledger.binding_updates =
-                    self.work_ledger.binding_updates.saturating_add(1);
-                self.work_ledger.binding_notifications =
-                    self.work_ledger.binding_notifications.saturating_add(1);
-                Ok(OpenGpuiBindingAdvance::Applied)
-            }
-            Ok(OpenGpuiBindingAdvance::Retry) => {
-                // Keep the old revision so the next materialized frame retries atomically.
-                cx.notify();
-                Ok(OpenGpuiBindingAdvance::Retry)
-            }
-            Err(error) => Err(error),
-        }
     }
 
     fn layout_invalidator(cx: &Context<Self>) -> OpenGpuiLayoutInvalidator {
@@ -530,16 +317,17 @@ impl OpenGpuiSceneHost {
         cx: &mut Context<Self>,
     ) -> Result<bool, ViewSessionError> {
         if !mount.is_live()
-            || self.mounts.retained_instance(instance.node()) != Some(instance)
+            || self.retained_nodes.retained_instance(instance.node()) != Some(instance)
             || !self
                 .mount_capability(instance)
                 .is_some_and(|current| current.is_same_mount(mount))
         {
             return Ok(false);
         }
-        if let Some(mounted) = self.mounts.get_mut(instance) {
-            mounted.content_epoch = mounted.content_epoch.saturating_add(1);
-        }
+        let invalidated_content = self
+            .retained_nodes
+            .invalidate_mount_content(instance, mount);
+        debug_assert!(invalidated_content);
         let invalidated = self.view.invalidate_node_layout(instance)?;
         if invalidated {
             cx.notify();
@@ -557,10 +345,10 @@ impl OpenGpuiSceneHost {
     ) -> MountedNode {
         self.work_ledger.mounts = self.work_ledger.mounts.saturating_add(1);
         let mount = OpenGpuiMountCapability::new();
-        let activity = OpenGpuiNodeActivityRegistry::for_host(
-            frame.instance().clone(),
-            self.activity_coordinator.clone(),
-        );
+        let activity = self
+            .retained_nodes
+            .activity_registry(frame.instance().clone());
+        let construction = RetainedNodeConstructionGuard::new(mount.clone(), activity.clone());
         let measurement = OpenGpuiMeasurementSink::new(
             cx.entity_id(),
             frame.instance().clone(),
@@ -637,17 +425,13 @@ impl OpenGpuiSceneHost {
         )
         .expect("frame geometry always has a positive finite canonical node size");
 
-        MountedNode {
+        construction.complete(MountedNode {
             view,
             content_kind,
             binding,
             activity,
             measurement,
             focus: cx.focus_handle(),
-            bounds: CanvasRect {
-                origin: semantic_zoom.canonical_origin(),
-                size: semantic_zoom.canonical_size(),
-            },
             semantic_zoom,
             registration_policy,
             scale_state,
@@ -657,7 +441,7 @@ impl OpenGpuiSceneHost {
             accessible_name,
             selected: frame.selected(),
             mount,
-        }
+        })
     }
 
     fn accessible_node_name(&self, frame: &FrameNode) -> String {
@@ -749,81 +533,44 @@ impl OpenGpuiSceneHost {
         }
     }
 
-    fn retire_stale_parked(
-        &mut self,
-        frame: &BTreeMap<NodeId, &NodeInstanceKey>,
-    ) -> PendingMountedNodeRetirements {
-        let stale = self
-            .mounts
-            .parked_instances()
-            .filter(|instance| self.instance_is_retired(instance, frame))
-            .cloned()
-            .collect::<Vec<_>>();
-        let mut retired_nodes = PendingMountedNodeRetirements::with_capacity(stale.len());
-        for instance in stale {
-            if let Some(retired) = self.mounts.retire(&instance) {
-                retired_nodes.push(self.settle_retirement(retired));
-            }
-        }
-        retired_nodes
-    }
-
-    fn instance_is_retired(
-        &self,
-        instance: &NodeInstanceKey,
-        frame: &BTreeMap<NodeId, &NodeInstanceKey>,
-    ) -> bool {
-        if let Some(current) = frame.get(&instance.node()) {
-            return *current != instance;
-        }
-        match self.view.node_lifetime_key(instance.node()) {
-            Ok(Some(current)) => current != instance.lifetime(),
-            Ok(None) | Err(ViewSessionError::Closed { .. }) => true,
-            Err(_) => false,
-        }
-    }
-
     pub(super) fn mount_capability(
         &self,
         instance: &NodeInstanceKey,
     ) -> Option<&OpenGpuiMountCapability> {
-        self.mounts.get(instance).map(|mounted| &mounted.mount)
+        self.retained_nodes.mount_capability(instance)
     }
 
     pub(super) fn detach_instance(&mut self, instance: &NodeInstanceKey) -> Option<MountedNode> {
-        let retired = self.mounts.retire(instance)?;
-        Some(self.settle_retirement(retired))
+        let release = self.retained_nodes.retire_instance(instance)?;
+        Some(self.settle_release(release))
     }
 
-    fn hard_retire(&mut self, instance: &NodeInstanceKey, mounted: MountedNode) -> MountedNode {
-        let retired = self.mounts.retire_detached(instance.clone(), mounted);
-        self.settle_retirement(retired)
-    }
-
-    fn settle_retirement(&mut self, retired: RetiredMount<MountedNode>) -> MountedNode {
-        self.interaction_owner.cancel_scene_owner_deferred(
-            &retired.instance,
-            OpenGpuiSceneGestureCancelReason::OwnerRetired,
-        );
-        self.retire_canvas_interaction_owner(InteractionOwner::Node(retired.instance.lifetime()));
-        self.retire_connection_context(&retired.instance, &retired.value.mount);
-        retired.value
-    }
-
-    fn settle_eviction(&mut self, evicted: EvictedMount<MountedNode>) -> MountedNode {
-        self.retire_connection_context(&evicted.instance, &evicted.value.mount);
-        evicted.value
-    }
-
-    pub(super) fn detach_all_instances(&mut self) -> Vec<MountedNode> {
-        let retired_nodes = self
-            .mounts
-            .iter()
-            .map(|(instance, _)| instance.lifetime())
-            .collect::<Vec<_>>();
-        for instance in retired_nodes {
-            self.retire_canvas_interaction_owner(InteractionOwner::Node(instance));
+    fn settle_release(&mut self, mut release: RetainedNodeRelease) -> MountedNode {
+        if release.kind == RetainedNodeReleaseKind::HardRetirement {
+            self.interaction_owner.cancel_scene_owner_deferred(
+                &release.instance,
+                OpenGpuiSceneGestureCancelReason::OwnerRetired,
+            );
+            self.retire_canvas_interaction_owner(InteractionOwner::Node(
+                release.instance.lifetime(),
+            ));
         }
+        self.retire_connection_context(&release.instance, release.mount());
+        release.take_mounted()
+    }
+
+    pub(super) fn close_all_instances(&mut self, reason: ViewCloseReason) -> Vec<MountedNode> {
+        let releases = self.retained_nodes.close_and_retire_all(reason);
+        self.settle_all_releases(releases)
+    }
+
+    #[cfg(test)]
+    pub(super) fn detach_all_instances(&mut self) -> Vec<MountedNode> {
+        let releases = self.retained_nodes.retire_all();
+        self.settle_all_releases(releases)
+    }
+
+    fn settle_all_releases(&mut self, releases: Vec<RetainedNodeRelease>) -> Vec<MountedNode> {
         if let Some(edge) = self.interaction_owner.presentation().active_edge() {
             self.retire_canvas_interaction_owner(InteractionOwner::Edge(edge));
         }
@@ -847,14 +594,9 @@ impl OpenGpuiSceneHost {
                 OpenGpuiPortDragCancelReason::OwnerRetired,
             );
         }
-        self.mounts.retire_all()
-    }
-
-    fn hard_retire_all(&mut self, window: &mut Window) {
-        let mounted = self.detach_all_instances();
-        mounted
-            .iter()
-            .any(|node| node.activity.release_pointer_capture_if_owned(window));
-        retire_mounted_nodes(mounted).resume();
+        releases
+            .into_iter()
+            .map(|release| self.settle_release(release))
+            .collect()
     }
 }

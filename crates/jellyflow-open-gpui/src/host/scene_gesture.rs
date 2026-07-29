@@ -52,7 +52,7 @@ fn mounted_node_interaction_bounds(
         mounted.registration_policy.scale_policy(),
     );
     CanvasRect {
-        origin: mounted.bounds.origin,
+        origin: mounted.canonical_bounds().origin,
         size: CanvasSize {
             width: screen_size.width / transform.zoom,
             height: screen_size.height / transform.zoom,
@@ -113,7 +113,7 @@ impl OpenGpuiSceneHost {
         let graph = self.view.graph_snapshot().ok()?;
         let geometry = self.view.geometry_snapshot().ok()?;
 
-        for (instance, mounted) in self.mounts.active_in_order() {
+        for (instance, mounted) in self.retained_nodes.active_in_order() {
             let bounds =
                 mounted_node_interaction_bounds(instance, mounted, Some(&geometry), transform);
             if canvas_rect_contains(bounds, point) {
@@ -185,14 +185,14 @@ impl OpenGpuiSceneHost {
         let mut hovered_port = None;
         let graph = self.view.graph_snapshot().ok();
         let geometry = self.view.geometry_snapshot().ok();
-        for (instance, mounted) in self.mounts.active_in_order() {
+        for (instance, mounted) in self.retained_nodes.active_in_order() {
             let bounds =
                 mounted_node_interaction_bounds(instance, mounted, geometry.as_ref(), transform);
             let Some(point) = sample_canvas_point(sample) else {
                 return;
             };
             if canvas_rect_contains(bounds, point) {
-                hovered_node = Some(instance.node());
+                hovered_node = Some(instance.clone());
             }
             let Some(node) = graph
                 .as_ref()
@@ -207,17 +207,22 @@ impl OpenGpuiSceneHost {
                     .and_then(|geometry| geometry.hit_bounds())
                     .is_some_and(|bounds| canvas_rect_contains(bounds, point))
                 {
-                    hovered_node = Some(instance.node());
-                    hovered_port = Some(*port);
+                    let Some(port_instance) = graph
+                        .as_ref()
+                        .and_then(|snapshot| snapshot.port_instance_key(*port))
+                    else {
+                        continue;
+                    };
+                    hovered_node = Some(instance.clone());
+                    hovered_port = Some(port_instance);
                 }
             }
         }
-        if self.hovered_node != hovered_node || self.hovered_port != hovered_port {
-            self.hovered_node = hovered_node;
-            self.hovered_port = hovered_port;
+        let has_hovered_node = hovered_node.is_some();
+        if self.retained_nodes.set_hover(hovered_node, hovered_port) {
             cx.notify();
         }
-        let result = if hovered_node.is_some() {
+        let result = if has_hovered_node {
             self.interaction_owner.clear_edge_hover()
         } else {
             self.interaction_owner.request_edge_pick(sample)
@@ -231,9 +236,7 @@ impl OpenGpuiSceneHost {
         cx: &mut Context<Self>,
     ) {
         self.pending_blank_canvas_context = None;
-        let had_hovered_node = self.hovered_node.take().is_some();
-        let had_hovered_port = self.hovered_port.take().is_some();
-        if had_hovered_node || had_hovered_port {
+        if self.retained_nodes.clear_hover() {
             cx.notify();
         }
         if let Ok(update) = self.interaction_owner.clear_edge_hover() {
@@ -502,9 +505,9 @@ impl OpenGpuiSceneHost {
 
     fn scene_node_owner_is_current(&self, instance: &NodeInstanceKey) -> bool {
         instance.view() == self.view.id()
-            && self.mounts.retained_instance(instance.node()) == Some(instance)
+            && self.retained_nodes.retained_instance(instance.node()) == Some(instance)
             && self
-                .mounts
+                .retained_nodes
                 .get(instance)
                 .is_some_and(|mounted| mounted.mount.is_live())
             && matches!(

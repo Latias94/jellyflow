@@ -12,6 +12,7 @@ mod native_frame_wake;
 mod node_lifecycle;
 mod presentation;
 mod retained_mount_store;
+mod retained_node_owner;
 mod scene_gesture;
 mod scene_render;
 
@@ -29,8 +30,7 @@ use self::frame_feedback::{LayoutReceiptAction, layout_receipt_action};
 use self::frame_feedback::{OpenGpuiFrameTransaction, PendingNodeSizeSubmission};
 #[cfg(test)]
 use self::lifecycle::HostLifecycleSignal;
-use self::node_lifecycle::MountedNode;
-use self::presentation::OpenGpuiPresentationPortCache;
+use self::retained_node_owner::RetainedNodeOwner;
 #[cfg(test)]
 use self::scene_render::{
     OPEN_GPUI_SCENE_LAYER_ORDER, OPEN_GPUI_SELECTION_RECTANGLE_SELECTOR,
@@ -38,11 +38,11 @@ use self::scene_render::{
 };
 
 use std::cell::RefCell;
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use jellyflow_core::{CanvasPoint, CanvasRect, CanvasSize, NodeGraphConnectionMode, PortId};
+use jellyflow_core::{CanvasPoint, CanvasRect, CanvasSize, NodeGraphConnectionMode};
 use jellyflow_runtime::viewport::ViewportTransform;
 use jellyflow_runtime::{
     geometry::ViewPoint, geometry::ViewRect, geometry::ViewSize,
@@ -58,10 +58,8 @@ use open_gpui::{
 };
 
 use self::lifecycle::HostLifecycleBridge;
-use self::retained_mount_store::RetainedMountStore;
 use self::scene_render::OpenGpuiPreparedEdgeCache;
 
-use crate::activity::OpenGpuiActivityCoordinator;
 use crate::chrome::OpenGpuiEdgePainterRegistry;
 use crate::command_journal::{
     OpenGpuiCommandJournal, OpenGpuiCommandPrefixBarrierResult, resolve_command_tickets,
@@ -207,18 +205,12 @@ pub struct OpenGpuiSceneHost {
     initial_viewport_policy: InitialViewportPolicy,
     graph_theme: OpenGpuiGraphTheme,
     edge_painters: Arc<OpenGpuiEdgePainterRegistry>,
-    mounts: RetainedMountStore<MountedNode>,
-    activity_coordinator: OpenGpuiActivityCoordinator,
+    retained_nodes: RetainedNodeOwner,
     interaction_owner: interaction_session::OpenGpuiNativeInteractionOwner,
-    presentation_ports: OpenGpuiPresentationPortCache,
     pending_node_size_submission: Option<PendingNodeSizeSubmission>,
     ready_node_size_prefixes: VecDeque<OpenGpuiCommandPrefixBarrierResult>,
     scene_origin: Option<open_gpui::Point<Pixels>>,
     scene_transform: Option<ViewportTransform>,
-    hovered_node: Option<jellyflow_core::NodeId>,
-    hovered_port: Option<PortId>,
-    space_pan_held: bool,
-    document_epoch: Option<jellyflow_runtime::graph::DocumentEpoch>,
     adapter_environment_epoch: u64,
     terminal_reason: Option<ViewCloseReason>,
     pending_terminal_panics: OpenGpuiPanicAccumulator,
@@ -312,22 +304,17 @@ impl OpenGpuiSceneHost {
             initial_viewport_policy: InitialViewportPolicy::default(),
             graph_theme: OpenGpuiGraphTheme::default(),
             edge_painters: Arc::new(OpenGpuiEdgePainterRegistry::default()),
-            mounts: RetainedMountStore::new(OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY),
-            activity_coordinator: OpenGpuiActivityCoordinator::new(
+            retained_nodes: RetainedNodeOwner::new(
+                OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY,
                 OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY,
             ),
             interaction_owner: interaction_session::OpenGpuiNativeInteractionOwner::new(
                 canvas_interaction,
             ),
-            presentation_ports: OpenGpuiPresentationPortCache::default(),
             pending_node_size_submission: None,
             ready_node_size_prefixes: VecDeque::new(),
             scene_origin: None,
             scene_transform: None,
-            hovered_node: None,
-            hovered_port: None,
-            space_pan_held: false,
-            document_epoch: None,
             adapter_environment_epoch: 0,
             terminal_reason: None,
             pending_terminal_panics: OpenGpuiPanicAccumulator::default(),
@@ -761,12 +748,7 @@ impl OpenGpuiSceneHost {
         } else {
             self.viewport
         };
-        let mut protected_required_nodes = self
-            .mounts
-            .iter()
-            .filter(|(_, mounted)| mounted.activity.protected_count() > 0)
-            .map(|(instance, _)| instance.node())
-            .collect::<BTreeSet<_>>();
+        let mut protected_required_nodes = self.retained_nodes.protected_required_nodes();
         if let Ok(snapshot) = self.view.graph_snapshot()
             && let Ok(node_drag_required) =
                 self.interaction_owner.required_node_drag_nodes(&snapshot)
@@ -829,7 +811,7 @@ impl Render for OpenGpuiSceneHost {
         self.ensure_window_owner(window, cx);
         self.ensure_lifecycle_bridge(window, cx);
         if let Some(reason) = self.close_reason() {
-            self.space_pan_held = false;
+            self.interaction_owner.clear_space_pan();
             self.finish_terminal_render_cleanup(reason, window, cx);
             return self.terminal_scene(host_id);
         }
@@ -841,7 +823,7 @@ impl Render for OpenGpuiSceneHost {
             .focus_handle()
             .unwrap_or_else(|| cx.focus_handle().tab_stop(true));
         if !focus_handle.is_focused(window) {
-            self.space_pan_held = false;
+            self.interaction_owner.clear_space_pan();
         }
         self.interaction_owner
             .set_focus_handle(focus_handle.clone());

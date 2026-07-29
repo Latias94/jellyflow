@@ -894,6 +894,21 @@ impl OpenGpuiNativeInteractionOwner {
         }
         self.graph_focus
             .reconcile(current, root, allow_return, window, cx);
+        if !root.is_focused(window) && self.clear_space_pan() {
+            cx.notify();
+        }
+    }
+
+    pub(super) fn hold_space_pan(&mut self) -> bool {
+        self.native.hold_space_pan()
+    }
+
+    pub(super) fn space_pan_held(&self) -> bool {
+        self.native.space_pan_held()
+    }
+
+    pub(super) fn clear_space_pan(&mut self) -> bool {
+        self.native.clear_space_pan()
     }
 
     pub(super) fn press_connection(
@@ -1374,6 +1389,7 @@ impl OpenGpuiNativeInteractionOwner {
         self.node_drag_residency = None;
         self.stop_ticking();
         self.connection = None;
+        self.native.clear_space_pan();
         let root_focus = self.focus.take();
         self.graph_focus.retire();
         self.session.close();
@@ -1456,6 +1472,7 @@ impl OpenGpuiNativeInteractionOwner {
         self.node_drag_residency = None;
         self.stop_ticking();
         self.connection = None;
+        self.native.clear_space_pan();
     }
 
     #[cfg(test)]

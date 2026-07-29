@@ -122,10 +122,6 @@ impl<T> RetainedMountStore<T> {
         })
     }
 
-    pub(super) fn parked_instances(&self) -> impl Iterator<Item = &NodeInstanceKey> {
-        self.parked.keys()
-    }
-
     pub(super) fn begin_reconcile(&mut self) {
         if self.reconcile_epoch == u64::MAX {
             for active in self.active.values_mut() {
@@ -341,14 +337,20 @@ impl<T> RetainedMountStore<T> {
         RetiredMount { instance, value }
     }
 
-    pub(super) fn retire_all(&mut self) -> Vec<T> {
+    pub(super) fn retire_all(&mut self) -> Vec<RetiredMount<T>> {
         let retired_count = self.active.len().saturating_add(self.parked.len());
         let active = std::mem::take(&mut self.active)
-            .into_values()
-            .map(|active| active.value);
+            .into_iter()
+            .map(|(instance, active)| RetiredMount {
+                instance,
+                value: active.value,
+            });
         let parked = std::mem::take(&mut self.parked)
-            .into_values()
-            .map(|parked| parked.value);
+            .into_iter()
+            .map(|(instance, parked)| RetiredMount {
+                instance,
+                value: parked.value,
+            });
         let retired = active.chain(parked).collect::<Vec<_>>();
         self.retained_instances.clear();
         self.active_order.clear();

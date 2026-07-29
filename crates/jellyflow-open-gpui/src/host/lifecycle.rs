@@ -18,7 +18,8 @@ use crate::command_journal::{
 
 use super::OpenGpuiSceneHost;
 use super::diagnostics::{OpenGpuiSceneHostDiagnostic, OpenGpuiSceneHostDiagnosticKind};
-use super::node_lifecycle::{MountedNode, retire_mounted_nodes, suppress_host_panic};
+use super::node_lifecycle::{MountedNode, suppress_host_panic};
+use super::retained_node_owner::retire_mounted_nodes;
 
 fn release_mounted_pointer_capture(nodes: &[MountedNode], window: &mut Window) -> bool {
     nodes
@@ -295,13 +296,11 @@ impl OpenGpuiSceneHost {
 
     fn owns_window_resources(&self) -> bool {
         self.interaction_owner.requires_window_cleanup()
-            || self.activity_coordinator.requires_window_cleanup()
+            || self.retained_nodes.requires_window_cleanup()
     }
 
     fn release_registered_pointer_capture(&self, window: &mut Window) -> bool {
-        self.mounts
-            .iter()
-            .any(|(_, node)| node.activity.release_pointer_capture_if_owned(window))
+        self.retained_nodes.release_pointer_capture_if_owned(window)
     }
 
     /// Closes a never-rendered view capability with no pending window-owned state.
@@ -674,11 +673,8 @@ impl OpenGpuiSceneHost {
         self.scene_origin = None;
         self.scene_transform = None;
         self.terminal_reason = Some(reason);
-        self.document_epoch = None;
-        for (_, node) in self.mounts.iter() {
-            node.mount.close(reason);
-        }
-        self.detach_all_instances()
+        self.retained_nodes.clear_document();
+        self.close_all_instances(reason)
     }
 
     #[cfg(test)]
@@ -694,10 +690,7 @@ impl Drop for OpenGpuiSceneHost {
         let completed = self.commands.terminate_dropped();
         self.discard_frame_transaction();
         let resolutions = self.handle_completed_commands(completed);
-        for (_, node) in self.mounts.iter() {
-            node.mount.close(ViewCloseReason::HostClosed);
-        }
-        let mounted = self.detach_all_instances();
+        let mounted = self.close_all_instances(ViewCloseReason::HostClosed);
         self.pending_terminal_panics
             .merge(retire_mounted_nodes(mounted));
         if let Some(bridge) = self.lifecycle_bridge.take() {
