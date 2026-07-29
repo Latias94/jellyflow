@@ -12,7 +12,6 @@ use jellyflow_runtime::{
 };
 
 const KIND: &str = "test.revisioned-field";
-const RENDERER: &str = "test.revisioned.field";
 
 #[test]
 fn authoritative_observations_distinguish_clean_dirty_and_composing_fields() {
@@ -672,7 +671,7 @@ fn runtime_with_value(value: &str) -> GraphRuntime {
 fn catalog() -> NodeCatalog {
     let mut catalog = NodeCatalog::new();
     catalog
-        .register(NodeKindSpec::builder(KIND, "Revisioned field", RENDERER).build())
+        .register(NodeKindSpec::builder(KIND).build())
         .expect("revisioned field kind");
     catalog
 }

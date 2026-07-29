@@ -362,8 +362,16 @@ impl CanonicalDriver {
                         .connection_search_candidates(&request, window, cx)
                         .expect("canonical search candidates");
                     assert!(!candidates.candidates().is_empty());
-                    host.select_connection_search_candidate(&request, &candidates, 0, window, cx)
-                        .expect("select canonical search candidate");
+                    let creation = connection_search_creation(&request, &candidates, 0);
+                    host.select_connection_search_candidate(
+                        &request,
+                        &candidates,
+                        0,
+                        creation,
+                        window,
+                        cx,
+                    )
+                    .expect("select canonical search candidate");
                 });
             }
             ConformanceAction::QueuePrefix => self.queue_prefix(cx),

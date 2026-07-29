@@ -1434,14 +1434,7 @@ fn node() -> Node {
 fn catalog() -> NodeCatalog {
     let mut catalog = NodeCatalog::new();
     catalog
-        .register(
-            NodeKindSpec::builder(KIND, "Resource node", RENDERER)
-                .default_size(CanvasSize {
-                    width: 180.0,
-                    height: 100.0,
-                })
-                .build(),
-        )
+        .register(NodeKindSpec::builder(KIND).build())
         .unwrap();
     catalog
 }
@@ -1449,18 +1442,7 @@ fn catalog() -> NodeCatalog {
 fn cycle_catalog() -> NodeCatalog {
     let mut catalog = catalog();
     catalog
-        .register(
-            NodeKindSpec::builder(
-                REPLACEMENT_KIND,
-                "Replacement resource node",
-                REPLACEMENT_RENDERER,
-            )
-            .default_size(CanvasSize {
-                width: 180.0,
-                height: 100.0,
-            })
-            .build(),
-        )
+        .register(NodeKindSpec::builder(REPLACEMENT_KIND).build())
         .unwrap();
     catalog
 }

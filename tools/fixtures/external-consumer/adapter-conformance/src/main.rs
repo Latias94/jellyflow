@@ -494,7 +494,13 @@ impl RuntimeInteractionBridge {
             .instantiate_node_with_ids(
                 candidate.node_kind(),
                 ids.created_node,
-                canvas_anchor(view, FixtureAnchors::new().empty),
+                CanvasRect {
+                    origin: canvas_anchor(view, FixtureAnchors::new().empty),
+                    size: CanvasSize {
+                        width: 60.0,
+                        height: 60.0,
+                    },
+                },
                 [ids.created_port],
             )
             .expect("the catalog instantiates the selected node kind");
@@ -1293,11 +1299,7 @@ fn fixture_catalog() -> NodeCatalog {
     let mut catalog = NodeCatalog::new();
     catalog
         .register(
-            NodeKindSpec::builder(CREATED_NODE_KIND, "Created target", CREATED_NODE_KIND)
-                .default_size(CanvasSize {
-                    width: 60.0,
-                    height: 60.0,
-                })
+            NodeKindSpec::builder(CREATED_NODE_KIND)
                 .port(NodePortSpec::new(
                     CREATED_PORT_KEY,
                     PortDirection::In,

@@ -1,7 +1,9 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use jellyflow_core::{CanvasSize, Node, NodeId, PortCapacity, PortDirection, PortKind};
+use jellyflow_core::{
+    CanvasSize, Node, NodeId, NodeKindKey, PortCapacity, PortDirection, PortKind,
+};
 use jellyflow_open_gpui::activity::{
     OpenGpuiActivityKind, OpenGpuiActivityLease, OpenGpuiNodeActivityHandle,
 };
@@ -34,12 +36,13 @@ use open_gpui_ui_components::{
 use crate::model_options::{
     WorkflowModelOptionsCompleteness, WorkflowModelOptionsState, WorkflowModelOptionsStatus,
 };
+use crate::product_catalog::{NativeProductCatalog, NativeProductNodePresentation};
 use crate::product_theme::NativeProductTheme;
 
 use super::super::sync_activity_lease;
 use super::{
-    WORKFLOW_HEADER_HEIGHT, WorkflowNodeError, WorkflowNodeStatus, WorkflowPort, workflow_alert,
-    workflow_header,
+    WORKFLOW_HEADER_HEIGHT, WorkflowNodeError, WorkflowNodeStatus, WorkflowPort, open_gpui_side,
+    workflow_alert, workflow_header,
 };
 
 pub const WORKFLOW_LLM_KIND: &str = "workflow.llm";
@@ -68,6 +71,7 @@ pub struct WorkflowLlmNode {
     prompt: RetainedField<String>,
     model: RetainedField<String>,
     product_theme: NativeProductTheme,
+    product_presentation: NativeProductNodePresentation,
     model_menu_base: Option<String>,
     model_menu_open: Rc<Cell<bool>>,
     model_overlay_lease: Option<OpenGpuiActivityLease>,
@@ -173,7 +177,7 @@ fn recovery_diagnostic(recoveries: &[(&'static str, RetainedFieldRecovery)]) -> 
 
 impl WorkflowLlmNode {
     fn reconcile_graph(&mut self, cx: &mut Context<Self>) -> Option<(LlmData, Vec<WorkflowPort>)> {
-        let result = read_llm_render_binding(&self.binding, cx);
+        let result = read_llm_render_binding(&self.binding, &self.product_presentation, cx);
         match result {
             Ok((authoring, data, ports)) => {
                 let prompt_observation = authoring.observe_field(|_| data.prompt.clone());
@@ -875,25 +879,20 @@ impl Render for WorkflowLlmNode {
 }
 
 pub(super) fn catalog_spec() -> NodeKindSpec {
-    NodeKindSpec::builder(WORKFLOW_LLM_KIND, "LLM", WORKFLOW_LLM_RENDERER)
-        .category(["Workflow", "AI"])
-        .keywords(["llm", "model", "prompt", "generate"])
-        .default_size(WORKFLOW_LLM_DEFAULT_SIZE)
+    NodeKindSpec::builder(WORKFLOW_LLM_KIND)
         .ports([
             NodePortSpec::new(
                 "input",
                 PortDirection::In,
                 PortKind::Exec,
                 PortCapacity::Single,
-            )
-            .with_label("Input"),
+            ),
             NodePortSpec::new(
                 "success",
                 PortDirection::Out,
                 PortKind::Exec,
                 PortCapacity::Multi,
-            )
-            .with_label("Success"),
+            ),
         ])
         .default_data(serde_json::json!({
             "title": "LLM",
@@ -908,20 +907,27 @@ pub(super) fn register(
     field_store: WorkflowFieldStore,
     model_options: Entity<WorkflowModelOptionsState>,
     product_theme: NativeProductTheme,
+    product_catalog: &NativeProductCatalog,
 ) {
+    let product_presentation = product_catalog
+        .get(&NodeKindKey::new(WORKFLOW_LLM_KIND), 1)
+        .expect("LLM renderer requires its product presentation")
+        .clone();
+    let accessible_name = product_presentation.title().to_owned();
     registry
         .register(
             OpenGpuiNodeRendererDescriptor::new(
                 WORKFLOW_LLM_KIND,
                 1,
                 RendererStamp::new(WORKFLOW_LLM_RENDERER, 1),
-                OpenGpuiNodeAdapterPresentation::new("LLM"),
+                OpenGpuiNodeAdapterPresentation::new(accessible_name),
                 move |binding, _window, cx| {
                     Ok(mount_workflow_llm(
                         binding,
                         field_store.clone(),
                         model_options.clone(),
                         product_theme,
+                        product_presentation.clone(),
                         cx,
                     ))
                 },
@@ -945,6 +951,7 @@ fn mount_workflow_llm(
     field_store: WorkflowFieldStore,
     model_options: Entity<WorkflowModelOptionsState>,
     product_theme: NativeProductTheme,
+    product_presentation: NativeProductNodePresentation,
     cx: &mut App,
 ) -> Entity<WorkflowLlmNode> {
     let activity = binding.read(cx).activity().clone();
@@ -990,6 +997,7 @@ fn mount_workflow_llm(
             prompt,
             model,
             product_theme,
+            product_presentation,
             model_menu_base: None,
             model_menu_open: Rc::new(Cell::new(false)),
             model_overlay_lease: None,
@@ -1119,6 +1127,7 @@ fn read_llm_binding(
 
 fn read_llm_render_binding(
     binding: &Entity<OpenGpuiNodeBinding>,
+    product_presentation: &NativeProductNodePresentation,
     cx: &App,
 ) -> Result<(OpenGpuiNodeAuthoring, LlmData, Vec<WorkflowPort>), WorkflowNodeError> {
     let binding = binding.read(cx);
@@ -1130,11 +1139,21 @@ fn read_llm_render_binding(
     let data = LlmData::parse(authoring.node_id(), authoring.node())?;
     let ports = authoring
         .ports()
-        .map(|port| WorkflowPort {
-            id: port.id(),
-            direction: port.facts().dir,
-            kind: port.facts().kind,
-            handle: port.handle().clone(),
+        .map(|port| {
+            let handle = product_presentation
+                .port(&port.facts().key)
+                .map(|presentation| {
+                    port.handle()
+                        .clone()
+                        .with_side(open_gpui_side(presentation.side()))
+                })
+                .unwrap_or_else(|| port.handle().clone());
+            WorkflowPort {
+                id: port.id(),
+                direction: port.facts().dir,
+                kind: port.facts().kind,
+                handle,
+            }
         })
         .collect();
     Ok((authoring, data, ports))
@@ -1441,6 +1460,11 @@ mod tests {
         let factory_captured = Rc::clone(&captured);
         let factory_options = model_options.clone();
         let factory_store = WorkflowFieldStore::new();
+        let product_presentation = crate::product_catalog::native_product_catalog()
+            .expect("native product catalog")
+            .get(&NodeKindKey::new(WORKFLOW_LLM_KIND), 1)
+            .expect("LLM product presentation")
+            .clone();
         registry
             .register(
                 OpenGpuiNodeRendererDescriptor::new(
@@ -1454,6 +1478,7 @@ mod tests {
                             factory_store.clone(),
                             factory_options.clone(),
                             NativeProductTheme::workflow_dify(),
+                            product_presentation.clone(),
                             cx,
                         );
                         factory_captured.borrow_mut().replace(node.clone());
@@ -1729,6 +1754,11 @@ mod tests {
         let captured_for_factory = Rc::clone(&captured);
         let mounts_for_factory = Rc::clone(&mounts);
         let factory_store = draft_store.clone();
+        let product_presentation = crate::product_catalog::native_product_catalog()
+            .expect("native product catalog")
+            .get(&NodeKindKey::new(WORKFLOW_LLM_KIND), 1)
+            .expect("LLM product presentation")
+            .clone();
         registry
             .register(OpenGpuiNodeRendererDescriptor::new(
                 WORKFLOW_LLM_KIND,
@@ -1741,6 +1771,7 @@ mod tests {
                         factory_store.clone(),
                         model_options.clone(),
                         NativeProductTheme::workflow_dify(),
+                        product_presentation.clone(),
                         cx,
                     );
                     captured_for_factory.borrow_mut().replace(node.clone());
@@ -1890,18 +1921,7 @@ mod tests {
             .register(catalog_spec())
             .expect("register workflow LLM kind");
         catalog
-            .register(
-                NodeKindSpec::builder(
-                    PROTECTOR_KIND,
-                    "Workflow transient protector",
-                    PROTECTOR_RENDERER,
-                )
-                .default_size(CanvasSize {
-                    width: 120.0,
-                    height: 80.0,
-                })
-                .build(),
-            )
+            .register(NodeKindSpec::builder(PROTECTOR_KIND).build())
             .expect("register workflow transient protector kind");
         catalog
     }
@@ -1920,7 +1940,10 @@ mod tests {
             .instantiate_node_with_ids(
                 &NodeKindKey::new(WORKFLOW_LLM_KIND),
                 transient_llm_id(),
-                CanvasPoint::default(),
+                CanvasRect {
+                    origin: CanvasPoint::default(),
+                    size: WORKFLOW_LLM_DEFAULT_SIZE,
+                },
                 [
                     PortId::from_u128(0x7a11_2101),
                     PortId::from_u128(0x7a11_2102),
@@ -1949,7 +1972,10 @@ mod tests {
             .instantiate_node_with_ids(
                 &NodeKindKey::new(WORKFLOW_LLM_KIND),
                 transient_llm_id(),
-                CanvasPoint::default(),
+                CanvasRect {
+                    origin: CanvasPoint::default(),
+                    size: WORKFLOW_LLM_DEFAULT_SIZE,
+                },
                 [
                     PortId::from_u128(0x7a11_2101),
                     PortId::from_u128(0x7a11_2102),

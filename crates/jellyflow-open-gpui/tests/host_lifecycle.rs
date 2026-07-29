@@ -719,14 +719,7 @@ fn test_node() -> Node {
 fn catalog() -> NodeCatalog {
     let mut catalog = NodeCatalog::new();
     catalog
-        .register(
-            NodeKindSpec::builder(KIND, "Workflow node", RENDERER)
-                .default_size(CanvasSize {
-                    width: 180.0,
-                    height: 100.0,
-                })
-                .build(),
-        )
+        .register(NodeKindSpec::builder(KIND).build())
         .unwrap();
     catalog
 }

@@ -2,9 +2,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use jellyflow_core::core::{
-    CanvasPoint, CanvasSize, EdgeId, EdgeKind, Graph, GraphBuilder, GraphId, GraphValidationError,
-    NodeId, NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKey, PortKind,
-    SYMBOL_REF_NODE_KIND,
+    CanvasPoint, CanvasRect, CanvasSize, EdgeId, EdgeKind, Graph, GraphBuilder, GraphId,
+    GraphValidationError, NodeId, NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKey,
+    PortKind, SYMBOL_REF_NODE_KIND,
 };
 use jellyflow_core::interaction::NodeGraphConnectionMode;
 use jellyflow_core::types::{
@@ -21,8 +21,20 @@ use crate::runtime::graph_runtime::{CreateFromWireQueryError, GraphRuntime, Grap
 use crate::schema::{
     NodeCatalog, NodeCatalogInstantiationError, NodeCatalogMigrationError,
     NodeCatalogRegistrationError, NodeCreation, NodeKindMigrateError, NodeKindMigrationIssue,
-    NodeKindMigrator, NodeKindSpec, NodePortSpec, PortPresentationHint, PortSide,
+    NodeKindMigrator, NodeKindSpec, NodePortSpec,
 };
+
+const TEST_NODE_SIZE: CanvasSize = CanvasSize {
+    width: 180.0,
+    height: 96.0,
+};
+
+fn test_bounds(origin: CanvasPoint) -> CanvasRect {
+    CanvasRect {
+        origin,
+        size: TEST_NODE_SIZE,
+    }
+}
 
 struct FailingMigrator;
 
@@ -94,14 +106,8 @@ impl GraphProfile for RejectCanonicalGraphProfile {
 }
 
 fn add_spec(kind: &str, latest_kind_version: u32) -> NodeKindSpec {
-    NodeKindSpec::builder(kind, "Add", "math.add")
+    NodeKindSpec::builder(kind)
         .latest_kind_version(latest_kind_version)
-        .category(["Math"])
-        .keywords(["sum", "number"])
-        .default_size(CanvasSize {
-            width: 180.0,
-            height: 96.0,
-        })
         .port(
             NodePortSpec::new(
                 "lhs",
@@ -110,12 +116,7 @@ fn add_spec(kind: &str, latest_kind_version: u32) -> NodeKindSpec {
                 PortCapacity::Single,
             )
             .with_type(TypeDesc::Float)
-            .with_label("A")
-            .with_presentation(
-                PortPresentationHint::new()
-                    .with_side(PortSide::Left)
-                    .with_order(0),
-            ),
+            .with_default_data(json!({ "slot": "lhs" })),
         )
         .default_data(json!({ "lhs": 0.0 }))
         .build()
@@ -172,22 +173,23 @@ fn semantic_catalog_resolves_aliases_and_instantiates_real_ports() {
         .expect("alias resolves to registered kind");
     assert_eq!(spec.kind(), &NodeKindKey::new("math.add"));
     assert_eq!(spec.latest_kind_version(), 2);
-    assert_eq!(spec.renderer_key(), "math.add");
-    assert_eq!(spec.title(), "Add");
-    assert_eq!(spec.category(), ["Math"]);
-    assert_eq!(spec.keywords(), ["sum", "number"]);
     assert_eq!(spec.ports().len(), 1);
 
     let node_id = NodeId::from_u128(1);
     let port_id = PortId::from_u128(2);
     let creation = catalog
-        .instantiate_node_with_ids(&alias, node_id, CanvasPoint { x: 24.0, y: 48.0 }, [port_id])
+        .instantiate_node_with_ids(
+            &alias,
+            node_id,
+            test_bounds(CanvasPoint { x: 24.0, y: 48.0 }),
+            [port_id],
+        )
         .unwrap();
 
     assert_eq!(creation.node_id(), node_id);
     assert_eq!(creation.node().kind, NodeKindKey::new("math.add"));
     assert_eq!(creation.node().kind_version, 2);
-    assert_eq!(creation.node().size, spec.default_size());
+    assert_eq!(creation.node().size, Some(TEST_NODE_SIZE));
     assert_eq!(creation.node().data, json!({ "lhs": 0.0 }));
     assert_eq!(creation.node().ports, [port_id]);
     assert_eq!(creation.ports().len(), 1);
@@ -197,7 +199,7 @@ fn semantic_catalog_resolves_aliases_and_instantiates_real_ports() {
     assert_eq!(port.kind, PortKind::Data);
     assert_eq!(port.capacity, PortCapacity::Single);
     assert_eq!(port.ty, Some(TypeDesc::Float));
-    assert_eq!(spec.ports()[0].presentation().side(), Some(PortSide::Left));
+    assert_eq!(port.data, json!({ "slot": "lhs" }));
 }
 
 #[test]
@@ -205,7 +207,7 @@ fn semantic_catalog_rejects_duplicate_supplied_port_ids() {
     let mut catalog = NodeCatalog::new();
     catalog
         .register(
-            NodeKindSpec::builder("math.binary", "Binary", "math.binary")
+            NodeKindSpec::builder("math.binary")
                 .port(NodePortSpec::new(
                     "lhs",
                     PortDirection::In,
@@ -227,11 +229,65 @@ fn semantic_catalog_rejects_duplicate_supplied_port_ids() {
         catalog.instantiate_node_with_ids(
             &NodeKindKey::new("math.binary"),
             NodeId::from_u128(71),
-            CanvasPoint::default(),
+            test_bounds(CanvasPoint::default()),
             [duplicate, duplicate],
         ),
         Err(NodeCatalogInstantiationError::DuplicatePortId { port }) if port == duplicate
     ));
+}
+
+#[test]
+fn semantic_catalog_requires_valid_product_supplied_initial_bounds() {
+    let mut catalog = NodeCatalog::new();
+    catalog.register(add_spec("math.add", 1)).unwrap();
+    let kind = NodeKindKey::new("math.add");
+    let invalid = [
+        CanvasRect {
+            origin: CanvasPoint {
+                x: f32::NAN,
+                y: 0.0,
+            },
+            size: TEST_NODE_SIZE,
+        },
+        CanvasRect {
+            origin: CanvasPoint::default(),
+            size: CanvasSize {
+                width: 0.0,
+                height: 96.0,
+            },
+        },
+        CanvasRect {
+            origin: CanvasPoint::default(),
+            size: CanvasSize {
+                width: 180.0,
+                height: f32::INFINITY,
+            },
+        },
+    ];
+
+    for bounds in invalid {
+        assert_eq!(
+            catalog.instantiate_node(&kind, bounds).unwrap_err(),
+            NodeCatalogInstantiationError::InvalidInitialBounds
+        );
+    }
+}
+
+#[test]
+fn semantic_port_default_data_is_cloned_per_creation() {
+    let mut catalog = NodeCatalog::new();
+    catalog.register(add_spec("math.add", 1)).unwrap();
+    let kind = NodeKindKey::new("math.add");
+    let first = catalog
+        .instantiate_node(&kind, test_bounds(CanvasPoint::default()))
+        .unwrap();
+    let (_, _, mut first_ports) = first.into_parts();
+    first_ports[0].1.data["slot"] = json!("changed");
+
+    let second = catalog
+        .instantiate_node(&kind, test_bounds(CanvasPoint::default()))
+        .unwrap();
+    assert_eq!(second.ports()[0].1.data, json!({ "slot": "lhs" }));
 }
 
 #[test]
@@ -277,7 +333,7 @@ fn catalog_registration_conflicts_never_depend_on_registration_order() {
             if kind == NodeKindKey::new("math.shared")
     ));
 
-    let duplicate_ports = NodeKindSpec::builder("math.duplicate", "Duplicate", "math.duplicate")
+    let duplicate_ports = NodeKindSpec::builder("math.duplicate")
         .port(NodePortSpec::new(
             "value",
             PortDirection::In,
@@ -313,20 +369,20 @@ fn catalog_creation_can_only_publish_through_a_revisioned_graph_command() {
     catalog.register(add_spec("math.add", 1)).unwrap();
     let node_id = NodeId::from_u128(1);
     let port_id = PortId::from_u128(2);
-    let position = CanvasPoint { x: 24.0, y: 48.0 };
+    let bounds = test_bounds(CanvasPoint { x: 24.0, y: 48.0 });
     let runtime = GraphRuntime::builder(catalog.clone())
         .build(Graph::new(GraphId::from_u128(12)))
         .unwrap();
     let stale_version = runtime.snapshot().unwrap().version();
 
     let stale_creation: NodeCreation = catalog
-        .instantiate_node_with_ids(&NodeKindKey::new("math.add"), node_id, position, [port_id])
+        .instantiate_node_with_ids(&NodeKindKey::new("math.add"), node_id, bounds, [port_id])
         .unwrap();
     let prefix = catalog
         .instantiate_node_with_ids(
             &NodeKindKey::new("math.add"),
             NodeId::from_u128(3),
-            CanvasPoint::default(),
+            test_bounds(CanvasPoint::default()),
             [PortId::from_u128(4)],
         )
         .unwrap();
@@ -347,7 +403,7 @@ fn catalog_creation_can_only_publish_through_a_revisioned_graph_command() {
     assert!(runtime.snapshot().unwrap().graph().node(&node_id).is_none());
 
     let creation = catalog
-        .instantiate_node_with_ids(&NodeKindKey::new("math.add"), node_id, position, [port_id])
+        .instantiate_node_with_ids(&NodeKindKey::new("math.add"), node_id, bounds, [port_id])
         .unwrap();
     let applied = runtime
         .execute(creation.into_command(current_version))
@@ -366,7 +422,7 @@ fn create_from_wire_candidates_share_direction_kind_and_type_semantics() {
     let mut catalog = NodeCatalog::new();
     catalog
         .register(
-            NodeKindSpec::builder("z.last", "Last", "z.last")
+            NodeKindSpec::builder("z.last")
                 .port(
                     NodePortSpec::new(
                         "input",
@@ -381,7 +437,7 @@ fn create_from_wire_candidates_share_direction_kind_and_type_semantics() {
         .unwrap();
     catalog
         .register(
-            NodeKindSpec::builder("a.first", "First", "a.first")
+            NodeKindSpec::builder("a.first")
                 .port(
                     NodePortSpec::new(
                         "compatible",
@@ -437,6 +493,7 @@ fn create_from_wire_candidates_share_direction_kind_and_type_semantics() {
         .map(|candidate| {
             (
                 candidate.node_kind().0.as_str(),
+                candidate.kind_version(),
                 candidate.port().0.as_str(),
             )
         })
@@ -445,9 +502,9 @@ fn create_from_wire_candidates_share_direction_kind_and_type_semantics() {
     assert_eq!(
         keys,
         [
-            ("a.first", "compatible"),
-            ("a.first", "unresolved_type"),
-            ("z.last", "input"),
+            ("a.first", 1, "compatible"),
+            ("a.first", 1, "unresolved_type"),
+            ("z.last", 1, "input"),
         ]
     );
 
@@ -463,7 +520,7 @@ fn loose_create_from_wire_query_preserves_final_planner_type_direction() {
     let mut catalog = NodeCatalog::new();
     catalog
         .register(
-            NodeKindSpec::builder("math.source", "Source", "math.source")
+            NodeKindSpec::builder("math.source")
                 .port(
                     NodePortSpec::new(
                         "same_direction",
@@ -509,7 +566,7 @@ fn runtime_create_from_wire_query_is_revisioned_and_builds_one_atomic_command() 
     let mut catalog = NodeCatalog::new();
     catalog
         .register(
-            NodeKindSpec::builder("math.target", "Target", "math.target")
+            NodeKindSpec::builder("math.target")
                 .port(
                     NodePortSpec::new(
                         "input",
@@ -567,7 +624,7 @@ fn runtime_create_from_wire_query_is_revisioned_and_builds_one_atomic_command() 
         .instantiate_node_with_ids(
             query.candidates()[0].node_kind(),
             created_node,
-            CanvasPoint { x: 200.0, y: 100.0 },
+            test_bounds(CanvasPoint { x: 200.0, y: 100.0 }),
             [created_port],
         )
         .unwrap();
@@ -601,7 +658,7 @@ fn runtime_create_from_wire_query_is_revisioned_and_builds_one_atomic_command() 
         .instantiate_node_with_ids(
             refreshed.candidates()[0].node_kind(),
             created_node,
-            CanvasPoint { x: 200.0, y: 100.0 },
+            test_bounds(CanvasPoint { x: 200.0, y: 100.0 }),
             [created_port],
         )
         .unwrap();
@@ -797,7 +854,7 @@ fn runtime_canonicalizes_once_before_publishing_the_same_graph_to_every_view() {
     let mut catalog = NodeCatalog::new();
     catalog
         .register(
-            NodeKindSpec::builder("math.add", "Add", "math.add.native")
+            NodeKindSpec::builder("math.add")
                 .latest_kind_version(2)
                 .alias("legacy.add")
                 .build(),
@@ -849,7 +906,7 @@ fn runtime_rejects_a_registered_legacy_kind_before_any_view_can_attach() {
     let mut catalog = NodeCatalog::new();
     catalog
         .register(
-            NodeKindSpec::builder("math.add", "Add", "math.add.native")
+            NodeKindSpec::builder("math.add")
                 .latest_kind_version(2)
                 .alias("legacy.add")
                 .build(),
@@ -885,14 +942,10 @@ fn canonicalization_structurally_validates_the_migrated_result() {
     let mut catalog = NodeCatalog::new();
     catalog
         .register(
-            NodeKindSpec::builder(
-                SYMBOL_REF_NODE_KIND,
-                "Symbol Reference",
-                "symbol-ref.native",
-            )
-            .latest_kind_version(1)
-            .alias("legacy.symbol-ref")
-            .build(),
+            NodeKindSpec::builder(SYMBOL_REF_NODE_KIND)
+                .latest_kind_version(1)
+                .alias("legacy.symbol-ref")
+                .build(),
         )
         .unwrap();
     let node = NodeId::from_u128(3);
@@ -928,7 +981,7 @@ fn one_known_kind_failure_rejects_the_entire_scratch_migration() {
     catalog.register(add_spec("math.add", 2)).unwrap();
     catalog
         .register(
-            NodeKindSpec::builder("math.multiply", "Multiply", "math.multiply")
+            NodeKindSpec::builder("math.multiply")
                 .latest_kind_version(2)
                 .build(),
         )

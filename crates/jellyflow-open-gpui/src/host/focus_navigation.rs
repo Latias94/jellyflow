@@ -369,11 +369,7 @@ mod tests {
         let mut catalog = NodeCatalog::new();
         catalog
             .register(
-                NodeKindSpec::builder(KIND, "Focus node", "test.focus-renderer")
-                    .default_size(CanvasSize {
-                        width: 100.0,
-                        height: 60.0,
-                    })
+                NodeKindSpec::builder(KIND)
                     .port(NodePortSpec::new(
                         "out",
                         PortDirection::Out,
@@ -424,14 +420,7 @@ mod tests {
         const KIND: &str = "test.focus-portless-node";
         let mut catalog = NodeCatalog::new();
         catalog
-            .register(
-                NodeKindSpec::builder(KIND, "Focus portless node", "test.focus-renderer")
-                    .default_size(CanvasSize {
-                        width: 100.0,
-                        height: 60.0,
-                    })
-                    .build(),
-            )
+            .register(NodeKindSpec::builder(KIND).build())
             .expect("unique focus portless node kind");
         let mut graph = GraphBuilder::new(GraphId::from_u128(2));
         let nodes = (0..count)

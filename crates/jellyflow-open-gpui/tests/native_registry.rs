@@ -50,7 +50,7 @@ fn catalog_with(entries: impl IntoIterator<Item = NodeKindSpec>) -> NodeCatalog 
 }
 
 fn spec(kind: &str, version: u32) -> NodeKindSpec {
-    NodeKindSpec::builder(kind, kind, "legacy.catalog.renderer")
+    NodeKindSpec::builder(kind)
         .latest_kind_version(version)
         .build()
 }
@@ -248,7 +248,7 @@ fn duplicate_semantic_key_and_exact_stamp_are_atomic_while_incarnations_remain_d
 
 #[test]
 fn seal_reports_unknown_alias_and_version_mismatches_in_semantic_key_order() {
-    let canonical = NodeKindSpec::builder("m.canonical", "Canonical", "legacy")
+    let canonical = NodeKindSpec::builder("m.canonical")
         .latest_kind_version(4)
         .alias("a.alias")
         .build();

@@ -16,9 +16,7 @@ use jellyflow_runtime::interaction::{
 };
 use jellyflow_runtime::io::{GraphFile, PersistenceLimits, ViewSessionSeed, ViewSessionSeedFile};
 use jellyflow_runtime::profile::GraphProfile;
-use jellyflow_runtime::schema::{
-    NodeCatalog, NodeKindSpec, NodePortSpec, PortPresentationHint, PortSide,
-};
+use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec, NodePortSpec};
 use jellyflow_runtime::view::{
     AdapterEnvironment, EdgePickQuery, FeedbackCollector, FrameRequest, NodeLayoutTarget,
     RendererStamp, ViewSessionOptions, VisibleRouteQuery,
@@ -381,26 +379,27 @@ fn semantic_catalog_and_viewport_planning_are_framework_neutral() {
     let mut catalog = NodeCatalog::new();
     catalog
         .register(
-            NodeKindSpec::builder("public.value", "Value", "public.value")
-                .category(["Workflow"])
-                .default_size(CanvasSize {
-                    width: 120.0,
-                    height: 72.0,
-                })
-                .port(
-                    NodePortSpec::new(
-                        "value",
-                        PortDirection::Out,
-                        PortKind::Data,
-                        PortCapacity::Multi,
-                    )
-                    .with_presentation(PortPresentationHint::new().with_side(PortSide::Right)),
-                )
+            NodeKindSpec::builder("public.value")
+                .port(NodePortSpec::new(
+                    "value",
+                    PortDirection::Out,
+                    PortKind::Data,
+                    PortCapacity::Multi,
+                ))
                 .build(),
         )
         .expect("catalog registration");
     let creation = catalog
-        .instantiate_node(&NodeKindKey::new("public.value"), CanvasPoint::default())
+        .instantiate_node(
+            &NodeKindKey::new("public.value"),
+            CanvasRect {
+                origin: CanvasPoint::default(),
+                size: CanvasSize {
+                    width: 120.0,
+                    height: 72.0,
+                },
+            },
+        )
         .expect("catalog creation");
     let runtime = GraphRuntime::builder(catalog)
         .build(Graph::new(GraphId::from_u128(0x601)))

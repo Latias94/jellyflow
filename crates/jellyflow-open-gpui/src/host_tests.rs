@@ -8337,12 +8337,21 @@ fn create_from_wire_query_and_selection_add_one_node_and_edge_atomically(
             .connection_search_candidates(&request, window, cx)
             .expect("semantic candidates");
         assert_eq!(candidates.candidates().len(), 1);
+        let creation = connection_search_creation(&request, &candidates, 0);
         let submission = host
-            .select_connection_search_candidate(&request, &candidates, 0, window, cx)
+            .select_connection_search_candidate(&request, &candidates, 0, creation, window, cx)
             .expect("enqueue atomic create and connect");
         assert_eq!(host.connection_search_request(), None);
+        let repeated_creation = connection_search_creation(&request, &candidates, 0);
         assert!(matches!(
-            host.select_connection_search_candidate(&request, &candidates, 0, window, cx),
+            host.select_connection_search_candidate(
+                &request,
+                &candidates,
+                0,
+                repeated_creation,
+                window,
+                cx,
+            ),
             Err(super::OpenGpuiConnectionSearchError::InactiveRequest)
         ));
         assert!(matches!(
@@ -8454,8 +8463,9 @@ fn create_from_wire_selection_rebinds_after_an_unrelated_revision(
     let history_after_intervening = runtime.history_state().expect("history state");
 
     let submission = cx.update_window_entity(&host, |host, window, cx| {
+        let creation = connection_search_creation(&request, &candidates, 0);
         let submission = host
-            .select_connection_search_candidate(&request, &candidates, 0, window, cx)
+            .select_connection_search_candidate(&request, &candidates, 0, creation, window, cx)
             .expect("selection enters prefix-barrier commit");
         assert_eq!(
             host.interaction_presentation().phase(),
@@ -8533,7 +8543,8 @@ fn rejected_port_start_cannot_cancel_an_existing_search_or_commit(
             .expect("queued prefix command")
     });
     cx.update_window_entity(&host, |host, window, cx| {
-        host.select_connection_search_candidate(&request, &candidates, 0, window, cx)
+        let creation = connection_search_creation(&request, &candidates, 0);
+        host.select_connection_search_candidate(&request, &candidates, 0, creation, window, cx)
             .expect("selection waits behind prefix");
         assert_eq!(
             host.interaction_presentation().phase(),
@@ -8623,7 +8634,8 @@ fn cancelling_a_pending_interaction_releases_its_prefix_task_reservation(
                 super::OpenGpuiCommandOrigin::Binding,
             )
             .expect("queued prefix command");
-        host.select_connection_search_candidate(&request, &candidates, 0, window, cx)
+        let creation = connection_search_creation(&request, &candidates, 0);
+        host.select_connection_search_candidate(&request, &candidates, 0, creation, window, cx)
             .expect("selection waits behind prefix");
         assert!(host.has_pending_interaction_prefix_task());
         assert!(
@@ -10697,14 +10709,7 @@ fn portless_nodes_graph(nodes: &[NodeId]) -> jellyflow_core::Graph {
 fn portless_catalog() -> NodeCatalog {
     let mut catalog = NodeCatalog::new();
     catalog
-        .register(
-            NodeKindSpec::builder(KIND, "Portless scene node", RENDERER)
-                .default_size(CanvasSize {
-                    width: 180.0,
-                    height: 100.0,
-                })
-                .build(),
-        )
+        .register(NodeKindSpec::builder(KIND).build())
         .expect("unique portless node kind");
     catalog
 }
@@ -10713,11 +10718,7 @@ fn catalog() -> NodeCatalog {
     let mut catalog = NodeCatalog::new();
     catalog
         .register(
-            NodeKindSpec::builder(KIND, "Scene layer node", RENDERER)
-                .default_size(CanvasSize {
-                    width: 180.0,
-                    height: 100.0,
-                })
+            NodeKindSpec::builder(KIND)
                 .port(jellyflow_runtime::schema::NodePortSpec::new(
                     "input",
                     PortDirection::In,
@@ -10735,11 +10736,7 @@ fn catalog() -> NodeCatalog {
         .expect("unique node kind");
     catalog
         .register(
-            NodeKindSpec::builder(EXEC_KIND, "Scene layer exec node", RENDERER)
-                .default_size(CanvasSize {
-                    width: 180.0,
-                    height: 100.0,
-                })
+            NodeKindSpec::builder(EXEC_KIND)
                 .port(jellyflow_runtime::schema::NodePortSpec::new(
                     "input",
                     PortDirection::In,
@@ -10756,6 +10753,28 @@ fn catalog() -> NodeCatalog {
         )
         .expect("unique exec node kind");
     catalog
+}
+
+fn connection_search_creation(
+    request: &jellyflow_runtime::interaction::ConnectionSearchRequest,
+    candidates: &jellyflow_runtime::graph::CreateFromWireCandidates,
+    candidate_index: usize,
+) -> jellyflow_runtime::schema::NodeCreation {
+    let candidate = &candidates.candidates()[candidate_index];
+    let creation = catalog()
+        .instantiate_node(
+            candidate.node_kind(),
+            CanvasRect {
+                origin: request.canvas_position(),
+                size: CanvasSize {
+                    width: 180.0,
+                    height: 100.0,
+                },
+            },
+        )
+        .expect("product supplies valid initial geometry");
+    assert_eq!(creation.node().kind_version, candidate.kind_version());
+    creation
 }
 
 fn viewport() -> CanvasRect {

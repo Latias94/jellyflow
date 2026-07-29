@@ -393,8 +393,8 @@ impl DerivedGeometry {
         let (size, source) = if let Some(size) = node.size.filter(|size| size.is_positive_finite())
         {
             (size, FrameBoundsSource::Persisted)
-        } else if let Some(size) = request.kind_default_sizes.get(&node.kind).copied() {
-            (size, FrameBoundsSource::KindDefault)
+        } else if let Some(size) = request.kind_fallback_sizes.get(&node.kind).copied() {
+            (size, FrameBoundsSource::AdapterKindFallback)
         } else {
             (request.fallback_size, FrameBoundsSource::ProtocolFallback)
         };

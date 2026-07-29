@@ -246,13 +246,7 @@ impl OpenGpuiSceneHost {
                         frame_node.id(),
                         previous_geometry.as_ref(),
                     );
-                    Self::reconcile_mounted(
-                        mounted,
-                        frame_node,
-                        document_epoch,
-                        zoom,
-                        &self.catalog,
-                    )
+                    Self::reconcile_mounted(mounted, frame_node, document_epoch, zoom)
                 };
                 if let Some(binding) = binding_advance {
                     match self.advance_binding_from_frame(&binding, frame_node, cx) {
@@ -347,12 +341,9 @@ impl OpenGpuiSceneHost {
         frame: &FrameNode,
         document_epoch: jellyflow_runtime::graph::DocumentEpoch,
         zoom: f32,
-        catalog: &jellyflow_runtime::schema::NodeCatalog,
     ) -> Option<Entity<OpenGpuiNodeBinding>> {
         let previous_size = mounted.semantic_zoom.canonical_size();
-        mounted
-            .semantic_zoom
-            .reconcile(frame, catalog, document_epoch);
+        mounted.semantic_zoom.reconcile(frame, document_epoch);
         let canonical_size = mounted.semantic_zoom.canonical_size();
         if canonical_size != previous_size
             && !mounted.size_state.recognizes_authoritative_size(
@@ -594,8 +585,7 @@ impl OpenGpuiSceneHost {
             command_sink,
         );
         let accessible_name = self.accessible_node_name(frame);
-        let mut semantic_zoom =
-            OpenGpuiSemanticZoomState::from_frame(frame, &self.catalog, document_epoch);
+        let mut semantic_zoom = OpenGpuiSemanticZoomState::from_frame(frame, document_epoch);
 
         let (view, overview, content_kind, binding, registration_policy) = match binding_mount {
             Ok(binding_mount) => {
@@ -674,9 +664,8 @@ impl OpenGpuiSceneHost {
         let Some(node) = frame.node() else {
             return format!("Node {}", frame.id().0);
         };
-        self.catalog
-            .resolve_kind(&node.kind)
-            .and_then(|kind| self.registry.presentation(kind, node.kind_version))
+        self.registry
+            .presentation(&node.kind, node.kind_version)
             .map(|presentation| presentation.accessible_name().to_owned())
             .unwrap_or_else(|| node.kind.0.clone())
     }

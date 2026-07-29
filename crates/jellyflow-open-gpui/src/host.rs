@@ -43,7 +43,6 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use jellyflow_core::{CanvasPoint, CanvasRect, CanvasSize, NodeGraphConnectionMode, PortId};
-use jellyflow_runtime::schema::NodeCatalog;
 use jellyflow_runtime::viewport::ViewportTransform;
 use jellyflow_runtime::{
     geometry::ViewPoint, geometry::ViewRect, geometry::ViewSize,
@@ -190,7 +189,6 @@ pub struct OpenGpuiSceneHost {
     view: ViewSession,
     commands: Rc<OpenGpuiCommandJournal>,
     frame_transaction: Option<Rc<OpenGpuiFrameTransaction>>,
-    catalog: Arc<NodeCatalog>,
     registry: OpenGpuiNodeRegistry,
     frame_request_template: FrameRequest,
     viewport: CanvasRect,
@@ -256,19 +254,10 @@ struct OpenGpuiSceneHostWindowOwner {
     _release_subscription: Subscription,
 }
 
-fn registry_frame_request(
-    catalog: &NodeCatalog,
-    registry: &OpenGpuiNodeRegistry,
-    viewport: CanvasRect,
-) -> FrameRequest {
+fn registry_frame_request(registry: &OpenGpuiNodeRegistry, viewport: CanvasRect) -> FrameRequest {
     let mut request = FrameRequest::new(viewport, RendererStamp::new(DIAGNOSTIC_RENDERER_KEY, 1));
     for (kind, kind_version, renderer) in registry.mappings() {
         request = request.with_kind_renderer(kind.clone(), kind_version, renderer.clone());
-    }
-    for spec in catalog.kinds() {
-        if let Some(size) = spec.default_size() {
-            request = request.with_kind_default(spec.kind().clone(), size);
-        }
     }
     request.with_incident_routing_dependencies()
 }
@@ -297,8 +286,7 @@ impl OpenGpuiSceneHost {
 
     #[must_use]
     pub fn new(view: ViewSession, registry: OpenGpuiNodeRegistry, viewport: CanvasRect) -> Self {
-        let catalog = view.catalog_owned();
-        let frame_request_template = registry_frame_request(&catalog, &registry, viewport);
+        let frame_request_template = registry_frame_request(&registry, viewport);
         let navigation = OpenGpuiNavigationConfig::default();
         let canvas_interaction = CanvasInteractionSession::attach(&view, navigation.runtime_config())
             .expect("a newly constructed native host owns an open view with valid interaction configuration");
@@ -306,7 +294,6 @@ impl OpenGpuiSceneHost {
             view,
             commands: OpenGpuiCommandJournal::new(),
             frame_transaction: None,
-            catalog,
             registry,
             frame_request_template,
             viewport,
@@ -567,8 +554,8 @@ impl OpenGpuiSceneHost {
 
     /// Fits every visible node with canonical size into the measured native surface.
     ///
-    /// Hidden nodes and nodes without either a document size or catalog default are ignored. An
-    /// empty fit set, an unmeasured surface, or an active graph gesture is a deterministic no-op.
+    /// Hidden nodes and nodes without a document size are ignored. An empty fit set, an unmeasured
+    /// surface, or an active graph gesture is a deterministic no-op.
     pub fn fit_view(&mut self, cx: &mut Context<Self>) -> Result<bool, ViewSessionError> {
         if self.interaction_owner.presentation().phase() != CanvasInteractionPhase::Idle {
             return Ok(false);
@@ -585,11 +572,7 @@ impl OpenGpuiSceneHost {
                 if node.hidden {
                     return None;
                 }
-                let size = node.size.or_else(|| {
-                    self.catalog
-                        .get(&node.kind)
-                        .and_then(|spec| spec.default_size())
-                })?;
+                let size = node.size?;
                 node.bounds_for_size(size)
             })
             .reduce(union_canvas_rects);
@@ -645,11 +628,7 @@ impl OpenGpuiSceneHost {
                     saw_fresh_measurement = true;
                     return Some(measured.bounds());
                 }
-                let size = node.size.or_else(|| {
-                    self.catalog
-                        .get(&node.kind)
-                        .and_then(|spec| spec.default_size())
-                })?;
+                let size = node.size?;
                 node.bounds_for_size(size)
             })
             .reduce(union_canvas_rects);

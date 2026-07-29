@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use jellyflow_core::core::{CanvasPoint, NodeId, NodeKindKey, PortId, PortKey};
+use jellyflow_core::core::{CanvasRect, NodeId, NodeKindKey, PortId, PortKey};
 
 use super::migration::NodeKindMigrator;
 mod candidates;
@@ -15,7 +15,7 @@ pub use canonical::{
     NodeKindCanonicalization, NodeKindMigrationIssue, NodeKindUpgrade, OpaqueNodeKind,
 };
 pub use creation::NodeCreation;
-pub use spec::{NodeKindSpec, NodeKindSpecBuilder, NodePortSpec, PortPresentationHint, PortSide};
+pub use spec::{NodeKindSpec, NodeKindSpecBuilder, NodePortSpec};
 
 /// Invalid or conflicting semantic catalog registration.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -24,12 +24,6 @@ pub enum NodeCatalogRegistrationError {
     EmptyKind,
     #[error("node kind `{kind:?}` must declare a positive latest version")]
     InvalidKindVersion { kind: NodeKindKey },
-    #[error("node kind `{kind:?}` must declare a non-empty title")]
-    EmptyTitle { kind: NodeKindKey },
-    #[error("node kind `{kind:?}` must declare a non-empty renderer key")]
-    EmptyRendererKey { kind: NodeKindKey },
-    #[error("node kind `{kind:?}` declares invalid default size")]
-    InvalidDefaultSize { kind: NodeKindKey },
     #[error("node kind `{kind:?}` declares duplicate port key `{port:?}`")]
     DuplicatePortKey { kind: NodeKindKey, port: PortKey },
     #[error("node kind `{kind:?}` declares invalid alias `{alias:?}`")]
@@ -57,6 +51,8 @@ pub enum NodeCatalogRegistrationError {
 pub enum NodeCatalogInstantiationError {
     #[error("node kind is not registered: {kind:?}")]
     MissingKind { kind: NodeKindKey },
+    #[error("initial node bounds must have a finite origin and positive finite size")]
+    InvalidInitialBounds,
     #[error("port id count mismatch: expected {expected}, got {actual}")]
     PortIdCountMismatch { expected: usize, actual: usize },
     #[error("port id {port:?} was supplied more than once")]
@@ -175,23 +171,31 @@ impl NodeCatalog {
     pub fn instantiate_node(
         &self,
         kind: &NodeKindKey,
-        position: CanvasPoint,
+        bounds: CanvasRect,
     ) -> Result<NodeCreation, NodeCatalogInstantiationError> {
-        self.get(kind)
-            .map(|spec| spec.instantiate(position))
-            .ok_or_else(|| NodeCatalogInstantiationError::MissingKind { kind: kind.clone() })
+        let spec = self
+            .get(kind)
+            .ok_or_else(|| NodeCatalogInstantiationError::MissingKind { kind: kind.clone() })?;
+        if !bounds.is_positive_finite() {
+            return Err(NodeCatalogInstantiationError::InvalidInitialBounds);
+        }
+        Ok(spec.instantiate(bounds))
     }
 
     pub fn instantiate_node_with_ids(
         &self,
         kind: &NodeKindKey,
         node: NodeId,
-        position: CanvasPoint,
+        bounds: CanvasRect,
         ports: impl IntoIterator<Item = PortId>,
     ) -> Result<NodeCreation, NodeCatalogInstantiationError> {
-        self.get(kind)
-            .ok_or_else(|| NodeCatalogInstantiationError::MissingKind { kind: kind.clone() })?
-            .instantiate_with_ids(node, position, ports)
+        let spec = self
+            .get(kind)
+            .ok_or_else(|| NodeCatalogInstantiationError::MissingKind { kind: kind.clone() })?;
+        if !bounds.is_positive_finite() {
+            return Err(NodeCatalogInstantiationError::InvalidInitialBounds);
+        }
+        spec.instantiate_with_ids(node, bounds, ports)
     }
 
     pub(super) fn migrator(&self, kind: &NodeKindKey) -> Option<&Arc<dyn NodeKindMigrator>> {
@@ -232,25 +236,6 @@ fn validate_spec(spec: &NodeKindSpec) -> Result<(), NodeCatalogRegistrationError
             kind: spec.kind().clone(),
         });
     }
-    if spec.title().trim().is_empty() {
-        return Err(NodeCatalogRegistrationError::EmptyTitle {
-            kind: spec.kind().clone(),
-        });
-    }
-    if spec.renderer_key().trim().is_empty() {
-        return Err(NodeCatalogRegistrationError::EmptyRendererKey {
-            kind: spec.kind().clone(),
-        });
-    }
-    if spec
-        .default_size()
-        .is_some_and(|size| !size.is_positive_finite())
-    {
-        return Err(NodeCatalogRegistrationError::InvalidDefaultSize {
-            kind: spec.kind().clone(),
-        });
-    }
-
     let mut ports = BTreeSet::new();
     for port in spec.ports() {
         if !ports.insert(port.key().clone()) {

@@ -35,6 +35,7 @@ use open_gpui_canvas_jellyflow::nodes::{
     workflow_prompt_apply_selector, workflow_prompt_conflict_selector,
     workflow_prompt_reapply_selector, workflow_prompt_selector,
 };
+use open_gpui_canvas_jellyflow::product_catalog::native_product_catalog;
 use open_gpui_canvas_jellyflow::product_domain::condition::{
     ConditionCase, ConditionError, ConditionIntent, ConditionObservation, ConditionOperator,
     ConditionPredicate,
@@ -129,7 +130,7 @@ fn catalog_default_workflow_nodes_mount_without_product_side_data_repair(
         .instantiate_node_with_ids(
             &NodeKindKey::new(WORKFLOW_LLM_KIND),
             llm,
-            CanvasPoint { x: 40.0, y: 40.0 },
+            native_product_bounds(WORKFLOW_LLM_KIND, CanvasPoint { x: 40.0, y: 40.0 }),
             [
                 PortId::from_u128(0xd1fa_4101),
                 PortId::from_u128(0xd1fa_4102),
@@ -140,7 +141,7 @@ fn catalog_default_workflow_nodes_mount_without_product_side_data_repair(
         .instantiate_node_with_ids(
             &NodeKindKey::new(WORKFLOW_CONDITION_KIND),
             condition,
-            CanvasPoint { x: 460.0, y: 40.0 },
+            native_product_bounds(WORKFLOW_CONDITION_KIND, CanvasPoint { x: 460.0, y: 40.0 }),
             [
                 PortId::from_u128(0xd1fa_4201),
                 PortId::from_u128(0xd1fa_4202),
@@ -463,14 +464,18 @@ fn condition_header_input_port_stays_clear_of_the_first_branch_row(
 }
 
 #[test]
-fn workflow_demo_fixed_ports_match_the_native_catalog() {
+fn workflow_demo_fixed_ports_match_semantic_and_product_catalogs() {
     let catalog = native_node_catalog().expect("native catalog");
+    let product = native_product_catalog().expect("native product catalog");
     let graph = workflow_demo_graph().expect("workflow graph");
 
     for node_id in [workflow_llm_node_id(), workflow_condition_node_id()] {
         let node = graph.node(&node_id).expect("workflow demo node");
         let spec = catalog.get(&node.kind).expect("workflow kind in catalog");
-        assert_eq!(node.size, spec.default_size());
+        let presentation = product
+            .get(&node.kind, node.kind_version)
+            .expect("workflow product presentation");
+        assert_eq!(node.size, Some(presentation.initial_size()));
         assert!(node.ports.len() >= spec.ports().len());
         for port_spec in spec.ports() {
             let port_id = node
@@ -2193,6 +2198,17 @@ fn viewport() -> CanvasRect {
             width: 1_100.0,
             height: 720.0,
         },
+    }
+}
+
+fn native_product_bounds(kind: &str, origin: CanvasPoint) -> CanvasRect {
+    let product = native_product_catalog().expect("native product catalog");
+    let presentation = product
+        .get(&NodeKindKey::new(kind), 1)
+        .expect("native product presentation");
+    CanvasRect {
+        origin,
+        size: presentation.initial_size(),
     }
 }
 

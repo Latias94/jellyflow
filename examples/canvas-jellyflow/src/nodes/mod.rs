@@ -14,6 +14,7 @@ use jellyflow_runtime::schema::{NodeCatalog, NodeCatalogRegistrationError};
 use open_gpui::{App, AppContext, Entity};
 
 use crate::model_options::WorkflowModelOptionsState;
+use crate::product_catalog::{NativeProductCatalog, native_product_catalog};
 use crate::product_theme::NativeProductTheme;
 
 /// Application-owned visual configuration shared by one flagship graph surface and its nodes.
@@ -132,6 +133,7 @@ pub struct NativeNodeResources {
     shader_field_store: ShaderFieldStore,
     workflow_model_options: Entity<WorkflowModelOptionsState>,
     product_theme: NativeProductTheme,
+    product_catalog: NativeProductCatalog,
 }
 
 impl NativeNodeResources {
@@ -142,6 +144,8 @@ impl NativeNodeResources {
             shader_field_store: ShaderFieldStore::new(),
             workflow_model_options,
             product_theme: NativeProductTheme::default(),
+            product_catalog: native_product_catalog()
+                .expect("built-in native product catalog must be valid"),
         }
     }
 
@@ -167,6 +171,13 @@ impl NativeNodeResources {
         self.product_theme = product_theme;
         self
     }
+
+    /// Injects the product discovery and static-port presentation paired with the registry.
+    #[must_use]
+    pub fn with_product_catalog(mut self, product_catalog: NativeProductCatalog) -> Self {
+        self.product_catalog = product_catalog;
+        self
+    }
 }
 
 /// Builds the semantic node catalog paired with [`native_node_registry`].
@@ -190,12 +201,14 @@ pub fn register_native_nodes(
         registry,
         resources.shader_field_store,
         resources.product_theme,
+        resources.product_catalog.clone(),
     );
     workflow::register(
         registry,
         resources.workflow_field_store,
         resources.workflow_model_options,
         resources.product_theme,
+        resources.product_catalog,
     );
 }
 

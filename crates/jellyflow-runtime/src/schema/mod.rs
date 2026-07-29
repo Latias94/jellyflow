@@ -7,8 +7,7 @@ pub use catalog::{
     CanonicalGraph, CreateFromWireCandidate, NodeCatalog, NodeCatalogInstantiationError,
     NodeCatalogMigrationError, NodeCatalogMigrationReport, NodeCatalogRegistrationError,
     NodeCreation, NodeKindCanonicalization, NodeKindMigrationIssue, NodeKindSpec,
-    NodeKindSpecBuilder, NodeKindUpgrade, NodePortSpec, OpaqueNodeKind, PortPresentationHint,
-    PortSide,
+    NodeKindSpecBuilder, NodeKindUpgrade, NodePortSpec, OpaqueNodeKind,
 };
 pub use migration::{NodeKindMigrateError, NodeKindMigrator};
 

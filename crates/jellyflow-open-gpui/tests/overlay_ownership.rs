@@ -753,14 +753,7 @@ fn output_id() -> PortId {
 fn catalog() -> NodeCatalog {
     let mut catalog = NodeCatalog::new();
     catalog
-        .register(
-            NodeKindSpec::builder(KIND, "Overlay underlay", RENDERER)
-                .default_size(CanvasSize {
-                    width: 180.0,
-                    height: 100.0,
-                })
-                .build(),
-        )
+        .register(NodeKindSpec::builder(KIND).build())
         .expect("register overlay ownership node kind");
     catalog
 }

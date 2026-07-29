@@ -34,7 +34,6 @@ use open_gpui_ui_components::{Button, ButtonVariant, ListboxOption, Select, Text
 const KIND: &str = "external.dynamic-workflow";
 const RENDERER: &str = "external.native.dynamic-workflow";
 const SINK_KIND: &str = "external.sink";
-const SINK_RENDERER: &str = "external.native.missing-sink";
 const EDGE_RENDERER: &str = "external.edge.data";
 const NODE_SELECTOR: &str = "external-product-node";
 const CONTROL_SELECTOR: &str = "external-product-control";
@@ -284,11 +283,7 @@ fn external_catalog() -> NodeCatalog {
     let mut catalog = NodeCatalog::new();
     catalog
         .register(
-            NodeKindSpec::builder(KIND, "Dynamic workflow", "legacy.catalog.renderer")
-                .default_size(CanvasSize {
-                    width: 260.0,
-                    height: 180.0,
-                })
+            NodeKindSpec::builder(KIND)
                 .port(NodePortSpec::new(
                     "base",
                     PortDirection::Out,
@@ -300,11 +295,7 @@ fn external_catalog() -> NodeCatalog {
         .expect("register external dynamic node kind");
     catalog
         .register(
-            NodeKindSpec::builder(SINK_KIND, "Sink", SINK_RENDERER)
-                .default_size(CanvasSize {
-                    width: 160.0,
-                    height: 96.0,
-                })
+            NodeKindSpec::builder(SINK_KIND)
                 .port(NodePortSpec::new(
                     "input",
                     PortDirection::In,
@@ -422,14 +413,31 @@ fn external_retained_node_mounts_and_measures_real_ports(cx: &mut open_gpui::Tes
     let sink_kind = NodeKindKey::new(SINK_KIND);
 
     let creation = catalog
-        .instantiate_node_with_ids(&kind, node, CanvasPoint { x: 40.0, y: 48.0 }, [base_port])
+        .instantiate_node_with_ids(
+            &kind,
+            node,
+            CanvasRect {
+                origin: CanvasPoint { x: 40.0, y: 48.0 },
+                size: CanvasSize {
+                    width: 260.0,
+                    height: 180.0,
+                },
+            },
+            [base_port],
+        )
         .expect("instantiate external dynamic node");
     let (created_id, created_node, created_ports) = creation.into_parts();
     let sink_creation = catalog
         .instantiate_node_with_ids(
             &sink_kind,
             sink_node_id(),
-            CanvasPoint { x: 480.0, y: 48.0 },
+            CanvasRect {
+                origin: CanvasPoint { x: 480.0, y: 48.0 },
+                size: CanvasSize {
+                    width: 160.0,
+                    height: 96.0,
+                },
+            },
             [sink_port_id()],
         )
         .expect("instantiate external sink node");

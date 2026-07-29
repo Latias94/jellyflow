@@ -3,7 +3,7 @@ use jellyflow_core::{
     CanvasSize, Node, NodeId, NodeKindKey, PortCapacity, PortDirection, PortId, PortKind,
 };
 use jellyflow_open_gpui::authoring::{
-    OpenGpuiNodeAuthoring, OpenGpuiNodeBinding, OpenGpuiNodeObservation,
+    OpenGpuiNodeAuthoring, OpenGpuiNodeBinding, OpenGpuiNodeObservation, OpenGpuiPortSide,
 };
 use jellyflow_open_gpui::registry::{
     OpenGpuiNodeAdapterPresentation, OpenGpuiNodeRegistryBuilder, OpenGpuiNodeRendererDescriptor,
@@ -16,6 +16,7 @@ use jellyflow_open_gpui::retained_field::{
 #[cfg(test)]
 use jellyflow_open_gpui::retained_field::{RetainedFieldAttempt, RetainedFieldSettlement};
 use jellyflow_runtime::commands::GraphCommand;
+use jellyflow_runtime::geometry::HandlePosition;
 use jellyflow_runtime::schema::{NodeKindSpec, NodePortSpec};
 use jellyflow_runtime::view::RendererStamp;
 use open_gpui::{
@@ -26,6 +27,7 @@ use open_gpui_ui_components::prelude::Sizable;
 use open_gpui_ui_components::{Button, ButtonVariant, NumberInput};
 
 use super::{ShaderNodeError, ShaderPort, ShaderPortElement, port_element};
+use crate::product_catalog::{NativeProductCatalog, NativeProductNodePresentation};
 use crate::product_theme::NativeProductTheme;
 
 pub const SHADER_MULTIPLY_KIND: &str = "shader.multiply";
@@ -53,6 +55,7 @@ pub struct ShaderMultiplyNode {
     binding: Entity<OpenGpuiNodeBinding>,
     factor: RetainedField<f32>,
     product_theme: NativeProductTheme,
+    product_presentation: NativeProductNodePresentation,
     preview_expanded: bool,
     diagnostic: Option<String>,
 }
@@ -62,11 +65,13 @@ impl ShaderMultiplyNode {
         binding: Entity<OpenGpuiNodeBinding>,
         factor: RetainedField<f32>,
         product_theme: NativeProductTheme,
+        product_presentation: NativeProductNodePresentation,
     ) -> Self {
         Self {
             binding,
             factor,
             product_theme,
+            product_presentation,
             preview_expanded: false,
             diagnostic: None,
         }
@@ -203,6 +208,22 @@ impl Render for ShaderMultiplyNode {
         cx: &mut Context<Self>,
     ) -> impl open_gpui::IntoElement {
         let theme = self.product_theme;
+        let product_presentation = self.product_presentation.clone();
+        let input_a_text = product_presentation
+            .port(&jellyflow_core::PortKey::new("a"))
+            .expect("validated Multiply product presentation contains port a")
+            .label()
+            .to_owned();
+        let input_b_text = product_presentation
+            .port(&jellyflow_core::PortKey::new("b"))
+            .expect("validated Multiply product presentation contains port b")
+            .label()
+            .to_owned();
+        let result_text = product_presentation
+            .port(&jellyflow_core::PortKey::new("result"))
+            .expect("validated Multiply product presentation contains result")
+            .label()
+            .to_owned();
         let drag_handle = self.binding.read(cx).drag_handle();
         let (node_id, instance_scope, factor_observation, title, preview, input_a_connected, ports) = {
             let binding = self.binding.read(cx);
@@ -213,7 +234,7 @@ impl Render for ShaderMultiplyNode {
                 let title = data
                     .get("title")
                     .and_then(serde_json::Value::as_str)
-                    .unwrap_or("Multiply")
+                    .unwrap_or(product_presentation.title())
                     .to_owned();
                 let factor = finite_f32(data.get(SHADER_FACTOR_FIELD), 1.0);
                 let factor_observation = authoring
@@ -227,19 +248,24 @@ impl Render for ShaderMultiplyNode {
                     .ports()
                     .map(|port| {
                         let key = port.facts().key.clone();
-                        let label = match key.0.as_str() {
-                            "a" => "A".into(),
-                            "b" => "B".into(),
-                            "result" => "Result".into(),
-                            _ => key.0.clone().into(),
-                        };
+                        let product_port = product_presentation.port(&key);
+                        let label = product_port
+                            .map(|presentation| presentation.label().into())
+                            .unwrap_or_else(|| key.0.clone().into());
+                        let handle = product_port
+                            .map(|presentation| {
+                                port.handle()
+                                    .clone()
+                                    .with_side(open_gpui_side(presentation.side()))
+                            })
+                            .unwrap_or_else(|| port.handle().clone());
                         ShaderPort {
                             id: port.id(),
                             key,
                             direction: port.facts().dir,
                             kind: port.facts().kind,
                             label,
-                            handle: port.handle().clone(),
+                            handle,
                         }
                     })
                     .collect();
@@ -313,14 +339,14 @@ impl Render for ShaderMultiplyNode {
                     .debug_selector(move || input_a_label_selector.clone())
                     .text_sm()
                     .text_color(theme.text.secondary)
-                    .child("A"),
+                    .child(input_a_text.clone()),
             )
         } else {
             div()
                 .debug_selector(move || input_a_label_selector.clone())
                 .text_sm()
                 .text_color(theme.text.secondary)
-                .child("A")
+                .child(input_a_text)
         };
         let factor_editor = (!input_a_connected).then(|| {
             let editor_selector = shader_inline_editor_selector(node_id, "a");
@@ -371,7 +397,7 @@ impl Render for ShaderMultiplyNode {
                         .debug_selector(move || output_label_selector.clone())
                         .text_sm()
                         .text_color(theme.text.secondary)
-                        .child("Result"),
+                        .child(result_text),
                 )
                 .child(div().absolute().right(px(-6.0)).top(px(14.0)).child(marker));
         }
@@ -391,7 +417,7 @@ impl Render for ShaderMultiplyNode {
                     .debug_selector(move || input_b_label_selector.clone())
                     .text_sm()
                     .text_color(theme.text.secondary)
-                    .child("B"),
+                    .child(input_b_text),
             );
 
         let status_content = if self.factor.conflict().is_some() {
@@ -625,25 +651,19 @@ impl Render for ShaderMultiplyNode {
 }
 
 pub(super) fn catalog_spec() -> NodeKindSpec {
-    NodeKindSpec::builder(SHADER_MULTIPLY_KIND, "Multiply", SHADER_MULTIPLY_RENDERER)
-        .category(["Shader", "Math"])
-        .keywords(["multiply", "float", "vector"])
-        .default_size(SHADER_MULTIPLY_DEFAULT_SIZE)
+    NodeKindSpec::builder(SHADER_MULTIPLY_KIND)
         .ports([
             NodePortSpec::new("a", PortDirection::In, PortKind::Data, PortCapacity::Single)
-                .with_type(TypeDesc::Float)
-                .with_label("A"),
+                .with_type(TypeDesc::Float),
             NodePortSpec::new("b", PortDirection::In, PortKind::Data, PortCapacity::Single)
-                .with_type(TypeDesc::Float)
-                .with_label("B"),
+                .with_type(TypeDesc::Float),
             NodePortSpec::new(
                 "result",
                 PortDirection::Out,
                 PortKind::Data,
                 PortCapacity::Multi,
             )
-            .with_type(TypeDesc::Float)
-            .with_label("Result"),
+            .with_type(TypeDesc::Float),
         ])
         .default_data(serde_json::json!({
             "title": "Multiply",
@@ -657,18 +677,25 @@ pub(super) fn register(
     registry: &mut OpenGpuiNodeRegistryBuilder,
     field_store: ShaderFieldStore,
     product_theme: NativeProductTheme,
+    product_catalog: &NativeProductCatalog,
 ) {
+    let product_presentation = product_catalog
+        .get(&NodeKindKey::new(SHADER_MULTIPLY_KIND), 1)
+        .expect("Multiply renderer requires its product presentation")
+        .clone();
+    let accessible_name = product_presentation.title().to_owned();
     registry
         .register(OpenGpuiNodeRendererDescriptor::new(
             SHADER_MULTIPLY_KIND,
             1,
             RendererStamp::new(SHADER_MULTIPLY_RENDERER, 1),
-            OpenGpuiNodeAdapterPresentation::new("Multiply"),
+            OpenGpuiNodeAdapterPresentation::new(accessible_name),
             move |binding, _window, cx| {
                 Ok(mount_shader_multiply(
                     binding,
                     field_store.clone(),
                     product_theme,
+                    product_presentation.clone(),
                     cx,
                 ))
             },
@@ -680,6 +707,7 @@ fn mount_shader_multiply(
     binding: Entity<OpenGpuiNodeBinding>,
     field_store: ShaderFieldStore,
     product_theme: NativeProductTheme,
+    product_presentation: NativeProductNodePresentation,
     cx: &mut App,
 ) -> Entity<ShaderMultiplyNode> {
     let initial = binding
@@ -693,7 +721,16 @@ fn mount_shader_multiply(
         .expect("shader factor field key is a non-empty constant");
     let factor = RetainedField::mount(observation, key, field_store)
         .expect("shader node retained field must mount while its binding is live");
-    cx.new(|_| ShaderMultiplyNode::new(binding, factor, product_theme))
+    cx.new(|_| ShaderMultiplyNode::new(binding, factor, product_theme, product_presentation))
+}
+
+const fn open_gpui_side(side: HandlePosition) -> OpenGpuiPortSide {
+    match side {
+        HandlePosition::Top => OpenGpuiPortSide::Top,
+        HandlePosition::Right => OpenGpuiPortSide::Right,
+        HandlePosition::Bottom => OpenGpuiPortSide::Bottom,
+        HandlePosition::Left => OpenGpuiPortSide::Left,
+    }
 }
 
 #[must_use]
@@ -1037,6 +1074,11 @@ mod tests {
         let captured = Rc::new(RefCell::new(None::<Entity<ShaderMultiplyNode>>));
         let captured_for_factory = Rc::clone(&captured);
         let draft_store = ShaderFieldStore::new();
+        let product_presentation = crate::product_catalog::native_product_catalog()
+            .expect("native product catalog")
+            .get(&NodeKindKey::new(SHADER_MULTIPLY_KIND), 1)
+            .expect("Multiply product presentation")
+            .clone();
         let mut registry = OpenGpuiNodeRegistry::builder();
         registry
             .register(OpenGpuiNodeRendererDescriptor::new(
@@ -1049,6 +1091,7 @@ mod tests {
                         binding,
                         draft_store.clone(),
                         NativeProductTheme::shader_blueprint(),
+                        product_presentation.clone(),
                         cx,
                     );
                     captured_for_factory.borrow_mut().replace(node.clone());
@@ -1136,6 +1179,11 @@ mod tests {
         let captured = Rc::new(RefCell::new(None::<Entity<ShaderMultiplyNode>>));
         let captured_for_factory = Rc::clone(&captured);
         let draft_store = ShaderFieldStore::new();
+        let product_presentation = crate::product_catalog::native_product_catalog()
+            .expect("native product catalog")
+            .get(&NodeKindKey::new(SHADER_MULTIPLY_KIND), 1)
+            .expect("Multiply product presentation")
+            .clone();
         let mut registry = OpenGpuiNodeRegistry::builder();
         registry
             .register(OpenGpuiNodeRendererDescriptor::new(
@@ -1148,6 +1196,7 @@ mod tests {
                         binding,
                         draft_store.clone(),
                         NativeProductTheme::shader_blueprint(),
+                        product_presentation.clone(),
                         cx,
                     );
                     captured_for_factory.borrow_mut().replace(node.clone());
@@ -1221,7 +1270,10 @@ mod tests {
             .instantiate_node_with_ids(
                 &NodeKindKey::new(SHADER_MULTIPLY_KIND),
                 pending_factor_node_id(),
-                CanvasPoint::default(),
+                CanvasRect {
+                    origin: CanvasPoint::default(),
+                    size: SHADER_MULTIPLY_DEFAULT_SIZE,
+                },
                 [
                     PortId::from_u128(0x5ade_1101),
                     PortId::from_u128(0x5ade_1102),

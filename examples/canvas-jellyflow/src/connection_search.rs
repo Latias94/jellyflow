@@ -18,7 +18,6 @@ use jellyflow_runtime::interaction::{
     CanvasInteractionPhase, ConnectionSearchRequest, ConnectionSearchStatus,
     InteractionTerminalReason,
 };
-use jellyflow_runtime::schema::NodeCatalog;
 use jellyflow_runtime::view::{ViewCloseReason, ViewSession};
 use open_gpui::prelude::FluentBuilder;
 use open_gpui::{
@@ -29,6 +28,7 @@ use open_gpui::{
 use open_gpui_ui_components::gpui_adapter::TextInputController;
 use open_gpui_ui_components::{Button, ButtonVariant, TextInput};
 
+use crate::product_catalog::{NativeProductComposition, native_product_catalog};
 use crate::product_theme::NativeProductTheme;
 
 pub const NATIVE_GRAPH_SURFACE_SELECTOR: &str = "jellyflow-native-graph-surface";
@@ -172,7 +172,7 @@ impl NativeConnectionSearchSource for RuntimeConnectionSearchSource {
 pub struct NativeGraphSurface {
     host: Entity<OpenGpuiSceneHost>,
     product_theme: NativeProductTheme,
-    catalog: NodeCatalog,
+    product_catalog: NativeProductComposition,
     search_source: Arc<dyn NativeConnectionSearchSource>,
     query_controller: Entity<TextInputController>,
     search: Option<NativeConnectionSearch>,
@@ -270,6 +270,7 @@ fn native_candidate_commit_target(
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct NativeCandidateIdentity {
     kind: String,
+    kind_version: u32,
     port: String,
 }
 
@@ -277,6 +278,7 @@ impl NativeCandidateIdentity {
     fn from_candidate(candidate: &jellyflow_runtime::schema::CreateFromWireCandidate) -> Self {
         Self {
             kind: candidate.node_kind().0.clone(),
+            kind_version: candidate.kind_version(),
             port: candidate.port().0.clone(),
         }
     }
@@ -295,7 +297,7 @@ struct NativeConnectionSearchState<C> {
 }
 
 struct NativeCandidateRow {
-    index: usize,
+    authoritative_index: usize,
     identity: NativeCandidateIdentity,
     selector: String,
     title: String,
@@ -592,14 +594,14 @@ impl NativeConnectionSearchState<CreateFromWireCandidates> {
             .iter()
             .find(|row| &row.identity == identity && self.visible.contains(identity))?;
         let candidates = self.candidates.as_ref()?;
-        let candidate = candidates.candidates().get(row.index)?;
+        let candidate = candidates.candidates().get(row.authoritative_index)?;
         if NativeCandidateIdentity::from_candidate(candidate) != *identity {
             self.mark_stale_candidate(
                 "Candidate identity changed; refresh compatible nodes.".to_owned(),
             );
             return None;
         }
-        let candidate_index = row.index;
+        let candidate_index = row.authoritative_index;
         let candidates = candidates.clone();
         if !self.freeze_for_commit(identity) {
             return None;
@@ -674,7 +676,12 @@ impl NativeGraphSurface {
         initial_viewport_policy: InitialViewportPolicy,
         cx: &mut Context<Self>,
     ) -> Self {
-        let catalog = view.catalog().clone();
+        let product_catalog = NativeProductComposition::compose(
+            view.catalog_owned(),
+            native_product_catalog().expect("built-in product catalog must be valid"),
+            &registry,
+        )
+        .expect("native product catalog, semantic catalog, and registry must compose");
         let product_theme = visual_profile.product_theme();
         let (graph_theme, edge_painters) = visual_profile.into_host_parts();
         let host = cx.new(|_| {
@@ -709,7 +716,7 @@ impl NativeGraphSurface {
         Self {
             host,
             product_theme,
-            catalog,
+            product_catalog,
             search_source,
             query_controller,
             search: None,
@@ -835,7 +842,7 @@ impl NativeGraphSurface {
         self.search_load_task = None;
         let result = result
             .map(|candidates| {
-                let rows = Self::candidate_rows(&self.catalog, &candidates);
+                let rows = Self::candidate_rows(&self.product_catalog, &candidates);
                 (candidates, rows)
             })
             .map_err(|error| format!("Search failed: {error}"));
@@ -920,35 +927,47 @@ impl NativeGraphSurface {
     }
 
     fn candidate_rows(
-        catalog: &NodeCatalog,
+        product_catalog: &NativeProductComposition,
         candidates: &CreateFromWireCandidates,
     ) -> Vec<NativeCandidateRow> {
-        candidates
-            .candidates()
-            .iter()
-            .enumerate()
-            .filter_map(|(index, candidate)| {
-                let spec = catalog.get(candidate.node_kind())?;
-                let identity = NativeCandidateIdentity::from_candidate(candidate);
-                Some(NativeCandidateRow {
-                    index,
+        product_catalog
+            .project_candidates(candidates.candidates())
+            .into_iter()
+            .map(|candidate| {
+                let identity = NativeCandidateIdentity {
+                    kind: candidate.kind().0.clone(),
+                    kind_version: candidate.kind_version(),
+                    port: candidate.port().0.clone(),
+                };
+                NativeCandidateRow {
+                    authoritative_index: candidate.authoritative_index(),
                     identity,
                     selector: native_connection_search_candidate_selector(
-                        &candidate.node_kind().0,
+                        &candidate.kind().0,
                         &candidate.port().0,
                     ),
-                    title: spec.title().to_owned(),
-                    detail: format!("{} / {}", candidate.node_kind().0, candidate.port().0),
+                    title: candidate.title().to_owned(),
+                    detail: format!("{} / {}", candidate.kind().0, candidate.port().0),
                     searchable: format!(
                         "{} {} {} {} {}",
-                        spec.title(),
-                        candidate.node_kind().0,
+                        candidate.title(),
+                        candidate.kind().0,
                         candidate.port().0,
-                        spec.category().join(" "),
-                        spec.keywords().join(" ")
+                        candidate
+                            .category()
+                            .iter()
+                            .map(AsRef::as_ref)
+                            .collect::<Vec<&str>>()
+                            .join(" "),
+                        candidate
+                            .keywords()
+                            .iter()
+                            .map(AsRef::as_ref)
+                            .collect::<Vec<&str>>()
+                            .join(" ")
                     )
                     .to_lowercase(),
-                })
+                }
             })
             .collect()
     }
@@ -1016,11 +1035,35 @@ impl NativeGraphSurface {
         else {
             return;
         };
+        let Some(candidate) = candidates.candidates().get(candidate_index) else {
+            if let Some(search) = self.search.as_mut() {
+                search.state.mark_stale_candidate(
+                    "Candidate identity changed; refresh compatible nodes.".to_owned(),
+                );
+            }
+            cx.notify();
+            return;
+        };
+        let creation = match self.product_catalog.instantiate(
+            candidate.node_kind(),
+            candidate.kind_version(),
+            request.canvas_position(),
+        ) {
+            Ok(creation) => creation,
+            Err(error) => {
+                if let Some(search) = self.search.as_mut() {
+                    search.state.mark_stale_candidate(error.to_string());
+                }
+                cx.notify();
+                return;
+            }
+        };
         let result = self.host.update(cx, |host, cx| {
             let result = host.select_connection_search_candidate(
                 &request,
                 &candidates,
                 candidate_index,
+                creation,
                 window,
                 cx,
             );
@@ -1038,6 +1081,7 @@ impl NativeGraphSurface {
                         OpenGpuiConnectionSearchError::CandidateNoLongerValid
                         | OpenGpuiConnectionSearchError::CandidateUnavailable { .. }
                         | OpenGpuiConnectionSearchError::CandidateSetMismatch
+                        | OpenGpuiConnectionSearchError::CandidateCreationMismatch
                         | OpenGpuiConnectionSearchError::StaleGeneration
                         | OpenGpuiConnectionSearchError::InactiveRequest => {
                             search.state.mark_stale_candidate(message);
@@ -1045,8 +1089,7 @@ impl NativeGraphSurface {
                         OpenGpuiConnectionSearchError::Query(_) => {
                             search.state.mark_source_error(message);
                         }
-                        OpenGpuiConnectionSearchError::Instantiation(_)
-                        | OpenGpuiConnectionSearchError::CandidatePortUnavailable { .. }
+                        OpenGpuiConnectionSearchError::CandidatePortUnavailable { .. }
                         | OpenGpuiConnectionSearchError::InvalidSelection => {
                             search.state.mark_stale_candidate(message);
                         }
@@ -1576,13 +1619,14 @@ mod tests {
     fn candidate_identity(kind: &str) -> NativeCandidateIdentity {
         NativeCandidateIdentity {
             kind: kind.to_owned(),
+            kind_version: 1,
             port: "value".to_owned(),
         }
     }
 
     fn candidate_row(kind: &str, searchable: &str, index: usize) -> NativeCandidateRow {
         NativeCandidateRow {
-            index,
+            authoritative_index: index,
             identity: candidate_identity(kind),
             selector: format!("candidate-{kind}"),
             title: kind.to_owned(),

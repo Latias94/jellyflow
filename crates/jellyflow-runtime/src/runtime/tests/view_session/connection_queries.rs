@@ -557,7 +557,7 @@ fn create_from_wire_query_preserves_results_and_errors_across_view_capabilities(
     let mut catalog = NodeCatalog::new();
     catalog
         .register(
-            NodeKindSpec::builder("test.target", "Target", "test.target")
+            NodeKindSpec::builder("test.target")
                 .port(NodePortSpec::new(
                     "input",
                     PortDirection::In,

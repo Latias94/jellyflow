@@ -3,7 +3,9 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::time::Duration;
 
-use jellyflow_core::{CanvasSize, NodeId, PortCapacity, PortDirection, PortId, PortKind, TypeDesc};
+use jellyflow_core::{
+    CanvasSize, NodeId, NodeKindKey, PortCapacity, PortDirection, PortId, PortKind, TypeDesc,
+};
 use jellyflow_open_gpui::activity::{
     OpenGpuiActivityKind, OpenGpuiActivityLease, OpenGpuiNodeActivityHandle,
 };
@@ -30,8 +32,9 @@ use open_gpui_ui_components::{
 };
 
 use super::WORKFLOW_PORT_DIAMETER;
-use super::{WorkflowNodeStatus, WorkflowPort, workflow_alert, workflow_header};
+use super::{WorkflowNodeStatus, WorkflowPort, open_gpui_side, workflow_alert, workflow_header};
 use crate::nodes::sync_activity_lease;
+use crate::product_catalog::{NativeProductCatalog, NativeProductNodePresentation};
 use crate::product_domain::condition::{
     CONDITION_ELSE_PORT_KEY, CONDITION_KIND, ConditionCase, ConditionError, ConditionIntent,
     ConditionObservation, ConditionPredicate, condition_default_data,
@@ -108,6 +111,7 @@ pub struct WorkflowConditionNode {
     provider_activity_lease: Option<OpenGpuiActivityLease>,
     provider_task: Option<Task<()>>,
     product_theme: NativeProductTheme,
+    product_presentation: NativeProductNodePresentation,
     mutation_diagnostic: Option<String>,
     control_diagnostic: Option<ConditionControlDiagnostic>,
 }
@@ -137,6 +141,7 @@ impl WorkflowConditionNode {
         activity: OpenGpuiNodeActivityHandle,
         case_value_controller: Entity<TextInputController>,
         product_theme: NativeProductTheme,
+        product_presentation: NativeProductNodePresentation,
     ) -> Self {
         Self {
             binding,
@@ -154,6 +159,7 @@ impl WorkflowConditionNode {
             provider_activity_lease: None,
             provider_task: None,
             product_theme,
+            product_presentation,
             mutation_diagnostic: None,
             control_diagnostic: None,
         }
@@ -540,12 +546,19 @@ impl Render for WorkflowConditionNode {
         cx: &mut Context<Self>,
     ) -> impl open_gpui::IntoElement {
         let theme = self.product_theme;
+        let else_label = self
+            .product_presentation
+            .port(&jellyflow_core::PortKey::new(CONDITION_ELSE_PORT_KEY))
+            .expect("validated Condition product presentation contains else")
+            .label()
+            .to_owned();
         let node_id = self.node_id;
         let drag_handle = self.binding.read(cx).drag_handle();
         let authoring = self.binding.read(cx).authoring();
         let settlement;
         let data = match authoring {
-            Ok(authoring) => match read_condition_authoring(&authoring) {
+            Ok(authoring) => match read_condition_authoring(&authoring, &self.product_presentation)
+            {
                 Ok(data) => {
                     settlement = self.reconcile_command(
                         &authoring,
@@ -903,7 +916,7 @@ impl Render for WorkflowConditionNode {
                             .flex_1()
                             .truncate()
                             .text_sm()
-                            .child(else_branch.label().to_owned()),
+                            .child(else_label),
                     )
                     .child(
                         div()
@@ -1053,40 +1066,33 @@ impl Render for WorkflowConditionNode {
 }
 
 pub(super) fn catalog_spec() -> NodeKindSpec {
-    NodeKindSpec::builder(
-        WORKFLOW_CONDITION_KIND,
-        "Condition",
-        WORKFLOW_CONDITION_RENDERER,
-    )
-    .category(["Workflow", "Logic"])
-    .keywords(["condition", "case", "route", "if"])
-    .default_size(WORKFLOW_CONDITION_DEFAULT_SIZE)
-    .port(
-        NodePortSpec::new(
+    NodeKindSpec::builder(WORKFLOW_CONDITION_KIND)
+        .port(NodePortSpec::new(
             "input",
             PortDirection::In,
             PortKind::Exec,
             PortCapacity::Single,
-        )
-        .with_label("Input"),
-    )
-    .port(
-        NodePortSpec::new(
+        ))
+        .port(NodePortSpec::new(
             CONDITION_ELSE_PORT_KEY,
             PortDirection::Out,
             PortKind::Exec,
             PortCapacity::Multi,
-        )
-        .with_label("Else"),
-    )
-    .default_data(condition_default_data())
-    .build()
+        ))
+        .default_data(condition_default_data())
+        .build()
 }
 
 pub(super) fn register(
     registry: &mut OpenGpuiNodeRegistryBuilder,
     product_theme: NativeProductTheme,
+    product_catalog: &NativeProductCatalog,
 ) {
+    let product_presentation = product_catalog
+        .get(&NodeKindKey::new(WORKFLOW_CONDITION_KIND), 1)
+        .expect("Condition renderer requires its product presentation")
+        .clone();
+    let accessible_name = product_presentation.title().to_owned();
     let policy = OpenGpuiNodeRegistrationPolicy::default().with_size_policy(
         OpenGpuiNodeSizePolicy::ContentHeight(
             OpenGpuiContentHeightPolicy::new(CONDITION_MIN_HEIGHT, CONDITION_MAX_HEIGHT)
@@ -1099,8 +1105,15 @@ pub(super) fn register(
                 WORKFLOW_CONDITION_KIND,
                 1,
                 RendererStamp::new(WORKFLOW_CONDITION_RENDERER, 1),
-                OpenGpuiNodeAdapterPresentation::new("Condition"),
-                move |binding, _window, cx| Ok(mount_condition(binding, product_theme, cx)),
+                OpenGpuiNodeAdapterPresentation::new(accessible_name),
+                move |binding, _window, cx| {
+                    Ok(mount_condition(
+                        binding,
+                        product_theme,
+                        product_presentation.clone(),
+                        cx,
+                    ))
+                },
             )
             .with_policy(policy),
         )
@@ -1110,6 +1123,7 @@ pub(super) fn register(
 fn mount_condition(
     binding: Entity<OpenGpuiNodeBinding>,
     product_theme: NativeProductTheme,
+    product_presentation: NativeProductNodePresentation,
     cx: &mut App,
 ) -> Entity<WorkflowConditionNode> {
     let (instance, mutation, activity) = {
@@ -1130,6 +1144,7 @@ fn mount_condition(
             activity.clone(),
             controller,
             product_theme,
+            product_presentation,
         )
     });
     let provider_cancelled = Rc::new(Cell::new(false));
@@ -1173,6 +1188,7 @@ fn mount_condition(
 
 fn read_condition_authoring(
     authoring: &OpenGpuiNodeAuthoring,
+    product_presentation: &NativeProductNodePresentation,
 ) -> Result<ConditionRenderData, ConditionError> {
     let observation = condition_observation(authoring)?;
     let mut handles = authoring
@@ -1213,12 +1229,28 @@ fn read_condition_authoring(
         .ok_or(ConditionError::MissingElsePort {
             node: authoring.node_id(),
         })?;
+    let else_handle = product_presentation
+        .port(&jellyflow_core::PortKey::new(CONDITION_ELSE_PORT_KEY))
+        .map(|presentation| {
+            else_handle
+                .clone()
+                .with_side(open_gpui_side(presentation.side()))
+        })
+        .unwrap_or(else_handle);
     let input_port = observation.input_port();
     let input_handle = handles
         .remove(&input_port)
         .ok_or(ConditionError::MissingInputPort {
             node: authoring.node_id(),
         })?;
+    let input_handle = product_presentation
+        .port(&jellyflow_core::PortKey::new("input"))
+        .map(|presentation| {
+            input_handle
+                .clone()
+                .with_side(open_gpui_side(presentation.side()))
+        })
+        .unwrap_or(input_handle);
     Ok(ConditionRenderData {
         title: observation.title().to_owned(),
         cases,

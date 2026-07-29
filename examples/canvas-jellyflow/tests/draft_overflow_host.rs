@@ -25,8 +25,8 @@ use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec};
 use jellyflow_runtime::view::{RendererStamp, ViewSessionOptions};
 use open_gpui::{App, AppContext, Context, Entity, ParentElement, Render, Styled, Window, div};
 use open_gpui_canvas_jellyflow::nodes::{
-    NativeNodeResources, WORKFLOW_LLM_KIND, native_node_catalog, register_native_nodes,
-    workflow_prompt_selector,
+    NativeNodeResources, WORKFLOW_LLM_DEFAULT_SIZE, WORKFLOW_LLM_KIND, native_node_catalog,
+    register_native_nodes, workflow_prompt_selector,
 };
 use open_gpui_canvas_jellyflow::nodes::{WORKFLOW_PROMPT_FIELD, WorkflowFieldStore};
 use open_gpui_ui_components::gpui_adapter::init_text_input;
@@ -457,14 +457,7 @@ fn overflow_node_record(index: usize) -> Node {
 fn catalog() -> NodeCatalog {
     let mut catalog = NodeCatalog::new();
     catalog
-        .register(
-            NodeKindSpec::builder(KIND, "Workflow overflow", RENDERER)
-                .default_size(CanvasSize {
-                    width: 120.0,
-                    height: 80.0,
-                })
-                .build(),
-        )
+        .register(NodeKindSpec::builder(KIND).build())
         .expect("register overflow kind");
     catalog
 }
@@ -472,14 +465,7 @@ fn catalog() -> NodeCatalog {
 fn focus_overflow_catalog() -> NodeCatalog {
     let mut catalog = native_node_catalog().expect("native workflow catalog");
     catalog
-        .register(
-            NodeKindSpec::builder(KIND, "Workflow focus protector", RENDERER)
-                .default_size(CanvasSize {
-                    width: 120.0,
-                    height: 80.0,
-                })
-                .build(),
-        )
+        .register(NodeKindSpec::builder(KIND).build())
         .expect("register focus protector kind");
     catalog
 }
@@ -494,7 +480,10 @@ fn focus_overflow_graph() -> jellyflow_core::Graph {
         .instantiate_node_with_ids(
             &NodeKindKey::new(WORKFLOW_LLM_KIND),
             focus_overflow_llm_id(),
-            CanvasPoint::default(),
+            CanvasRect {
+                origin: CanvasPoint::default(),
+                size: WORKFLOW_LLM_DEFAULT_SIZE,
+            },
             [
                 PortId::from_u128(0xd1af_f101),
                 PortId::from_u128(0xd1af_f102),

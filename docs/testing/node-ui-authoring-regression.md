@@ -24,10 +24,10 @@ contracts.
 The dropped-wire search is intentionally application-owned. The Open GPUI host exposes only the
 revision-bound request, semantic candidate query, local overlay anchor, cancellation, and atomic
 commit operations. The example supplies an asynchronous, cancellation-by-drop provider plus native
-text input and candidate rows, filters against its own `NodeCatalog`, and verifies loading without
-blocking controls, empty results, source error/retry, stale generations, Escape, outside-click
-cancellation, and host-close cancellation. A future adapter can build a different search surface
-without taking on this UI or introducing a shared widget DSL.
+text input and candidate rows, projects semantic candidates through its validated product catalog,
+and verifies loading without blocking controls, empty results, source error/retry, stale
+generations, Escape, outside-click cancellation, and host-close cancellation. A future adapter can
+build a different search surface without taking on this UI or introducing a shared widget DSL.
 
 Dynamic handles are valid only when backed by stable graph `PortId`s. Product components must derive
 connected state from `ViewSession::port_connection_facts` or binding reads; they must not maintain a

@@ -1,11 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use jellyflow_core::{
-    CanvasSize, NodeId, Port, PortCapacity, PortDirection, PortId, PortKind, TypeDesc,
+    CanvasSize, NodeId, NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKind, TypeDesc,
 };
 use jellyflow_open_gpui::authoring::{
     MutationLayoutEffect, MutationLayoutSettlement, MutationRequest, MutationSettlement,
     OpenGpuiManagedMutation, OpenGpuiNodeAuthoring, OpenGpuiNodeBinding, OpenGpuiPortHandle,
+    OpenGpuiPortSide,
 };
 use jellyflow_open_gpui::registry::{
     OpenGpuiNodeAdapterPresentation, OpenGpuiNodeRegistrationPolicy, OpenGpuiNodeRegistryBuilder,
@@ -13,6 +14,7 @@ use jellyflow_open_gpui::registry::{
 };
 use jellyflow_open_gpui::size_policy::{OpenGpuiContentHeightPolicy, OpenGpuiNodeSizePolicy};
 use jellyflow_runtime::commands::IncidentEdgePolicy;
+use jellyflow_runtime::geometry::HandlePosition;
 use jellyflow_runtime::schema::{NodeKindSpec, NodePortSpec};
 use jellyflow_runtime::view::NodeInstanceKey;
 use jellyflow_runtime::view::RendererStamp;
@@ -23,6 +25,7 @@ use open_gpui::{
 use open_gpui_ui_components::{Button, ButtonVariant};
 
 use super::{ShaderPort, port_element};
+use crate::product_catalog::{NativeProductCatalog, NativeProductNodePresentation};
 use crate::product_domain::blueprint::{
     BlueprintError, BlueprintIntent, BlueprintObservation, BlueprintPin, blueprint_default_data,
     dynamic_pin_key,
@@ -58,6 +61,7 @@ pub struct BlueprintCallNode {
     node_id: NodeId,
     mutation: OpenGpuiManagedMutation<BlueprintIntent>,
     product_theme: NativeProductTheme,
+    product_presentation: NativeProductNodePresentation,
     mutation_diagnostic: Option<String>,
 }
 
@@ -76,12 +80,14 @@ impl BlueprintCallNode {
         instance: NodeInstanceKey,
         mutation: OpenGpuiManagedMutation<BlueprintIntent>,
         product_theme: NativeProductTheme,
+        product_presentation: NativeProductNodePresentation,
     ) -> Self {
         Self {
             binding,
             node_id: instance.node(),
             mutation,
             product_theme,
+            product_presentation,
             mutation_diagnostic: None,
         }
     }
@@ -257,24 +263,26 @@ impl Render for BlueprintCallNode {
         let authoring = self.binding.read(cx).authoring();
         let settlement;
         let data = match authoring {
-            Ok(authoring) => match read_blueprint_authoring(&authoring) {
-                Ok(data) => {
-                    settlement = self.reconcile_command(
-                        &authoring,
-                        data.observation
-                            .as_ref()
-                            .expect("live Blueprint render data has an observation"),
-                        cx,
-                    );
-                    self.apply_mutation_settlement(&settlement);
-                    Ok(data)
+            Ok(authoring) => {
+                match read_blueprint_authoring(&authoring, &self.product_presentation) {
+                    Ok(data) => {
+                        settlement = self.reconcile_command(
+                            &authoring,
+                            data.observation
+                                .as_ref()
+                                .expect("live Blueprint render data has an observation"),
+                            cx,
+                        );
+                        self.apply_mutation_settlement(&settlement);
+                        Ok(data)
+                    }
+                    Err(error) => {
+                        settlement = self.mutation.observe_unavailable(&authoring, cx);
+                        self.apply_mutation_settlement(&settlement);
+                        Err(error.to_string())
+                    }
                 }
-                Err(error) => {
-                    settlement = self.mutation.observe_unavailable(&authoring, cx);
-                    self.apply_mutation_settlement(&settlement);
-                    Err(error.to_string())
-                }
-            },
+            }
             Err(error) => {
                 settlement = self.mutation.observe_authoring_error(&error);
                 self.apply_mutation_settlement(&settlement);
@@ -674,46 +682,42 @@ impl Render for BlueprintCallNode {
 }
 
 pub(super) fn catalog_spec() -> NodeKindSpec {
-    NodeKindSpec::builder(
-        BLUEPRINT_CALL_KIND,
-        "Function Call",
-        BLUEPRINT_CALL_RENDERER,
-    )
-    .category(["Blueprint", "Functions"])
-    .keywords(["call", "function", "dynamic input"])
-    .default_size(BLUEPRINT_CALL_DEFAULT_SIZE)
-    .ports([
-        NodePortSpec::new(
-            "exec_in",
-            PortDirection::In,
-            PortKind::Exec,
-            PortCapacity::Single,
-        )
-        .with_label("In"),
-        NodePortSpec::new(
-            "exec_out",
-            PortDirection::Out,
-            PortKind::Exec,
-            PortCapacity::Multi,
-        )
-        .with_label("Out"),
-        NodePortSpec::new(
-            "value",
-            PortDirection::In,
-            PortKind::Data,
-            PortCapacity::Single,
-        )
-        .with_type(TypeDesc::Float)
-        .with_label("Value"),
-    ])
-    .default_data(blueprint_default_data())
-    .build()
+    NodeKindSpec::builder(BLUEPRINT_CALL_KIND)
+        .ports([
+            NodePortSpec::new(
+                "exec_in",
+                PortDirection::In,
+                PortKind::Exec,
+                PortCapacity::Single,
+            ),
+            NodePortSpec::new(
+                "exec_out",
+                PortDirection::Out,
+                PortKind::Exec,
+                PortCapacity::Multi,
+            ),
+            NodePortSpec::new(
+                "value",
+                PortDirection::In,
+                PortKind::Data,
+                PortCapacity::Single,
+            )
+            .with_type(TypeDesc::Float),
+        ])
+        .default_data(blueprint_default_data())
+        .build()
 }
 
 pub(super) fn register(
     registry: &mut OpenGpuiNodeRegistryBuilder,
     product_theme: NativeProductTheme,
+    product_catalog: &NativeProductCatalog,
 ) {
+    let product_presentation = product_catalog
+        .get(&NodeKindKey::new(BLUEPRINT_CALL_KIND), 1)
+        .expect("Blueprint renderer requires its product presentation")
+        .clone();
+    let accessible_name = product_presentation.title().to_owned();
     let policy = OpenGpuiNodeRegistrationPolicy::default().with_size_policy(
         OpenGpuiNodeSizePolicy::ContentHeight(
             OpenGpuiContentHeightPolicy::new(BLUEPRINT_MIN_HEIGHT, BLUEPRINT_MAX_HEIGHT)
@@ -726,7 +730,7 @@ pub(super) fn register(
                 BLUEPRINT_CALL_KIND,
                 1,
                 RendererStamp::new(BLUEPRINT_CALL_RENDERER, 1),
-                OpenGpuiNodeAdapterPresentation::new("Blueprint Call"),
+                OpenGpuiNodeAdapterPresentation::new(accessible_name),
                 move |binding, _window, cx| {
                     let (instance, mutation) = {
                         let binding = binding.read(cx);
@@ -740,7 +744,13 @@ pub(super) fn register(
                         (instance, binding.managed_mutation())
                     };
                     Ok(cx.new(|_| {
-                        BlueprintCallNode::new(binding, instance, mutation, product_theme)
+                        BlueprintCallNode::new(
+                            binding,
+                            instance,
+                            mutation,
+                            product_theme,
+                            product_presentation.clone(),
+                        )
                     }))
                 },
             )
@@ -809,6 +819,7 @@ pub fn blueprint_pin_scroll_selector(node: NodeId) -> String {
 
 fn read_blueprint_authoring(
     authoring: &OpenGpuiNodeAuthoring,
+    product_presentation: &NativeProductNodePresentation,
 ) -> Result<BlueprintRenderData, BlueprintError> {
     let observation = blueprint_observation(authoring)?;
     let mut handles = authoring
@@ -839,12 +850,22 @@ fn read_blueprint_authoring(
                 node: authoring.node_id(),
                 port: *port_id,
             })?;
+            let product_port = product_presentation.port(&facts.key);
+            let handle = product_port
+                .map(|presentation| {
+                    handle
+                        .clone()
+                        .with_side(open_gpui_side(presentation.side()))
+                })
+                .unwrap_or(handle);
             Ok(ShaderPort {
                 id: *port_id,
                 key: facts.key.clone(),
                 direction: facts.dir,
                 kind: facts.kind,
-                label: blueprint_port_label(facts).into(),
+                label: product_port
+                    .map(|presentation| presentation.label().into())
+                    .unwrap_or_else(|| blueprint_port_label(facts).into()),
                 handle,
             })
         })
@@ -860,6 +881,15 @@ fn read_blueprint_authoring(
         outputs,
         pins,
     })
+}
+
+const fn open_gpui_side(side: HandlePosition) -> OpenGpuiPortSide {
+    match side {
+        HandlePosition::Top => OpenGpuiPortSide::Top,
+        HandlePosition::Right => OpenGpuiPortSide::Right,
+        HandlePosition::Bottom => OpenGpuiPortSide::Bottom,
+        HandlePosition::Left => OpenGpuiPortSide::Left,
+    }
 }
 
 fn blueprint_observation(

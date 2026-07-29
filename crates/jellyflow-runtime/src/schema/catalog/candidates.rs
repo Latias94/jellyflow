@@ -8,16 +8,21 @@ use crate::rules::{ConnectionPortFacts, connection_semantics_accepts};
 /// One semantic node kind and real port that can complete a dropped wire.
 ///
 /// The stable keys are owned so native search state can safely retain results across frames.
-/// Palette and renderer metadata remain available through the catalog.
+/// Product discovery metadata and native renderer mappings are joined outside the runtime.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CreateFromWireCandidate {
     node_kind: NodeKindKey,
+    kind_version: u32,
     port: PortKey,
 }
 
 impl CreateFromWireCandidate {
     pub fn node_kind(&self) -> &NodeKindKey {
         &self.node_kind
+    }
+
+    pub const fn kind_version(&self) -> u32 {
+        self.kind_version
     }
 
     pub fn port(&self) -> &PortKey {
@@ -60,6 +65,7 @@ impl NodeCatalog {
                 ) {
                     candidates.push(CreateFromWireCandidate {
                         node_kind: node_kind.kind().clone(),
+                        kind_version: node_kind.latest_kind_version(),
                         port: port.key().clone(),
                     });
                 }

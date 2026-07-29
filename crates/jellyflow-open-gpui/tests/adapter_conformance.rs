@@ -627,14 +627,7 @@ fn dynamic_port(node: NodeId) -> Port {
 fn catalog() -> NodeCatalog {
     let mut catalog = NodeCatalog::new();
     catalog
-        .register(
-            NodeKindSpec::builder(TRACER_KIND, "Adapter tracer", TRACER_RENDERER)
-                .default_size(CanvasSize {
-                    width: 260.0,
-                    height: 180.0,
-                })
-                .build(),
-        )
+        .register(NodeKindSpec::builder(TRACER_KIND).build())
         .expect("tracer catalog entry");
     catalog
 }

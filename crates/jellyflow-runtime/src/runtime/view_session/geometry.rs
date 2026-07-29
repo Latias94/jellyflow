@@ -814,22 +814,22 @@ impl ViewSpatialIndex {
 
 #[derive(Debug, Clone, PartialEq)]
 struct AdmissionPolicy {
-    kind_default_sizes: Arc<BTreeMap<NodeKindKey, CanvasSize>>,
+    kind_fallback_sizes: Arc<BTreeMap<NodeKindKey, CanvasSize>>,
     fallback_size: CanvasSize,
 }
 
 impl AdmissionPolicy {
     fn from_request(request: &FrameRequest) -> Self {
         Self {
-            kind_default_sizes: request.kind_default_sizes.clone(),
+            kind_fallback_sizes: request.kind_fallback_sizes.clone(),
             fallback_size: request.fallback_size,
         }
     }
 
     fn matches(&self, request: &FrameRequest) -> bool {
         self.fallback_size == request.fallback_size
-            && (Arc::ptr_eq(&self.kind_default_sizes, &request.kind_default_sizes)
-                || self.kind_default_sizes == request.kind_default_sizes)
+            && (Arc::ptr_eq(&self.kind_fallback_sizes, &request.kind_fallback_sizes)
+                || self.kind_fallback_sizes == request.kind_fallback_sizes)
     }
 
     fn bounds_for(&self, node: &Node) -> Option<CanvasRect> {
@@ -839,7 +839,7 @@ impl AdmissionPolicy {
         let size = node
             .size
             .filter(|size| size.is_positive_finite())
-            .or_else(|| self.kind_default_sizes.get(&node.kind).copied())
+            .or_else(|| self.kind_fallback_sizes.get(&node.kind).copied())
             .unwrap_or(self.fallback_size);
         node.bounds_for_size(size)
     }

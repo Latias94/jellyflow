@@ -1523,11 +1523,7 @@ fn trace_creation(ids: TraceGraphIds) -> jellyflow_runtime::schema::NodeCreation
     let mut catalog = NodeCatalog::new();
     catalog
         .register(
-            NodeKindSpec::builder("trace.created", "Created", "trace.created")
-                .default_size(CanvasSize {
-                    width: 60.0,
-                    height: 60.0,
-                })
+            NodeKindSpec::builder("trace.created")
                 .port(NodePortSpec::new(
                     "port",
                     PortDirection::In,
@@ -1541,7 +1537,13 @@ fn trace_creation(ids: TraceGraphIds) -> jellyflow_runtime::schema::NodeCreation
         .instantiate_node_with_ids(
             &NodeKindKey::new("trace.created"),
             ids.created_node,
-            CanvasPoint::default(),
+            CanvasRect {
+                origin: CanvasPoint::default(),
+                size: CanvasSize {
+                    width: 60.0,
+                    height: 60.0,
+                },
+            },
             [ids.created_port],
         )
         .expect("trace node creation uses exact IDs")

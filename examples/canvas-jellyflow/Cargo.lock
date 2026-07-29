@@ -3544,6 +3544,7 @@ dependencies = [
  "open-gpui-platform",
  "open-gpui-ui-components",
  "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

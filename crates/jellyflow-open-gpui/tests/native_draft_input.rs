@@ -667,14 +667,7 @@ fn graph() -> jellyflow_core::Graph {
 fn catalog() -> NodeCatalog {
     let mut catalog = NodeCatalog::new();
     catalog
-        .register(
-            NodeKindSpec::builder(KIND, "Native draft", RENDERER)
-                .default_size(CanvasSize {
-                    width: 280.0,
-                    height: 96.0,
-                })
-                .build(),
-        )
+        .register(NodeKindSpec::builder(KIND).build())
         .unwrap();
     catalog
 }

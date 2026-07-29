@@ -11,13 +11,19 @@ use crate::runtime::graph_runtime::GraphVersion;
 /// minted by a snapshot.
 ///
 /// ```compile_fail
-/// use jellyflow_core::CanvasPoint;
+/// use jellyflow_core::{CanvasPoint, CanvasRect, CanvasSize};
 /// use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec};
 ///
 /// let mut catalog = NodeCatalog::new();
-/// catalog.register(NodeKindSpec::builder("demo.node", "Node", "demo.node").build()).unwrap();
+/// catalog.register(NodeKindSpec::builder("demo.node").build()).unwrap();
 /// let creation = catalog
-///     .instantiate_node(&jellyflow_core::NodeKindKey::new("demo.node"), CanvasPoint::default())
+///     .instantiate_node(
+///         &jellyflow_core::NodeKindKey::new("demo.node"),
+///         CanvasRect {
+///             origin: CanvasPoint::default(),
+///             size: CanvasSize { width: 160.0, height: 96.0 },
+///         },
+///     )
 ///     .unwrap();
 /// let transaction = creation.into_transaction();
 /// ```

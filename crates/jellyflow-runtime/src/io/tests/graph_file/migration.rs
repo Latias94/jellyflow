@@ -20,13 +20,9 @@ fn public_canonicalize_rejects_invalid_wrapper_fields_before_catalog_migration()
     let mut catalog = NodeCatalog::new();
     catalog
         .register(
-            NodeKindSpec::builder(
-                "test.wrapper-order",
-                "Wrapper order",
-                "test.native.wrapper-order",
-            )
-            .latest_kind_version(2)
-            .build(),
+            NodeKindSpec::builder("test.wrapper-order")
+                .latest_kind_version(2)
+                .build(),
         )
         .unwrap();
     catalog
@@ -89,7 +85,7 @@ fn canonical_graph_file_load_migrates_known_kinds_and_preserves_unknown_kinds() 
     let mut catalog = NodeCatalog::new();
     catalog
         .register(
-            NodeKindSpec::builder("core.note", "Note", "note.native")
+            NodeKindSpec::builder("core.note")
                 .latest_kind_version(2)
                 .alias("legacy.note")
                 .build(),
@@ -150,7 +146,7 @@ fn canonical_graph_file_load_rejects_a_partial_known_kind_migration() {
     let mut catalog = NodeCatalog::new();
     catalog
         .register(
-            NodeKindSpec::builder("core.note", "Note", "note.native")
+            NodeKindSpec::builder("core.note")
                 .latest_kind_version(2)
                 .build(),
         )

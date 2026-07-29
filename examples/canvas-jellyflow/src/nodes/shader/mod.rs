@@ -13,6 +13,7 @@ use open_gpui::{
     AnyElement, InteractiveElement, IntoElement, ParentElement, SharedString, Styled, div, px,
 };
 
+use crate::product_catalog::NativeProductCatalog;
 use crate::product_theme::NativeProductTheme;
 
 pub use crate::product_theme::NATIVE_FLOAT_STYLE_SLOT as SHADER_FLOAT_STYLE_SLOT;
@@ -107,9 +108,10 @@ pub(super) fn register_with_field_store(
     registry: &mut OpenGpuiNodeRegistryBuilder,
     field_store: ShaderFieldStore,
     product_theme: NativeProductTheme,
+    product_catalog: NativeProductCatalog,
 ) {
-    multiply::register(registry, field_store, product_theme);
-    blueprint_call::register(registry, product_theme);
+    multiply::register(registry, field_store, product_theme, &product_catalog);
+    blueprint_call::register(registry, product_theme, &product_catalog);
 }
 
 fn port_style_slot(kind: PortKind) -> Option<OpenGpuiGraphStyleSlot> {

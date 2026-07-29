@@ -727,7 +727,7 @@ pub struct FrameRequest {
     pub(crate) routing_dependencies: BTreeSet<NodeId>,
     pub(crate) incident_routing_dependencies: bool,
     pub(crate) required_nodes: BTreeSet<NodeId>,
-    pub(crate) kind_default_sizes: Arc<BTreeMap<NodeKindKey, CanvasSize>>,
+    pub(crate) kind_fallback_sizes: Arc<BTreeMap<NodeKindKey, CanvasSize>>,
     pub(crate) fallback_size: CanvasSize,
     pub(crate) materialization_budget: FrameMaterializationBudget,
 }
@@ -743,7 +743,7 @@ impl FrameRequest {
             routing_dependencies: BTreeSet::new(),
             incident_routing_dependencies: false,
             required_nodes: BTreeSet::new(),
-            kind_default_sizes: Arc::new(BTreeMap::new()),
+            kind_fallback_sizes: Arc::new(BTreeMap::new()),
             fallback_size: CanvasSize {
                 width: 160.0,
                 height: 96.0,
@@ -817,9 +817,9 @@ impl FrameRequest {
         self
     }
 
-    pub fn with_kind_default(mut self, kind: NodeKindKey, size: CanvasSize) -> Self {
+    pub fn with_kind_fallback_size(mut self, kind: NodeKindKey, size: CanvasSize) -> Self {
         if size.is_positive_finite() {
-            Arc::make_mut(&mut self.kind_default_sizes).insert(kind, size);
+            Arc::make_mut(&mut self.kind_fallback_sizes).insert(kind, size);
         }
         self
     }
@@ -857,7 +857,7 @@ pub struct FrameToken {
 pub enum FrameBoundsSource {
     Published,
     Persisted,
-    KindDefault,
+    AdapterKindFallback,
     ProtocolFallback,
 }
 

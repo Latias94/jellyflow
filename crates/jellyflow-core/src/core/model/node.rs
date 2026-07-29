@@ -80,7 +80,9 @@ pub struct Node {
     #[serde(default)]
     pub collapsed: bool,
 
-    /// Stable port ordering for this node (UI-facing).
+    /// Stable graph-member ordering for this node.
+    ///
+    /// Product and adapter presentation order is intentionally independent from this sequence.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ports: Vec<PortId>,
 

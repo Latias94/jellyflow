@@ -2646,14 +2646,7 @@ mod tests {
         );
         let mut catalog = NodeCatalog::new();
         catalog
-            .register(
-                NodeKindSpec::builder(KIND, "Command journal node", RENDERER)
-                    .default_size(CanvasSize {
-                        width: 180.0,
-                        height: 100.0,
-                    })
-                    .build(),
-            )
+            .register(NodeKindSpec::builder(KIND).build())
             .expect("command journal kind");
         let runtime = GraphRuntime::builder(catalog)
             .build(graph.build().expect("command journal graph"))

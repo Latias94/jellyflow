@@ -54,6 +54,7 @@ use open_gpui_canvas_jellyflow::nodes::{
     shader_inline_editor_selector, shader_inline_value_selector, shader_port_label_selector,
     shader_port_selector,
 };
+use open_gpui_canvas_jellyflow::product_catalog::native_product_catalog;
 use open_gpui_canvas_jellyflow::product_domain::blueprint::{
     BlueprintError, BlueprintIntent, BlueprintObservation, BlueprintPin,
 };
@@ -1677,16 +1678,65 @@ fn occupied_shader_reconnect_search_rejection_then_outside_cancel_preserves_edge
     });
 }
 
-#[test]
-fn native_catalog_declares_all_product_kinds_with_renderable_defaults_and_real_ports() {
+#[open_gpui::test]
+fn semantic_product_and_renderer_catalogs_own_distinct_native_node_contracts(
+    cx: &mut open_gpui::TestAppContext,
+) {
     let catalog = native_node_catalog().expect("native node catalog");
+    let product = native_product_catalog().expect("native product catalog");
+    let registry = cx.update(native_registry);
     assert_eq!(catalog.kinds().count(), 4);
+
+    for (kind, initial_size, renderer) in [
+        (
+            SHADER_MULTIPLY_KIND,
+            SHADER_MULTIPLY_DEFAULT_SIZE,
+            SHADER_MULTIPLY_RENDERER,
+        ),
+        (
+            BLUEPRINT_CALL_KIND,
+            BLUEPRINT_CALL_DEFAULT_SIZE,
+            BLUEPRINT_CALL_RENDERER,
+        ),
+        (
+            WORKFLOW_LLM_KIND,
+            WORKFLOW_LLM_DEFAULT_SIZE,
+            WORKFLOW_LLM_RENDERER,
+        ),
+        (
+            WORKFLOW_CONDITION_KIND,
+            WORKFLOW_CONDITION_DEFAULT_SIZE,
+            WORKFLOW_CONDITION_RENDERER,
+        ),
+    ] {
+        let kind = NodeKindKey::new(kind);
+        let presentation = product
+            .get(&kind, 1)
+            .expect("product presentation for semantic kind");
+        assert_eq!(presentation.initial_size(), initial_size);
+        assert_eq!(
+            registry.renderer_stamp(&kind, 1).map(|stamp| stamp.key()),
+            Some(renderer),
+        );
+        assert_eq!(
+            registry
+                .presentation(&kind, 1)
+                .map(|adapter| adapter.accessible_name()),
+            Some(presentation.title()),
+        );
+    }
+    assert!(
+        product
+            .get(&NodeKindKey::new(SHADER_MULTIPLY_KIND), 1)
+            .expect("shader product presentation")
+            .ports()
+            .any(|port| port.key().0 == "a" && port.label() == "A"),
+        "static port labels belong to the product presentation catalog",
+    );
 
     let shader = catalog
         .get(&NodeKindKey::new(SHADER_MULTIPLY_KIND))
         .expect("shader kind");
-    assert_eq!(shader.renderer_key(), SHADER_MULTIPLY_RENDERER);
-    assert_eq!(shader.default_size(), Some(SHADER_MULTIPLY_DEFAULT_SIZE));
     assert_eq!(shader.ports().len(), 3);
     assert!(shader.ports().iter().any(|port| {
         port.key().0 == "a"
@@ -1712,8 +1762,6 @@ fn native_catalog_declares_all_product_kinds_with_renderable_defaults_and_real_p
     let blueprint = catalog
         .get(&NodeKindKey::new(BLUEPRINT_CALL_KIND))
         .expect("blueprint kind");
-    assert_eq!(blueprint.renderer_key(), BLUEPRINT_CALL_RENDERER);
-    assert_eq!(blueprint.default_size(), Some(BLUEPRINT_CALL_DEFAULT_SIZE));
     assert_eq!(blueprint.ports().len(), 3);
     assert!(blueprint.ports().iter().any(|port| {
         port.key().0 == "value"
@@ -1732,8 +1780,6 @@ fn native_catalog_declares_all_product_kinds_with_renderable_defaults_and_real_p
     let llm = catalog
         .get(&NodeKindKey::new(WORKFLOW_LLM_KIND))
         .expect("workflow LLM kind");
-    assert_eq!(llm.renderer_key(), WORKFLOW_LLM_RENDERER);
-    assert_eq!(llm.default_size(), Some(WORKFLOW_LLM_DEFAULT_SIZE));
     assert_eq!(
         llm.ports()
             .iter()
@@ -1771,11 +1817,6 @@ fn native_catalog_declares_all_product_kinds_with_renderable_defaults_and_real_p
     let condition = catalog
         .get(&NodeKindKey::new(WORKFLOW_CONDITION_KIND))
         .expect("workflow condition kind");
-    assert_eq!(condition.renderer_key(), WORKFLOW_CONDITION_RENDERER);
-    assert_eq!(
-        condition.default_size(),
-        Some(WORKFLOW_CONDITION_DEFAULT_SIZE)
-    );
     assert_eq!(condition.ports().len(), 2);
     let input = &condition.ports()[0];
     assert_eq!(input.key().0, "input");
@@ -3035,7 +3076,7 @@ fn shader_layout_graph() -> jellyflow_core::Graph {
         .instantiate_node_with_ids(
             &NodeKindKey::new(SHADER_MULTIPLY_KIND),
             node_id(),
-            CanvasPoint { x: 40.0, y: 40.0 },
+            native_product_bounds(SHADER_MULTIPLY_KIND, CanvasPoint { x: 40.0, y: 40.0 }),
             [input_a_id(), input_b_id(), output_id()],
         )
         .expect("layout Multiply node");
@@ -3043,7 +3084,7 @@ fn shader_layout_graph() -> jellyflow_core::Graph {
         .instantiate_node_with_ids(
             &NodeKindKey::new(BLUEPRINT_CALL_KIND),
             blueprint_node_id(),
-            CanvasPoint { x: 380.0, y: 40.0 },
+            native_product_bounds(BLUEPRINT_CALL_KIND, CanvasPoint { x: 380.0, y: 40.0 }),
             [
                 blueprint_exec_input_id(),
                 blueprint_exec_output_id(),
@@ -3073,7 +3114,7 @@ fn shader_graph() -> jellyflow_core::Graph {
         .instantiate_node_with_ids(
             &NodeKindKey::new(SHADER_MULTIPLY_KIND),
             node_id(),
-            CanvasPoint { x: 40.0, y: 36.0 },
+            native_product_bounds(SHADER_MULTIPLY_KIND, CanvasPoint { x: 40.0, y: 36.0 }),
             [input_a_id(), input_b_id(), output_id()],
         )
         .expect("shader fixture node");
@@ -3081,7 +3122,7 @@ fn shader_graph() -> jellyflow_core::Graph {
         .instantiate_node_with_ids(
             &NodeKindKey::new(SHADER_MULTIPLY_KIND),
             source_node_id(),
-            CanvasPoint { x: -320.0, y: 36.0 },
+            native_product_bounds(SHADER_MULTIPLY_KIND, CanvasPoint { x: -320.0, y: 36.0 }),
             [source_input_a_id(), source_input_b_id(), source_output_id()],
         )
         .expect("upstream shader fixture node");
@@ -3112,7 +3153,7 @@ fn two_catalog_shader_nodes(source_output_type: TypeDesc) -> jellyflow_core::Gra
         .instantiate_node_with_ids(
             &NodeKindKey::new(SHADER_MULTIPLY_KIND),
             typed_source_node_id(),
-            CanvasPoint { x: 0.0, y: 0.0 },
+            native_product_bounds(SHADER_MULTIPLY_KIND, CanvasPoint { x: 0.0, y: 0.0 }),
             [
                 typed_source_input_a_id(),
                 typed_source_input_b_id(),
@@ -3124,7 +3165,7 @@ fn two_catalog_shader_nodes(source_output_type: TypeDesc) -> jellyflow_core::Gra
         .instantiate_node_with_ids(
             &NodeKindKey::new(SHADER_MULTIPLY_KIND),
             typed_target_node_id(),
-            CanvasPoint { x: 360.0, y: 0.0 },
+            native_product_bounds(SHADER_MULTIPLY_KIND, CanvasPoint { x: 360.0, y: 0.0 }),
             [
                 typed_target_input_id(),
                 typed_target_input_b_id(),
@@ -3152,7 +3193,7 @@ fn blueprint_graph() -> jellyflow_core::Graph {
         .instantiate_node_with_ids(
             &NodeKindKey::new(BLUEPRINT_CALL_KIND),
             blueprint_node_id(),
-            CanvasPoint { x: 32.0, y: 40.0 },
+            native_product_bounds(BLUEPRINT_CALL_KIND, CanvasPoint { x: 32.0, y: 40.0 }),
             [
                 blueprint_exec_input_id(),
                 blueprint_exec_output_id(),
@@ -3169,7 +3210,7 @@ fn blueprint_graph_with_source() -> jellyflow_core::Graph {
         .instantiate_node_with_ids(
             &NodeKindKey::new(SHADER_MULTIPLY_KIND),
             source_node_id(),
-            CanvasPoint { x: -320.0, y: 40.0 },
+            native_product_bounds(SHADER_MULTIPLY_KIND, CanvasPoint { x: -320.0, y: 40.0 }),
             [source_input_a_id(), source_input_b_id(), source_output_id()],
         )
         .expect("blueprint source node");
@@ -3177,7 +3218,7 @@ fn blueprint_graph_with_source() -> jellyflow_core::Graph {
         .instantiate_node_with_ids(
             &NodeKindKey::new(BLUEPRINT_CALL_KIND),
             blueprint_node_id(),
-            CanvasPoint { x: 32.0, y: 40.0 },
+            native_product_bounds(BLUEPRINT_CALL_KIND, CanvasPoint { x: 32.0, y: 40.0 }),
             [
                 blueprint_exec_input_id(),
                 blueprint_exec_output_id(),
@@ -3201,6 +3242,17 @@ fn graph_from_creations<const N: usize>(
         }
     }
     graph.build().expect("catalog graph")
+}
+
+fn native_product_bounds(kind: &str, origin: CanvasPoint) -> CanvasRect {
+    let product = native_product_catalog().expect("native product catalog");
+    let presentation = product
+        .get(&NodeKindKey::new(kind), 1)
+        .expect("native product presentation");
+    CanvasRect {
+        origin,
+        size: presentation.initial_size(),
+    }
 }
 
 fn node_id() -> NodeId {

@@ -556,11 +556,7 @@ fn canonical_graph_load_rejects_migration_work_before_invoking_migrators() {
     let calls = Arc::new(AtomicUsize::new(0));
     let mut catalog = NodeCatalog::new();
     catalog
-        .register(
-            NodeKindSpec::builder(kind, "Bounded migration", "test.native.bounded-migration")
-                .latest_kind_version(2)
-                .build(),
-        )
+        .register(NodeKindSpec::builder(kind).latest_kind_version(2).build())
         .unwrap();
     catalog
         .register_migrator(
@@ -619,11 +615,7 @@ fn migration_output_budget_stops_before_invoking_the_next_migrator() {
     let calls = Arc::new(AtomicUsize::new(0));
     let mut catalog = NodeCatalog::new();
     catalog
-        .register(
-            NodeKindSpec::builder(kind, "Incremental output budget", "test.native.incremental")
-                .latest_kind_version(2)
-                .build(),
-        )
+        .register(NodeKindSpec::builder(kind).latest_kind_version(2).build())
         .unwrap();
     catalog
         .register_migrator(

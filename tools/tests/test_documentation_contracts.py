@@ -27,7 +27,7 @@ class DocumentationContractTests(unittest.TestCase):
             / "tools"
             / "fixtures"
             / "external-consumer"
-            / "package-open-gpui"
+            / "open-gpui-adoption"
             / "src"
             / "main.rs"
         ).read_text(encoding="utf-8")

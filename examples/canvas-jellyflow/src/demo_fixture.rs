@@ -1,12 +1,18 @@
 use jellyflow_core::types::TypeDesc;
 use jellyflow_core::{
-    CanvasPoint, Edge, EdgeId, EdgeKind, Graph, GraphBuilder, GraphId, NodeId, NodeKindKey, PortId,
-    Symbol, SymbolId,
+    CanvasPoint, CanvasRect, Edge, EdgeId, EdgeKind, Graph, GraphBuilder, GraphId, NodeId,
+    NodeKindKey, PortId, Symbol, SymbolId,
 };
 use jellyflow_runtime::schema::NodeCatalog;
 use open_gpui_canvas_jellyflow::nodes::SHADER_MULTIPLY_KIND;
+use open_gpui_canvas_jellyflow::product_catalog::native_product_catalog;
 
 pub(crate) fn shader_demo_graph(catalog: &NodeCatalog) -> Result<Graph, String> {
+    let product = native_product_catalog()
+        .map_err(|error| format!("invalid native product catalog: {error}"))?;
+    let presentation = product
+        .get(&NodeKindKey::new(SHADER_MULTIPLY_KIND), 1)
+        .ok_or_else(|| "shader multiply is missing from the native product catalog".to_owned())?;
     let mut graph = GraphBuilder::new(GraphId::from_u128(0x7000));
     graph.insert_symbol(
         SymbolId::from_u128(0x7001),
@@ -37,7 +43,10 @@ pub(crate) fn shader_demo_graph(catalog: &NodeCatalog) -> Result<Graph, String> 
             .instantiate_node_with_ids(
                 &NodeKindKey::new(SHADER_MULTIPLY_KIND),
                 node_id,
-                position,
+                CanvasRect {
+                    origin: position,
+                    size: presentation.initial_size(),
+                },
                 [input_a, input_b, output],
             )
             .map_err(|error| format!("shader catalog ports do not match: {error:?}"))?;
@@ -105,11 +114,15 @@ mod tests {
     #[test]
     fn shader_demo_static_ports_match_the_native_catalog() {
         let catalog = native_node_catalog().expect("native node catalog");
+        let product = native_product_catalog().expect("native product catalog");
         let graph = shader_demo_graph(&catalog).expect("valid shader demo graph");
 
         for node in graph.nodes().values() {
             let spec = catalog.get(&node.kind).expect("demo node kind in catalog");
-            assert_eq!(node.size, spec.default_size());
+            let presentation = product
+                .get(&node.kind, node.kind_version)
+                .expect("demo node kind in product catalog");
+            assert_eq!(node.size, Some(presentation.initial_size()));
             assert_eq!(node.ports.len(), spec.ports().len());
             for (port_id, port_spec) in node.ports.iter().zip(spec.ports()) {
                 let port = graph.port(port_id).expect("demo port");

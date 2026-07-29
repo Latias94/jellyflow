@@ -5,7 +5,7 @@ use jellyflow_core::{CanvasPoint, Edge, EdgeId, EdgeKind, Graph, NodeId, PortId}
 use jellyflow_runtime::geometry::{
     EdgePath, EdgePresentationFacts, HandlePosition, resolve_edge_route_path,
 };
-use jellyflow_runtime::schema::NodeCatalogInstantiationError;
+use jellyflow_runtime::schema::NodeCreation;
 use jellyflow_runtime::{
     graph::CreateFromWireCandidates, graph::EdgeEndpoint, graph::EdgeInstanceKey,
     graph::PortConnectionDragIntent, interaction::CanvasInteractionError,
@@ -62,8 +62,8 @@ pub enum OpenGpuiConnectionSearchError {
     CandidateUnavailable { index: usize },
     #[error("selected connection search candidate is no longer valid for the source port")]
     CandidateNoLongerValid,
-    #[error("selected node kind could not be instantiated")]
-    Instantiation(#[from] NodeCatalogInstantiationError),
+    #[error("product creation does not match the selected semantic candidate")]
+    CandidateCreationMismatch,
     #[error("the selected node kind no longer declares port {port:?}")]
     CandidatePortUnavailable { port: jellyflow_core::PortKey },
     #[error("selected connection search candidate produced no topology")]
@@ -172,6 +172,7 @@ impl OpenGpuiSceneHost {
         request: &ConnectionSearchRequest,
         candidates: &CreateFromWireCandidates,
         candidate_index: usize,
+        creation: NodeCreation,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<OpenGpuiConnectionSearchSubmission, OpenGpuiConnectionSearchError> {
@@ -189,9 +190,11 @@ impl OpenGpuiSceneHost {
             .iter()
             .find(|current| **current == candidate)
             .ok_or(OpenGpuiConnectionSearchError::CandidateNoLongerValid)?;
-        let creation = self
-            .catalog
-            .instantiate_node(candidate.node_kind(), request.canvas_position())?;
+        if &creation.node().kind != candidate.node_kind()
+            || creation.node().kind_version != candidate.kind_version()
+        {
+            return Err(OpenGpuiConnectionSearchError::CandidateCreationMismatch);
+        }
         let node = creation.node_id();
         let port = creation.port_id(candidate.port()).ok_or_else(|| {
             OpenGpuiConnectionSearchError::CandidatePortUnavailable {
@@ -750,11 +753,7 @@ impl OpenGpuiSceneHost {
             .filter(|geometry| geometry.is_fresh())
             .map(|geometry| geometry.bounds())
             .or_else(|| {
-                let size = node.size.or_else(|| {
-                    self.catalog
-                        .get(&node.kind)
-                        .and_then(|spec| spec.default_size())
-                })?;
+                let size = node.size?;
                 node.bounds_for_size(size)
             })?;
         resolver

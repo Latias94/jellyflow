@@ -92,18 +92,21 @@ let command = GraphCommand::set_node_geometry(
 
 ## Native Nodes
 
-Applications register semantic node kinds in `NodeCatalog`: creation metadata, defaults, stable
-real-port declarations, types, renderer keys, and small presentation hints. The catalog does not
-describe controls, forms, slots, menus, inspectors, or widget layout.
+Applications register graph semantics in `NodeCatalog`: canonical kind/version identity, aliases,
+default graph data, and stable real-port identity, direction, kind, capacity, type, and data. Node
+creation supplies explicit initial bounds. Product discovery metadata, initial geometry, port
+labels/layout hints, and native renderer mappings deliberately live outside the headless runtime.
+The flagship example validates those three owners before exposing a node as creatable.
 
 Open GPUI authors register retained `Entity<V: Render>` factories with
 `OpenGpuiNodeRegistryBuilder`. Their node internals are normal Open GPUI controls. The shared
 adapter adds only graph-semantic capabilities: `OpenGpuiPortHandle` publishes real ports,
 `OpenGpuiNodeDragHandle` marks an explicit header or grip, and
 `OpenGpuiOverlayInteractionBoundary` owns popup hit testing outside node bounds. Ordinary controls
-and scroll areas need no Jellyflow wrapper. A native control builds a command from an owned binding
-read, enqueues it into the host's ordered feedback journal, and observes the eventual receipt
-through a one-shot ticket; it does not synchronously mutate the runtime during render.
+and scroll areas need no Jellyflow wrapper. A native control builds an explicit command from an
+owned binding read and submits it through managed authoring; runtime completion and authoritative
+snapshots are reconciled without exposing raw tickets to product renderers. Commands never mutate
+the runtime synchronously during render.
 
 Renderer registration also selects explicit scale and size authority. The default semantic LOD
 keeps arbitrary controls at native metrics, switches to canonical overview with hysteresis, and

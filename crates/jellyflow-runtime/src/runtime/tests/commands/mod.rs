@@ -50,7 +50,7 @@ fn canonical_add_catalog() -> NodeCatalog {
     let mut catalog = NodeCatalog::new();
     catalog
         .register(
-            NodeKindSpec::builder("math.add", "Add", "math.add.native")
+            NodeKindSpec::builder("math.add")
                 .latest_kind_version(2)
                 .alias("legacy.add")
                 .build(),

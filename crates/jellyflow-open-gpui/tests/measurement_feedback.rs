@@ -1073,14 +1073,7 @@ fn incomplete_layout_keeps_command_and_authoritative_route_until_atomic_refresh(
 ) {
     let mut node_catalog = catalog();
     node_catalog
-        .register(
-            NodeKindSpec::builder(VALID_SIBLING_KIND, "Valid sibling", VALID_SIBLING_RENDERER)
-                .default_size(CanvasSize {
-                    width: 140.0,
-                    height: 80.0,
-                })
-                .build(),
-        )
+        .register(NodeKindSpec::builder(VALID_SIBLING_KIND).build())
         .expect("unique sibling kind");
     let runtime = GraphRuntime::builder(node_catalog.clone())
         .build(graph_with_route_and_valid_sibling())
@@ -1686,14 +1679,7 @@ fn missing_renderer_fallback_measures_every_real_port(cx: &mut open_gpui::TestAp
 fn duplicate_renderer_stamp_is_rejected_without_mutating_the_registry() {
     let mut node_catalog = catalog();
     node_catalog
-        .register(
-            NodeKindSpec::builder(VALID_SIBLING_KIND, "Valid sibling", VALID_SIBLING_RENDERER)
-                .default_size(CanvasSize {
-                    width: 140.0,
-                    height: 80.0,
-                })
-                .build(),
-        )
+        .register(NodeKindSpec::builder(VALID_SIBLING_KIND).build())
         .unwrap();
 
     let mut registry = OpenGpuiNodeRegistry::builder();
@@ -2420,14 +2406,7 @@ fn edge_id() -> EdgeId {
 fn catalog() -> NodeCatalog {
     let mut catalog = NodeCatalog::new();
     catalog
-        .register(
-            NodeKindSpec::builder(KIND, "Measured node", RENDERER)
-                .default_size(CanvasSize {
-                    width: 220.0,
-                    height: 120.0,
-                })
-                .build(),
-        )
+        .register(NodeKindSpec::builder(KIND).build())
         .unwrap();
     catalog
 }

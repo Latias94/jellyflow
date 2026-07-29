@@ -581,7 +581,7 @@ fn provisional_admission_uses_document_catalog_and_protocol_sizes_in_order() {
     let frame = session
         .frame(
             FrameRequest::new(viewport(), RendererStamp::new("test.node", 1))
-                .with_kind_default(NodeKindKey::new("catalog"), catalog_size)
+                .with_kind_fallback_size(NodeKindKey::new("catalog"), catalog_size)
                 .with_fallback_size(fallback_size),
         )
         .unwrap();
@@ -606,7 +606,7 @@ fn provisional_admission_uses_document_catalog_and_protocol_sizes_in_order() {
     );
     assert_eq!(
         record(catalog_id).bounds_source(),
-        FrameBoundsSource::KindDefault
+        FrameBoundsSource::AdapterKindFallback
     );
     assert_eq!(record(catalog_id).bounds().size, catalog_size);
     assert_eq!(

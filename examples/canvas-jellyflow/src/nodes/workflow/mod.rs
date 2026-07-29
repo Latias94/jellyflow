@@ -3,13 +3,15 @@ mod llm;
 
 use jellyflow_core::types::TypeDesc;
 use jellyflow_core::{
-    CanvasPoint, Edge, EdgeId, EdgeKind, EdgeRouteSpec, EdgeViewDescriptor, Graph, GraphBuilder,
-    GraphId, GraphValidationError, NodeId, NodeKindKey, PortDirection, PortId, PortKind,
+    CanvasPoint, CanvasRect, Edge, EdgeId, EdgeKind, EdgeRouteSpec, EdgeViewDescriptor, Graph,
+    GraphBuilder, GraphId, GraphValidationError, NodeId, NodeKindKey, PortDirection, PortId,
+    PortKind,
 };
 use jellyflow_open_gpui::accessibility::OPEN_GPUI_DIAGNOSTIC_ROLE;
-use jellyflow_open_gpui::authoring::OpenGpuiPortHandle;
+use jellyflow_open_gpui::authoring::{OpenGpuiPortHandle, OpenGpuiPortSide};
 use jellyflow_open_gpui::chrome::{OpenGpuiPortMarker, OpenGpuiPortTone};
 use jellyflow_open_gpui::registry::OpenGpuiNodeRegistryBuilder;
+use jellyflow_runtime::geometry::HandlePosition;
 use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec};
 use open_gpui::{
     AnyElement, Div, ElementId, Entity, InteractiveElement, IntoElement, ParentElement,
@@ -17,6 +19,7 @@ use open_gpui::{
 };
 
 use crate::model_options::WorkflowModelOptionsState;
+use crate::product_catalog::NativeProductCatalog;
 use crate::product_domain::condition::{
     ConditionCase, ConditionPredicate, condition_case_route_port, condition_case_value_port,
     condition_data,
@@ -309,9 +312,25 @@ pub(super) fn register(
     field_store: WorkflowFieldStore,
     model_options: Entity<WorkflowModelOptionsState>,
     product_theme: NativeProductTheme,
+    product_catalog: NativeProductCatalog,
 ) {
-    llm::register(registry, field_store, model_options, product_theme);
-    condition::register(registry, product_theme);
+    llm::register(
+        registry,
+        field_store,
+        model_options,
+        product_theme,
+        &product_catalog,
+    );
+    condition::register(registry, product_theme, &product_catalog);
+}
+
+const fn open_gpui_side(side: HandlePosition) -> OpenGpuiPortSide {
+    match side {
+        HandlePosition::Top => OpenGpuiPortSide::Top,
+        HandlePosition::Right => OpenGpuiPortSide::Right,
+        HandlePosition::Bottom => OpenGpuiPortSide::Bottom,
+        HandlePosition::Left => OpenGpuiPortSide::Left,
+    }
 }
 
 pub fn workflow_demo_graph() -> Result<Graph, Vec<GraphValidationError>> {
@@ -364,7 +383,10 @@ pub fn workflow_demo_graph() -> Result<Graph, Vec<GraphValidationError>> {
         .instantiate_node_with_ids(
             &NodeKindKey::new(WORKFLOW_LLM_KIND),
             llm,
-            CanvasPoint { x: 90.0, y: 210.0 },
+            CanvasRect {
+                origin: CanvasPoint { x: 90.0, y: 210.0 },
+                size: WORKFLOW_LLM_DEFAULT_SIZE,
+            },
             [llm_input, llm_output],
         )
         .expect("workflow LLM fixture must match its catalog ports");
@@ -372,7 +394,10 @@ pub fn workflow_demo_graph() -> Result<Graph, Vec<GraphValidationError>> {
         .instantiate_node_with_ids(
             &NodeKindKey::new(WORKFLOW_CONDITION_KIND),
             condition,
-            CanvasPoint { x: 650.0, y: 170.0 },
+            CanvasRect {
+                origin: CanvasPoint { x: 650.0, y: 170.0 },
+                size: WORKFLOW_CONDITION_DEFAULT_SIZE,
+            },
             [condition_input, else_output],
         )
         .expect("workflow condition fixture must match its fixed catalog ports");
@@ -380,7 +405,10 @@ pub fn workflow_demo_graph() -> Result<Graph, Vec<GraphValidationError>> {
         .instantiate_node_with_ids(
             &NodeKindKey::new(WORKFLOW_LLM_KIND),
             response_llm,
-            CanvasPoint { x: 650.0, y: 720.0 },
+            CanvasRect {
+                origin: CanvasPoint { x: 650.0, y: 720.0 },
+                size: WORKFLOW_LLM_DEFAULT_SIZE,
+            },
             [response_input, response_output],
         )
         .expect("workflow response fixture must match its catalog ports");

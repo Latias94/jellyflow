@@ -4,6 +4,7 @@ use jellyflow_core::{
     CanvasPoint, CanvasRect, CanvasSize, NodeId, PortDirection, PortId, PortKind,
 };
 use jellyflow_runtime::geometry::HandlePosition;
+#[cfg(test)]
 use jellyflow_runtime::schema::NodeCatalog;
 use jellyflow_runtime::{
     graph::DocumentEpoch, graph::GraphRevision, graph::PortInstanceKey, view::FrameNode,
@@ -230,12 +231,8 @@ struct OpenGpuiDetailGeometryFreshness {
 }
 
 impl OpenGpuiSemanticZoomState {
-    pub(crate) fn from_frame(
-        frame: &FrameNode,
-        catalog: &NodeCatalog,
-        document_epoch: DocumentEpoch,
-    ) -> Self {
-        let canonical_size = authoritative_size(frame, catalog).unwrap_or(frame.bounds().size);
+    pub(crate) fn from_frame(frame: &FrameNode, document_epoch: DocumentEpoch) -> Self {
+        let canonical_size = authoritative_size(frame).unwrap_or(frame.bounds().size);
         let canonical_origin = authoritative_origin(frame, canonical_size);
         Self {
             canonical_origin,
@@ -257,13 +254,8 @@ impl OpenGpuiSemanticZoomState {
         }
     }
 
-    pub(crate) fn reconcile(
-        &mut self,
-        frame: &FrameNode,
-        catalog: &NodeCatalog,
-        document_epoch: DocumentEpoch,
-    ) {
-        if let Some(size) = authoritative_size(frame, catalog) {
+    pub(crate) fn reconcile(&mut self, frame: &FrameNode, document_epoch: DocumentEpoch) {
+        if let Some(size) = authoritative_size(frame) {
             self.canonical_size = size;
         }
         self.canonical_origin = authoritative_origin(frame, self.canonical_size);
@@ -648,11 +640,9 @@ const fn port_side(position: HandlePosition) -> OpenGpuiPortSide {
     }
 }
 
-fn authoritative_size(frame: &FrameNode, catalog: &NodeCatalog) -> Option<CanvasSize> {
+fn authoritative_size(frame: &FrameNode) -> Option<CanvasSize> {
     let node = frame.node()?;
-    node.size
-        .filter(|size| size.is_positive_finite())
-        .or_else(|| catalog_default_size(frame, catalog))
+    node.size.filter(|size| size.is_positive_finite())
 }
 
 fn structural_signature(
@@ -668,13 +658,6 @@ fn structural_signature(
         canonical_origin,
         canonical_size,
     }
-}
-
-fn catalog_default_size(frame: &FrameNode, catalog: &NodeCatalog) -> Option<CanvasSize> {
-    frame
-        .node()
-        .and_then(|node| catalog.get(&node.kind))
-        .and_then(|spec| spec.default_size())
 }
 
 fn ports_match_frame(ports: &[OpenGpuiOverviewPort], frame: &FrameNode) -> bool {
@@ -1099,11 +1082,8 @@ mod tests {
         let initial_frame = view.frame(frame_request()).expect("initial semantic frame");
         let initial_node = &initial_frame.nodes()[0];
         let port_instance = initial_node.ports()[0].instance();
-        let mut state = OpenGpuiSemanticZoomState::from_frame(
-            initial_node,
-            view.catalog(),
-            initial_frame.document_epoch(),
-        );
+        let mut state =
+            OpenGpuiSemanticZoomState::from_frame(initial_node, initial_frame.document_epoch());
         state.remember_detail_ports(
             initial_node.bounds(),
             [(
@@ -1132,11 +1112,7 @@ mod tests {
         let successor_node = &successor_frame.nodes()[0];
 
         assert_eq!(successor_node.ports()[0].instance(), port_instance);
-        state.reconcile(
-            successor_node,
-            view.catalog(),
-            successor_frame.document_epoch(),
-        );
+        state.reconcile(successor_node, successor_frame.document_epoch());
 
         assert_eq!(state.ports[0].instance, port_instance);
         assert_eq!(state.ports[0].detail_anchor, Some(remembered));
@@ -1165,11 +1141,8 @@ mod tests {
         let initial_frame = view.frame(frame_request()).expect("initial semantic frame");
         let initial_node = &initial_frame.nodes()[0];
         let retired_instance = initial_node.ports()[0].instance();
-        let mut state = OpenGpuiSemanticZoomState::from_frame(
-            initial_node,
-            view.catalog(),
-            initial_frame.document_epoch(),
-        );
+        let mut state =
+            OpenGpuiSemanticZoomState::from_frame(initial_node, initial_frame.document_epoch());
         state.remember_detail_ports(
             initial_node.bounds(),
             [(
@@ -1203,11 +1176,7 @@ mod tests {
         let replacement_instance = replacement_node.ports()[0].instance();
 
         assert_ne!(replacement_instance, retired_instance);
-        state.reconcile(
-            replacement_node,
-            view.catalog(),
-            replacement_frame.document_epoch(),
-        );
+        state.reconcile(replacement_node, replacement_frame.document_epoch());
 
         assert_eq!(state.ports[0].instance, replacement_instance);
         assert_eq!(state.ports[0].id(), port_id);
