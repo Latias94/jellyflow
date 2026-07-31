@@ -5,18 +5,19 @@ use jellyflow_core::{
     CanvasPoint, CanvasRect, CanvasSize, EdgeId, Graph, GraphBuilder, GraphId,
     NodeGraphConnectionMode, NodeId, NodeKindKey, PortDirection, PortId, PortKind, TypeDesc,
 };
-use jellyflow_open_gpui::host::OpenGpuiSceneHost;
+use jellyflow_open_gpui::host::{InitialViewportPolicy, OpenGpuiSceneHost};
 use jellyflow_open_gpui::registry::OpenGpuiNodeRegistry;
 use jellyflow_runtime::commands::{
     CommandExecutionKind, GraphCommand, IncidentEdgePolicy, TopologyEdit, TopologyPort,
 };
+use jellyflow_runtime::geometry::HandlePosition;
 use jellyflow_runtime::graph::{GraphRuntime, GraphRuntimeError};
 use jellyflow_runtime::io::GraphFile;
-use jellyflow_runtime::view::ViewSessionOptions;
+use jellyflow_runtime::view::{PublishedPortGeometry, ViewSessionOptions};
 use jellyflow_runtime::viewport::ViewportTransform;
 use open_gpui::{
-    AppContext, Bounds, Pixels, ScrollDelta, ScrollWheelEvent, TouchPhase, VisualTestContext,
-    point, px, size,
+    AppContext, Bounds, Entity, MouseButton, Pixels, ScrollDelta, ScrollWheelEvent, TouchPhase,
+    VisualTestContext, point, px, size,
 };
 use open_gpui_canvas_jellyflow::nodes::{
     NativeNodeResources, WORKFLOW_CONDITION_KIND, WORKFLOW_LLM_KIND, native_node_catalog,
@@ -183,6 +184,104 @@ fn catalog_default_workflow_nodes_mount_without_product_side_data_repair(
 }
 
 #[open_gpui::test]
+fn workflow_port_layout_anchor_and_hit_target_stay_stable_across_zoom(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    cx.update(init_text_input);
+    let runtime = native_runtime(workflow_demo_graph().expect("workflow port profile graph"))
+        .expect("workflow port profile runtime");
+    let input = {
+        let snapshot = runtime.snapshot().expect("workflow port profile snapshot");
+        workflow_port_by_key(&snapshot, workflow_llm_node_id(), "input")
+    };
+    let view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("workflow port profile view");
+    let weak_view = view.downgrade();
+    let (host, cx) = cx.add_window_view(move |_, cx| {
+        OpenGpuiSceneHost::new(view, native_registry(cx), viewport())
+    });
+
+    for zoom in [0.5, 1.0, 2.0] {
+        weak_view
+            .set_viewport(
+                ViewportTransform::new(CanvasPoint::default(), zoom)
+                    .expect("valid workflow port profile viewport"),
+            )
+            .expect("set workflow port profile viewport");
+        draw(cx);
+
+        let transform = weak_view.viewport_transform().expect("workflow viewport");
+        let geometry = weak_view.geometry_snapshot().expect("workflow geometry");
+        let port = geometry
+            .port(input)
+            .expect("published workflow input port")
+            .clone();
+        assert_workflow_port_profile(&port, &transform, zoom >= 1.0);
+        assert_native_workflow_port_hit_boundary(cx, &host, &port, &transform);
+        let after_probe = weak_view
+            .geometry_snapshot()
+            .expect("workflow geometry after boundary probe")
+            .port(input)
+            .expect("workflow input after boundary probe")
+            .clone();
+        assert_eq!(after_probe.visual_bounds(), port.visual_bounds());
+        assert_eq!(after_probe.hit_bounds(), port.hit_bounds());
+        assert_eq!(after_probe.route_anchor(), port.route_anchor());
+    }
+}
+
+fn assert_native_workflow_port_hit_boundary(
+    cx: &mut VisualTestContext,
+    host: &Entity<OpenGpuiSceneHost>,
+    port: &PublishedPortGeometry,
+    transform: &ViewportTransform,
+) {
+    assert!(matches!(
+        port.outward(),
+        HandlePosition::Left | HandlePosition::Right
+    ));
+    let hit = port.hit_bounds().expect("visible workflow port hit bounds");
+    let min = transform
+        .screen_point_for_canvas(hit.origin)
+        .expect("finite workflow hit origin");
+    let max = transform
+        .screen_point_for_canvas(CanvasPoint {
+            x: hit.origin.x + hit.size.width,
+            y: hit.origin.y + hit.size.height,
+        })
+        .expect("finite workflow hit extent");
+    let center_y = (min.y + max.y) * 0.5;
+    let (inside_x, outside_x) = match port.outward() {
+        HandlePosition::Left => (min.x + 0.5, min.x - 0.5),
+        HandlePosition::Right => (max.x - 0.5, max.x + 0.5),
+        HandlePosition::Top | HandlePosition::Bottom => unreachable!("workflow ports are lateral"),
+    };
+    let outside = point(px(outside_x), px(center_y));
+    cx.simulate_mouse_down(outside, MouseButton::Left, Default::default());
+    cx.read_entity(host, |host, _| {
+        assert!(
+            host.active_port_drag().is_none(),
+            "a point 0.5 px beyond the workflow hit boundary must not acquire a port",
+        );
+    });
+    cx.simulate_mouse_up(outside, MouseButton::Left, Default::default());
+
+    let inside = point(px(inside_x), px(center_y));
+    cx.simulate_mouse_down(inside, MouseButton::Left, Default::default());
+    cx.read_entity(host, |host, _| {
+        assert_eq!(
+            host.active_port_drag().map(|owner| owner.port()),
+            Some(port.port()),
+            "a point 0.5 px inside the workflow hit boundary must acquire the exact port",
+        );
+    });
+    cx.simulate_keystrokes("escape");
+    cx.simulate_mouse_up(inside, MouseButton::Left, Default::default());
+    draw(cx);
+}
+
+#[open_gpui::test]
 fn condition_async_provider_projects_loading_then_publishes_without_retention_protection(
     cx: &mut open_gpui::TestAppContext,
 ) {
@@ -283,6 +382,46 @@ fn workflow_layout_contract_holds_in_compact_window(cx: &mut open_gpui::TestAppC
 #[open_gpui::test]
 fn workflow_layout_contract_holds_in_normal_window(cx: &mut open_gpui::TestAppContext) {
     assert_workflow_layout_contract(cx, 1_440.0, 900.0);
+}
+
+#[open_gpui::test]
+fn workflow_measured_surface_fit_publishes_every_intrinsic_size_without_diagnostics(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    cx.update(init_text_input);
+    let runtime = Rc::new(native_runtime(workflow_demo_graph().unwrap()).unwrap());
+    let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    let weak_view = view.downgrade();
+    let (host, cx) = cx.add_window_view(move |_, cx| {
+        OpenGpuiSceneHost::new_measured_surface(view, native_registry(cx))
+            .with_initial_viewport_policy(InitialViewportPolicy::FitOnFirstMeasuredGeometry)
+    });
+
+    for _ in 0..12 {
+        draw(cx);
+        cx.read_entity(&host, |host, _| {
+            assert!(
+                host.last_diagnostic().is_none(),
+                "measured-surface convergence emitted a host diagnostic: {:?}",
+                host.last_diagnostic()
+            );
+        });
+    }
+
+    let snapshot = runtime.snapshot().unwrap();
+    let geometry = weak_view.geometry_snapshot().unwrap();
+    assert_eq!(geometry.nodes().len(), snapshot.graph().nodes().len());
+    for (node_id, _) in snapshot.graph().nodes() {
+        let published = geometry
+            .node(*node_id)
+            .unwrap_or_else(|| panic!("workflow node {node_id:?} has no published geometry"));
+        assert!(published.is_fresh());
+        assert!(published.bounds().is_positive_finite());
+    }
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(host.resource_snapshot().protected_instances(), 0);
+        assert_eq!(host.resource_snapshot().protected_leases(), 0);
+    });
 }
 
 #[open_gpui::test]
@@ -620,6 +759,7 @@ fn native_workflow_controls_commit_graph_facts_and_publish_real_case_ports(
     cx.simulate_click(value.center(), Default::default());
     cx.simulate_input("0.8");
     draw(cx);
+    let before_add = host_runtime.snapshot().unwrap();
 
     let add = cx
         .debug_bounds(&workflow_condition_add_selector(condition))
@@ -628,12 +768,19 @@ fn native_workflow_controls_commit_graph_facts_and_publish_real_case_ports(
     let submitted = host_runtime.snapshot().unwrap();
     let submitted_condition = ConditionObservation::from_snapshot(&submitted, condition).unwrap();
     assert_eq!(submitted_condition.cases().len(), 3);
-    draw(cx);
+    let expected_content_revision = before_add.revision() + 2;
+    assert!(submitted.revision() <= expected_content_revision);
+    for _ in 0..4 {
+        draw(cx);
+        if host_runtime.snapshot().unwrap().revision() == expected_content_revision {
+            break;
+        }
+    }
     let updated = host_runtime.snapshot().unwrap();
     assert_eq!(
         updated.revision(),
-        submitted.revision() + 1,
-        "one converged content-size command follows the atomic topology command"
+        expected_content_revision,
+        "Add emits one atomic topology command and one bounded content-size command"
     );
     let updated_condition = ConditionObservation::from_snapshot(&updated, condition).unwrap();
     let branches = updated_condition.cases();
@@ -2266,6 +2413,51 @@ fn draw(cx: &mut open_gpui::VisualTestContext) {
 
 fn draw_once(cx: &mut open_gpui::VisualTestContext) {
     cx.update(|window, cx| window.draw(cx).clear());
+}
+
+fn assert_workflow_port_profile(
+    port: &PublishedPortGeometry,
+    transform: &ViewportTransform,
+    detail: bool,
+) {
+    let visual = projected_workflow_rect_size(port.visual_bounds(), transform);
+    let hit = projected_workflow_rect_size(
+        port.hit_bounds().expect("visible workflow port hit target"),
+        transform,
+    );
+    if detail {
+        assert!((visual.width - 12.0).abs() <= 0.1);
+        assert!((visual.height - 12.0).abs() <= 0.1);
+    } else {
+        assert!(visual.width > 0.0 && visual.width <= 10.0);
+        assert!(visual.height > 0.0 && visual.height <= 10.0);
+    }
+    assert!((hit.width - 22.0).abs() <= 0.1);
+    assert!((hit.height - 22.0).abs() <= 0.1);
+
+    let bounds = port.visual_bounds();
+    let center = CanvasPoint {
+        x: bounds.origin.x + bounds.size.width * 0.5,
+        y: bounds.origin.y + bounds.size.height * 0.5,
+    };
+    assert!((port.route_anchor().x - center.x).abs() <= 0.01);
+    assert!((port.route_anchor().y - center.y).abs() <= 0.01);
+}
+
+fn projected_workflow_rect_size(bounds: CanvasRect, transform: &ViewportTransform) -> CanvasSize {
+    let origin = transform
+        .screen_point_for_canvas(bounds.origin)
+        .expect("finite workflow bounds origin");
+    let far = transform
+        .screen_point_for_canvas(CanvasPoint {
+            x: bounds.origin.x + bounds.size.width,
+            y: bounds.origin.y + bounds.size.height,
+        })
+        .expect("finite workflow bounds extent");
+    CanvasSize {
+        width: (far.x - origin.x).abs(),
+        height: (far.y - origin.y).abs(),
+    }
 }
 
 fn assert_workflow_layout_contract(

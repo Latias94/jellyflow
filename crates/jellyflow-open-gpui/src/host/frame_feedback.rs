@@ -16,6 +16,7 @@ use crate::command_journal::{
 use crate::port_handle::{OpenGpuiMeasurementError, OpenGpuiPendingMeasurements};
 
 use super::OpenGpuiSceneHost;
+use super::interaction_session::NodeDragRouteHandoffToken;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum LayoutReceiptAction {
@@ -57,6 +58,7 @@ pub(super) struct OpenGpuiFrameTransaction {
     measurements: Rc<OpenGpuiPendingMeasurements>,
     commands: Rc<OpenGpuiCommandJournal>,
     scheduled: Cell<bool>,
+    node_drag_route_handoff: Cell<Option<NodeDragRouteHandoffToken>>,
     #[cfg(test)]
     fault: Cell<Option<OpenGpuiFrameTransactionFault>>,
 }
@@ -81,6 +83,7 @@ impl OpenGpuiFrameTransaction {
             measurements,
             commands,
             scheduled: Cell::new(false),
+            node_drag_route_handoff: Cell::new(None),
             #[cfg(test)]
             fault: Cell::new(None),
         }
@@ -96,6 +99,14 @@ impl OpenGpuiFrameTransaction {
 
     pub(super) fn schedule_once(&self) -> bool {
         !self.scheduled.replace(true)
+    }
+
+    pub(super) fn mark_node_drag_route_handoff(&self, token: NodeDragRouteHandoffToken) {
+        self.node_drag_route_handoff.set(Some(token));
+    }
+
+    pub(super) fn node_drag_route_handoff(&self) -> Option<NodeDragRouteHandoffToken> {
+        self.node_drag_route_handoff.get()
     }
 
     pub(super) fn requires_follow_up_frame(&self) -> bool {

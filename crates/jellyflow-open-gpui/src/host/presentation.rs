@@ -155,7 +155,7 @@ impl OpenGpuiSceneHost {
 
         let interaction = self.interaction_owner.presentation();
         let connection = interaction.connection();
-        let keyboard_source = self.interaction_owner.keyboard_connection_source();
+        let keyboard_source = self.interaction_owner.retained_keyboard_connection_source();
         let keyboard_feedback = self
             .interaction_owner
             .keyboard_connection_feedback()

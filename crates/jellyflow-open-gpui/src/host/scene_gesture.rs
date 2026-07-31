@@ -309,7 +309,7 @@ impl OpenGpuiSceneHost {
     ) -> bool {
         if self
             .interaction_owner
-            .keyboard_connection_source()
+            .armed_keyboard_connection_source()
             .is_some()
         {
             let cancelled = self.interaction_owner.cancel();

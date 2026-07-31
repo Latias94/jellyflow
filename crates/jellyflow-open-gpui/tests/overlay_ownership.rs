@@ -7,9 +7,7 @@ use jellyflow_core::{
 };
 use jellyflow_open_gpui::authoring::OpenGpuiNodeBinding;
 use jellyflow_open_gpui::host::{OpenGpuiConnectionOptions, OpenGpuiSceneHost};
-use jellyflow_open_gpui::interaction::{
-    OpenGpuiPortDragCancelReason, OpenGpuiPortDragPhase, OpenGpuiPortEvent,
-};
+use jellyflow_open_gpui::interaction::{OpenGpuiPortDragPhase, OpenGpuiPortEvent};
 use jellyflow_open_gpui::registry::{
     OpenGpuiNodeAdapterPresentation, OpenGpuiNodeRegistry, OpenGpuiNodeRendererDescriptor,
 };
@@ -586,7 +584,7 @@ fn active_port_capture_precedes_a_new_overlay_until_explicit_release(
 }
 
 #[open_gpui::test]
-fn escape_cancels_capture_before_the_overlay_becomes_the_pointer_owner(
+fn overlay_owns_escape_while_existing_pointer_capture_waits_for_physical_release(
     cx: &mut open_gpui::TestAppContext,
 ) {
     let (_runtime, host, scene, cx, overlay_open, events, _view) = mount_scene(cx);
@@ -601,11 +599,18 @@ fn escape_cancels_capture_before_the_overlay_becomes_the_pointer_owner(
 
     assert_eq!(
         events.borrow().as_slice(),
+        [ObservedEvent::Port(OpenGpuiPortDragPhase::Start)]
+    );
+    assert!(cx.update(|window, _| window.captured_hitbox()).is_some());
+    cx.read_entity(&host, |host, _| assert!(host.active_port_drag().is_some()));
+
+    let overlay = cx.debug_bounds(OVERLAY_SELECTOR).expect("overlay bounds");
+    cx.simulate_mouse_up(overlay.center(), MouseButton::Left, Default::default());
+    assert_eq!(
+        events.borrow().as_slice(),
         [
             ObservedEvent::Port(OpenGpuiPortDragPhase::Start),
-            ObservedEvent::Port(OpenGpuiPortDragPhase::Cancel(
-                OpenGpuiPortDragCancelReason::Escape,
-            )),
+            ObservedEvent::Port(OpenGpuiPortDragPhase::Release),
         ]
     );
     assert!(cx.update(|window, _| window.captured_hitbox()).is_none());

@@ -3,16 +3,18 @@
 use jellyflow_runtime::adapter::conformance as trace;
 
 use trace::{
-    ConformanceAction as TraceInput, ConformanceCancelReason as TraceCancelReason,
-    ConformanceCandidate as TraceCandidate, ConformanceCommandOutcome as TraceReceipt,
-    ConformanceEffect as TraceEffect, ConformanceGeometry as TraceGeometry,
-    ConformanceGraph as TraceGraph, ConformanceIntent as TraceIntent,
-    ConformanceOwnership as TraceOwnership, ConformancePhase as TracePhase,
-    ConformanceReconnectEndpoint as TraceReconnectEndpoint,
+    ConformanceAction as TraceInput, ConformanceAdapterTransportEvidence as TraceTransportEvidence,
+    ConformanceCancelReason as TraceCancelReason, ConformanceCandidate as TraceCandidate,
+    ConformanceCommandCompletion as TraceCompletion,
+    ConformanceCommandEvidence as TraceCommandEvidence,
+    ConformanceConnectionSettlement as TraceConnectionSettlement, ConformanceEffect as TraceEffect,
+    ConformanceGeometry as TraceGeometry, ConformanceGraph as TraceGraph,
+    ConformanceIntent as TraceIntent, ConformanceOwnership as TraceOwnership,
+    ConformancePhase as TracePhase, ConformanceReconnectEndpoint as TraceReconnectEndpoint,
     ConformanceScenario as CanonicalInteractionTrace, ConformanceScenarioId as TraceScenarioId,
     ConformanceSelection as TraceSelection, ConformanceTarget as TraceTarget,
     ConformanceTerminal as TraceTerminal, ConformanceTicket as TraceTicket,
-    ConformanceViewStatus as TraceViewStatus, NormalizedObservation, canonical_command_outcomes,
+    ConformanceViewStatus as TraceViewStatus, NormalizedObservation, canonical_command_evidence,
     canonical_scenarios, compare_observations, create_from_wire_scenario as create_from_wire_trace,
     edge_pick_scenario as edge_pick_trace, native_control_scenario as native_control_trace,
     new_connection_scenario as new_connection_trace, node_drag_scenario as node_drag_trace,
@@ -36,8 +38,9 @@ use jellyflow_runtime::interaction::{
     CanvasInteractionConfig, CanvasInteractionEffect, CanvasInteractionPhase,
     CanvasInteractionQueryAdvanceReceipt, CanvasInteractionQueryPageReceipt,
     CanvasInteractionSession, CanvasInteractionUpdate, CanvasPressTarget, ConnectionGestureBinding,
-    ConnectionProbe, InteractionDamage, InteractionGraphSubmission, InteractionOwner,
-    InteractionTerminalReason, InteractionTicketId, SelectionMode,
+    ConnectionProbe, ConnectionSettlementPresentation, InteractionDamage,
+    InteractionGraphSubmission, InteractionOwner, InteractionTerminalReason, InteractionTicketId,
+    SelectionMode,
 };
 use jellyflow_runtime::profile::ApplyPipelineError;
 use jellyflow_runtime::schema::{NodeCatalog, NodeCreation, NodeKindSpec, NodePortSpec};
@@ -61,11 +64,15 @@ impl GraphRuntimeMiddleware for RejectCanonicalCommand {
     }
 }
 
+const fn completed(completion: TraceCompletion) -> TraceCommandEvidence {
+    TraceCommandEvidence::Completion(completion)
+}
+
 #[test]
 fn canonical_trace_vocabulary_is_deterministic_and_covers_terminal_receipts() {
-    for receipt in canonical_command_outcomes() {
-        let trace = new_connection_trace(receipt);
-        assert_eq!(trace, new_connection_trace(receipt));
+    for evidence in canonical_command_evidence() {
+        let trace = new_connection_trace(evidence);
+        assert_eq!(trace, new_connection_trace(evidence));
         assert_eq!(
             trace
                 .steps()
@@ -88,7 +95,7 @@ fn canonical_trace_vocabulary_is_deterministic_and_covers_terminal_receipts() {
             TraceReconnectEndpoint::Source,
             TraceReconnectEndpoint::Target,
         ] {
-            let reconnect = reconnect_trace(endpoint, receipt);
+            let reconnect = reconnect_trace(endpoint, evidence);
             assert_eq!(
                 reconnect
                     .steps()
@@ -103,7 +110,7 @@ fn canonical_trace_vocabulary_is_deterministic_and_covers_terminal_receipts() {
 
 #[test]
 fn search_and_native_control_traces_keep_terminal_ownership_explicit() {
-    let rejected = create_from_wire_trace(TraceReceipt::Rejected);
+    let rejected = create_from_wire_trace(completed(TraceCompletion::Rejected));
     assert_eq!(
         rejected
             .steps()
@@ -113,9 +120,20 @@ fn search_and_native_control_traces_keep_terminal_ownership_explicit() {
             .phase,
         TracePhase::Searching,
     );
+    let applied = create_from_wire_trace(completed(TraceCompletion::Applied));
+    let published = applied
+        .steps()
+        .last()
+        .expect("published create-from-wire step");
+    assert_eq!(published.action(), TraceInput::PublishAuthoritativeFrame);
+    assert_eq!(published.expected().phase, TracePhase::Idle);
+    assert_eq!(
+        published.expected().geometry,
+        TraceGeometry::CreateFromWireRouted
+    );
 
     let control = native_control_trace();
-    let drag = node_drag_trace(TraceReceipt::Applied);
+    let drag = node_drag_trace(completed(TraceCompletion::Applied));
     assert_eq!(control.steps()[0].expected().phase, TracePhase::Idle);
     assert!(
         drag.steps()
@@ -142,7 +160,7 @@ fn search_and_native_control_traces_keep_terminal_ownership_explicit() {
 
 #[test]
 fn observation_comparison_fails_for_semantic_drift_not_display_names() {
-    let scenario = new_connection_trace(TraceReceipt::Applied);
+    let scenario = new_connection_trace(completed(TraceCompletion::Applied));
     let observations: Vec<_> = scenario
         .steps()
         .iter()
@@ -683,7 +701,9 @@ struct TraceAnchors {
 
 impl TraceHarness {
     fn new() -> Self {
-        Self::for_scenario(TraceScenarioId::NewConnection(TraceReceipt::Applied))
+        Self::for_scenario(TraceScenarioId::NewConnection(completed(
+            TraceCompletion::Applied,
+        )))
     }
 
     fn for_scenario(scenario: TraceScenarioId) -> Self {
@@ -748,10 +768,11 @@ impl TraceHarness {
         let runtime = GraphRuntime::builder(Default::default())
             .build(builder.build().unwrap())
             .unwrap();
-        let runtime = match scenario_command_outcome(scenario) {
-            Some(TraceReceipt::Rejected) => runtime.with_middleware(RejectCanonicalCommand),
-            Some(TraceReceipt::Applied | TraceReceipt::Conflict | TraceReceipt::NotDispatched)
-            | None => runtime,
+        let runtime = match scenario.command_evidence() {
+            Some(TraceCommandEvidence::Completion(TraceCompletion::Rejected)) => {
+                runtime.with_middleware(RejectCanonicalCommand)
+            }
+            Some(_) | None => runtime,
         };
         let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
         publish_trace_geometry(&view, ids, anchors);
@@ -795,6 +816,7 @@ impl TraceHarness {
             trace.id(),
             trace::ConformanceScenarioId::ReconnectSource(_)
                 | trace::ConformanceScenarioId::ReconnectTarget(_)
+                | trace::ConformanceScenarioId::ReconnectTargetNoop
                 | trace::ConformanceScenarioId::ReconnectSourcePrefixWait
                 | trace::ConformanceScenarioId::ReconnectTargetPrefixWait
         ) {
@@ -877,31 +899,94 @@ impl TraceHarness {
                 self.capture_submit(update, TraceEffect::SubmitConnection)
             }
             TraceInput::AdvanceFrame => TraceEffect::None,
-            TraceInput::CompleteCommand(receipt) => {
+            TraceInput::PublishAuthoritativeFrame => {
+                self.publish_authoritative_frame();
+                TraceEffect::None
+            }
+            TraceInput::AdvanceAuthoritativeAbsence => {
+                self.execute_external_revision("uncertain-absence");
+                let update = self
+                    .session
+                    .reconcile_graph()
+                    .expect("later authoritative absence is reconciled");
+                assert!(update.effects().is_empty());
+                TraceEffect::None
+            }
+            TraceInput::RetryConnectionSettlement => {
+                let capability = match self.session.presentation().connection_settlement() {
+                    Some(ConnectionSettlementPresentation::Uncertain {
+                        capability,
+                        can_retry: true,
+                    }) => capability,
+                    settlement => panic!("expected retryable uncertainty, got {settlement:?}"),
+                };
+                let update = self
+                    .session
+                    .retry_connection_settlement(capability)
+                    .expect("exact uncertainty capability starts a fresh attempt");
+                self.capture_submit(update, TraceEffect::SubmitConnection)
+            }
+            TraceInput::CancelConnectionSettlement => {
+                let capability = match self.session.presentation().connection_settlement() {
+                    Some(ConnectionSettlementPresentation::Uncertain { capability, .. })
+                    | Some(ConnectionSettlementPresentation::Retryable { capability, .. }) => {
+                        capability
+                    }
+                    settlement => panic!("expected cancellable settlement, got {settlement:?}"),
+                };
+                let update = self
+                    .session
+                    .cancel_connection_settlement(capability)
+                    .expect("current settlement capability cancels its projection");
+                assert!(update.effects().is_empty());
+                TraceEffect::RestorePresentation
+            }
+            TraceInput::CompleteCommand(completion) => {
                 let ticket = self.ticket.take().expect("trace submitted one command");
                 let submission = self
                     .submission
                     .take()
                     .expect("trace captured one graph submission");
-                match receipt {
-                    TraceReceipt::NotDispatched => {
+                let runtime_completion = self.dispatch_submission(completion, submission);
+                self.session
+                    .complete_submission(ticket, runtime_completion)
+                    .expect("command completion settles the exact submission");
+                if matches!(completion, TraceCompletion::Applied | TraceCompletion::Noop) {
+                    self.publish_terminal_connection_route();
+                }
+                match completion {
+                    TraceCompletion::Applied | TraceCompletion::Noop => TraceEffect::None,
+                    TraceCompletion::Rejected
+                    | TraceCompletion::Conflict
+                    | TraceCompletion::Failed => TraceEffect::RestorePresentation,
+                }
+            }
+            TraceInput::ReportTransportEvidence(evidence) => {
+                let ticket = self.ticket.take().expect("trace submitted one command");
+                let submission = self
+                    .submission
+                    .take()
+                    .expect("trace captured one graph submission");
+                match evidence {
+                    TraceTransportEvidence::NotDispatched => {
                         drop(submission);
                         self.session
                             .submission_not_dispatched(ticket)
                             .expect("undispatched submission is reported");
+                        TraceEffect::RestorePresentation
                     }
-                    TraceReceipt::Applied | TraceReceipt::Rejected | TraceReceipt::Conflict => {
-                        let completion = self.dispatch_submission(receipt, submission);
+                    TraceTransportEvidence::OutcomeUnknown => {
+                        let command = self
+                            .session
+                            .bind_submission(submission)
+                            .expect("outcome-unknown transport binds the admitted command")
+                            .expect("outcome-unknown transport follows command admission");
+                        drop(command);
                         self.session
-                            .complete_submission(ticket, completion)
-                            .expect("command completion settles the exact submission");
+                            .submission_outcome_unknown(ticket)
+                            .expect("post-admission transport uncertainty is reported");
+                        TraceEffect::None
                     }
-                }
-                match receipt {
-                    TraceReceipt::Applied => TraceEffect::None,
-                    TraceReceipt::Rejected
-                    | TraceReceipt::Conflict
-                    | TraceReceipt::NotDispatched => TraceEffect::RestorePresentation,
                 }
             }
             TraceInput::Cancel(reason) => {
@@ -959,7 +1044,7 @@ impl TraceHarness {
 
     fn dispatch_submission(
         &mut self,
-        requested: TraceReceipt,
+        requested: TraceCompletion,
         submission: InteractionGraphSubmission,
     ) -> CommandExecutionCompletion {
         let command = self
@@ -968,13 +1053,46 @@ impl TraceHarness {
             .expect("runtime transport binds the emitted mutation")
             .expect("canonical emitted mutation is not a no-op");
         match requested {
-            TraceReceipt::Conflict => self.execute_external_revision("conflict"),
-            TraceReceipt::Applied | TraceReceipt::Rejected => {}
-            TraceReceipt::NotDispatched => {
-                unreachable!("non-dispatch receipts are handled before command binding")
+            TraceCompletion::Conflict => self.execute_external_revision("conflict"),
+            TraceCompletion::Applied | TraceCompletion::Noop | TraceCompletion::Rejected => {}
+            TraceCompletion::Failed => {
+                let foreign = GraphRuntime::builder(Default::default())
+                    .build(
+                        GraphBuilder::new(GraphId::from_u128(u128::MAX))
+                            .build()
+                            .expect("foreign failure graph is valid"),
+                    )
+                    .expect("foreign failure runtime builds");
+                return foreign.execute(command);
             }
         }
         self.runtime.execute(command)
+    }
+
+    fn publish_terminal_connection_route(&mut self) {
+        if matches!(
+            self.scenario,
+            TraceScenarioId::CreateFromWire(TraceCommandEvidence::Completion(
+                TraceCompletion::Applied
+            )) | TraceScenarioId::CreateFromWirePrefixWait
+        ) || !self
+            .session
+            .presentation()
+            .connection_settlement()
+            .is_some()
+        {
+            return;
+        }
+        self.publish_authoritative_frame();
+    }
+
+    fn publish_authoritative_frame(&mut self) {
+        publish_trace_geometry(&self.view, self.ids, self.anchors);
+        let update = self
+            .session
+            .reconcile_authoritative_state()
+            .expect("published canonical route settles the terminal projection");
+        assert!(update.effects().is_empty());
     }
 
     fn execute_external_revision(&mut self, reason: &str) {
@@ -1325,12 +1443,33 @@ impl TraceHarness {
             geometry,
         );
         observation.terminal = presentation.terminal().map(trace_terminal);
+        observation.connection_settlement = match presentation.connection_settlement() {
+            None => TraceConnectionSettlement::None,
+            Some(ConnectionSettlementPresentation::AwaitingPublication) => {
+                TraceConnectionSettlement::AwaitingPublication
+            }
+            Some(ConnectionSettlementPresentation::Uncertain { can_retry, .. }) => {
+                TraceConnectionSettlement::Uncertain {
+                    retryable: can_retry,
+                }
+            }
+            Some(ConnectionSettlementPresentation::Retryable { can_retry, .. }) => {
+                TraceConnectionSettlement::Retryable {
+                    retryable: can_retry,
+                }
+            }
+        };
         observation.intent = presentation
             .connection_intent()
             .map_or(TraceIntent::None, trace_intent);
         observation.graph = graph;
-        observation.optimistic_presentation = self.ticket.is_some()
-            && (presentation.connection().is_some() || presentation.node_drag().is_some());
+        observation.optimistic_presentation = presentation
+            .connection()
+            .is_some_and(|connection| connection.ticket().is_some())
+            || presentation.connection_settlement().is_some()
+            || presentation
+                .node_drag()
+                .is_some_and(|drag| drag.ticket().is_some());
         observation.selection = match self.view.selection() {
             Ok(selection)
                 if selection.nodes().is_empty()
@@ -1483,9 +1622,18 @@ impl TraceHarness {
                 TraceGeometry::ReconnectTargetRouted
             }
             TraceGraph::CreateFromWire => {
-                assert!(geometry.port(self.ids.created_port).is_none());
-                assert!(geometry.route(EdgeId::from_u128(100)).is_none());
-                TraceGeometry::CreateFromWireAwaitingLayout
+                if geometry.port(self.ids.created_port).is_some() {
+                    self.assert_route_matches(
+                        &geometry,
+                        EdgeId::from_u128(100),
+                        self.ids.source_port,
+                        self.ids.created_port,
+                    );
+                    TraceGeometry::CreateFromWireRouted
+                } else {
+                    assert!(geometry.route(EdgeId::from_u128(100)).is_none());
+                    TraceGeometry::CreateFromWireAwaitingLayout
+                }
             }
             TraceGraph::NodeMoved => {
                 let graph = self.runtime.snapshot().unwrap();
@@ -1529,6 +1677,9 @@ impl TraceHarness {
             }
             TraceScenarioId::NewConnection(_)
             | TraceScenarioId::ReconnectTarget(_)
+            | TraceScenarioId::ReconnectTargetNoop
+            | TraceScenarioId::InvalidConnectionRelease
+            | TraceScenarioId::ConnectionUncertainRetryCancel
             | TraceScenarioId::CreateFromWire(_)
             | TraceScenarioId::NodeDrag(_)
             | TraceScenarioId::NewConnectionProbePrefix
@@ -1556,7 +1707,10 @@ impl TraceHarness {
             TraceScenarioId::ReconnectTarget(_) | TraceScenarioId::ReconnectTargetPrefixWait => {
                 self.anchors.reconnect_alternate
             }
+            TraceScenarioId::ReconnectTargetNoop => self.anchors.reconnect_target,
             TraceScenarioId::NewConnection(_)
+            | TraceScenarioId::InvalidConnectionRelease
+            | TraceScenarioId::ConnectionUncertainRetryCancel
             | TraceScenarioId::CreateFromWire(_)
             | TraceScenarioId::NodeDrag(_)
             | TraceScenarioId::NewConnectionProbePrefix
@@ -1632,48 +1786,23 @@ fn advance_successful_query_page(
     (update, receipt)
 }
 
-fn scenario_command_outcome(id: TraceScenarioId) -> Option<TraceReceipt> {
-    match id {
-        TraceScenarioId::NewConnection(settlement)
-        | TraceScenarioId::ReconnectSource(settlement)
-        | TraceScenarioId::ReconnectTarget(settlement)
-        | TraceScenarioId::CreateFromWire(settlement)
-        | TraceScenarioId::NodeDrag(settlement) => Some(settlement),
-        TraceScenarioId::NewConnectionPrefixWait
-        | TraceScenarioId::NewConnectionProbePrefix
-        | TraceScenarioId::ReconnectSourcePrefixWait
-        | TraceScenarioId::ReconnectTargetPrefixWait
-        | TraceScenarioId::CreateFromWirePrefixWait
-        | TraceScenarioId::NodeDragPrefixWait => Some(TraceReceipt::Applied),
-        TraceScenarioId::NodePressBelowThreshold
-        | TraceScenarioId::NativeControl
-        | TraceScenarioId::EdgePick
-        | TraceScenarioId::CaptureLost
-        | TraceScenarioId::OwnerReplaced
-        | TraceScenarioId::Escape
-        | TraceScenarioId::OutsideClick
-        | TraceScenarioId::SourceRetired
-        | TraceScenarioId::HostClosed => None,
-    }
-}
-
 fn trace_terminal(reason: InteractionTerminalReason) -> TraceTerminal {
     match reason {
         InteractionTerminalReason::Applied => TraceTerminal::Applied,
-        InteractionTerminalReason::Noop => {
-            panic!("canonical trace does not model a no-op command")
-        }
+        InteractionTerminalReason::Noop => TraceTerminal::Noop,
         InteractionTerminalReason::Rejected => TraceTerminal::Rejected,
         InteractionTerminalReason::Conflict => TraceTerminal::Conflict,
-        InteractionTerminalReason::TransportFailure => TraceTerminal::NotDispatched,
+        InteractionTerminalReason::ExecutionFailed => TraceTerminal::ExecutionFailed,
+        InteractionTerminalReason::TransportFailure => TraceTerminal::TransportFailure,
+        InteractionTerminalReason::Uncertain => TraceTerminal::Uncertain,
         InteractionTerminalReason::Cancelled => TraceTerminal::Cancelled,
+        InteractionTerminalReason::InvalidTarget => TraceTerminal::InvalidTarget,
         InteractionTerminalReason::OwnerRetired => TraceTerminal::OwnerRetired,
         InteractionTerminalReason::ViewClosed => TraceTerminal::HostClosed,
-        reason @ (InteractionTerminalReason::ExecutionFailed
-        | InteractionTerminalReason::Uncertain
-        | InteractionTerminalReason::BudgetExhausted
+        reason @ (InteractionTerminalReason::BudgetExhausted
         | InteractionTerminalReason::GeometryIndeterminate
-        | InteractionTerminalReason::IdentityExhausted) => {
+        | InteractionTerminalReason::IdentityExhausted
+        | InteractionTerminalReason::ProtocolFailure) => {
             panic!("canonical trace reached unsupported terminal reason {reason:?}")
         }
     }
@@ -1701,7 +1830,7 @@ fn publish_trace_geometry(view: &ViewSession, ids: TraceGraphIds, anchors: Trace
         ))
         .unwrap();
     let collector = frame.collector();
-    for (node, port, direction, anchor) in [
+    let mut published = vec![
         (
             ids.source_node,
             ids.source_port,
@@ -1738,7 +1867,20 @@ fn publish_trace_geometry(view: &ViewSession, ids: TraceGraphIds, anchors: Trace
             PortDirection::In,
             anchors.reconnect_alternate,
         ),
-    ] {
+    ];
+    if frame
+        .nodes()
+        .iter()
+        .any(|candidate| candidate.id() == ids.created_node)
+    {
+        published.push((
+            ids.created_node,
+            ids.created_port,
+            PortDirection::In,
+            anchors.empty,
+        ));
+    }
+    for (node, port, direction, anchor) in published {
         let frame_node = frame
             .nodes()
             .iter()

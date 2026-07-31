@@ -16,7 +16,7 @@ use crate::runtime::interaction::{
 use crate::runtime::tests::fixtures::{current_port_instance, keyboard_connection_port_by_id};
 use crate::runtime::view_session::{ViewSessionError, ViewSessionOptions};
 
-use super::fixtures::graph_with_routed_edge;
+use super::fixtures::{graph_with_routed_edge, publish_graph_layouts};
 
 #[test]
 fn keyboard_connection_uses_exact_ports_and_the_fresh_connection_mutation_pipeline() {
@@ -48,13 +48,15 @@ fn keyboard_connection_uses_exact_ports_and_the_fresh_connection_mutation_pipeli
         session.presentation().phase(),
         CanvasInteractionPhase::ConnectionDrag
     );
-    assert_eq!(session.keyboard_connection_source(), Some(source));
+    assert_eq!(session.armed_keyboard_connection_source(), Some(source));
+    assert_eq!(session.retained_keyboard_connection_source(), Some(source));
 
     let reactivated = session
         .activate_keyboard_connection(source, edge, NodeGraphConnectionMode::Strict)
         .expect("source reactivation is a no-op");
     assert!(reactivated.effects().is_empty());
-    assert_eq!(session.keyboard_connection_source(), Some(source));
+    assert_eq!(session.armed_keyboard_connection_source(), Some(source));
+    assert_eq!(session.retained_keyboard_connection_source(), Some(source));
 
     let submitted = session
         .activate_connection_port(target, edge, NodeGraphConnectionMode::Strict)
@@ -94,7 +96,94 @@ fn keyboard_connection_uses_exact_ports_and_the_fresh_connection_mutation_pipeli
     let connected = graph.graph().edge(&edge).expect("new keyboard edge");
     assert_eq!(connected.from, ids.alternate_source_port);
     assert_eq!(connected.to, ids.target_port);
+    assert_eq!(
+        session.presentation().phase(),
+        CanvasInteractionPhase::Committing
+    );
+    assert_eq!(session.armed_keyboard_connection_source(), None);
+    assert_eq!(session.retained_keyboard_connection_source(), Some(source));
+
+    publish_graph_layouts(&view);
+    session
+        .reconcile_authoritative_state()
+        .expect("published keyboard route settles the interaction");
     assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
+    assert_eq!(session.armed_keyboard_connection_source(), None);
+    assert_eq!(session.retained_keyboard_connection_source(), None);
+}
+
+#[test]
+fn keyboard_connection_reconciles_a_lost_applied_completion_before_route_publication() {
+    let (graph, ids) = graph_with_routed_edge();
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .expect("keyboard uncertainty runtime");
+    let view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("keyboard uncertainty view");
+    let source = keyboard_connection_port_by_id(&view, ids.alternate_source_port)
+        .expect("keyboard uncertainty source");
+    let target = keyboard_connection_port_by_id(&view, ids.target_port)
+        .expect("keyboard uncertainty target");
+    let edge = EdgeId::from_u128(0x306);
+    let mut session = CanvasInteractionSession::attach(&view, CanvasInteractionConfig::default())
+        .expect("keyboard uncertainty session");
+
+    session
+        .activate_keyboard_connection(source, edge, NodeGraphConnectionMode::Strict)
+        .expect("arm keyboard source");
+    let update = session
+        .activate_keyboard_connection_target(target)
+        .expect("submit keyboard target");
+    let CanvasInteractionEffect::SubmitGraph { submission } = update
+        .into_dispatch()
+        .effects
+        .into_iter()
+        .next()
+        .expect("keyboard uncertainty mutation")
+    else {
+        unreachable!("keyboard target emits one graph submission")
+    };
+    let ticket = submission.ticket();
+    let command = session
+        .bind_submission(submission)
+        .expect("bind keyboard uncertainty submission")
+        .expect("keyboard uncertainty emits a command");
+    runtime
+        .execute(command)
+        .into_result()
+        .expect("keyboard command executes")
+        .applied()
+        .expect("keyboard command applies");
+    session
+        .submission_outcome_unknown(ticket)
+        .expect("lost callback enters shared uncertainty settlement");
+
+    assert_eq!(
+        session.presentation().terminal(),
+        Some(InteractionTerminalReason::Uncertain)
+    );
+    assert_eq!(session.armed_keyboard_connection_source(), None);
+    assert_eq!(session.retained_keyboard_connection_source(), Some(source));
+    session
+        .reconcile_authoritative_state()
+        .expect("authoritative graph proves the exact keyboard attempt");
+    assert_eq!(
+        session.presentation().phase(),
+        CanvasInteractionPhase::Committing
+    );
+    assert_eq!(
+        session.presentation().terminal(),
+        Some(InteractionTerminalReason::Applied)
+    );
+
+    publish_graph_layouts(&view);
+    session
+        .reconcile_authoritative_state()
+        .expect("published route closes keyboard settlement");
+    assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
+    assert_eq!(session.armed_keyboard_connection_source(), None);
+    assert_eq!(session.retained_keyboard_connection_source(), None);
 }
 
 #[test]
@@ -223,7 +312,12 @@ fn keyboard_connection_retains_structured_invalid_feedback_and_escape_cancels() 
     assert_eq!(feedback.source(), ids.alternate_source_port);
     assert_eq!(feedback.target(), ids.source_port);
     assert!(!feedback.diagnostics().is_empty());
-    assert_eq!(session.keyboard_connection_source(), Some(source));
+    assert_eq!(
+        session.presentation().phase(),
+        CanvasInteractionPhase::ConnectionDrag
+    );
+    assert_eq!(session.armed_keyboard_connection_source(), Some(source));
+    assert_eq!(session.retained_keyboard_connection_source(), Some(source));
 
     let cancelled = session.cancel().unwrap();
     assert!(cancelled.effects().is_empty());
@@ -232,7 +326,8 @@ fn keyboard_connection_retains_structured_invalid_feedback_and_escape_cancels() 
         session.presentation().terminal(),
         Some(InteractionTerminalReason::Cancelled)
     );
-    assert_eq!(session.keyboard_connection_source(), None);
+    assert_eq!(session.armed_keyboard_connection_source(), None);
+    assert_eq!(session.retained_keyboard_connection_source(), None);
     assert_eq!(session.keyboard_connection_feedback(), None);
 }
 

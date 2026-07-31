@@ -133,7 +133,32 @@ impl GraphVersion {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct NodeIncarnation(u64);
+struct Incarnation {
+    serial: u64,
+    introduced_at: GraphRevision,
+}
+
+impl Incarnation {
+    const fn new(serial: u64, introduced_at: GraphRevision) -> Self {
+        Self {
+            serial,
+            introduced_at,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct NodeIncarnation(Incarnation);
+
+impl NodeIncarnation {
+    const fn new(serial: u64, introduced_at: GraphRevision) -> Self {
+        Self(Incarnation::new(serial, introduced_at))
+    }
+
+    const fn introduced_at(self) -> GraphRevision {
+        self.0.introduced_at
+    }
+}
 
 type NodeIncarnationMap = RedBlackTreeMapSync<NodeId, NodeIncarnation>;
 
@@ -174,7 +199,7 @@ impl NodeLifetimeKey {
         Self::new(
             RuntimeProvenance::new(RuntimeId::UNAVAILABLE),
             node,
-            NodeIncarnation(0),
+            NodeIncarnation::new(0, 0),
         )
     }
 }
@@ -185,7 +210,17 @@ impl NodeLifetimeKey {
 /// replaced. Reusing the same [`PortId`] always allocates a new value, including through undo,
 /// redo, and document replacement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct PortIncarnation(u64);
+pub(crate) struct PortIncarnation(Incarnation);
+
+impl PortIncarnation {
+    const fn new(serial: u64, introduced_at: GraphRevision) -> Self {
+        Self(Incarnation::new(serial, introduced_at))
+    }
+
+    const fn introduced_at(self) -> GraphRevision {
+        self.0.introduced_at
+    }
+}
 
 /// Full runtime identity of one continuous real-port lifetime.
 ///
@@ -243,9 +278,9 @@ impl PortInstanceKey {
         Self::new(
             RuntimeProvenance::new(RuntimeId::UNAVAILABLE),
             node,
-            NodeIncarnation(0),
+            NodeIncarnation::new(0, 0),
             port,
-            PortIncarnation(0),
+            PortIncarnation::new(0, 0),
         )
     }
 }
@@ -255,12 +290,20 @@ impl PortInstanceKey {
 /// Reusing an [`EdgeId`] after removal always allocates a new value, including through undo,
 /// redo, and document replacement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct EdgeIncarnation(u64);
+pub(crate) struct EdgeIncarnation(Incarnation);
 
 impl EdgeIncarnation {
+    const fn new(serial: u64, introduced_at: GraphRevision) -> Self {
+        Self(Incarnation::new(serial, introduced_at))
+    }
+
+    const fn introduced_at(self) -> GraphRevision {
+        self.0.introduced_at
+    }
+
     #[cfg(test)]
     pub(crate) const fn from_u64_for_test(value: u64) -> Self {
-        Self(value)
+        Self::new(value, 0)
     }
 }
 
@@ -331,7 +374,7 @@ impl Clone for EdgeIncarnationEntry {
 impl EdgeIncarnation {
     #[cfg(test)]
     pub(crate) const fn unavailable() -> Self {
-        Self(0)
+        Self::new(0, 0)
     }
 }
 
@@ -490,6 +533,14 @@ impl GraphSnapshot {
         self.node_lifetime_key(key.node()) == Some(key)
     }
 
+    pub(crate) fn node_lifetime_was_introduced_at(
+        &self,
+        key: NodeLifetimeKey,
+        revision: GraphRevision,
+    ) -> bool {
+        self.node_lifetime_is_current(key) && key.incarnation.introduced_at() == revision
+    }
+
     /// Returns the lifetime identity of an edge present in this exact graph snapshot.
     pub(crate) fn edge_incarnation(&self, edge: EdgeId) -> Option<EdgeIncarnation> {
         self.edge_incarnations
@@ -509,6 +560,14 @@ impl GraphSnapshot {
     /// Returns whether the key still names the same live edge in this runtime.
     pub fn edge_instance_is_current(&self, key: EdgeInstanceKey) -> bool {
         self.edge_instance_key(key.edge()) == Some(key)
+    }
+
+    pub(crate) fn edge_instance_was_introduced_at(
+        &self,
+        key: EdgeInstanceKey,
+        revision: GraphRevision,
+    ) -> bool {
+        self.edge_instance_is_current(key) && key.incarnation.introduced_at() == revision
     }
 
     /// Returns the lifetime identity of a port present in this exact graph snapshot.
@@ -533,6 +592,14 @@ impl GraphSnapshot {
     /// Returns whether the key still names the same live port and owning node in this runtime.
     pub fn port_instance_is_current(&self, key: PortInstanceKey) -> bool {
         key.provenance() == self.provenance && self.port_instance_key(key.port()) == Some(key)
+    }
+
+    pub(crate) fn port_instance_was_introduced_at(
+        &self,
+        key: PortInstanceKey,
+        revision: GraphRevision,
+    ) -> bool {
+        self.port_instance_is_current(key) && key.port_incarnation.introduced_at() == revision
     }
 
     pub fn ptr_eq(&self, other: &Self) -> bool {
@@ -871,20 +938,20 @@ impl GraphRuntime {
         let mut next_incarnation = 1;
         let mut incarnations = NodeIncarnationMap::new_sync();
         for node in graph.nodes().keys().copied() {
-            incarnations.insert_mut(node, allocate_incarnation(&mut next_incarnation)?);
+            incarnations.insert_mut(node, allocate_incarnation(&mut next_incarnation, 0)?);
         }
         let mut edge_incarnations = EdgeIncarnationMap::new_sync();
         for edge in graph.edges().keys().copied() {
             edge_incarnations.insert_mut(
                 edge,
-                EdgeIncarnationEntry(allocate_edge_incarnation(&mut next_incarnation)?),
+                EdgeIncarnationEntry(allocate_edge_incarnation(&mut next_incarnation, 0)?),
             );
         }
         let mut port_incarnations = PortIncarnationMap::new_sync();
         for port in graph.ports().keys().copied() {
             port_incarnations.insert_mut(
                 port,
-                PortIncarnationEntry(allocate_port_incarnation(&mut next_incarnation)?),
+                PortIncarnationEntry(allocate_port_incarnation(&mut next_incarnation, 0)?),
             );
         }
         let index = GraphIndex::from_graph(&graph);
@@ -1462,16 +1529,16 @@ impl RuntimeShared {
                 .map(|node| (node, None))
                 .collect::<BTreeMap<_, _>>();
             for node in graph.nodes().keys().copied() {
-                let incarnation = allocate_incarnation(&mut next_incarnation)?;
+                let incarnation = allocate_incarnation(&mut next_incarnation, to_revision)?;
                 next_incarnations.insert_mut(node, incarnation);
                 incarnation_delta.insert(node, Some(incarnation));
             }
             for edge in graph.edges().keys().copied() {
-                let incarnation = allocate_edge_incarnation(&mut next_incarnation)?;
+                let incarnation = allocate_edge_incarnation(&mut next_incarnation, to_revision)?;
                 next_edge_incarnations.insert_mut(edge, EdgeIncarnationEntry(incarnation));
             }
             for port in graph.ports().keys().copied() {
-                let incarnation = allocate_port_incarnation(&mut next_incarnation)?;
+                let incarnation = allocate_port_incarnation(&mut next_incarnation, to_revision)?;
                 next_port_incarnations.insert_mut(port, PortIncarnationEntry(incarnation));
             }
             let graph = Arc::new(graph);

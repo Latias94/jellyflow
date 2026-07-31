@@ -16,6 +16,7 @@ use jellyflow_open_gpui::registry::OpenGpuiNodeRegistry;
 use jellyflow_runtime::commands::{
     CommandExecutionKind, ConnectionEdit, GraphCommand, IncidentEdgePolicy, TopologyEdit,
 };
+use jellyflow_runtime::geometry::HandlePosition;
 use jellyflow_runtime::graph::{
     CreateFromWireCandidates, Diagnostic, DiagnosticTarget, GraphRuntime, GraphRuntimeError,
     GraphRuntimePolicy,
@@ -25,7 +26,7 @@ use jellyflow_runtime::interaction::{
     InteractionTerminalReason,
 };
 use jellyflow_runtime::profile::GraphProfile;
-use jellyflow_runtime::view::ViewSessionOptions;
+use jellyflow_runtime::view::{PublishedPortGeometry, ViewSessionOptions, WeakViewSession};
 use jellyflow_runtime::viewport::ViewportTransform;
 use open_gpui::{
     AppContext, Bounds, Context, Entity, MouseButton, ParentElement, Pixels, Render, Styled,
@@ -144,6 +145,165 @@ fn native_shader_entity_mounts_through_scene_host_and_submits_real_port_feedback
     cx.read_entity(&host, |host, _| {
         assert_eq!(host.resource_snapshot().active_nodes(), 1);
     });
+}
+
+#[open_gpui::test]
+fn native_shader_surface_tab_moves_from_graph_focus_into_the_graph_focus_domain(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let runtime = native_runtime(shader_graph()).expect("shader keyboard runtime");
+    let view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("shader keyboard view");
+    let (surface, cx) =
+        cx.add_window_view(move |_, cx| NativeGraphSurface::new(view, native_registry(cx), cx));
+    draw(cx);
+
+    let title = cx
+        .debug_bounds(&shader_header_title_selector(node_id()))
+        .expect("shader node title");
+    cx.simulate_click(title.center(), Default::default());
+    draw(cx);
+    let before = cx
+        .update(|window, cx| window.focused(cx))
+        .expect("graph focus before Tab");
+    cx.update(|window, cx| {
+        assert!(surface.read(cx).graph_has_focus(window, cx));
+    });
+
+    cx.simulate_keystrokes("tab");
+    draw(cx);
+
+    let forward = cx
+        .update(|window, cx| window.focused(cx))
+        .expect("graph focus after Tab");
+    assert_ne!(forward, before);
+    cx.update(|window, cx| {
+        assert!(surface.read(cx).graph_has_focus(window, cx));
+    });
+
+    cx.simulate_keystrokes("shift-tab");
+    draw(cx);
+
+    cx.update(|window, cx| {
+        assert_ne!(window.focused(cx), Some(forward));
+        assert!(surface.read(cx).graph_has_focus(window, cx));
+    });
+}
+
+#[open_gpui::test]
+fn shader_port_layout_anchor_and_hit_target_stay_stable_across_zoom_and_hover(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let runtime = native_runtime(shader_graph()).expect("shader port profile runtime");
+    let view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("shader port profile view");
+    let weak_view = view.downgrade();
+    let registry = cx.update(native_registry);
+    let (host, cx) =
+        cx.add_window_view(move |_, _| OpenGpuiSceneHost::new(view, registry, viewport()));
+
+    for zoom in [0.5, 1.0, 2.0] {
+        weak_view
+            .set_viewport(
+                ViewportTransform::new(CanvasPoint::default(), zoom)
+                    .expect("valid shader port profile viewport"),
+            )
+            .expect("set shader port profile viewport");
+        draw(cx);
+
+        let transform = weak_view.viewport_transform().expect("shader viewport");
+        let geometry = weak_view.geometry_snapshot().expect("shader geometry");
+        for port_id in [input_a_id(), output_id()] {
+            let port = geometry
+                .port(port_id)
+                .expect("published shader port")
+                .clone();
+            assert_product_port_profile(&port, &transform, zoom >= 1.0);
+            assert_native_port_hit_boundary(cx, &host, &port, &transform);
+            let after_probe = weak_view
+                .geometry_snapshot()
+                .expect("shader geometry after boundary probe")
+                .port(port_id)
+                .expect("shader port after boundary probe")
+                .clone();
+            assert_eq!(after_probe.visual_bounds(), port.visual_bounds());
+            assert_eq!(after_probe.hit_bounds(), port.hit_bounds());
+            assert_eq!(after_probe.route_anchor(), port.route_anchor());
+        }
+
+        if zoom == 1.0 {
+            let before = geometry
+                .port(output_id())
+                .expect("output before hover")
+                .clone();
+            let marker = cx
+                .debug_bounds(&shader_port_selector(output_id()))
+                .expect("detail output marker");
+            cx.simulate_mouse_move(marker.center(), None, Default::default());
+            draw(cx);
+            let after = weak_view
+                .geometry_snapshot()
+                .expect("shader geometry after hover")
+                .port(output_id())
+                .expect("output after hover")
+                .clone();
+            assert_eq!(after.visual_bounds(), before.visual_bounds());
+            assert_eq!(after.route_anchor(), before.route_anchor());
+        }
+    }
+}
+
+fn assert_native_port_hit_boundary(
+    cx: &mut VisualTestContext,
+    host: &Entity<OpenGpuiSceneHost>,
+    port: &PublishedPortGeometry,
+    transform: &ViewportTransform,
+) {
+    let hit = port.hit_bounds().expect("visible port hit bounds");
+    let min = transform
+        .screen_point_for_canvas(hit.origin)
+        .expect("finite hit origin");
+    let max = transform
+        .screen_point_for_canvas(CanvasPoint {
+            x: hit.origin.x + hit.size.width,
+            y: hit.origin.y + hit.size.height,
+        })
+        .expect("finite hit extent");
+    let center_y = (min.y + max.y) * 0.5;
+    let (inside_x, outside_x) = match port.outward() {
+        HandlePosition::Left => (min.x + 0.5, min.x - 0.5),
+        HandlePosition::Right => (max.x - 0.5, max.x + 0.5),
+        HandlePosition::Top => (min.x + (max.x - min.x) * 0.5, min.x),
+        HandlePosition::Bottom => (min.x + (max.x - min.x) * 0.5, max.x),
+    };
+    assert!(matches!(
+        port.outward(),
+        HandlePosition::Left | HandlePosition::Right
+    ));
+    let outside = point(px(outside_x), px(center_y));
+    cx.simulate_mouse_down(outside, MouseButton::Left, Default::default());
+    cx.read_entity(host, |host, _| {
+        assert!(
+            host.active_port_drag().is_none(),
+            "a point 0.5 px beyond the published hit boundary must not acquire a port",
+        );
+    });
+    cx.simulate_mouse_up(outside, MouseButton::Left, Default::default());
+
+    let inside = point(px(inside_x), px(center_y));
+    cx.simulate_mouse_down(inside, MouseButton::Left, Default::default());
+    cx.read_entity(host, |host, _| {
+        assert_eq!(
+            host.active_port_drag().map(|owner| owner.port()),
+            Some(port.port()),
+            "a point 0.5 px inside the published hit boundary must acquire the exact port",
+        );
+    });
+    cx.simulate_keystrokes("escape");
+    cx.simulate_mouse_up(inside, MouseButton::Left, Default::default());
+    draw(cx);
 }
 
 #[open_gpui::test]
@@ -547,7 +707,7 @@ fn ordinary_shader_wire_rejection_is_owned_by_the_shared_interaction_session(
         assert_eq!(presentation.phase(), CanvasInteractionPhase::Idle);
         assert_eq!(
             presentation.terminal(),
-            Some(InteractionTerminalReason::Cancelled)
+            Some(InteractionTerminalReason::InvalidTarget)
         );
     });
 
@@ -1506,6 +1666,7 @@ fn occupied_shader_input_search_reconnects_atomically_and_undo_restores_the_edge
     let view = runtime
         .attach_view(ViewSessionOptions::default())
         .expect("shader reconnect-search view");
+    let weak_view = view.downgrade();
     let (surface, cx) =
         cx.add_window_view(move |_, cx| NativeGraphSurface::new(view, native_registry(cx), cx));
     draw(cx);
@@ -1515,6 +1676,7 @@ fn occupied_shader_input_search_reconnects_atomically_and_undo_restores_the_edge
     let candidate = select_blueprint_value_candidate(cx);
     cx.simulate_click(candidate.center(), Default::default());
     draw(cx);
+    wait_for_connection_search_close(cx, &surface, &weak_view);
 
     assert!(cx.debug_bounds(NATIVE_CONNECTION_SEARCH_SELECTOR).is_none());
     cx.update(|window, cx| assert_eq!(window.focused(cx), Some(previous_focus)));
@@ -1568,6 +1730,7 @@ fn occupied_shader_reconnect_search_rebinds_stale_candidate_atomically(
     let view = runtime
         .attach_view(ViewSessionOptions::default())
         .expect("stale reconnect-search view");
+    let weak_view = view.downgrade();
     let (surface, cx) =
         cx.add_window_view(move |_, cx| NativeGraphSurface::new(view, native_registry(cx), cx));
     draw(cx);
@@ -1588,6 +1751,7 @@ fn occupied_shader_reconnect_search_rebinds_stale_candidate_atomically(
 
     cx.simulate_click(candidate.center(), Default::default());
     draw(cx);
+    wait_for_connection_search_close(cx, &surface, &weak_view);
 
     assert!(cx.debug_bounds(NATIVE_CONNECTION_SEARCH_SELECTOR).is_none());
     cx.update(|window, cx| assert_eq!(window.focused(cx), Some(previous_focus)));
@@ -2157,7 +2321,9 @@ fn blueprint_native_pin_rows_reorder_remove_and_republish_real_geometry(
         assert!(
             geometry
                 .hit_bounds()
-                .is_some_and(CanvasRect::is_positive_finite)
+                .is_some_and(CanvasRect::is_positive_finite),
+            "dynamic pin {:?} published invalid hit geometry: {geometry:?}",
+            pin.port_id(),
         );
     }
 
@@ -2653,6 +2819,90 @@ fn draw(cx: &mut open_gpui::VisualTestContext) {
         window.draw(cx).clear();
     });
     cx.run_until_parked();
+}
+
+fn wait_for_connection_search_close(
+    cx: &mut open_gpui::VisualTestContext,
+    surface: &Entity<NativeGraphSurface>,
+    view: &WeakViewSession,
+) {
+    for _ in 0..8 {
+        if cx.debug_bounds(NATIVE_CONNECTION_SEARCH_SELECTOR).is_none() {
+            return;
+        }
+        draw(cx);
+    }
+    let presentation = cx.read_entity(surface, |surface, cx| {
+        surface.host().read(cx).interaction_presentation()
+    });
+    let snapshot = view.graph_snapshot().ok();
+    let geometry = view.geometry_snapshot().ok();
+    let edge = snapshot
+        .as_ref()
+        .and_then(|snapshot| snapshot.graph().edge(&edge_id()));
+    let route = geometry
+        .as_ref()
+        .and_then(|geometry| geometry.route(edge_id()).cloned());
+    let ports = edge.map(|edge| {
+        (
+            edge.from,
+            geometry
+                .as_ref()
+                .and_then(|geometry| geometry.port(edge.from).cloned()),
+            edge.to,
+            geometry
+                .as_ref()
+                .and_then(|geometry| geometry.port(edge.to).cloned()),
+        )
+    });
+    panic!(
+        "connection search did not close after authoritative publication: {presentation:?}; graph={snapshot:?}; route={route:?}; ports={ports:?}"
+    );
+}
+
+fn assert_product_port_profile(
+    port: &PublishedPortGeometry,
+    transform: &ViewportTransform,
+    detail: bool,
+) {
+    let visual = projected_canvas_rect_size(port.visual_bounds(), transform);
+    let hit = projected_canvas_rect_size(
+        port.hit_bounds().expect("visible product port hit target"),
+        transform,
+    );
+    if detail {
+        assert!((visual.width - 12.0).abs() <= 0.1);
+        assert!((visual.height - 12.0).abs() <= 0.1);
+    } else {
+        assert!(visual.width > 0.0 && visual.width <= 12.0);
+        assert!(visual.height > 0.0 && visual.height <= 12.0);
+    }
+    assert!((hit.width - 22.0).abs() <= 0.1);
+    assert!((hit.height - 22.0).abs() <= 0.1);
+
+    let bounds = port.visual_bounds();
+    let center = CanvasPoint {
+        x: bounds.origin.x + bounds.size.width * 0.5,
+        y: bounds.origin.y + bounds.size.height * 0.5,
+    };
+    assert!((port.route_anchor().x - center.x).abs() <= 0.01);
+    assert!((port.route_anchor().y - center.y).abs() <= 0.01);
+}
+
+fn projected_canvas_rect_size(bounds: CanvasRect, transform: &ViewportTransform) -> CanvasSize {
+    let origin = transform
+        .screen_point_for_canvas(bounds.origin)
+        .expect("finite projected bounds origin");
+    let far = transform
+        .screen_point_for_canvas(CanvasPoint {
+            x: bounds.origin.x + bounds.size.width,
+            y: bounds.origin.y + bounds.size.height,
+        })
+        .expect("finite projected bounds extent");
+    CanvasSize {
+        width: (far.x - origin.x).abs(),
+        height: (far.y - origin.y).abs(),
+    }
 }
 
 fn assert_shader_layout_contract(

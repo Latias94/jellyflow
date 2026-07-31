@@ -7,28 +7,35 @@ use jellyflow_core::{
     NodeGraphConnectionMode, NodeId, NodeKindKey, Port, PortCapacity, PortDirection, PortId,
     PortKey, PortKind,
 };
-use jellyflow_egui::{EguiCanvasInteraction, EguiInteractionOutput, EguiNativeFrameHost};
+use jellyflow_egui::{
+    EguiCanvasInteraction, EguiInteractionError, EguiInteractionOutput, EguiNativeFrameHost,
+};
 use jellyflow_runtime::adapter::conformance::{
-    ConformanceAction as TraceInput, ConformanceCancelReason as TraceCancelReason,
-    ConformanceCandidate as TraceCandidate, ConformanceCommandOutcome as TraceReceipt,
-    ConformanceEffect as TraceEffect, ConformanceGeometry as TraceGeometry,
-    ConformanceGraph as TraceGraph, ConformanceIntent as TraceIntent,
-    ConformanceOwnership as TraceOwnership, ConformancePhase as TracePhase,
-    ConformanceScenario as CanonicalInteractionTrace, ConformanceScenarioId as TraceScenarioId,
-    ConformanceSelection as TraceSelection, ConformanceTarget as TraceTarget,
-    ConformanceTerminal as TraceTerminal, ConformanceTicket as TraceTicket,
-    ConformanceViewStatus as TraceViewStatus, NormalizedObservation, canonical_scenarios,
-    compare_observations, new_connection_probe_prefix_scenario,
+    ConformanceAction as TraceInput, ConformanceAdapterTransportEvidence as TraceTransportEvidence,
+    ConformanceCancelReason as TraceCancelReason, ConformanceCandidate as TraceCandidate,
+    ConformanceCommandCompletion as TraceCompletion,
+    ConformanceCommandEvidence as TraceCommandEvidence,
+    ConformanceConnectionSettlement as TraceConnectionSettlement, ConformanceEffect as TraceEffect,
+    ConformanceGeometry as TraceGeometry, ConformanceGraph as TraceGraph,
+    ConformanceIntent as TraceIntent, ConformanceOwnership as TraceOwnership,
+    ConformancePhase as TracePhase, ConformanceScenario as CanonicalInteractionTrace,
+    ConformanceScenarioId as TraceScenarioId, ConformanceSelection as TraceSelection,
+    ConformanceTarget as TraceTarget, ConformanceTerminal as TraceTerminal,
+    ConformanceTicket as TraceTicket, ConformanceViewStatus as TraceViewStatus,
+    NormalizedObservation, canonical_scenarios, compare_observations,
+    new_connection_probe_prefix_scenario,
 };
 use jellyflow_runtime::commands::{GraphCommand, IncidentEdgePolicy, TopologyEdit};
-use jellyflow_runtime::geometry::{HandlePosition, ViewPoint, ViewRect, ViewSize};
+use jellyflow_runtime::geometry::{HandlePosition, ViewPoint};
 use jellyflow_runtime::graph::{
     EdgeEndpoint, GraphRuntime, GraphRuntimeMiddleware, GraphRuntimeMiddlewareSnapshot,
 };
 use jellyflow_runtime::interaction::{
-    CanvasInteractionConfig, CanvasInteractionEffect, CanvasInteractionPhase, CanvasPressFallback,
-    CanvasPressTarget, ConnectionGestureBinding, ConnectionProbe, ConnectionSearchRequest,
-    InteractionGraphSubmission, InteractionTerminalReason, InteractionTicketId, SelectionMode,
+    CanvasInteractionConfig, CanvasInteractionEffect, CanvasInteractionError,
+    CanvasInteractionPhase, CanvasPressFallback, CanvasPressTarget, ConnectionGestureBinding,
+    ConnectionProbe, ConnectionSearchRequest, ConnectionSearchStatus,
+    ConnectionSettlementPresentation, InteractionGraphSubmission, InteractionTerminalReason,
+    InteractionTicketId, SelectionMode,
 };
 use jellyflow_runtime::profile::ApplyPipelineError;
 use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec, NodePortSpec};
@@ -110,6 +117,10 @@ impl GraphRuntimeMiddleware for RejectCanonicalCommand {
     }
 }
 
+const fn completed(completion: TraceCompletion) -> TraceCommandEvidence {
+    TraceCommandEvidence::Completion(completion)
+}
+
 #[test]
 fn stolen_egui_drag_ownership_cancels_the_semantic_session() {
     let mut runner = EguiTraceRunner::new();
@@ -163,6 +174,218 @@ fn release_at_a_new_position_activates_and_commits_an_armed_drag() {
 }
 
 #[test]
+fn egui_search_retry_rejects_a_stale_cancel_request() {
+    let mut runner = EguiTraceRunner::new();
+
+    assert_eq!(runner.press(TraceTarget::SourcePort), TraceEffect::None);
+    assert_eq!(
+        runner.move_to_candidate(TraceCandidate::None),
+        TraceEffect::ProbeConnection
+    );
+    assert_eq!(runner.release(), TraceEffect::OpenSearch);
+
+    let first_request = runner
+        .search_request
+        .clone()
+        .expect("release emits an exact search request");
+    let ctx = runner.harness.ctx.clone();
+    runner
+        .state_mut()
+        .interaction
+        .search_failed(&ctx, &first_request)
+        .expect("the current search request can report failure");
+    assert_eq!(
+        runner
+            .state()
+            .interaction
+            .presentation()
+            .connection()
+            .and_then(|connection| connection.search()),
+        Some(ConnectionSearchStatus::Error)
+    );
+
+    let retry = runner
+        .state_mut()
+        .interaction
+        .retry_search(&ctx, &first_request)
+        .expect("the current request starts a successor attempt");
+    assert_eq!(
+        runner.capture_semantic_effect(retry, false),
+        TraceEffect::OpenSearch
+    );
+    let successor_request = runner
+        .search_request
+        .clone()
+        .expect("retry emits its successor request");
+    assert_ne!(successor_request, first_request);
+
+    assert!(matches!(
+        runner
+            .state_mut()
+            .interaction
+            .cancel_search(&ctx, &first_request),
+        Err(EguiInteractionError::Interaction(
+            CanvasInteractionError::ConnectionSearchStaleGeneration
+        ))
+    ));
+    runner
+        .state_mut()
+        .interaction
+        .cancel_search(&ctx, &successor_request)
+        .expect("only the current request can cancel its search");
+    assert_eq!(
+        runner.state().interaction.presentation().phase(),
+        CanvasInteractionPhase::Idle
+    );
+    assert_eq!(
+        runner.state().interaction.presentation().terminal(),
+        Some(InteractionTerminalReason::Cancelled)
+    );
+}
+
+#[test]
+fn egui_uncertain_settlement_retries_with_a_fresh_exact_capability() {
+    let mut runner = EguiTraceRunner::new();
+
+    assert_eq!(runner.press(TraceTarget::SourcePort), TraceEffect::None);
+    assert_eq!(
+        runner.move_to_candidate(TraceCandidate::Valid),
+        TraceEffect::ProbeConnection
+    );
+    assert_eq!(runner.release(), TraceEffect::SubmitConnection);
+
+    let first_ticket = runner.ticket.expect("connection submission owns a ticket");
+    let first_submission = runner
+        .submission
+        .take()
+        .expect("connection release emits a graph submission");
+    let first_command = runner
+        .state_mut()
+        .interaction
+        .bind_submission(first_submission)
+        .expect("the adapter binds the first submission")
+        .expect("the first attempt emits a command");
+    drop(first_command);
+
+    let ctx = runner.harness.ctx.clone();
+    runner
+        .state_mut()
+        .interaction
+        .submission_outcome_unknown(&ctx, first_ticket)
+        .expect("loss after transport admission becomes uncertain");
+    runner.ticket = None;
+    let first_capability = match runner
+        .state()
+        .interaction
+        .presentation()
+        .connection_settlement()
+    {
+        Some(ConnectionSettlementPresentation::Uncertain {
+            capability,
+            can_retry: false,
+        }) => capability,
+        settlement => panic!("expected non-retryable uncertainty, got {settlement:?}"),
+    };
+    assert!(matches!(
+        runner
+            .state_mut()
+            .interaction
+            .retry_connection_settlement(&ctx, first_capability),
+        Err(EguiInteractionError::Interaction(
+            CanvasInteractionError::ConnectionSettlementRetryNotReady
+        ))
+    ));
+
+    runner.execute_external_revision("authorize uncertain retry");
+    runner
+        .state_mut()
+        .interaction
+        .reconcile_authoritative_state(&ctx)
+        .expect("a later authoritative absence authorizes retry");
+    assert_eq!(
+        runner
+            .state()
+            .interaction
+            .presentation()
+            .connection_settlement(),
+        Some(ConnectionSettlementPresentation::Uncertain {
+            capability: first_capability,
+            can_retry: true,
+        })
+    );
+
+    let retry = runner
+        .state_mut()
+        .interaction
+        .retry_connection_settlement(&ctx, first_capability)
+        .expect("the exact capability issues a fresh attempt");
+    assert_eq!(
+        runner.capture_semantic_effect(retry, false),
+        TraceEffect::SubmitConnection
+    );
+    let retry_ticket = runner.ticket.expect("retry owns a fresh ticket");
+    assert_ne!(retry_ticket, first_ticket);
+    let retry_submission = runner
+        .submission
+        .take()
+        .expect("retry emits a fresh graph submission");
+    let retry_command = runner
+        .state_mut()
+        .interaction
+        .bind_submission(retry_submission)
+        .expect("the adapter binds the retry submission")
+        .expect("the retry emits a command");
+    drop(retry_command);
+    runner
+        .state_mut()
+        .interaction
+        .submission_outcome_unknown(&ctx, retry_ticket)
+        .expect("the retry owns an independent uncertain outcome");
+    runner.ticket = None;
+    let successor_capability = match runner
+        .state()
+        .interaction
+        .presentation()
+        .connection_settlement()
+    {
+        Some(ConnectionSettlementPresentation::Uncertain { capability, .. }) => capability,
+        settlement => panic!("expected successor uncertainty, got {settlement:?}"),
+    };
+    assert_ne!(successor_capability, first_capability);
+
+    for stale_resolution in [
+        runner
+            .state_mut()
+            .interaction
+            .retry_connection_settlement(&ctx, first_capability),
+        runner
+            .state_mut()
+            .interaction
+            .cancel_connection_settlement(&ctx, first_capability),
+    ] {
+        assert!(matches!(
+            stale_resolution,
+            Err(EguiInteractionError::Interaction(
+                CanvasInteractionError::ConnectionSettlementStaleCapability
+            ))
+        ));
+    }
+    runner
+        .state_mut()
+        .interaction
+        .cancel_connection_settlement(&ctx, successor_capability)
+        .expect("only the successor capability can cancel its projection");
+    assert_eq!(
+        runner.state().interaction.presentation().phase(),
+        CanvasInteractionPhase::Idle
+    );
+    assert_eq!(
+        runner.state().interaction.presentation().terminal(),
+        Some(InteractionTerminalReason::Cancelled)
+    );
+}
+
+#[test]
 fn closing_only_the_semantic_interaction_cannot_satisfy_host_closed_conformance() {
     let trace = canonical_scenarios()
         .into_iter()
@@ -211,40 +434,33 @@ struct EguiTraceRunner {
 
 impl EguiTraceRunner {
     fn new() -> Self {
-        Self::for_settlement(None)
+        Self::build(None, None, TraceQuerySchedule::Default)
     }
 
     fn for_scenario(id: TraceScenarioId) -> Self {
-        Self::build(
-            scenario_command_outcome(id),
-            Some(id),
-            TraceQuerySchedule::Default,
-        )
+        Self::build(id.command_evidence(), Some(id), TraceQuerySchedule::Default)
     }
 
     fn for_paged_probe(id: TraceScenarioId) -> Self {
         Self::build(
-            scenario_command_outcome(id),
+            id.command_evidence(),
             Some(id),
             TraceQuerySchedule::ManyPagesPerFrame,
         )
     }
 
-    fn for_settlement(settlement: Option<TraceReceipt>) -> Self {
-        Self::build(settlement, None, TraceQuerySchedule::Default)
-    }
-
     fn build(
-        settlement: Option<TraceReceipt>,
+        evidence: Option<TraceCommandEvidence>,
         scenario: Option<TraceScenarioId>,
         query_schedule: TraceQuerySchedule,
     ) -> Self {
-        let state = EguiTraceState::for_settlement(settlement, query_schedule);
+        let state = EguiTraceState::for_evidence(evidence, query_schedule);
         if matches!(
             scenario,
             Some(
                 TraceScenarioId::ReconnectSource(_)
                     | TraceScenarioId::ReconnectTarget(_)
+                    | TraceScenarioId::ReconnectTargetNoop
                     | TraceScenarioId::ReconnectSourcePrefixWait
                     | TraceScenarioId::ReconnectTargetPrefixWait
             )
@@ -272,17 +488,18 @@ impl EguiTraceRunner {
             .node(&state.ids.source_node)
             .expect("canonical egui source node")
             .pos;
-        let baseline_source_bounds = state
-            .view()
-            .geometry_snapshot()
-            .expect("canonical egui geometry baseline")
-            .node(state.ids.source_node)
-            .expect("canonical egui source geometry")
-            .bounds();
         let pointer = state.anchors.source_pos();
         let harness = Harness::builder()
             .with_size(Vec2::new(900.0, 500.0))
             .build_ui_state(render_trace, state);
+        let baseline_source_bounds = harness
+            .state()
+            .view()
+            .geometry_snapshot()
+            .expect("canonical egui geometry baseline")
+            .node(harness.state().ids.source_node)
+            .expect("canonical egui source geometry")
+            .bounds();
         Self {
             harness,
             pointer,
@@ -294,7 +511,9 @@ impl EguiTraceRunner {
             prefix_held: false,
             adapter_capture: None,
             successor_capture: None,
-            scenario: scenario.unwrap_or(TraceScenarioId::NewConnection(TraceReceipt::Applied)),
+            scenario: scenario.unwrap_or(TraceScenarioId::NewConnection(completed(
+                TraceCompletion::Applied,
+            ))),
             baseline_source_position,
             baseline_source_bounds,
             query_schedule,
@@ -333,7 +552,14 @@ impl EguiTraceRunner {
                 let output = self.take_output();
                 self.capture_semantic_effect(output, false)
             }
-            TraceInput::CompleteCommand(receipt) => self.settle(receipt),
+            TraceInput::PublishAuthoritativeFrame => self.publish_authoritative_frame(),
+            TraceInput::AdvanceAuthoritativeAbsence => self.advance_authoritative_absence(),
+            TraceInput::RetryConnectionSettlement => self.retry_connection_settlement(),
+            TraceInput::CancelConnectionSettlement => self.cancel_connection_settlement(),
+            TraceInput::CompleteCommand(completion) => self.complete_command(completion),
+            TraceInput::ReportTransportEvidence(evidence) => {
+                self.report_transport_evidence(evidence)
+            }
             TraceInput::LoseCapture => self.lose_capture(),
             TraceInput::ReplaceOwner => self.replace_owner(),
             TraceInput::ReleasePreviousOwner => self.release_previous_owner(),
@@ -462,7 +688,7 @@ impl EguiTraceRunner {
         self.capture_semantic_effect(output, false)
     }
 
-    fn settle(&mut self, receipt: TraceReceipt) -> TraceEffect {
+    fn complete_command(&mut self, completion: TraceCompletion) -> TraceEffect {
         assert!(
             !self.prefix_held,
             "command transport cannot bypass a held prefix"
@@ -473,37 +699,97 @@ impl EguiTraceRunner {
             .take()
             .expect("trace captured one graph submission");
         let ctx = self.harness.ctx.clone();
-        match receipt {
-            TraceReceipt::NotDispatched => {
-                drop(submission);
-                self.harness
-                    .state_mut()
-                    .interaction
-                    .submission_not_dispatched(&ctx, ticket)
-                    .expect("undispatched submission is reported");
+        let runtime_completion = self.dispatch_submission(completion, submission);
+        let output = self
+            .harness
+            .state_mut()
+            .interaction
+            .complete_submission(&ctx, ticket, runtime_completion)
+            .expect("command completion settles the exact submission");
+        assert!(output.effects().is_empty());
+        if matches!(completion, TraceCompletion::Applied | TraceCompletion::Noop) {
+            self.publish_terminal_connection_route();
+        }
+        match completion {
+            TraceCompletion::Applied | TraceCompletion::Noop => TraceEffect::None,
+            TraceCompletion::Rejected | TraceCompletion::Conflict | TraceCompletion::Failed => {
                 TraceEffect::RestorePresentation
-            }
-            TraceReceipt::Applied | TraceReceipt::Rejected | TraceReceipt::Conflict => {
-                let completion = self.dispatch_submission(receipt, submission);
-                self.harness
-                    .state_mut()
-                    .interaction
-                    .complete_submission(&ctx, ticket, completion)
-                    .expect("command completion settles the exact submission");
-                match receipt {
-                    TraceReceipt::Applied => TraceEffect::None,
-                    TraceReceipt::Rejected | TraceReceipt::Conflict => {
-                        TraceEffect::RestorePresentation
-                    }
-                    TraceReceipt::NotDispatched => unreachable!(),
-                }
             }
         }
     }
 
+    fn report_transport_evidence(&mut self, evidence: TraceTransportEvidence) -> TraceEffect {
+        assert!(
+            !self.prefix_held,
+            "command transport cannot bypass a held prefix"
+        );
+        let ticket = self.ticket.take().expect("trace submitted one command");
+        let submission = self
+            .submission
+            .take()
+            .expect("trace captured one graph submission");
+        let ctx = self.harness.ctx.clone();
+        match evidence {
+            TraceTransportEvidence::NotDispatched => {
+                drop(submission);
+                let output = self
+                    .harness
+                    .state_mut()
+                    .interaction
+                    .submission_not_dispatched(&ctx, ticket)
+                    .expect("undispatched submission is reported");
+                assert!(output.effects().is_empty());
+                TraceEffect::RestorePresentation
+            }
+            TraceTransportEvidence::OutcomeUnknown => {
+                let command = self
+                    .harness
+                    .state_mut()
+                    .interaction
+                    .bind_submission(submission)
+                    .expect("outcome-unknown transport binds the admitted command")
+                    .expect("outcome-unknown transport follows command admission");
+                drop(command);
+                let output = self
+                    .harness
+                    .state_mut()
+                    .interaction
+                    .submission_outcome_unknown(&ctx, ticket)
+                    .expect("post-admission transport uncertainty is reported");
+                assert!(output.effects().is_empty());
+                TraceEffect::None
+            }
+        }
+    }
+
+    fn publish_terminal_connection_route(&mut self) {
+        if matches!(
+            self.scenario,
+            TraceScenarioId::CreateFromWire(TraceCommandEvidence::Completion(
+                TraceCompletion::Applied
+            )) | TraceScenarioId::CreateFromWirePrefixWait
+        ) || !self
+            .state()
+            .interaction
+            .presentation()
+            .connection_settlement()
+            .is_some()
+        {
+            return;
+        }
+        assert_eq!(self.publish_authoritative_frame(), TraceEffect::None);
+    }
+
+    fn publish_authoritative_frame(&mut self) -> TraceEffect {
+        self.harness.step();
+        let output = self.take_output();
+        assert!(output.effects().is_empty());
+        TraceEffect::None
+    }
+
     fn dispatch_submission(
         &mut self,
-        requested: TraceReceipt,
+        requested: TraceCompletion,
         submission: InteractionGraphSubmission,
     ) -> jellyflow_runtime::commands::CommandExecutionCompletion {
         let emitted = self
@@ -512,17 +798,79 @@ impl EguiTraceRunner {
             .bind_submission(submission)
             .expect("egui transport binds the emitted mutation")
             .expect("canonical emitted mutation is not a no-op");
-        let command = match requested {
-            TraceReceipt::Conflict => {
-                self.execute_external_revision("conflict");
-                emitted
+        match requested {
+            TraceCompletion::Conflict => self.execute_external_revision("conflict"),
+            TraceCompletion::Applied | TraceCompletion::Noop | TraceCompletion::Rejected => {}
+            TraceCompletion::Failed => {
+                let foreign = GraphRuntime::builder(Default::default())
+                    .build(
+                        GraphBuilder::new(GraphId::from_u128(u128::MAX))
+                            .build()
+                            .expect("foreign failure graph is valid"),
+                    )
+                    .expect("foreign failure runtime builds");
+                return foreign.execute(emitted);
             }
-            TraceReceipt::Applied | TraceReceipt::Rejected => emitted,
-            TraceReceipt::NotDispatched => {
-                unreachable!("non-dispatch receipts are handled before command binding")
-            }
+        }
+        self.state().runtime.execute(emitted)
+    }
+
+    fn advance_authoritative_absence(&mut self) -> TraceEffect {
+        self.execute_external_revision("uncertain-absence");
+        let ctx = self.harness.ctx.clone();
+        let output = self
+            .harness
+            .state_mut()
+            .interaction
+            .reconcile_authoritative_state(&ctx)
+            .expect("later authoritative absence is reconciled");
+        assert!(output.effects().is_empty());
+        TraceEffect::None
+    }
+
+    fn retry_connection_settlement(&mut self) -> TraceEffect {
+        let capability = match self
+            .state()
+            .interaction
+            .presentation()
+            .connection_settlement()
+        {
+            Some(ConnectionSettlementPresentation::Uncertain {
+                capability,
+                can_retry: true,
+            }) => capability,
+            settlement => panic!("expected retryable uncertainty, got {settlement:?}"),
         };
-        self.state().runtime.execute(command)
+        let ctx = self.harness.ctx.clone();
+        let output = self
+            .harness
+            .state_mut()
+            .interaction
+            .retry_connection_settlement(&ctx, capability)
+            .expect("exact uncertainty capability starts a fresh attempt");
+        self.capture_semantic_effect(output, false)
+    }
+
+    fn cancel_connection_settlement(&mut self) -> TraceEffect {
+        let capability = match self
+            .state()
+            .interaction
+            .presentation()
+            .connection_settlement()
+        {
+            Some(ConnectionSettlementPresentation::Uncertain { capability, .. })
+            | Some(ConnectionSettlementPresentation::Retryable { capability, .. }) => capability,
+            settlement => panic!("expected cancellable settlement, got {settlement:?}"),
+        };
+        let ctx = self.harness.ctx.clone();
+        let output = self
+            .harness
+            .state_mut()
+            .interaction
+            .cancel_connection_settlement(&ctx, capability)
+            .expect("current settlement capability cancels its projection");
+        assert!(output.effects().is_empty());
+        TraceEffect::RestorePresentation
     }
 
     fn drain_prefix(&mut self) -> TraceEffect {
@@ -771,9 +1119,28 @@ impl EguiTraceRunner {
             graph_revision_delta,
             geometry,
         );
-        observation.optimistic_presentation = self.ticket.is_some()
-            && (presentation.connection().is_some() || presentation.node_drag().is_some());
+        observation.optimistic_presentation = presentation
+            .connection()
+            .is_some_and(|_| self.ticket.is_some())
+            || presentation.connection_settlement().is_some()
+            || (self.ticket.is_some() && presentation.node_drag().is_some());
         observation.terminal = presentation.terminal().map(trace_terminal);
+        observation.connection_settlement = match presentation.connection_settlement() {
+            None => TraceConnectionSettlement::None,
+            Some(ConnectionSettlementPresentation::AwaitingPublication) => {
+                TraceConnectionSettlement::AwaitingPublication
+            }
+            Some(ConnectionSettlementPresentation::Uncertain { can_retry, .. }) => {
+                TraceConnectionSettlement::Uncertain {
+                    retryable: can_retry,
+                }
+            }
+            Some(ConnectionSettlementPresentation::Retryable { can_retry, .. }) => {
+                TraceConnectionSettlement::Retryable {
+                    retryable: can_retry,
+                }
+            }
+        };
         observation.intent = presentation
             .connection_intent()
             .map_or(TraceIntent::None, trace_intent);
@@ -929,9 +1296,18 @@ impl EguiTraceRunner {
                 TraceGeometry::ReconnectTargetRouted
             }
             TraceGraph::CreateFromWire => {
-                assert!(geometry.port(ids.created_port).is_none());
-                assert!(geometry.route(EdgeId::from_u128(100)).is_none());
-                TraceGeometry::CreateFromWireAwaitingLayout
+                if geometry.port(ids.created_port).is_some() {
+                    self.assert_route_matches(
+                        &geometry,
+                        EdgeId::from_u128(100),
+                        ids.source_port,
+                        ids.created_port,
+                    );
+                    TraceGeometry::CreateFromWireRouted
+                } else {
+                    assert!(geometry.route(EdgeId::from_u128(100)).is_none());
+                    TraceGeometry::CreateFromWireAwaitingLayout
+                }
             }
             TraceGraph::NodeMoved => {
                 let snapshot = self.state().runtime.snapshot().unwrap();
@@ -985,6 +1361,7 @@ impl EguiTraceRunner {
             TraceScenarioId::ReconnectTarget(_) | TraceScenarioId::ReconnectTargetPrefixWait => {
                 self.state().anchors.reconnect_alternate
             }
+            TraceScenarioId::ReconnectTargetNoop => self.state().anchors.reconnect_target,
             _ => self.state().anchors.valid,
         }
     }
@@ -1019,34 +1396,56 @@ struct EguiTraceState {
 }
 
 impl EguiTraceState {
-    fn for_settlement(
-        settlement: Option<TraceReceipt>,
+    fn for_evidence(
+        evidence: Option<TraceCommandEvidence>,
         query_schedule: TraceQuerySchedule,
     ) -> Self {
         let ids = TraceGraphIds::new();
         let anchors = TraceAnchors::new();
         let mut builder = GraphBuilder::new(GraphId::from_u128(1));
-        for (node, port, direction) in [
-            (ids.source_node, ids.source_port, PortDirection::Out),
-            (ids.invalid_node, ids.invalid_port, PortDirection::Out),
-            (ids.valid_node, ids.valid_port, PortDirection::In),
+        for (node, port, direction, anchor) in [
+            (
+                ids.source_node,
+                ids.source_port,
+                PortDirection::Out,
+                anchors.source,
+            ),
+            (
+                ids.invalid_node,
+                ids.invalid_port,
+                PortDirection::Out,
+                anchors.invalid,
+            ),
+            (
+                ids.valid_node,
+                ids.valid_port,
+                PortDirection::In,
+                anchors.valid,
+            ),
             (
                 ids.reconnect_source_node,
                 ids.reconnect_source_port,
                 PortDirection::Out,
+                anchors.reconnect_source,
             ),
             (
                 ids.reconnect_target_node,
                 ids.reconnect_target_port,
                 PortDirection::In,
+                anchors.reconnect_target,
             ),
             (
                 ids.reconnect_alternate_node,
                 ids.reconnect_alternate_port,
                 PortDirection::In,
+                if query_schedule.overlaps_valid_targets() {
+                    anchors.valid
+                } else {
+                    anchors.reconnect_alternate
+                },
             ),
         ] {
-            builder.insert_node(node, trace_node(port));
+            builder.insert_node(node, trace_node(port, anchor));
             builder.insert_port(port, trace_port(node, direction));
         }
         builder.insert_edge(
@@ -1060,15 +1459,15 @@ impl EguiTraceState {
         let runtime = GraphRuntime::builder(Default::default())
             .build(builder.build().expect("trace graph"))
             .expect("trace runtime");
-        let runtime = match settlement {
-            Some(TraceReceipt::Rejected) => runtime.with_middleware(RejectCanonicalCommand),
-            Some(TraceReceipt::Applied | TraceReceipt::Conflict | TraceReceipt::NotDispatched)
-            | None => runtime,
+        let runtime = match evidence {
+            Some(TraceCommandEvidence::Completion(TraceCompletion::Rejected)) => {
+                runtime.with_middleware(RejectCanonicalCommand)
+            }
+            Some(_) | None => runtime,
         };
         let view = runtime
             .attach_view(ViewSessionOptions::default())
             .expect("trace view");
-        publish_trace_geometry(&view, ids, anchors, query_schedule.overlaps_valid_targets());
         let interaction = EguiCanvasInteraction::new(&view, query_schedule.interaction_config())
             .expect("egui interaction");
         let host = EguiNativeFrameHost::new(view);
@@ -1122,6 +1521,7 @@ enum TraceReconnectEndpoint {
 }
 
 fn render_trace(ui: &mut Ui, state: &mut EguiTraceState) {
+    render_trace_native_frame(ui, state);
     let scene_rect = ui.max_rect();
     let query_pages_per_frame = state.query_pages_per_frame;
     state
@@ -1141,7 +1541,16 @@ fn render_trace(ui: &mut Ui, state: &mut EguiTraceState) {
                 | TraceResponse::Edge => Sense::drag(),
             },
         );
-        let target = press_target(state.host.view(), &state.interaction, state.ids, kind);
+        let target = if matches!(kind, TraceResponse::NativeControl) {
+            CanvasPressTarget::NativeControl
+        } else if response.ctx.input(|input| {
+            input.pointer.button_pressed(PointerButton::Primary)
+                && response.is_pointer_button_down_on()
+        }) {
+            press_target(state.host.view(), &state.interaction, state.ids, kind)
+        } else {
+            CanvasPressTarget::Pan
+        };
         state
             .interaction
             .handle_response(&response, target)
@@ -1152,12 +1561,90 @@ fn render_trace(ui: &mut Ui, state: &mut EguiTraceState) {
         }
     }
     paint_native_evidence(ui, state);
-    state.last_output = Some(
-        state
-            .interaction
-            .end_frame(ui.ctx())
-            .expect("end egui interaction frame"),
-    );
+    let mut output = state
+        .interaction
+        .end_frame(ui.ctx())
+        .expect("end egui interaction frame");
+    let reconciliation = state
+        .interaction
+        .reconcile_authoritative_state(ui.ctx())
+        .expect("real egui frame feedback reconciles authoritative geometry");
+    output.merge(reconciliation);
+    state.last_output = Some(output);
+}
+
+fn render_trace_native_frame(ui: &mut Ui, state: &EguiTraceState) {
+    let ids = state.ids;
+    let anchors = state.anchors;
+    let overlap_valid_targets = state.query_pages_per_frame == PAGED_QUERY_PAGES_PER_FRAME;
+    state
+        .host
+        .show(ui, trace_frame_request(), |ui, native| {
+            let (port, direction, anchor) = trace_native_port(
+                ids,
+                anchors,
+                overlap_valid_targets,
+                native.frame_node().id(),
+            );
+            let visual = ui.interact(
+                Rect::from_center_size(Pos2::new(anchor.x, anchor.y), Vec2::splat(10.0)),
+                native.id("port-visual"),
+                Sense::hover(),
+            );
+            let hit = ui.interact(
+                Rect::from_center_size(Pos2::new(anchor.x, anchor.y), Vec2::splat(24.0)),
+                native.id("port-hit"),
+                Sense::hover(),
+            );
+            native
+                .measure_port_with_hit(port, &visual, &hit, direction)
+                .expect("canonical native port measurement");
+            ui.interact(ui.max_rect(), native.id("root"), Sense::hover())
+        })
+        .expect("canonical real egui host submits one complete frame");
+}
+
+fn trace_native_port(
+    ids: TraceGraphIds,
+    anchors: TraceAnchors,
+    overlap_valid_targets: bool,
+    node: NodeId,
+) -> (PortId, HandlePosition, ViewPoint) {
+    if node == ids.source_node {
+        (ids.source_port, HandlePosition::Right, anchors.source)
+    } else if node == ids.invalid_node {
+        (ids.invalid_port, HandlePosition::Right, anchors.invalid)
+    } else if node == ids.valid_node {
+        (ids.valid_port, HandlePosition::Left, anchors.valid)
+    } else if node == ids.reconnect_source_node {
+        (
+            ids.reconnect_source_port,
+            HandlePosition::Right,
+            anchors.reconnect_source,
+        )
+    } else if node == ids.reconnect_target_node {
+        (
+            ids.reconnect_target_port,
+            HandlePosition::Left,
+            anchors.reconnect_target,
+        )
+    } else if node == ids.reconnect_alternate_node {
+        (
+            ids.reconnect_alternate_port,
+            HandlePosition::Left,
+            if overlap_valid_targets {
+                anchors.valid
+            } else {
+                anchors.reconnect_alternate
+            },
+        )
+    } else {
+        (
+            ids.created_port,
+            HandlePosition::Left,
+            ViewPoint::new(30.0, 30.0),
+        )
+    }
 }
 
 fn press_target(
@@ -1245,45 +1732,20 @@ fn paint_native_evidence(ui: &Ui, state: &EguiTraceState) {
     }
 }
 
-fn scenario_command_outcome(id: TraceScenarioId) -> Option<TraceReceipt> {
-    match id {
-        TraceScenarioId::NewConnection(settlement)
-        | TraceScenarioId::ReconnectSource(settlement)
-        | TraceScenarioId::ReconnectTarget(settlement)
-        | TraceScenarioId::CreateFromWire(settlement)
-        | TraceScenarioId::NodeDrag(settlement) => Some(settlement),
-        TraceScenarioId::NewConnectionPrefixWait
-        | TraceScenarioId::NewConnectionProbePrefix
-        | TraceScenarioId::ReconnectSourcePrefixWait
-        | TraceScenarioId::ReconnectTargetPrefixWait
-        | TraceScenarioId::CreateFromWirePrefixWait
-        | TraceScenarioId::NodeDragPrefixWait => Some(TraceReceipt::Applied),
-        TraceScenarioId::NodePressBelowThreshold
-        | TraceScenarioId::NativeControl
-        | TraceScenarioId::EdgePick
-        | TraceScenarioId::CaptureLost
-        | TraceScenarioId::OwnerReplaced
-        | TraceScenarioId::Escape
-        | TraceScenarioId::OutsideClick
-        | TraceScenarioId::SourceRetired
-        | TraceScenarioId::HostClosed => None,
-    }
-}
-
 fn trace_terminal(reason: InteractionTerminalReason) -> TraceTerminal {
     match reason {
         InteractionTerminalReason::Applied => TraceTerminal::Applied,
-        InteractionTerminalReason::Noop => {
-            panic!("canonical egui trace does not model a no-op command")
-        }
+        InteractionTerminalReason::Noop => TraceTerminal::Noop,
         InteractionTerminalReason::Rejected => TraceTerminal::Rejected,
         InteractionTerminalReason::Conflict => TraceTerminal::Conflict,
-        InteractionTerminalReason::TransportFailure => TraceTerminal::NotDispatched,
+        InteractionTerminalReason::ExecutionFailed => TraceTerminal::ExecutionFailed,
+        InteractionTerminalReason::TransportFailure => TraceTerminal::TransportFailure,
+        InteractionTerminalReason::Uncertain => TraceTerminal::Uncertain,
         InteractionTerminalReason::Cancelled => TraceTerminal::Cancelled,
+        InteractionTerminalReason::InvalidTarget => TraceTerminal::InvalidTarget,
         InteractionTerminalReason::OwnerRetired => TraceTerminal::OwnerRetired,
         InteractionTerminalReason::ViewClosed => TraceTerminal::HostClosed,
-        reason @ (InteractionTerminalReason::ExecutionFailed
-        | InteractionTerminalReason::Uncertain
+        reason @ (InteractionTerminalReason::ProtocolFailure
         | InteractionTerminalReason::BudgetExhausted
         | InteractionTerminalReason::GeometryIndeterminate
         | InteractionTerminalReason::IdentityExhausted) => {
@@ -1391,115 +1853,27 @@ impl TraceAnchors {
     }
 }
 
-fn publish_trace_geometry(
-    view: &ViewSession,
-    ids: TraceGraphIds,
-    anchors: TraceAnchors,
-    overlap_valid_targets: bool,
-) {
-    let frame = view
-        .frame(FrameRequest::new(
-            CanvasRect {
-                origin: CanvasPoint { x: -50.0, y: -50.0 },
-                size: CanvasSize {
-                    width: 900.0,
-                    height: 500.0,
-                },
+fn trace_frame_request() -> FrameRequest {
+    FrameRequest::new(
+        CanvasRect {
+            origin: CanvasPoint { x: -50.0, y: -50.0 },
+            size: CanvasSize {
+                width: 900.0,
+                height: 500.0,
             },
-            RendererStamp::new("trace.node", 1),
-        ))
-        .expect("trace frame");
-    let collector = frame.collector();
-    for (node, port, direction, anchor) in [
-        (
-            ids.source_node,
-            ids.source_port,
-            PortDirection::Out,
-            anchors.source,
-        ),
-        (
-            ids.invalid_node,
-            ids.invalid_port,
-            PortDirection::Out,
-            anchors.invalid,
-        ),
-        (
-            ids.valid_node,
-            ids.valid_port,
-            PortDirection::In,
-            anchors.valid,
-        ),
-        (
-            ids.reconnect_source_node,
-            ids.reconnect_source_port,
-            PortDirection::Out,
-            anchors.reconnect_source,
-        ),
-        (
-            ids.reconnect_target_node,
-            ids.reconnect_target_port,
-            PortDirection::In,
-            anchors.reconnect_target,
-        ),
-        (
-            ids.reconnect_alternate_node,
-            ids.reconnect_alternate_port,
-            PortDirection::In,
-            if overlap_valid_targets {
-                anchors.valid
-            } else {
-                anchors.reconnect_alternate
-            },
-        ),
-    ] {
-        let frame_node = frame
-            .nodes()
-            .iter()
-            .find(|candidate| candidate.id() == node)
-            .expect("trace frame node");
-        let frame_port = frame_node
-            .ports()
-            .iter()
-            .find(|candidate| candidate.id() == port)
-            .expect("trace frame port");
-        let node_bounds = ViewRect::new(
-            ViewPoint::new(anchor.x - 30.0, anchor.y - 30.0),
-            ViewSize::new(60.0, 60.0),
-        );
-        let visual = ViewRect::new(
-            ViewPoint::new(anchor.x - 5.0, anchor.y - 5.0),
-            ViewSize::new(10.0, 10.0),
-        );
-        let hit = ViewRect::new(
-            ViewPoint::new(anchor.x - 12.0, anchor.y - 12.0),
-            ViewSize::new(24.0, 24.0),
-        );
-        let mut layout = frame_node.begin_layout(node_bounds);
-        layout
-            .port_rendered(
-                frame_port.layout_target(),
-                visual,
-                hit,
-                anchor,
-                match direction {
-                    PortDirection::In => HandlePosition::Left,
-                    PortDirection::Out => HandlePosition::Right,
-                },
-            )
-            .expect("trace port layout");
-        collector
-            .layout(layout.finish().expect("trace node layout"))
-            .expect("collect trace layout");
-    }
-    view.submit_feedback(collector.finish().expect("trace feedback"))
-        .expect("publish trace geometry");
+        },
+        RendererStamp::new("trace.node", 1),
+    )
 }
 
-fn trace_node(port: PortId) -> Node {
+fn trace_node(port: PortId, anchor: ViewPoint) -> Node {
     Node {
         kind: NodeKindKey::new("trace.node"),
         kind_version: 1,
-        pos: CanvasPoint::default(),
+        pos: CanvasPoint {
+            x: anchor.x - 30.0,
+            y: anchor.y - 30.0,
+        },
         origin: None,
         selectable: None,
         draggable: None,

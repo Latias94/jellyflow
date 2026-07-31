@@ -2299,7 +2299,7 @@ fn adapter_environment_invalidation_is_exact_and_view_local() {
 }
 
 #[test]
-fn whole_frame_culling_withdraws_queries_and_republish_restores_geometry() {
+fn frame_culling_hides_nodes_but_retains_a_route_crossing_the_viewport() {
     let (graph, ids) = graph_with_routed_edge();
     let runtime = GraphRuntime::builder(Default::default())
         .build(graph)
@@ -2385,13 +2385,10 @@ fn whole_frame_culling_withdraws_queries_and_republish_restores_geometry() {
     let culled = session
         .frame(FrameRequest::new(
             CanvasRect {
-                origin: CanvasPoint {
-                    x: 10_000.0,
-                    y: 10_000.0,
-                },
+                origin: CanvasPoint { x: 181.0, y: 60.0 },
                 size: CanvasSize {
-                    width: 400.0,
-                    height: 300.0,
+                    width: 58.0,
+                    height: 40.0,
                 },
             },
             RendererStamp::new("test.node", 1),
@@ -2401,8 +2398,8 @@ fn whole_frame_culling_withdraws_queries_and_republish_restores_geometry() {
     let culling_work = culled.materialization_receipt().geometry();
     assert_eq!(culling_work.node_invalidations(), 2);
     assert_eq!(culling_work.spatial_updates(), 0);
-    assert_eq!(culling_work.route_invalidations(), 1);
-    assert_eq!(culling_work.route_recomputations(), 1);
+    assert_eq!(culling_work.route_invalidations(), 0);
+    assert_eq!(culling_work.route_recomputations(), 0);
     let after_cull = session.geometry_snapshot().unwrap();
     assert_eq!(after_cull.layout_revision(), 2);
     assert!(after_cull.node(ids.source).is_none());
@@ -2411,7 +2408,7 @@ fn whole_frame_culling_withdraws_queries_and_republish_restores_geometry() {
     assert!(after_cull.port(ids.target_port).is_none());
     assert!(after_cull.port_outcome(ids.source_port).is_none());
     assert!(after_cull.port_outcome(ids.target_port).is_none());
-    assert!(after_cull.route(ids.edge).is_none());
+    assert!(after_cull.route(ids.edge).is_some());
     assert!(after_cull.nodes().is_empty());
     assert!(after_cull.ports().is_empty());
     assert!(after_cull.port_outcomes().is_empty());
@@ -2420,6 +2417,18 @@ fn whole_frame_culling_withdraws_queries_and_republish_restores_geometry() {
     assert!(before.port(ids.source_port).is_some());
     assert!(before.port(ids.target_port).is_some());
     assert!(before.route(ids.edge).is_some());
+    match session
+        .visible_routes(VisibleRouteQuery::new(
+            ViewRect::new(ViewPoint::new(181.0, 60.0), ViewSize::new(58.0, 40.0)),
+            64,
+        ))
+        .unwrap()
+    {
+        VisibleRouteQueryOutcome::Complete { routes, .. } => {
+            assert_eq!(routes.edge_ids(), &[ids.edge]);
+        }
+        other => panic!("crossing route query must complete after frame culling: {other:?}"),
+    }
     assert!(matches!(
         session.connection_probe(ConnectionProbeQuery::resume(probe_cursor, 64)),
         Err(ConnectionProbeQueryError::StaleCursor(
@@ -2474,6 +2483,44 @@ fn whole_frame_culling_withdraws_queries_and_republish_restores_geometry() {
             .unwrap()
             .port(ids.source_port)
             .is_none()
+    );
+
+    let route_before_culled_translation = session
+        .geometry_snapshot()
+        .unwrap()
+        .route(ids.edge)
+        .expect("crossing route is retained while both endpoint nodes are frame-culled")
+        .facts()
+        .path
+        .clone();
+    let source_position = runtime
+        .snapshot()
+        .unwrap()
+        .graph()
+        .node(&ids.source)
+        .expect("source node remains authoritative")
+        .pos;
+    runtime
+        .execute(GraphCommand::set_node_position(
+            runtime.snapshot().unwrap().version(),
+            ids.source,
+            CanvasPoint {
+                x: source_position.x + 20.0,
+                y: source_position.y,
+            },
+        ))
+        .into_result()
+        .expect("translate frame-culled route endpoint");
+    let after_culled_translation = session.geometry_snapshot().unwrap();
+    assert!(after_culled_translation.node(ids.source).is_none());
+    assert!(after_culled_translation.port(ids.source_port).is_none());
+    assert_ne!(
+        after_culled_translation
+            .route(ids.edge)
+            .expect("translation must not create a blank crossing-route frame")
+            .facts()
+            .path,
+        route_before_culled_translation,
     );
 
     let restored = session
@@ -2689,7 +2736,7 @@ fn renderer_replacement_withdraws_old_instance_ports_before_new_layout() {
 }
 
 #[test]
-fn edge_only_reconnect_disconnect_and_restore_each_advance_geometry_revision_once() {
+fn same_coordinate_reconnect_disconnect_and_restore_each_advance_geometry_revision_once() {
     let (graph, ids) = graph_with_routed_edge();
     let runtime = GraphRuntime::builder(Default::default())
         .build(graph)
@@ -2729,8 +2776,8 @@ fn edge_only_reconnect_disconnect_and_restore_each_advance_geometry_revision_onc
         (
             ids.alternate_source,
             ids.alternate_source_port,
-            480.0,
-            654.0,
+            0.0,
+            174.0,
             HandlePosition::Right,
         ),
     ] {
@@ -2774,15 +2821,24 @@ fn edge_only_reconnect_disconnect_and_restore_each_advance_geometry_revision_onc
         .unwrap()
         .applied()
         .expect("reconnect applies");
-    assert!(matches!(
-        session.visible_routes(VisibleRouteQuery::resume(reconnect_cursor, 64)),
-        Err(VisibleRouteQueryError::StaleCursor(
-            VisibleRouteCursorStaleReason::RouteGeometry
-        ))
-    ));
     let reconnected = session.geometry_snapshot().unwrap();
     assert_eq!(reconnected.layout_revision(), 2);
-    assert_ne!(reconnected.route(ids.edge).unwrap(), &initial_route);
+    let reconnected_route = reconnected.route(ids.edge).unwrap();
+    assert_eq!(reconnected_route.facts(), initial_route.facts());
+    assert_ne!(
+        reconnected_route.source_instance(),
+        initial_route.source_instance(),
+    );
+    assert_ne!(reconnected_route, &initial_route);
+    match session
+        .visible_routes(VisibleRouteQuery::resume(reconnect_cursor, 64))
+        .expect("same-coordinate route keeps the spatial cursor valid")
+    {
+        VisibleRouteQueryOutcome::Complete { routes, .. } => {
+            assert_eq!(routes.edge_ids(), &[ids.edge]);
+        }
+        other => panic!("same-coordinate route query must complete, got {other:?}"),
+    }
     let disconnect_cursor = match session
         .visible_routes(VisibleRouteQuery::new(route_view, 0))
         .unwrap()

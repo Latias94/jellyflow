@@ -1,6 +1,7 @@
 //! Renderer-neutral graph interaction state and intent types.
 
 mod connection;
+mod connection_settlement;
 mod intent;
 mod navigation;
 mod presentation;
@@ -20,7 +21,8 @@ pub use navigation::{
 pub use presentation::{
     AlignmentGuide, AlignmentGuideAxis, CanvasInteractionPhase, CanvasInteractionPresentation,
     ConnectionPresentation, ConnectionProbeValidity, ConnectionSearchStatus,
-    ConnectionWireProjection, InteractionTerminalReason, NodeDragPresentation,
+    ConnectionSettlementPresentation, ConnectionWireProjection, InteractionTerminalReason,
+    NodeDragPresentation,
 };
 pub(crate) use session::SelectionMutation;
 pub use session::{
@@ -29,8 +31,9 @@ pub use session::{
     CanvasInteractionQueryAdvanceReceipt, CanvasInteractionQueryPageReceipt,
     CanvasInteractionSession, CanvasInteractionUpdate, CanvasPressFallback, CanvasPressTarget,
     ConnectionInteractionStart, ConnectionSearchRequest, ConnectionSearchSelection,
-    InteractionDamage, InteractionGeneration, InteractionGraphSubmission,
-    InteractionGraphSubmissionBindError, InteractionOwner, InteractionQueryId,
-    InteractionSessionId, InteractionTickDemand, InteractionTicketId, KeyboardConnectionFeedback,
-    KeyboardConnectionPort, NodeDragStart, NodeNudgeDirection, SelectionMode,
+    ConnectionSettlementCapability, InteractionDamage, InteractionGeneration,
+    InteractionGraphSubmission, InteractionGraphSubmissionBindError, InteractionOwner,
+    InteractionQueryId, InteractionSessionId, InteractionTickDemand, InteractionTicketId,
+    KeyboardConnectionFeedback, KeyboardConnectionPort, NodeDragStart, NodeNudgeDirection,
+    SelectionMode,
 };

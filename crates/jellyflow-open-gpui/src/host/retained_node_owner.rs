@@ -1,4 +1,9 @@
 use jellyflow_core::{CanvasSize, NodeId, PortId};
+#[cfg(feature = "test-support")]
+use jellyflow_runtime::{
+    geometry::{ViewRect, ViewSize},
+    viewport::ViewportTransform,
+};
 use jellyflow_runtime::{
     graph::{DocumentEpoch, GraphRevision, PortInstanceKey},
     view::{FrameNode, GeometrySnapshot, NodeInstanceKey, ViewSession},
@@ -7,7 +12,8 @@ use open_gpui::{Entity, Window};
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::activity::{
-    OpenGpuiActivityCoordinator, OpenGpuiActivityCoordinatorStats, OpenGpuiNodeActivityRegistry,
+    OpenGpuiActivityCoordinator, OpenGpuiActivityCoordinatorStats, OpenGpuiActivityKind,
+    OpenGpuiNodeActivityRegistry,
 };
 use crate::binding::{
     OpenGpuiBindingAdvance, OpenGpuiMountCapability, OpenGpuiNodeBinding, OpenGpuiNodeBindingError,
@@ -28,6 +34,8 @@ use super::presentation::{OpenGpuiPresentationPortCache, OpenGpuiPresentationSyn
 use super::retained_mount_store::{
     EvictedMount, RetainedMountSnapshot, RetainedMountStore, RetiredMount,
 };
+#[cfg(feature = "test-support")]
+use super::test_support::OpenGpuiSmokeNodeFootprint;
 
 /// Owns every retained-node index and the adapter state whose lifetime follows those mounts.
 ///
@@ -580,6 +588,33 @@ impl RetainedNodeOwner {
         self.store.active_in_order()
     }
 
+    #[cfg(feature = "test-support")]
+    pub(super) fn smoke_node_footprints(
+        &self,
+        transform: ViewportTransform,
+    ) -> Vec<OpenGpuiSmokeNodeFootprint> {
+        self.store
+            .iter_with_activity()
+            .filter_map(|(instance, mounted, materialized)| {
+                let bounds = mounted.canonical_bounds();
+                let origin = transform.screen_point_for_canvas(bounds.origin)?;
+                let size = mounted.semantic_zoom.screen_size(
+                    transform.zoom,
+                    mounted.graph_presentation(),
+                    mounted.registration_policy.scale_policy(),
+                );
+                let bounds = ViewRect::new(origin, ViewSize::new(size.width, size.height));
+                bounds
+                    .is_positive_finite()
+                    .then_some(OpenGpuiSmokeNodeFootprint::new(
+                        instance.node(),
+                        bounds,
+                        materialized,
+                    ))
+            })
+            .collect()
+    }
+
     pub(super) fn protected_required_nodes(&self) -> BTreeSet<NodeId> {
         self.store
             .iter()
@@ -677,13 +712,14 @@ impl RetainedNodeOwner {
         {
             return false;
         }
+        // The target generation is the publication fence. Its canvas bounds may intentionally
+        // differ from the document size when semantic LOD keeps native detail at 1:1 pixels.
         geometry.node(instance.node()).is_some_and(|published| {
             published.is_fresh()
                 && published.lifetime() == instance.lifetime()
                 && published.renderer() == instance.renderer()
                 && published.layout_generation()
                     == mounted.semantic_zoom.expected_layout_generation()
-                && policy.sizes_are_equivalent(published.bounds().size, desired_size)
         })
     }
 
@@ -703,6 +739,12 @@ impl RetainedNodeOwner {
 
     pub(super) fn requires_window_cleanup(&self) -> bool {
         self.activity.requires_window_cleanup()
+    }
+
+    pub(super) fn has_activity(&self, kind: OpenGpuiActivityKind) -> bool {
+        self.store
+            .iter()
+            .any(|(_, mounted)| mounted.activity.has_activity(kind))
     }
 
     pub(super) fn release_pointer_capture_if_owned(&self, window: &mut Window) -> bool {

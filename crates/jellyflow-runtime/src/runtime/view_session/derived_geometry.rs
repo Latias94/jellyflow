@@ -590,12 +590,6 @@ impl DerivedGeometry {
             }
             geometry_changed = true;
             invalidated_nodes.push(*node);
-            if let Some(facts) = node_facts.get(node)
-                && !facts.incident_edges.is_empty()
-            {
-                incident_work.materialize(&facts.incident_edges);
-                route_edges.extend(facts.incident_edges.iter().copied());
-            }
         }
 
         let route_recomputation =
@@ -1047,6 +1041,8 @@ impl DerivedGeometry {
             }
             let route = (|| {
                 let instance = snapshot.edge_instance_key(*edge_id)?;
+                let source_instance = snapshot.port_instance_key(edge.from)?;
+                let target_instance = snapshot.port_instance_key(edge.to)?;
                 let source = self.published_port(snapshot, edge.from)?;
                 let target = self.published_port(snapshot, edge.to)?;
                 let endpoints = EdgePosition {
@@ -1064,7 +1060,15 @@ impl DerivedGeometry {
                             reconnect_target: edge_policy.can_reconnect_target(),
                         })
                     })
-                    .and_then(|facts| PublishedEdgeRoute::new(self.provenance, instance, facts))
+                    .and_then(|facts| {
+                        PublishedEdgeRoute::new(
+                            self.provenance,
+                            instance,
+                            source_instance,
+                            target_instance,
+                            facts,
+                        )
+                    })
             })();
             if let Some(route) = route {
                 changed |= self.upsert_route(*edge_id, route);
@@ -1086,9 +1090,8 @@ impl DerivedGeometry {
         port: PortId,
     ) -> Option<&PublishedPortGeometry> {
         let owner = snapshot.graph().port(&port)?.node;
-        if self.frame_culled_nodes.contains(&owner) {
-            return None;
-        }
+        // Frame culling suppresses native materialization and hit testing, not retained route
+        // geometry. A visible crossing route may still depend on an off-screen endpoint.
         let node = self.nodes.get(&owner)?;
         node.is_fresh().then(|| node.ports().get(&port)).flatten()
     }

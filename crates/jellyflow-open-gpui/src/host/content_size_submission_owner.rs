@@ -131,45 +131,9 @@ struct PendingContentSizePrefix {
     cancellation: Option<OpenGpuiCommandPrefixBarrierCancellation>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ContentSizePublicationState {
-    WaitingForMutation,
-    AwaitingCompleteGeometry { recovery_frame_requested: bool },
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum MissingContentSizePublication {
-    Wait,
-    RequestRecoveryFrame,
-    RecoveryExhausted,
-}
-
-impl ContentSizePublicationState {
-    fn observe_missing_geometry(
-        &mut self,
-        allow_recovery_frame: bool,
-    ) -> MissingContentSizePublication {
-        let Self::AwaitingCompleteGeometry {
-            recovery_frame_requested,
-        } = self
-        else {
-            return MissingContentSizePublication::Wait;
-        };
-        if !allow_recovery_frame {
-            return MissingContentSizePublication::Wait;
-        }
-        if !*recovery_frame_requested {
-            *recovery_frame_requested = true;
-            return MissingContentSizePublication::RequestRecoveryFrame;
-        }
-        MissingContentSizePublication::RecoveryExhausted
-    }
-}
-
 struct InFlightContentSizeMutation {
     targets: Vec<ContentSizeTarget>,
     mutation: OpenGpuiManagedMutation<ContentSizeBatchIntent>,
-    publication: ContentSizePublicationState,
     last_projection: Option<MutationSettlement>,
 }
 
@@ -182,6 +146,10 @@ pub(super) struct ContentSizeSubmissionOwner {
     prefix: Option<PendingContentSizePrefix>,
     ready: VecDeque<(Rc<()>, Rc<()>, OpenGpuiCommandPrefixBarrierResult)>,
     in_flight: Option<InFlightContentSizeMutation>,
+    // Settled targets must remain frame-materialized until the matching geometry publication is
+    // observed. Otherwise an off-screen parked node can wait for a publication it can no longer
+    // produce.
+    awaiting_publication: BTreeMap<NodeInstanceKey, ContentSizeTarget>,
 }
 
 impl Default for ContentSizeSubmissionOwner {
@@ -195,6 +163,7 @@ impl Default for ContentSizeSubmissionOwner {
             prefix: None,
             ready: VecDeque::new(),
             in_flight: None,
+            awaiting_publication: BTreeMap::new(),
         }
     }
 }
@@ -447,14 +416,6 @@ impl ContentSizeSubmissionOwner {
         else {
             return ContentSizeEffects::default();
         };
-        if self.in_flight.as_ref().is_some_and(|in_flight| {
-            matches!(
-                in_flight.publication,
-                ContentSizePublicationState::AwaitingCompleteGeometry { .. }
-            )
-        }) {
-            return self.observe_publication(&targets, retained, view, false);
-        }
         let primary = &targets[0];
         let binding = retained.binding_for_mount(&primary.instance, &primary.mount);
         let authoring = binding.as_ref().map(|binding| binding.read(cx).authoring());
@@ -478,7 +439,7 @@ impl ContentSizeSubmissionOwner {
             }
         };
         let mut effects = self.consume_shared_settlement(settlement);
-        effects.merge(self.observe_publication(&targets, retained, view, false));
+        effects.merge(self.observe_publications(retained, view));
         effects
     }
 
@@ -583,7 +544,15 @@ impl ContentSizeSubmissionOwner {
 
     pub(super) fn needs_frame(&self) -> bool {
         !self.ready.is_empty()
+            || !self.awaiting_publication.is_empty()
             || (!self.queued.is_empty() && self.prefix.is_none() && self.in_flight.is_none())
+    }
+
+    pub(super) fn awaiting_publication_nodes(&self) -> BTreeSet<NodeId> {
+        self.awaiting_publication
+            .values()
+            .map(|target| target.instance.node())
+            .collect()
     }
 
     pub(super) fn clear(&mut self) {
@@ -591,6 +560,7 @@ impl ContentSizeSubmissionOwner {
         self.prefix = None;
         self.ready.clear();
         self.in_flight = None;
+        self.awaiting_publication.clear();
         self.queued.clear();
         self.nodes.clear();
     }
@@ -686,7 +656,6 @@ impl ContentSizeSubmissionOwner {
         self.in_flight = Some(InFlightContentSizeMutation {
             targets,
             mutation,
-            publication: ContentSizePublicationState::WaitingForMutation,
             last_projection: None,
         });
         let dispatched = catch_unwind(AssertUnwindSafe(|| {
@@ -738,10 +707,16 @@ impl ContentSizeSubmissionOwner {
                 }
             }
             MutationSettlement::Satisfied { .. } => {
-                if let Some(in_flight) = self.in_flight.as_mut() {
-                    in_flight.publication = ContentSizePublicationState::AwaitingCompleteGeometry {
-                        recovery_frame_requested: false,
-                    };
+                let targets = self
+                    .in_flight
+                    .take()
+                    .map(|in_flight| in_flight.targets)
+                    .unwrap_or_default();
+                for target in targets {
+                    let instance = target.instance.clone();
+                    if let Some(stale) = self.awaiting_publication.insert(instance, target) {
+                        self.retire_targets(vec![stale], &mut effects);
+                    }
                 }
             }
             MutationSettlement::Retryable { diagnostic, .. } => {
@@ -788,81 +763,57 @@ impl ContentSizeSubmissionOwner {
         effects
     }
 
-    fn observe_publication(
+    fn observe_publications(
         &mut self,
-        targets: &[ContentSizeTarget],
         retained: &RetainedNodeOwner,
         view: &ViewSession,
-        allow_recovery_frame: bool,
     ) -> ContentSizeEffects {
         let mut effects = ContentSizeEffects::default();
-        let awaiting = self.in_flight.as_ref().is_some_and(|in_flight| {
-            matches!(
-                in_flight.publication,
-                ContentSizePublicationState::AwaitingCompleteGeometry { .. }
-            )
-        });
-        if !awaiting {
+        if self.awaiting_publication.is_empty() {
             return effects;
         }
-        if !self.batch_mounts_are_current(targets, retained) {
-            let targets = self
-                .in_flight
-                .take()
-                .map(|in_flight| in_flight.targets)
-                .unwrap_or_default();
-            self.retire_targets(targets, &mut effects);
-            effects.request_next_frame |= self.needs_frame();
-            return effects;
-        }
-        let published = view.geometry_snapshot().ok().is_some_and(|geometry| {
-            targets.iter().all(|target| {
+        let geometry = view.geometry_snapshot().ok();
+        let mut published = Vec::new();
+        let mut retired = Vec::new();
+        let instances = self
+            .awaiting_publication
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        for instance in instances {
+            let target = self
+                .awaiting_publication
+                .get(&instance)
+                .expect("a collected content-size publication remains installed");
+            if !self.target_mount_is_current(target, retained) {
+                retired.push(
+                    self.awaiting_publication
+                        .remove(&instance)
+                        .expect("a retired content-size publication remains installed"),
+                );
+                continue;
+            }
+            let is_published = geometry.as_ref().is_some_and(|geometry| {
                 retained.has_complete_content_size_publication(
                     &target.instance,
                     &target.mount,
                     target.desired_size(),
                     target.policy,
-                    &geometry,
+                    geometry,
                 )
-            })
-        });
-        if published {
-            let targets = self
-                .in_flight
-                .take()
-                .map(|in_flight| in_flight.targets)
-                .unwrap_or_default();
-            self.complete_targets_satisfied(targets, &mut effects);
-            effects.request_next_frame |= self.needs_frame();
-            return effects;
-        }
-        let missing =
-            self.in_flight
-                .as_mut()
-                .map_or(MissingContentSizePublication::Wait, |in_flight| {
-                    in_flight
-                        .publication
-                        .observe_missing_geometry(allow_recovery_frame)
-                });
-        match missing {
-            MissingContentSizePublication::Wait => {}
-            MissingContentSizePublication::RequestRecoveryFrame => {
-                effects.request_next_frame = true;
+            });
+            if !is_published {
+                continue;
             }
-            MissingContentSizePublication::RecoveryExhausted => {
-                let targets = self
-                    .in_flight
-                    .take()
-                    .map(|in_flight| in_flight.targets)
-                    .unwrap_or_default();
-                effects.diagnostics.push(
-                    "content size mutation became authoritative but complete geometry was not published after one recovery frame; retaining the last complete geometry"
-                        .to_owned(),
-                );
-                self.complete_targets_satisfied(targets, &mut effects);
-                effects.request_next_frame |= self.needs_frame();
-            }
+            published.push(
+                self.awaiting_publication
+                    .remove(&instance)
+                    .expect("a published content-size target remains installed"),
+            );
         }
+        self.retire_targets(retired, &mut effects);
+        self.complete_targets_satisfied(published, &mut effects);
+        effects.request_next_frame |= self.needs_frame();
         effects
     }
 
@@ -871,14 +822,23 @@ impl ContentSizeSubmissionOwner {
         retained: &RetainedNodeOwner,
         view: &ViewSession,
     ) -> ContentSizeEffects {
-        let Some(targets) = self
-            .in_flight
-            .as_ref()
-            .map(|in_flight| in_flight.targets.clone())
-        else {
-            return ContentSizeEffects::default();
+        self.observe_publications(retained, view)
+    }
+
+    fn target_mount_is_current(
+        &self,
+        target: &ContentSizeTarget,
+        retained: &RetainedNodeOwner,
+    ) -> bool {
+        let Some(state) = self.nodes.get(&target.instance) else {
+            return false;
         };
-        self.observe_publication(&targets, retained, view, true)
+        state.matches_mount(&target.mount)
+            && self.environment_epoch_live
+            && state.content_epoch_live
+            && state.policy == target.policy
+            && state.epoch(self.environment_epoch) == target.command.epoch()
+            && retained.contains_mount(&target.instance, &target.mount)
     }
 
     fn batch_mounts_are_current(
@@ -886,17 +846,9 @@ impl ContentSizeSubmissionOwner {
         targets: &[ContentSizeTarget],
         retained: &RetainedNodeOwner,
     ) -> bool {
-        targets.iter().all(|target| {
-            let Some(state) = self.nodes.get(&target.instance) else {
-                return false;
-            };
-            state.matches_mount(&target.mount)
-                && self.environment_epoch_live
-                && state.content_epoch_live
-                && state.policy == target.policy
-                && state.epoch(self.environment_epoch) == target.command.epoch()
-                && retained.contains_mount(&target.instance, &target.mount)
-        })
+        targets
+            .iter()
+            .all(|target| self.target_mount_is_current(target, retained))
     }
 
     fn batch_is_authoritative(
@@ -1068,6 +1020,11 @@ impl ContentSizeSubmissionOwner {
                 .targets;
             self.retire_targets(targets, &mut effects);
         }
+        let awaiting = instances
+            .iter()
+            .filter_map(|instance| self.awaiting_publication.remove(instance))
+            .collect();
+        self.retire_targets(awaiting, &mut effects);
         let queued = instances
             .iter()
             .filter_map(|instance| self.queued.remove(instance))
@@ -1085,6 +1042,10 @@ impl ContentSizeSubmissionOwner {
         if let Some(in_flight) = self.in_flight.take() {
             self.retire_targets(in_flight.targets, &mut effects);
         }
+        let awaiting = std::mem::take(&mut self.awaiting_publication)
+            .into_values()
+            .collect();
+        self.retire_targets(awaiting, &mut effects);
         let queued = std::mem::take(&mut self.queued).into_values().collect();
         self.retire_targets(queued, &mut effects);
         self.ready.clear();
@@ -1098,6 +1059,7 @@ impl ContentSizeSubmissionOwner {
             .as_ref()
             .map_or(0, |prefix| prefix.targets.len());
         let remaining = self.queued.len()
+            + self.awaiting_publication.len()
             + self
                 .in_flight
                 .as_ref()
@@ -1346,30 +1308,6 @@ mod tests {
         assert!(!live);
         assert!(!advance_epoch(&mut epoch, &mut live));
         assert_eq!(epoch, u64::MAX);
-    }
-
-    #[test]
-    fn publication_recovery_is_bounded_and_never_spins() {
-        let mut publication = ContentSizePublicationState::AwaitingCompleteGeometry {
-            recovery_frame_requested: false,
-        };
-
-        assert_eq!(
-            publication.observe_missing_geometry(false),
-            MissingContentSizePublication::Wait
-        );
-        assert_eq!(
-            publication.observe_missing_geometry(true),
-            MissingContentSizePublication::RequestRecoveryFrame
-        );
-        assert_eq!(
-            publication.observe_missing_geometry(false),
-            MissingContentSizePublication::Wait
-        );
-        assert_eq!(
-            publication.observe_missing_geometry(true),
-            MissingContentSizePublication::RecoveryExhausted
-        );
     }
 
     #[test]

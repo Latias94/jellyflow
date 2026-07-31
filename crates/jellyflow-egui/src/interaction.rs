@@ -1,19 +1,22 @@
-use egui::{Context, Event, Id, Key, PointerButton, Pos2, Rect, Response};
+use egui::{Context, Event, Id, PointerButton, Pos2, Rect, Response};
 use jellyflow_core::{EdgeId, NodeGraphConnectionMode, PortId};
 use jellyflow_runtime::commands::{CommandExecutionCompletion, GraphCommand};
 use jellyflow_runtime::geometry::{HandlePosition, ViewPoint, ViewSize};
-use jellyflow_runtime::graph::{NodeLifetimeKey, PortInstanceKey};
+use jellyflow_runtime::graph::{CreateFromWireCandidates, NodeLifetimeKey, PortInstanceKey};
 use jellyflow_runtime::interaction::{
     CanvasInteractionConfig, CanvasInteractionEffect, CanvasInteractionError,
     CanvasInteractionPhase, CanvasInteractionPresentation, CanvasInteractionSession,
     CanvasInteractionUpdate, CanvasPressTarget, ConnectionInteractionStart,
-    ConnectionSearchRequest, ConnectionSearchSelection, InteractionDamage,
-    InteractionGraphSubmission, InteractionGraphSubmissionBindError, InteractionOwner,
-    InteractionTickDemand, InteractionTicketId, SelectionMode,
+    ConnectionSearchRequest, ConnectionSearchSelection, ConnectionSettlementCapability,
+    InteractionDamage, InteractionGraphSubmission, InteractionGraphSubmissionBindError,
+    InteractionOwner, InteractionTickDemand, InteractionTicketId, NodeNudgeDirection,
+    SelectionMode,
 };
 use jellyflow_runtime::schema::NodeCreation;
 use jellyflow_runtime::view::{ViewSession, ViewSessionError, WeakViewSession};
 use jellyflow_runtime::viewport::ViewportPointerSample;
+
+use crate::native_input::{EguiGraphKeyAction, EguiNativeInputFrame};
 
 const DEFAULT_QUERY_PAGES_PER_FRAME: usize = 1;
 
@@ -123,15 +126,13 @@ struct EguiInteractionFrame {
     primary_pressed: bool,
     primary_released: bool,
     primary_down: bool,
-    selection_delete_pressed: bool,
-    selection_delete_handled: bool,
-    escape_pressed: bool,
     pointer_gone: bool,
     elapsed_seconds: f32,
     tracked_response_seen: bool,
     tracked_response_down: bool,
     tracked_response_pointer: Option<Pos2>,
     renderer_query_pages_remaining: usize,
+    native_input: EguiNativeInputFrame,
     output: EguiInteractionOutput,
 }
 
@@ -171,6 +172,11 @@ impl EguiCanvasInteraction {
 
     pub fn presentation(&self) -> CanvasInteractionPresentation {
         self.session.presentation()
+    }
+
+    /// Returns the exact active create-from-wire request, including its attempt identity.
+    pub fn connection_search_request(&self) -> Option<ConnectionSearchRequest> {
+        self.session.search_request()
     }
 
     pub fn tracked_response(&self) -> Option<Id> {
@@ -296,8 +302,6 @@ impl EguiCanvasInteraction {
             primary_pressed,
             primary_released,
             primary_down,
-            selection_delete_pressed,
-            escape_pressed,
             pointer_gone,
             elapsed_seconds,
         ) = ctx.input(|input| {
@@ -306,8 +310,6 @@ impl EguiCanvasInteraction {
                 input.pointer.button_pressed(PointerButton::Primary),
                 input.pointer.button_released(PointerButton::Primary),
                 input.pointer.button_down(PointerButton::Primary),
-                input.key_pressed(Key::Delete) || input.key_pressed(Key::Backspace),
-                input.key_pressed(Key::Escape),
                 input
                     .events
                     .iter()
@@ -321,15 +323,13 @@ impl EguiCanvasInteraction {
             primary_pressed,
             primary_released,
             primary_down,
-            selection_delete_pressed,
-            selection_delete_handled: false,
-            escape_pressed,
             pointer_gone,
             elapsed_seconds,
             tracked_response_seen: false,
             tracked_response_down: false,
             tracked_response_pointer: None,
             renderer_query_pages_remaining: query_page_budget,
+            native_input: EguiNativeInputFrame::capture(ctx, self.native_capture),
             output: EguiInteractionOutput::default(),
         });
         Ok(())
@@ -344,13 +344,11 @@ impl EguiCanvasInteraction {
         response: &Response,
         target: CanvasPressTarget,
     ) -> Result<(), EguiInteractionError> {
-        if self.handle_selection_delete_shortcut(response, &target)? {
-            return Ok(());
-        }
         let frame = self
             .frame
             .as_mut()
             .ok_or(EguiInteractionError::FrameNotOpen)?;
+        frame.native_input.observe_response(response, &target);
         if self.tracked_response == Some(response.id) {
             frame.tracked_response_seen = true;
             frame.tracked_response_down = response.is_pointer_button_down_on();
@@ -397,42 +395,6 @@ impl EguiCanvasInteraction {
         Ok(())
     }
 
-    fn handle_selection_delete_shortcut(
-        &mut self,
-        response: &Response,
-        target: &CanvasPressTarget,
-    ) -> Result<bool, EguiInteractionError> {
-        let should_delete = {
-            let frame = self
-                .frame
-                .as_ref()
-                .ok_or(EguiInteractionError::FrameNotOpen)?;
-            frame.selection_delete_pressed
-                && !frame.selection_delete_handled
-                && self.session.presentation().phase() == CanvasInteractionPhase::Idle
-                && !matches!(target, CanvasPressTarget::NativeControl)
-                && response.has_focus()
-                && !response.ctx.text_edit_focused()
-        };
-        if !should_delete {
-            return Ok(false);
-        }
-
-        self.frame
-            .as_mut()
-            .expect("the interaction frame remains open while handling keyboard input")
-            .selection_delete_handled = true;
-        let update = self.session.delete_selection()?;
-        let mut output = EguiInteractionOutput::default();
-        self.process_update_with_current_budget(update, &mut output);
-        self.frame
-            .as_mut()
-            .expect("the interaction frame remains open while merging keyboard output")
-            .output
-            .merge(output);
-        Ok(true)
-    }
-
     pub fn end_frame(
         &mut self,
         ctx: &Context,
@@ -450,16 +412,47 @@ impl EguiCanvasInteraction {
             return Ok(self.finish_output(ctx, frame.output));
         }
 
-        if frame.escape_pressed || frame.pointer_gone {
+        let graph_key = frame.native_input.take_graph_action(ctx);
+        if matches!(graph_key, Some(EguiGraphKeyAction::Cancel)) || frame.pointer_gone {
             let update = self.session.cancel()?;
             self.process_frame_update(update, &mut frame);
             self.release_native_ownership(ctx, &mut frame.output);
-        } else if self.tracked_response.is_some() && !frame.tracked_response_seen {
+        } else {
+            if self.session.presentation().phase() == CanvasInteractionPhase::Idle {
+                match graph_key {
+                    Some(EguiGraphKeyAction::DeleteSelection) => {
+                        let update = self.session.delete_selection()?;
+                        self.process_frame_update(update, &mut frame);
+                    }
+                    Some(EguiGraphKeyAction::Nudge {
+                        direction,
+                        accelerated,
+                    }) => {
+                        let update = self.session.nudge_selection(direction, accelerated)?;
+                        self.process_frame_update(update, &mut frame);
+                    }
+                    Some(EguiGraphKeyAction::Cancel) | None => {}
+                }
+            }
+            self.finish_pointer_frame(ctx, &mut frame)?;
+        }
+
+        self.process_frame_pending_work(&mut frame);
+        self.sync_tracked_response(ctx, &mut frame.output);
+        Ok(self.finish_output(ctx, frame.output))
+    }
+
+    fn finish_pointer_frame(
+        &mut self,
+        ctx: &Context,
+        frame: &mut EguiInteractionFrame,
+    ) -> Result<(), EguiInteractionError> {
+        if self.tracked_response.is_some() && !frame.tracked_response_seen {
             let update = match self.tracked_owner {
                 Some(owner) => self.session.owner_retired(owner),
                 None => self.session.cancel()?,
             };
-            self.process_frame_update(update, &mut frame);
+            self.process_frame_update(update, frame);
             self.release_native_ownership(ctx, &mut frame.output);
         } else if self.native_capture
             && frame.primary_down
@@ -469,7 +462,7 @@ impl EguiCanvasInteraction {
                     .is_some_and(|id| Some(id) != self.tracked_response))
         {
             let update = self.session.cancel()?;
-            self.process_frame_update(update, &mut frame);
+            self.process_frame_update(update, frame);
             self.release_native_ownership(ctx, &mut frame.output);
         } else if self.native_capture {
             let pointer = frame
@@ -483,30 +476,27 @@ impl EguiCanvasInteraction {
                 let position = pointer.ok_or(CanvasInteractionError::InvalidPosition)?;
                 self.last_position = Some(position);
                 let update = self.session.release(position)?;
-                self.process_frame_update(update, &mut frame);
+                self.process_frame_update(update, frame);
                 self.release_native_ownership(ctx, &mut frame.output);
             } else if frame.primary_down {
                 let position = pointer.ok_or(CanvasInteractionError::InvalidPosition)?;
                 if self.last_position != Some(position) || !self.has_pending_renderer_query() {
                     self.last_position = Some(position);
                     let update = self.session.move_to(position)?;
-                    self.process_frame_update(update, &mut frame);
+                    self.process_frame_update(update, frame);
                 }
                 let tick = self.session.tick(
                     frame.elapsed_seconds,
                     ViewSize::new(frame.scene_rect.width(), frame.scene_rect.height()),
                 )?;
-                self.process_frame_update(tick, &mut frame);
+                self.process_frame_update(tick, frame);
             } else {
                 let update = self.session.cancel()?;
-                self.process_frame_update(update, &mut frame);
+                self.process_frame_update(update, frame);
                 self.release_native_ownership(ctx, &mut frame.output);
             }
         }
-
-        self.process_frame_pending_work(&mut frame);
-        self.sync_tracked_response(ctx, &mut frame.output);
-        Ok(self.finish_output(ctx, frame.output))
+        Ok(())
     }
 
     pub fn cancel(&mut self, ctx: &Context) -> Result<EguiInteractionOutput, EguiInteractionError> {
@@ -567,6 +557,18 @@ impl EguiCanvasInteraction {
         self.finish_submission_update(ctx, update)
     }
 
+    /// Reconciles graph authority and geometry after a runtime or frame publication.
+    ///
+    /// Call this after the native frame host accepts complete feedback. The optimistic wire remains
+    /// visible until the runtime proves that the exact authoritative route has been published.
+    pub fn reconcile_authoritative_state(
+        &mut self,
+        ctx: &Context,
+    ) -> Result<EguiInteractionOutput, EguiInteractionError> {
+        let update = self.session.reconcile_authoritative_state()?;
+        self.finish_submission_update(ctx, update)
+    }
+
     fn finish_submission_update(
         &mut self,
         ctx: &Context,
@@ -601,6 +603,75 @@ impl EguiCanvasInteraction {
         let update = self.session.search_ready(request, result_count)?;
         self.process_update_with_current_budget(update, &mut output);
         Ok(self.finish_output(ctx, output))
+    }
+
+    /// Resolves candidates for one exact active search request.
+    pub fn search_candidates(
+        &self,
+        request: &ConnectionSearchRequest,
+    ) -> Result<CreateFromWireCandidates, EguiInteractionError> {
+        Ok(self.session.search_candidates(request)?)
+    }
+
+    /// Marks one exact search attempt as failed without affecting a successor attempt.
+    pub fn search_failed(
+        &mut self,
+        ctx: &Context,
+        request: &ConnectionSearchRequest,
+    ) -> Result<EguiInteractionOutput, EguiInteractionError> {
+        let update = self.session.search_failed(request)?;
+        self.finish_submission_update(ctx, update)
+    }
+
+    /// Publishes a successor attempt for one exact failed search.
+    pub fn retry_search(
+        &mut self,
+        ctx: &Context,
+        request: &ConnectionSearchRequest,
+    ) -> Result<EguiInteractionOutput, EguiInteractionError> {
+        let update = self.session.retry_search(request)?;
+        self.finish_submission_update(ctx, update)
+    }
+
+    /// Cancels only the search attempt represented by `request`.
+    pub fn cancel_search(
+        &mut self,
+        ctx: &Context,
+        request: &ConnectionSearchRequest,
+    ) -> Result<EguiInteractionOutput, EguiInteractionError> {
+        let update = self.session.cancel_search(request)?;
+        self.finish_submission_update(ctx, update)
+    }
+
+    /// Reissues one exact connection settlement after authoritative absence is proven.
+    pub fn retry_connection_settlement(
+        &mut self,
+        ctx: &Context,
+        capability: ConnectionSettlementCapability,
+    ) -> Result<EguiInteractionOutput, EguiInteractionError> {
+        let update = self.session.retry_connection_settlement(capability)?;
+        self.finish_submission_update(ctx, update)
+    }
+
+    /// Cancels one exact post-admission settlement after reconciling graph authority.
+    pub fn cancel_connection_settlement(
+        &mut self,
+        ctx: &Context,
+        capability: ConnectionSettlementCapability,
+    ) -> Result<EguiInteractionOutput, EguiInteractionError> {
+        let update = self.session.cancel_connection_settlement(capability)?;
+        self.finish_submission_update(ctx, update)
+    }
+
+    /// Moves the exact current selection through the runtime command pipeline.
+    pub fn nudge_selection(
+        &mut self,
+        ctx: &Context,
+        direction: NodeNudgeDirection,
+        accelerated: bool,
+    ) -> Result<EguiInteractionOutput, EguiInteractionError> {
+        let update = self.session.nudge_selection(direction, accelerated)?;
+        self.finish_submission_update(ctx, update)
     }
 
     /// Creates one sealed search selection through the bound headless interaction session.

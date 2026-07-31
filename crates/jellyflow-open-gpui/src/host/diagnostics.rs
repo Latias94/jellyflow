@@ -162,6 +162,72 @@ pub struct OpenGpuiSceneHostResourceSnapshot {
     pub(super) edge_plan_live_estimated_bytes: usize,
 }
 
+/// Cumulative host facts used by the native real-window evidence contract.
+///
+/// This deliberately narrow snapshot is available only with `test-support`; production consumers
+/// use operation receipts and current resource snapshots instead of a public cumulative ledger.
+#[cfg(feature = "test-support")]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct OpenGpuiSmokeAuditSnapshot {
+    mounts: u64,
+    restores: u64,
+    evictions: u64,
+    hard_retirements: u64,
+    protected_overflows: u64,
+    feedback_submissions: u64,
+    feedback_failures: u64,
+    layout_rejections: u64,
+    measurement_failures: u64,
+}
+
+#[cfg(feature = "test-support")]
+impl OpenGpuiSmokeAuditSnapshot {
+    #[must_use]
+    pub const fn mounts(self) -> u64 {
+        self.mounts
+    }
+
+    #[must_use]
+    pub const fn restores(self) -> u64 {
+        self.restores
+    }
+
+    #[must_use]
+    pub const fn evictions(self) -> u64 {
+        self.evictions
+    }
+
+    #[must_use]
+    pub const fn hard_retirements(self) -> u64 {
+        self.hard_retirements
+    }
+
+    #[must_use]
+    pub const fn protected_overflows(self) -> u64 {
+        self.protected_overflows
+    }
+
+    #[must_use]
+    pub const fn feedback_submissions(self) -> u64 {
+        self.feedback_submissions
+    }
+
+    #[must_use]
+    pub const fn feedback_failures(self) -> u64 {
+        self.feedback_failures
+    }
+
+    #[must_use]
+    pub const fn layout_rejections(self) -> u64 {
+        self.layout_rejections
+    }
+
+    #[must_use]
+    pub const fn measurement_failures(self) -> u64 {
+        self.measurement_failures
+    }
+}
+
 impl OpenGpuiSceneHostResourceSnapshot {
     #[must_use]
     pub const fn active_nodes(self) -> usize {
@@ -1055,6 +1121,24 @@ impl OpenGpuiSceneHost {
             edge_plan_cache_estimated_bytes: edge_cache.plan_footprint.estimated_bytes,
             edge_plan_live_vertices: edge_cache.plan_live_footprint.vertices,
             edge_plan_live_estimated_bytes: edge_cache.plan_live_footprint.estimated_bytes,
+        }
+    }
+
+    /// Returns cumulative facts for the real-window evidence contract.
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub fn smoke_audit_snapshot(&self) -> OpenGpuiSmokeAuditSnapshot {
+        let ledger = self.work_ledger_snapshot();
+        OpenGpuiSmokeAuditSnapshot {
+            mounts: ledger.mounts(),
+            restores: ledger.restores(),
+            evictions: ledger.evictions(),
+            hard_retirements: ledger.hard_retirements(),
+            protected_overflows: ledger.protected_overflows(),
+            feedback_submissions: ledger.feedback_submissions(),
+            feedback_failures: ledger.feedback_failures(),
+            layout_rejections: ledger.layout_rejections(),
+            measurement_failures: ledger.measurement_failures(),
         }
     }
 

@@ -10,16 +10,17 @@ use jellyflow_runtime::{
     view::ViewCloseOutcome, view::ViewCloseReason, view::ViewCloseRequest, view::ViewSession,
     view::ViewSessionError, view::ViewSessionEvent, view::ViewSubscriptionToken,
 };
-use open_gpui::{AsyncWindowContext, Context, Task, WeakEntity, Window};
-
-use crate::command_journal::{
-    OpenGpuiCommandCloseError, OpenGpuiCompletedCommand, resolve_command_tickets,
-};
+use open_gpui::{AsyncWindowContext, Context, KeystrokeEvent, Task, WeakEntity, Window};
 
 use super::OpenGpuiSceneHost;
 use super::diagnostics::{OpenGpuiSceneHostDiagnostic, OpenGpuiSceneHostDiagnosticKind};
+use super::native_input::{OpenGpuiGraphKeyOwner, OpenGpuiNativeKeyOwner};
 use super::node_lifecycle::{MountedNode, suppress_host_panic};
 use super::retained_node_owner::retire_mounted_nodes;
+use crate::activity::OpenGpuiActivityKind;
+use crate::command_journal::{
+    OpenGpuiCommandCloseError, OpenGpuiCompletedCommand, resolve_command_tickets,
+};
 
 fn release_mounted_pointer_capture(nodes: &[MountedNode], window: &mut Window) -> bool {
     nodes
@@ -288,10 +289,61 @@ impl OpenGpuiSceneHost {
         let release_subscription = window.observe_release(&host, cx, |host, window, cx| {
             host.release_in_window(window, cx);
         });
+        self.native_input.bind_window(window_id);
+        let input_host = cx.weak_entity();
+        let key_interceptor = cx.intercept_keystrokes(move |event, window, cx| {
+            let Some(host) = input_host.upgrade() else {
+                return;
+            };
+            host.update(cx, |host, cx| {
+                host.freeze_native_key_owner(event, window, cx)
+            });
+        });
         self.window_owner = Some(super::OpenGpuiSceneHostWindowOwner {
             window: window_id,
             _release_subscription: release_subscription,
+            _key_interceptor: key_interceptor,
         });
+    }
+
+    fn freeze_native_key_owner(
+        &self,
+        event: &KeystrokeEvent,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        let window_id = window.window_handle().window_id();
+        if !self.native_input.owns_window(window_id) || self.interaction_owner.terminal() {
+            return;
+        }
+
+        let root = self.interaction_owner.focus_handle();
+        let focus_in_graph_domain = root
+            .as_ref()
+            .is_some_and(|focus| focus.contains_focused(window, cx));
+        let ime_active = self.retained_nodes.has_activity(OpenGpuiActivityKind::Ime);
+        let overlay_active = self
+            .retained_nodes
+            .has_activity(OpenGpuiActivityKind::Overlay)
+            || self.interaction_owner.native_capability().overlay_active();
+        let owner = if ime_active
+            || (event.keystroke.is_ime_in_progress() && (focus_in_graph_domain || overlay_active))
+        {
+            OpenGpuiNativeKeyOwner::Ime
+        } else if overlay_active {
+            OpenGpuiNativeKeyOwner::Overlay
+        } else if let Some(target) = self.interaction_owner.exact_focused_graph_target(window) {
+            OpenGpuiNativeKeyOwner::Graph(OpenGpuiGraphKeyOwner::Exact(target))
+        } else if root.as_ref().is_some_and(|focus| focus.is_focused(window)) {
+            OpenGpuiNativeKeyOwner::Graph(OpenGpuiGraphKeyOwner::Root)
+        } else if focus_in_graph_domain {
+            OpenGpuiNativeKeyOwner::NativeControl
+        } else {
+            OpenGpuiNativeKeyOwner::None
+        };
+
+        self.native_input
+            .freeze_key_down(event.keystroke.clone(), owner);
     }
 
     fn owns_window_resources(&self) -> bool {
@@ -476,6 +528,7 @@ impl OpenGpuiSceneHost {
         completed: Vec<OpenGpuiCompletedCommand>,
         reason: ViewCloseReason,
     ) -> Vec<crate::command_journal::OpenGpuiPendingCommandResolution> {
+        self.native_input.terminate();
         let resolutions = self.handle_completed_commands(completed);
         let panics = retire_mounted_nodes(self.detach_for_terminal(reason));
         self.pending_terminal_panics.merge(panics);
@@ -594,6 +647,14 @@ impl OpenGpuiSceneHost {
                         HostLifecycleEvent::NodesChanged(changes) => {
                             let retired = host.apply_node_changes(&changes, cx);
                             release_mounted_pointer_capture(&retired, window);
+                            match host.interaction_owner.reconcile_authoritative_state() {
+                                Ok(update) => {
+                                    host.apply_canvas_interaction_update(update, window, cx)
+                                }
+                                Err(error) => host.record_command_diagnostic(format!(
+                                    "failed to reconcile native interaction authority: {error}"
+                                )),
+                            }
                             host.interaction_owner
                                 .schedule_pending_native_drain(window, cx);
                             cx.notify();
@@ -687,6 +748,7 @@ impl OpenGpuiSceneHost {
 
 impl Drop for OpenGpuiSceneHost {
     fn drop(&mut self) {
+        self.native_input.terminate();
         let completed = self.commands.terminate_dropped();
         self.content_sizes.clear();
         self.discard_frame_transaction();

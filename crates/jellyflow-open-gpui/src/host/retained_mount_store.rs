@@ -114,6 +114,18 @@ impl<T> RetainedMountStore<T> {
             )
     }
 
+    #[cfg(feature = "test-support")]
+    pub(super) fn iter_with_activity(&self) -> impl Iterator<Item = (&NodeInstanceKey, &T, bool)> {
+        self.active
+            .iter()
+            .map(|(instance, active)| (instance, &active.value, true))
+            .chain(
+                self.parked
+                    .iter()
+                    .map(|(instance, parked)| (instance, &parked.value, false)),
+            )
+    }
+
     pub(super) fn active_in_order(&self) -> impl Iterator<Item = (&NodeInstanceKey, &T)> {
         self.active_order.iter().filter_map(|instance| {
             self.active

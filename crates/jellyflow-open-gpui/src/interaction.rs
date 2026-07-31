@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::mem;
 use std::rc::{Rc, Weak};
 
@@ -20,6 +20,9 @@ use crate::activity::{
     OpenGpuiNodeActivityRegistry,
 };
 use crate::binding::OpenGpuiMountCapability;
+use crate::host::native_input::{
+    OpenGpuiGraphKeyOwner, OpenGpuiNativeInputHandle, OpenGpuiNativeKeyOwner,
+};
 
 /// Why an active native port drag ended without a release.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -151,6 +154,23 @@ impl OpenGpuiOverlayInteractionBoundary {
     /// Occludes graph hit targets behind a native overlay and stops its unhandled pointer input.
     pub fn wrap(&self, child: impl IntoElement) -> impl IntoElement {
         OpenGpuiOverlayInteractionElement::new(self.interactions.clone(), child)
+    }
+
+    /// Occludes graph input and registers the native focus domain owned by this overlay.
+    ///
+    /// Registering the domain lets the host restore connection-search focus precisely and clear
+    /// focus when the overlay is removed during terminal host cleanup. Unrelated native focus is
+    /// never changed.
+    pub fn wrap_focus_domain(
+        &self,
+        focus: &FocusHandle,
+        child: impl IntoElement,
+    ) -> impl IntoElement {
+        OpenGpuiOverlayInteractionElement::new_with_focus(
+            self.interactions.clone(),
+            focus.clone(),
+            child,
+        )
     }
 }
 
@@ -359,7 +379,9 @@ struct NativeInteractionState {
     root_hitbox: Option<HitboxId>,
     focus_handle: Option<FocusHandle>,
     port_focus: Option<PortFocusOwnership>,
+    keyboard_ports: BTreeMap<PortInstanceKey, (OpenGpuiPortDragOwner, OpenGpuiPortListener)>,
     overlay_active: bool,
+    overlay_focus_domains: Vec<WeakFocusHandle>,
     space_pan_held: bool,
     terminal: bool,
 }
@@ -370,7 +392,7 @@ enum NativeCapture {
 }
 
 enum PendingNativeCancellation {
-    Port(PendingPortCancellation),
+    Port(Box<PendingPortCancellation>),
     Scene(PendingSceneCancellation),
 }
 
@@ -423,12 +445,14 @@ struct PortFocusOwnership {
 
 struct NativeFocusOwnership {
     previous_focus: Option<WeakFocusHandle>,
+    previous_focus_was_graph_domain: bool,
     interaction_focus: Option<WeakFocusHandle>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum OpenGpuiPortFocusExit {
     Restore,
+    RestoreSearchOverlay,
     OwnerRetired,
     HostClosed,
 }
@@ -456,7 +480,9 @@ impl OpenGpuiNativeInteractionHandle {
                 root_hitbox: None,
                 focus_handle: None,
                 port_focus: None,
+                keyboard_ports: BTreeMap::new(),
                 overlay_active: false,
+                overlay_focus_domains: Vec::new(),
                 space_pan_held: false,
                 terminal: false,
             })),
@@ -476,7 +502,43 @@ impl OpenGpuiNativeInteractionHandle {
         let mut state = self.state.borrow_mut();
         if !state.terminal {
             state.overlay_active = false;
+            state.overlay_focus_domains.clear();
+            state.keyboard_ports.clear();
         }
+    }
+
+    pub(crate) fn register_keyboard_port(
+        &self,
+        owner: OpenGpuiPortDragOwner,
+        listener: OpenGpuiPortListener,
+    ) {
+        let mut state = self.state.borrow_mut();
+        if !state.terminal {
+            state
+                .keyboard_ports
+                .insert(owner.port_instance(), (owner, listener));
+        }
+    }
+
+    pub(crate) fn activate_keyboard_port(
+        &self,
+        port: PortInstanceKey,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> bool {
+        let activation = self.state.borrow().keyboard_ports.get(&port).cloned();
+        let Some((owner, listener)) = activation else {
+            return false;
+        };
+        listener(
+            OpenGpuiPortEvent::Activation(OpenGpuiPortActivationEvent::new(
+                owner,
+                OpenGpuiPortActivationSource::Keyboard,
+            )),
+            window,
+            cx,
+        );
+        true
     }
 
     fn mark_overlay_active(&self) {
@@ -484,6 +546,13 @@ impl OpenGpuiNativeInteractionHandle {
         if !state.terminal {
             state.overlay_active = true;
             state.space_pan_held = false;
+        }
+    }
+
+    fn mark_overlay_focus_domain(&self, focus: &FocusHandle) {
+        let mut state = self.state.borrow_mut();
+        if !state.terminal {
+            state.overlay_focus_domains.push(focus.downgrade());
         }
     }
 
@@ -521,7 +590,9 @@ impl OpenGpuiNativeInteractionHandle {
 
     pub(crate) fn requires_window_cleanup(&self) -> bool {
         let state = self.state.borrow();
-        state.capture.requires_cleanup() || state.port_focus.is_some()
+        state.capture.requires_cleanup()
+            || state.port_focus.is_some()
+            || !state.overlay_focus_domains.is_empty()
     }
 
     pub(crate) fn settle_port_focus(
@@ -532,16 +603,17 @@ impl OpenGpuiNativeInteractionHandle {
         window: &mut Window,
         cx: &mut App,
     ) -> bool {
-        let ownership = {
+        let (ownership, overlay_focus_domains) = {
             let mut state = self.state.borrow_mut();
-            state
+            let ownership = state
                 .port_focus
-                .take_if(|current| current.owner == *owner && current.mount.is_same_mount(mount))
+                .take_if(|current| current.owner == *owner && current.mount.is_same_mount(mount));
+            (ownership, state.overlay_focus_domains.clone())
         };
         let Some(ownership) = ownership else {
             return false;
         };
-        settle_native_focus(ownership.focus, exit, window, cx);
+        settle_native_focus(ownership.focus, &overlay_focus_domains, exit, window, cx);
         true
     }
 
@@ -659,6 +731,9 @@ impl OpenGpuiNativeInteractionHandle {
 
         let previous_focus = window.focused(cx).map(|focus| focus.downgrade());
         let interaction_focus = self.state.borrow().focus_handle.clone();
+        let previous_focus_was_graph_domain = interaction_focus
+            .as_ref()
+            .is_some_and(|focus| focus.contains_focused(window, cx));
         if let Some(focus_handle) = &interaction_focus {
             window.focus(focus_handle, cx);
         }
@@ -678,6 +753,7 @@ impl OpenGpuiNativeInteractionHandle {
                 mount: mount.clone(),
                 focus: NativeFocusOwnership {
                     previous_focus,
+                    previous_focus_was_graph_domain,
                     interaction_focus: interaction_focus.map(|focus| focus.downgrade()),
                 },
             });
@@ -970,14 +1046,7 @@ impl OpenGpuiNativeInteractionHandle {
 
         release_matching_pointer_capture(&pending, window);
         for pending in pending {
-            let PendingNativeCancellation::Port(PendingPortCancellation {
-                generation: _,
-                hitbox: _,
-                event,
-                listener,
-                focus_settlement,
-            }) = pending
-            else {
+            let PendingNativeCancellation::Port(pending) = pending else {
                 let PendingNativeCancellation::Scene(pending) = pending else {
                     unreachable!();
                 };
@@ -992,6 +1061,13 @@ impl OpenGpuiNativeInteractionHandle {
                 (pending.listener)(pending.event, window, cx);
                 continue;
             };
+            let PendingPortCancellation {
+                generation: _,
+                hitbox: _,
+                event,
+                listener,
+                focus_settlement,
+            } = *pending;
             listener(OpenGpuiPortEvent::Pointer(event), window, cx);
             if let Some(focus) = focus_settlement {
                 self.settle_port_focus(&focus.owner, &focus.mount, focus.exit, window, cx);
@@ -1087,13 +1163,13 @@ impl OpenGpuiNativeInteractionHandle {
         };
         drop(active.lease);
         self.state.borrow_mut().capture.enqueue(
-            PendingNativeCancellation::Port(PendingPortCancellation {
+            PendingNativeCancellation::Port(Box::new(PendingPortCancellation {
                 generation: active.generation,
                 hitbox: active.hitbox,
                 event,
                 listener: active.listener,
                 focus_settlement,
-            }),
+            })),
             suppression,
         );
     }
@@ -1425,7 +1501,7 @@ impl OpenGpuiNativeInteractionAuthority {
             state.terminal = true;
             state.root_hitbox = None;
             state.focus_handle = None;
-            state.port_focus = None;
+            state.keyboard_ports.clear();
             state.overlay_active = false;
             state.space_pan_held = false;
             state.capture.set_suppression(None);
@@ -1446,14 +1522,33 @@ impl OpenGpuiNativeInteractionAuthority {
 
     pub(crate) fn cancel_for_host_close(&self, window: &mut Window, cx: &mut App) -> bool {
         let prepared = self.prepare_host_close_deferred();
-        let pending = self.state.borrow_mut().capture.take_pending();
-        if !prepared && pending.is_empty() {
+        let (pending, port_focus, overlay_focus_domains) = {
+            let mut state = self.state.borrow_mut();
+            (
+                state.capture.take_pending(),
+                state.port_focus.take(),
+                std::mem::take(&mut state.overlay_focus_domains),
+            )
+        };
+        let focus_owned = port_focus.is_some() || !overlay_focus_domains.is_empty();
+        if let Some(port_focus) = port_focus {
+            settle_native_focus(
+                port_focus.focus,
+                &overlay_focus_domains,
+                OpenGpuiPortFocusExit::HostClosed,
+                window,
+                cx,
+            );
+        } else if focus_is_owned_by_domains(&overlay_focus_domains, window, cx) {
+            window.blur();
+        }
+        if !prepared && pending.is_empty() && !focus_owned {
             return false;
         }
         release_matching_pointer_capture(&pending, window);
         window.refresh();
         if pending.is_empty() {
-            return prepared;
+            return prepared || focus_owned;
         }
         let state = Rc::downgrade(&self.state);
         window.defer(cx, move |window, cx| {
@@ -1743,13 +1838,13 @@ fn invalidate_native_generation(state: &Weak<RefCell<NativeInteractionState>>, g
             };
             drop(active.lease);
             state.borrow_mut().capture.enqueue(
-                PendingNativeCancellation::Port(PendingPortCancellation {
+                PendingNativeCancellation::Port(Box::new(PendingPortCancellation {
                     generation: active.generation,
                     hitbox: active.hitbox,
                     event,
                     listener: active.listener,
                     focus_settlement: None,
-                }),
+                })),
                 Some(suppression),
             );
         }
@@ -1790,6 +1885,7 @@ fn native_cancellation_is_current(
 pub(crate) fn interaction_root(
     id: impl Into<ElementId>,
     interactions: OpenGpuiNativeInteractionHandle,
+    native_input: OpenGpuiNativeInputHandle,
     focus_handle: FocusHandle,
     graph_key_down_listener: Option<OpenGpuiGraphKeyDownListener>,
     graph_key_up_listener: Option<OpenGpuiGraphKeyUpListener>,
@@ -1803,6 +1899,7 @@ pub(crate) fn interaction_root(
     OpenGpuiInteractionRoot {
         id: id.into(),
         interactions,
+        native_input,
         focus_handle,
         graph_key_down_listener,
         graph_key_up_listener,
@@ -1811,13 +1908,14 @@ pub(crate) fn interaction_root(
 }
 
 pub(crate) type OpenGpuiGraphKeyDownListener =
-    Rc<dyn Fn(&KeyDownEvent, &mut Window, &mut App) -> bool + 'static>;
+    Rc<dyn Fn(OpenGpuiGraphKeyOwner, &KeyDownEvent, &mut Window, &mut App) -> bool + 'static>;
 pub(crate) type OpenGpuiGraphKeyUpListener =
-    Rc<dyn Fn(&KeyUpEvent, &mut Window, &mut App) -> bool + 'static>;
+    Rc<dyn Fn(OpenGpuiGraphKeyOwner, &KeyUpEvent, &mut Window, &mut App) -> bool + 'static>;
 
 struct OpenGpuiInteractionRoot {
     id: ElementId,
     interactions: OpenGpuiNativeInteractionHandle,
+    native_input: OpenGpuiNativeInputHandle,
     focus_handle: FocusHandle,
     graph_key_down_listener: Option<OpenGpuiGraphKeyDownListener>,
     graph_key_up_listener: Option<OpenGpuiGraphKeyUpListener>,
@@ -1909,15 +2007,30 @@ impl Element for OpenGpuiInteractionRoot {
             }
         });
         let interactions = self.interactions.clone();
-        let graph_key_down_after_focus = self.graph_key_down_listener.clone();
+        let native_input = self.native_input.clone();
+        let graph_key_down_listener = self.graph_key_down_listener.clone();
         window.on_key_event(move |event: &KeyDownEvent, phase, window, cx| {
-            if phase == DispatchPhase::Capture && interactions.handle_key_down(event, window, cx) {
-                cx.stop_propagation();
+            if phase == DispatchPhase::Bubble {
+                if native_input.take_native_tab_fallback(&event.keystroke) {
+                    if event.keystroke.modifiers.shift {
+                        window.focus_prev(cx);
+                    } else {
+                        window.focus_next(cx);
+                    }
+                    window.prevent_default();
+                    cx.stop_propagation();
+                }
                 return;
             }
-            if phase == DispatchPhase::Bubble
-                && !window.default_prevented()
-                && !interactions.overlay_active()
+            if phase != DispatchPhase::Capture {
+                return;
+            }
+            let owner = native_input.take_key_down(&event.keystroke);
+            if owner == OpenGpuiNativeKeyOwner::NativeControl && is_unmodified_tab(event) {
+                native_input.defer_native_tab_fallback(&event.keystroke);
+                return;
+            }
+            if let OpenGpuiNativeKeyOwner::Graph(graph_owner) = owner
                 && is_unmodified_tab(event)
             {
                 if event.keystroke.modifiers.shift {
@@ -1925,33 +2038,41 @@ impl Element for OpenGpuiInteractionRoot {
                 } else {
                     window.focus_next(cx);
                 }
-                if let Some(listener) = graph_key_down_after_focus.as_ref() {
-                    let _ = listener(event, window, cx);
+                if let Some(listener) = graph_key_down_listener.as_ref() {
+                    let _ = listener(graph_owner, event, window, cx);
                 }
+                window.prevent_default();
+                cx.stop_propagation();
+                return;
+            }
+            let OpenGpuiNativeKeyOwner::Graph(graph_owner) = owner else {
+                return;
+            };
+            if interactions.handle_key_down(event, window, cx) {
+                window.prevent_default();
+                cx.stop_propagation();
+                return;
+            }
+            if graph_key_down_listener
+                .as_ref()
+                .is_some_and(|listener| listener(graph_owner, event, window, cx))
+            {
                 window.prevent_default();
                 cx.stop_propagation();
             }
         });
-        if let Some(listener) = self.graph_key_down_listener.clone() {
-            let interactions = self.interactions.clone();
-            window.on_key_event(move |event: &KeyDownEvent, phase, window, cx| {
-                if phase == DispatchPhase::Bubble
-                    && !window.default_prevented()
-                    && !interactions.overlay_active()
-                    && listener(event, window, cx)
-                {
-                    window.prevent_default();
-                    cx.stop_propagation();
-                }
-            });
-        }
         if let Some(listener) = self.graph_key_up_listener.clone() {
-            let interactions = self.interactions.clone();
+            let native_input = self.native_input.clone();
             window.on_key_event(move |event: &KeyUpEvent, phase, window, cx| {
-                if phase == DispatchPhase::Capture
-                    && !interactions.overlay_active()
-                    && listener(event, window, cx)
-                {
+                if phase != DispatchPhase::Capture {
+                    return;
+                }
+                let OpenGpuiNativeKeyOwner::Graph(graph_owner) =
+                    native_input.take_key_up(&event.keystroke)
+                else {
+                    return;
+                };
+                if listener(graph_owner, event, window, cx) {
                     window.prevent_default();
                     cx.stop_propagation();
                 }
@@ -1980,6 +2101,7 @@ impl IntoElement for OpenGpuiInteractionRoot {
 
 struct OpenGpuiOverlayInteractionElement {
     interactions: OpenGpuiNativeInteractionHandle,
+    focus_domain: Option<FocusHandle>,
     child: Option<AnyElement>,
 }
 
@@ -1987,6 +2109,19 @@ impl OpenGpuiOverlayInteractionElement {
     fn new(interactions: OpenGpuiNativeInteractionHandle, child: impl IntoElement) -> Self {
         Self {
             interactions,
+            focus_domain: None,
+            child: Some(child.into_any_element()),
+        }
+    }
+
+    fn new_with_focus(
+        interactions: OpenGpuiNativeInteractionHandle,
+        focus_domain: FocusHandle,
+        child: impl IntoElement,
+    ) -> Self {
+        Self {
+            interactions,
+            focus_domain: Some(focus_domain),
             child: Some(child.into_any_element()),
         }
     }
@@ -2044,6 +2179,9 @@ impl Element for OpenGpuiOverlayInteractionElement {
         cx: &mut App,
     ) {
         self.interactions.mark_overlay_active();
+        if let Some(focus_domain) = self.focus_domain.as_ref() {
+            self.interactions.mark_overlay_focus_domain(focus_domain);
+        }
         let pointer_hitbox = hitbox.clone();
         window.on_mouse_event(move |_: &MouseDownEvent, phase, window, cx| {
             if phase == DispatchPhase::Bubble && pointer_hitbox.is_hovered(window) {
@@ -2088,6 +2226,7 @@ impl IntoElement for OpenGpuiOverlayInteractionElement {
 
 fn settle_native_focus(
     ownership: NativeFocusOwnership,
+    overlay_focus_domains: &[WeakFocusHandle],
     exit: OpenGpuiPortFocusExit,
     window: &mut Window,
     cx: &mut App,
@@ -2101,25 +2240,40 @@ fn settle_native_focus(
         .as_ref()
         .and_then(WeakFocusHandle::upgrade);
     let current_focus = window.focused(cx);
+    let current_is_owned_overlay = focus_is_owned_by_domains(overlay_focus_domains, window, cx);
+    let restore_graph_fallback = |window: &mut Window, cx: &mut App| {
+        if ownership.previous_focus_was_graph_domain
+            && let Some(interaction_focus) = interaction_focus.as_ref()
+            && !interaction_focus.contains_focused(window, cx)
+        {
+            window.focus(interaction_focus, cx);
+        }
+    };
 
     match exit {
-        OpenGpuiPortFocusExit::Restore => {
+        OpenGpuiPortFocusExit::Restore | OpenGpuiPortFocusExit::RestoreSearchOverlay => {
             let current_is_previous = current_focus
                 .as_ref()
                 .zip(previous_focus.as_ref())
                 .is_some_and(|(current, previous)| current == previous);
             if current_is_previous {
+                restore_graph_fallback(window, cx);
                 return;
             }
             let current_is_interaction = current_focus
                 .as_ref()
                 .zip(interaction_focus.as_ref())
                 .is_some_and(|(current, interaction)| current == interaction);
-            if current_focus.is_some() && !current_is_interaction {
+            if current_focus.is_some()
+                && !current_is_interaction
+                && !(exit == OpenGpuiPortFocusExit::RestoreSearchOverlay
+                    && current_is_owned_overlay)
+            {
                 return;
             }
             if let Some(previous_focus) = previous_focus {
                 window.focus(&previous_focus, cx);
+                restore_graph_fallback(window, cx);
             } else if let Some(interaction_focus) = interaction_focus {
                 window.focus(&interaction_focus, cx);
             } else {
@@ -2131,7 +2285,7 @@ fn settle_native_focus(
                 .as_ref()
                 .zip(interaction_focus.as_ref())
                 .is_some_and(|(current, interaction)| current == interaction);
-            if current_is_interaction {
+            if current_is_interaction || current_is_owned_overlay {
                 window.blur();
             }
         }
@@ -2139,11 +2293,20 @@ fn settle_native_focus(
             if interaction_focus
                 .as_ref()
                 .is_some_and(|interaction| interaction.contains_focused(window, cx))
+                || current_is_owned_overlay
             {
                 window.blur();
             }
         }
     }
+}
+
+fn focus_is_owned_by_domains(domains: &[WeakFocusHandle], window: &Window, cx: &App) -> bool {
+    domains.iter().any(|focus| {
+        focus
+            .upgrade()
+            .is_some_and(|focus| focus.contains_focused(window, cx))
+    })
 }
 
 fn settle_scene_focus(
@@ -2992,7 +3155,7 @@ mod capture_bookkeeping_tests {
             let ownership = native_focus_ownership(&previous, &interaction);
             window.focus(&interaction, cx);
 
-            settle_native_focus(ownership, OpenGpuiPortFocusExit::Restore, window, cx);
+            settle_native_focus(ownership, &[], OpenGpuiPortFocusExit::Restore, window, cx);
 
             assert_eq!(window.focused(cx), Some(previous));
         });
@@ -3009,8 +3172,79 @@ mod capture_bookkeeping_tests {
             window.focus(&interaction, cx);
             window.focus(&unrelated, cx);
 
-            settle_native_focus(ownership, OpenGpuiPortFocusExit::Restore, window, cx);
+            settle_native_focus(ownership, &[], OpenGpuiPortFocusExit::Restore, window, cx);
 
+            assert_eq!(window.focused(cx), Some(unrelated));
+        });
+    }
+
+    #[open_gpui::test]
+    fn search_overlay_restore_returns_to_the_initiating_focus(cx: &mut open_gpui::TestAppContext) {
+        let (_, cx) = cx.add_window_view(|_, _| FocusTestView);
+        cx.update(|window, cx| {
+            let previous = cx.focus_handle();
+            let interaction = cx.focus_handle();
+            let search_overlay = cx.focus_handle();
+            let ownership = native_focus_ownership(&previous, &interaction);
+            window.focus(&search_overlay, cx);
+
+            settle_native_focus(
+                ownership,
+                &[search_overlay.downgrade()],
+                OpenGpuiPortFocusExit::RestoreSearchOverlay,
+                window,
+                cx,
+            );
+
+            assert_eq!(window.focused(cx), Some(previous));
+        });
+    }
+
+    #[open_gpui::test]
+    fn search_overlay_restore_does_not_steal_unregistered_focus(
+        cx: &mut open_gpui::TestAppContext,
+    ) {
+        let (_, cx) = cx.add_window_view(|_, _| FocusTestView);
+        cx.update(|window, cx| {
+            let previous = cx.focus_handle();
+            let interaction = cx.focus_handle();
+            let search_overlay = cx.focus_handle();
+            let unrelated = cx.focus_handle();
+            let ownership = native_focus_ownership(&previous, &interaction);
+            window.focus(&unrelated, cx);
+
+            settle_native_focus(
+                ownership,
+                &[search_overlay.downgrade()],
+                OpenGpuiPortFocusExit::RestoreSearchOverlay,
+                window,
+                cx,
+            );
+
+            assert_eq!(window.focused(cx), Some(unrelated));
+        });
+    }
+
+    #[open_gpui::test]
+    fn terminal_prepare_retains_registered_overlay_focus_for_window_cleanup(
+        cx: &mut open_gpui::TestAppContext,
+    ) {
+        let authority = OpenGpuiNativeInteractionAuthority::new();
+        let handle = authority.capability();
+        let (_, cx) = cx.add_window_view(|_, _| FocusTestView);
+        cx.update(|window, cx| {
+            let overlay = cx.focus_handle();
+            handle.mark_overlay_focus_domain(&overlay);
+            window.focus(&overlay, cx);
+            assert!(handle.requires_window_cleanup());
+
+            authority.prepare_host_close_deferred();
+            assert!(authority.cancel_for_host_close(window, cx));
+            assert!(window.focused(cx).is_none());
+
+            let unrelated = cx.focus_handle();
+            window.focus(&unrelated, cx);
+            assert!(!authority.cancel_for_host_close(window, cx));
             assert_eq!(window.focused(cx), Some(unrelated));
         });
     }
@@ -3025,11 +3259,33 @@ mod capture_bookkeeping_tests {
             let previous = cx.focus_handle().downgrade();
             let ownership = NativeFocusOwnership {
                 previous_focus: Some(previous),
+                previous_focus_was_graph_domain: false,
                 interaction_focus: Some(interaction.downgrade()),
             };
             window.blur();
 
-            settle_native_focus(ownership, OpenGpuiPortFocusExit::Restore, window, cx);
+            settle_native_focus(ownership, &[], OpenGpuiPortFocusExit::Restore, window, cx);
+
+            assert_eq!(window.focused(cx), Some(interaction));
+        });
+    }
+
+    #[open_gpui::test]
+    fn terminal_restore_falls_back_to_canvas_when_previous_graph_focus_is_detached(
+        cx: &mut open_gpui::TestAppContext,
+    ) {
+        let (_, cx) = cx.add_window_view(|_, _| FocusTestView);
+        cx.update(|window, cx| {
+            let previous = cx.focus_handle();
+            let interaction = cx.focus_handle();
+            let ownership = NativeFocusOwnership {
+                previous_focus: Some(previous.downgrade()),
+                previous_focus_was_graph_domain: true,
+                interaction_focus: Some(interaction.downgrade()),
+            };
+            window.focus(&interaction, cx);
+
+            settle_native_focus(ownership, &[], OpenGpuiPortFocusExit::Restore, window, cx);
 
             assert_eq!(window.focused(cx), Some(interaction));
         });
@@ -3047,6 +3303,7 @@ mod capture_bookkeeping_tests {
             window.focus(&interaction, cx);
             settle_native_focus(
                 native_focus_ownership(&previous, &interaction),
+                &[],
                 OpenGpuiPortFocusExit::OwnerRetired,
                 window,
                 cx,
@@ -3056,6 +3313,7 @@ mod capture_bookkeeping_tests {
             window.focus(&unrelated, cx);
             settle_native_focus(
                 native_focus_ownership(&previous, &interaction),
+                &[],
                 OpenGpuiPortFocusExit::OwnerRetired,
                 window,
                 cx,
@@ -3064,6 +3322,7 @@ mod capture_bookkeeping_tests {
 
             settle_native_focus(
                 native_focus_ownership(&previous, &interaction),
+                &[],
                 OpenGpuiPortFocusExit::HostClosed,
                 window,
                 cx,
@@ -3073,6 +3332,7 @@ mod capture_bookkeeping_tests {
             window.focus(&interaction, cx);
             settle_native_focus(
                 native_focus_ownership(&previous, &interaction),
+                &[],
                 OpenGpuiPortFocusExit::HostClosed,
                 window,
                 cx,
@@ -3087,6 +3347,7 @@ mod capture_bookkeeping_tests {
     ) -> NativeFocusOwnership {
         NativeFocusOwnership {
             previous_focus: Some(previous.downgrade()),
+            previous_focus_was_graph_domain: false,
             interaction_focus: Some(interaction.downgrade()),
         }
     }

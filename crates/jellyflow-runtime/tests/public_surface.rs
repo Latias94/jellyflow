@@ -18,8 +18,8 @@ use jellyflow_runtime::io::{GraphFile, PersistenceLimits, ViewSessionSeed, ViewS
 use jellyflow_runtime::profile::GraphProfile;
 use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec, NodePortSpec};
 use jellyflow_runtime::view::{
-    AdapterEnvironment, EdgePickQuery, FeedbackCollector, FrameRequest, NodeLayoutTarget,
-    RendererStamp, ViewSessionOptions, VisibleRouteQuery,
+    AdapterEnvironment, EdgePickQuery, FrameRequest, RendererStamp, ViewSessionOptions,
+    VisibleRouteQuery,
 };
 use jellyflow_runtime::viewport::ViewportTransform;
 
@@ -416,6 +416,4 @@ fn semantic_catalog_and_viewport_planning_are_framework_neutral() {
 
     let transform = ViewportTransform::new(CanvasPoint::default(), 1.0).unwrap();
     assert!(transform.is_valid());
-    let _ = std::mem::size_of::<FeedbackCollector>();
-    let _ = std::mem::size_of::<NodeLayoutTarget>();
 }

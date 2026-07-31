@@ -10,19 +10,29 @@ mod frame_feedback;
 mod interaction_session;
 mod lifecycle;
 mod native_frame_wake;
+pub(crate) mod native_input;
 mod node_lifecycle;
 mod presentation;
 mod retained_mount_store;
 mod retained_node_owner;
 mod scene_gesture;
 mod scene_render;
+#[cfg(feature = "test-support")]
+mod test_support;
 
 pub use self::connection::{OpenGpuiConnectionSearchError, OpenGpuiConnectionSearchSubmission};
+#[cfg(feature = "test-support")]
+pub use self::diagnostics::OpenGpuiSmokeAuditSnapshot;
 pub use self::diagnostics::{
     OpenGpuiEdgeLayerOverflow, OpenGpuiSceneHostDiagnostic, OpenGpuiSceneHostDiagnosticKind,
     OpenGpuiSceneHostResourceSnapshot,
 };
 pub use self::lifecycle::OpenGpuiSceneHostCloseError;
+#[cfg(feature = "test-support")]
+pub use self::test_support::{
+    OpenGpuiSmokeNodeBounds, OpenGpuiSmokeNodeFootprint, OpenGpuiSmokePresentedScene,
+    OpenGpuiSmokePreviewRoute, OpenGpuiSmokePreviewTarget, OpenGpuiSmokeRoute,
+};
 
 use self::content_size_submission_owner::ContentSizeSubmissionOwner;
 use self::diagnostics::OpenGpuiSceneHostWorkLedger;
@@ -32,6 +42,7 @@ use self::frame_feedback::OpenGpuiFrameTransaction;
 use self::frame_feedback::{LayoutReceiptAction, layout_receipt_action};
 #[cfg(test)]
 use self::lifecycle::HostLifecycleSignal;
+use self::native_input::NativeInputOwner;
 use self::retained_node_owner::RetainedNodeOwner;
 #[cfg(test)]
 use self::scene_render::{
@@ -54,12 +65,14 @@ use jellyflow_runtime::{
     view::ViewCloseReason, view::ViewSession, view::ViewSessionError,
 };
 use open_gpui::{
-    App, Context, IntoElement, Modifiers, MouseButton, Pixels, Render, Subscription, Window,
-    WindowId,
+    App, Context, FocusHandle, IntoElement, Modifiers, MouseButton, Pixels, Render, Subscription,
+    Window, WindowId,
 };
 
 use self::lifecycle::HostLifecycleBridge;
 use self::scene_render::OpenGpuiPreparedEdgeCache;
+#[cfg(feature = "test-support")]
+use self::test_support::OpenGpuiSmokePresentedSceneOwner;
 
 use crate::chrome::OpenGpuiEdgePainterRegistry;
 use crate::command_journal::{OpenGpuiCommandJournal, resolve_command_tickets};
@@ -206,6 +219,7 @@ pub struct OpenGpuiSceneHost {
     edge_painters: Arc<OpenGpuiEdgePainterRegistry>,
     retained_nodes: RetainedNodeOwner,
     interaction_owner: interaction_session::OpenGpuiNativeInteractionOwner,
+    native_input: NativeInputOwner,
     content_sizes: ContentSizeSubmissionOwner,
     scene_origin: Option<open_gpui::Point<Pixels>>,
     scene_transform: Option<ViewportTransform>,
@@ -226,6 +240,8 @@ pub struct OpenGpuiSceneHost {
     last_frame_materialization_overflow: Option<FrameMaterializationOverflow>,
     unobserved_frame_materialization_overflow: Option<FrameMaterializationOverflow>,
     last_edge_layer_overflow: OpenGpuiEdgeLayerOverflow,
+    #[cfg(feature = "test-support")]
+    smoke_presented_scene: OpenGpuiSmokePresentedSceneOwner,
 }
 
 /// One-shot policy for initializing a measured native surface viewport.
@@ -241,6 +257,7 @@ pub enum InitialViewportPolicy {
 struct OpenGpuiSceneHostWindowOwner {
     window: WindowId,
     _release_subscription: Subscription,
+    _key_interceptor: Subscription,
 }
 
 fn registry_frame_request(registry: &OpenGpuiNodeRegistry, viewport: CanvasRect) -> FrameRequest {
@@ -271,6 +288,16 @@ impl OpenGpuiSceneHost {
     #[must_use]
     pub fn overlay_boundary(&self) -> OpenGpuiOverlayInteractionBoundary {
         self.interaction_owner.overlay_boundary()
+    }
+
+    /// Uses an application-owned focus handle as the graph root authority.
+    ///
+    /// Wrappers that host overlays or connection search can retain this handle for focus
+    /// restoration. The scene tracks it; callers must not register the same handle twice.
+    #[must_use]
+    pub fn with_graph_focus_handle(mut self, focus: FocusHandle) -> Self {
+        let _ = self.interaction_owner.set_focus_handle(focus);
+        self
     }
 
     #[must_use]
@@ -308,6 +335,7 @@ impl OpenGpuiSceneHost {
             interaction_owner: interaction_session::OpenGpuiNativeInteractionOwner::new(
                 canvas_interaction,
             ),
+            native_input: NativeInputOwner::new(),
             content_sizes: ContentSizeSubmissionOwner::default(),
             scene_origin: None,
             scene_transform: None,
@@ -328,6 +356,8 @@ impl OpenGpuiSceneHost {
             last_frame_materialization_overflow: None,
             unobserved_frame_materialization_overflow: None,
             last_edge_layer_overflow: OpenGpuiEdgeLayerOverflow::default(),
+            #[cfg(feature = "test-support")]
+            smoke_presented_scene: OpenGpuiSmokePresentedSceneOwner::default(),
         }
     }
 
@@ -745,11 +775,14 @@ impl OpenGpuiSceneHost {
             self.viewport
         };
         let mut protected_required_nodes = self.retained_nodes.protected_required_nodes();
+        protected_required_nodes.extend(self.content_sizes.awaiting_publication_nodes());
         if let Ok(snapshot) = self.view.graph_snapshot()
             && let Ok(node_drag_required) =
                 self.interaction_owner.required_node_drag_nodes(&snapshot)
         {
             protected_required_nodes.extend(node_drag_required);
+            protected_required_nodes
+                .extend(self.interaction_owner.required_connection_nodes(&snapshot));
         }
         let materialization_budget = effective_frame_materialization_budget(
             self.frame_materialization_budget,
@@ -903,6 +936,9 @@ impl Render for OpenGpuiSceneHost {
                 return self.frame_failure(message, cx);
             }
         };
+        if let Some(token) = wires.node_drag_route_handoff {
+            transaction.mark_node_drag_route_handoff(token);
+        }
         if self.last_edge_layer_overflow.query_pending() {
             let host_id = cx.entity_id();
             window.on_next_frame(move |_, cx| cx.notify(host_id));
@@ -910,6 +946,7 @@ impl Render for OpenGpuiSceneHost {
         }
         self.render_scene(
             transaction,
+            frame.graph_revision(),
             frame.transform(),
             focus_handle,
             wires,

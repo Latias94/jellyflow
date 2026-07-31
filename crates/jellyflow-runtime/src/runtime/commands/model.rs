@@ -955,7 +955,7 @@ impl GraphCommandReceipt {
 #[derive(Debug, Clone)]
 pub struct GraphCommandNoop {
     identity: GraphCommandIdentity,
-    version: GraphVersion,
+    snapshot: GraphSnapshot,
     footprint: GraphMutationFootprint,
     planning_work: GraphCommandPlanningWork,
 }
@@ -963,24 +963,24 @@ pub struct GraphCommandNoop {
 impl GraphCommandNoop {
     pub(crate) fn new(
         identity: GraphCommandIdentity,
-        version: GraphVersion,
+        snapshot: GraphSnapshot,
         footprint: GraphMutationFootprint,
         planning_work: GraphCommandPlanningWork,
     ) -> Self {
         Self {
             identity,
-            version,
+            snapshot,
             footprint,
             planning_work,
         }
     }
 
     pub fn revision(&self) -> GraphRevision {
-        self.version.revision()
+        self.snapshot.revision()
     }
 
     pub fn version(&self) -> GraphVersion {
-        self.version
+        self.snapshot.version()
     }
 
     pub fn identity(&self) -> &GraphCommandIdentity {
@@ -989,6 +989,11 @@ impl GraphCommandNoop {
 
     pub fn footprint(&self) -> &GraphMutationFootprint {
         &self.footprint
+    }
+
+    /// Returns the authoritative graph state that proves this command was a semantic no-op.
+    pub fn snapshot(&self) -> &GraphSnapshot {
+        &self.snapshot
     }
 
     /// Returns work performed while proving this command was a semantic no-op.

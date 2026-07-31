@@ -96,7 +96,7 @@ fn new_connection_preview_reuses_the_eventual_exec_edge_recipe(cx: &mut open_gpu
             .expect("resolved exec preview recipe");
         assert_eq!(evidence.edge_kind, EdgeKind::Exec);
         assert_eq!(evidence.probe, OpenGpuiConnectionPreviewProbeOutcome::Valid);
-        assert_eq!(evidence.target_marker, OpenGpuiEdgeMarkerShape::Arrow);
+        assert_eq!(evidence.target_marker, OpenGpuiEdgeMarkerShape::None);
         assert_eq!(evidence.paint_key, recipe.path_batch_key());
         assert_eq!(evidence.halo_paint_key, recipe.halo_path_batch_key());
         assert!(evidence.halo_stroke_width > Some(evidence.stroke_width));
@@ -414,7 +414,11 @@ fn typed_connection_keeps_one_recipe_across_preview_commit_hover_and_zoom(
             host.view.edge_instance_key(edge).unwrap()
         );
         let wires = host.scene_wires().expect("typed hovered scene wires");
-        let hover = wires.hover_overlay.expect("typed hover overlay");
+        let hover = wires
+            .published
+            .iter()
+            .find(|wire| wire.edge == edge)
+            .expect("hovered wire remains in its published position");
         assert_eq!(hover.style_slot, Some(slot));
         let geometry = host.view.geometry_snapshot().expect("typed hover geometry");
         let facts = geometry.route(edge).expect("typed hover route").facts();

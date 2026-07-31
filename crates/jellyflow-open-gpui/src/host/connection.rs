@@ -152,6 +152,20 @@ impl OpenGpuiSceneHost {
         Ok(())
     }
 
+    /// Reissues one exact settlement after authoritative facts make it retryable.
+    pub fn retry_connection_settlement(
+        &mut self,
+        capability: jellyflow_runtime::interaction::ConnectionSettlementCapability,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), CanvasInteractionError> {
+        let update = self
+            .interaction_owner
+            .retry_connection_settlement(capability)?;
+        self.apply_canvas_interaction_update(update, window, cx);
+        Ok(())
+    }
+
     /// Cancels the active search without changing graph topology.
     pub fn cancel_connection_search(
         &mut self,
@@ -160,7 +174,22 @@ impl OpenGpuiSceneHost {
         cx: &mut Context<Self>,
     ) -> Result<(), OpenGpuiConnectionSearchError> {
         self.validate_connection_search_request(request)?;
-        let update = self.interaction_owner.cancel()?;
+        let update = self.interaction_owner.cancel_search(request)?;
+        self.discard_pending_interaction_submission();
+        self.apply_canvas_interaction_update(update, window, cx);
+        Ok(())
+    }
+
+    /// Cancels one post-admission settlement without requiring a stale search request capability.
+    pub fn cancel_connection_settlement(
+        &mut self,
+        capability: jellyflow_runtime::interaction::ConnectionSettlementCapability,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), CanvasInteractionError> {
+        let update = self
+            .interaction_owner
+            .cancel_connection_settlement(capability)?;
         self.discard_pending_interaction_submission();
         self.apply_canvas_interaction_update(update, window, cx);
         Ok(())
@@ -223,11 +252,8 @@ impl OpenGpuiSceneHost {
         let Some(active) = self.connection_search_request() else {
             return Err(OpenGpuiConnectionSearchError::InactiveRequest);
         };
-        if active.generation() != request.generation() {
-            return Err(OpenGpuiConnectionSearchError::StaleGeneration);
-        }
         if active != *request {
-            return Err(OpenGpuiConnectionSearchError::InactiveRequest);
+            return Err(OpenGpuiConnectionSearchError::StaleGeneration);
         }
         Ok(())
     }
@@ -398,7 +424,7 @@ impl OpenGpuiSceneHost {
                     if self.navigation.input_bindings().connects_on_click()
                         && self
                             .interaction_owner
-                            .keyboard_connection_source()
+                            .armed_keyboard_connection_source()
                             .is_some() =>
                 {
                     self.reject_native_connection_start(event.owner(), mount, window, cx);
@@ -426,7 +452,7 @@ impl OpenGpuiSceneHost {
                     if self.navigation.input_bindings().connects_on_click()
                         && self
                             .interaction_owner
-                            .keyboard_connection_source()
+                            .armed_keyboard_connection_source()
                             .is_some() =>
                 {
                     self.activate_port(event.owner(), mount, window, cx);
@@ -443,7 +469,7 @@ impl OpenGpuiSceneHost {
                     if self.navigation.input_bindings().connects_on_click()
                         && self
                             .interaction_owner
-                            .keyboard_connection_source()
+                            .armed_keyboard_connection_source()
                             .is_some() =>
                 {
                     self.cancel_connection_for_drag(
@@ -821,9 +847,12 @@ impl OpenGpuiSceneHost {
         }
 
         let presentation = self.interaction_owner.presentation();
+        if presentation.phase() == CanvasInteractionPhase::ConnectionSearch {
+            self.interaction_owner.mark_connection_search_focus_owned();
+        }
         let keyboard_connection = self
             .interaction_owner
-            .keyboard_connection_source()
+            .retained_keyboard_connection_source()
             .is_some();
         let native_armed = presentation.phase() == CanvasInteractionPhase::Armed
             && self
@@ -835,6 +864,7 @@ impl OpenGpuiSceneHost {
                 });
         if presentation.connection().is_none() && !native_armed && !keyboard_connection {
             if let Some((owner, mount)) = self.interaction_owner.connection_identity() {
+                let search_focus_owned = self.interaction_owner.connection_search_focus_owned();
                 let (exit, cancellation) = match presentation.terminal() {
                     Some(InteractionTerminalReason::OwnerRetired) => (
                         OpenGpuiPortFocusExit::OwnerRetired,
@@ -843,6 +873,10 @@ impl OpenGpuiSceneHost {
                     Some(InteractionTerminalReason::ViewClosed) => (
                         OpenGpuiPortFocusExit::HostClosed,
                         OpenGpuiPortDragCancelReason::HostClosed,
+                    ),
+                    _ if search_focus_owned => (
+                        OpenGpuiPortFocusExit::RestoreSearchOverlay,
+                        OpenGpuiPortDragCancelReason::InteractionUnavailable,
                     ),
                     _ => (
                         OpenGpuiPortFocusExit::Restore,
@@ -911,13 +945,12 @@ impl OpenGpuiSceneHost {
     }
 
     fn stale_connection_context_owner(&self) -> Option<InteractionOwner> {
-        let binding = self
-            .interaction_owner
-            .presentation()
-            .connection()?
-            .binding();
+        let presentation = self.interaction_owner.presentation();
+        let connection = presentation.connection()?;
+        let terminal_projection = presentation.connection_settlement().is_some();
+        let binding = connection.binding();
         if self.interaction_owner.connection_matches_binding(&binding)
-            && self.view.validate_connection_binding(&binding).is_ok()
+            && (terminal_projection || self.view.validate_connection_binding(&binding).is_ok())
         {
             return None;
         }
@@ -931,12 +964,13 @@ impl OpenGpuiSceneHost {
     pub(super) fn connection_preview_plan(&mut self) -> Option<OpenGpuiConnectionPreviewPlan> {
         let presentation = self.interaction_owner.presentation();
         let connection = presentation.connection()?;
+        let terminal_projection = presentation.connection_settlement().is_some();
         let wire = connection.wire();
         let snapshot = self.view.graph_snapshot().ok()?;
         let graph = snapshot.graph();
         let binding = connection.binding();
         if !self.interaction_owner.connection_matches_binding(&binding)
-            || self.view.validate_connection_binding(&binding).is_err()
+            || (!terminal_projection && self.view.validate_connection_binding(&binding).is_err())
         {
             return None;
         }

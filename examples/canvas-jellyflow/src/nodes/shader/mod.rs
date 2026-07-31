@@ -9,9 +9,7 @@ use jellyflow_open_gpui::chrome::{OpenGpuiPortMarker, OpenGpuiPortTone};
 use jellyflow_open_gpui::registry::OpenGpuiNodeRegistryBuilder;
 use jellyflow_open_gpui::theme::OpenGpuiGraphStyleSlot;
 use jellyflow_runtime::schema::NodeKindSpec;
-use open_gpui::{
-    AnyElement, InteractiveElement, IntoElement, ParentElement, SharedString, Styled, div, px,
-};
+use open_gpui::{AnyElement, InteractiveElement, IntoElement, ParentElement, SharedString, div};
 
 use crate::product_catalog::NativeProductCatalog;
 use crate::product_theme::NativeProductTheme;
@@ -97,6 +95,7 @@ struct ShaderPort {
 struct ShaderPortElement {
     key: PortKey,
     label: SharedString,
+    layout_diameter: f32,
     marker: AnyElement,
 }
 
@@ -133,23 +132,17 @@ fn port_element(
         Some(slot) => chrome.with_style_slot(slot),
         None => chrome,
     };
-    let minimum_hit_diameter = chrome.minimum_hit_diameter();
+    let style = chrome.style();
+    let minimum_hit_diameter = style.minimum_hit_diameter();
+    let layout_diameter = style.layout_diameter();
     let marker = port
         .handle
         .with_minimum_hit_diameter(minimum_hit_diameter)
-        .interactive(
-            div()
-                .debug_selector(move || selector.clone())
-                .w(px(12.0))
-                .h(px(12.0))
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(chrome),
-        );
+        .interactive(div().debug_selector(move || selector.clone()).child(chrome));
     ShaderPortElement {
         key: port.key,
         label: port.label,
+        layout_diameter,
         marker: marker.into_any_element(),
     }
 }

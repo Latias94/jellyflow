@@ -8,11 +8,14 @@ use std::fmt;
 /// Stable semantic identity for a canonical adapter scenario.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum ConformanceScenarioId {
-    NewConnection(ConformanceCommandOutcome),
-    ReconnectSource(ConformanceCommandOutcome),
-    ReconnectTarget(ConformanceCommandOutcome),
-    CreateFromWire(ConformanceCommandOutcome),
-    NodeDrag(ConformanceCommandOutcome),
+    NewConnection(ConformanceCommandEvidence),
+    ReconnectSource(ConformanceCommandEvidence),
+    ReconnectTarget(ConformanceCommandEvidence),
+    ReconnectTargetNoop,
+    InvalidConnectionRelease,
+    ConnectionUncertainRetryCancel,
+    CreateFromWire(ConformanceCommandEvidence),
+    NodeDrag(ConformanceCommandEvidence),
     NewConnectionProbePrefix,
     NewConnectionPrefixWait,
     ReconnectSourcePrefixWait,
@@ -28,6 +31,44 @@ pub enum ConformanceScenarioId {
     OutsideClick,
     SourceRetired,
     HostClosed,
+}
+
+impl ConformanceScenarioId {
+    /// Returns the command evidence the scenario's native driver must supply, when applicable.
+    #[must_use]
+    pub const fn command_evidence(self) -> Option<ConformanceCommandEvidence> {
+        match self {
+            Self::NewConnection(evidence)
+            | Self::ReconnectSource(evidence)
+            | Self::ReconnectTarget(evidence)
+            | Self::CreateFromWire(evidence)
+            | Self::NodeDrag(evidence) => Some(evidence),
+            Self::ReconnectTargetNoop => Some(ConformanceCommandEvidence::Completion(
+                ConformanceCommandCompletion::Noop,
+            )),
+            Self::ConnectionUncertainRetryCancel => Some(ConformanceCommandEvidence::Transport(
+                ConformanceAdapterTransportEvidence::OutcomeUnknown,
+            )),
+            Self::NewConnectionPrefixWait
+            | Self::NewConnectionProbePrefix
+            | Self::ReconnectSourcePrefixWait
+            | Self::ReconnectTargetPrefixWait
+            | Self::CreateFromWirePrefixWait
+            | Self::NodeDragPrefixWait => Some(ConformanceCommandEvidence::Completion(
+                ConformanceCommandCompletion::Applied,
+            )),
+            Self::InvalidConnectionRelease
+            | Self::NodePressBelowThreshold
+            | Self::NativeControl
+            | Self::EdgePick
+            | Self::CaptureLost
+            | Self::OwnerReplaced
+            | Self::Escape
+            | Self::OutsideClick
+            | Self::SourceRetired
+            | Self::HostClosed => None,
+        }
+    }
 }
 
 /// A semantic target role that each native driver maps to its own widget or hit region.
@@ -56,13 +97,28 @@ pub enum ConformanceCandidate {
     Valid,
 }
 
-/// Every terminal command result understood by the renderer-neutral interaction session.
+/// A command completion produced by the renderer-neutral runtime.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub enum ConformanceCommandOutcome {
+pub enum ConformanceCommandCompletion {
     Applied,
+    Noop,
     Rejected,
     Conflict,
+    Failed,
+}
+
+/// Adapter-owned evidence about command transport, never a runtime command completion.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum ConformanceAdapterTransportEvidence {
     NotDispatched,
+    OutcomeUnknown,
+}
+
+/// The command evidence selected by a canonical mutation scenario.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum ConformanceCommandEvidence {
+    Completion(ConformanceCommandCompletion),
+    Transport(ConformanceAdapterTransportEvidence),
 }
 
 /// A semantic cancellation initiated outside command settlement.
@@ -83,7 +139,12 @@ pub enum ConformanceAction {
     QueuePrefix,
     DrainPrefix,
     AdvanceFrame,
-    CompleteCommand(ConformanceCommandOutcome),
+    PublishAuthoritativeFrame,
+    AdvanceAuthoritativeAbsence,
+    RetryConnectionSettlement,
+    CancelConnectionSettlement,
+    CompleteCommand(ConformanceCommandCompletion),
+    ReportTransportEvidence(ConformanceAdapterTransportEvidence),
     LoseCapture,
     ReplaceOwner,
     ReleasePreviousOwner,
@@ -122,10 +183,14 @@ pub enum ConformanceEffect {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ConformanceTerminal {
     Applied,
+    Noop,
     Rejected,
     Conflict,
-    NotDispatched,
+    ExecutionFailed,
+    TransportFailure,
+    Uncertain,
     Cancelled,
+    InvalidTarget,
     OwnerRetired,
     HostClosed,
 }
@@ -162,6 +227,15 @@ pub enum ConformanceTicket {
     Pending,
 }
 
+/// Runtime-owned terminal connection projection visible after command settlement.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConformanceConnectionSettlement {
+    None,
+    AwaitingPublication,
+    Uncertain { retryable: bool },
+    Retryable { retryable: bool },
+}
+
 /// Connection intent retained by the renderer-neutral presentation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ConformanceIntent {
@@ -192,6 +266,7 @@ pub enum ConformanceGeometry {
     ReconnectSourceRouted,
     ReconnectTargetRouted,
     CreateFromWireAwaitingLayout,
+    CreateFromWireRouted,
     NodeMoved,
     Unavailable,
 }
@@ -204,6 +279,7 @@ pub struct NormalizedObservation {
     pub terminal: Option<ConformanceTerminal>,
     pub ownership: ConformanceOwnership,
     pub ticket: ConformanceTicket,
+    pub connection_settlement: ConformanceConnectionSettlement,
     pub intent: ConformanceIntent,
     pub optimistic_presentation: bool,
     pub graph_revision_delta: u64,
@@ -229,6 +305,7 @@ impl NormalizedObservation {
             terminal: None,
             ownership,
             ticket,
+            connection_settlement: ConformanceConnectionSettlement::None,
             intent: ConformanceIntent::None,
             optimistic_presentation: false,
             graph_revision_delta,
@@ -260,6 +337,15 @@ impl NormalizedObservation {
     #[must_use]
     pub const fn with_selection(mut self, selection: ConformanceSelection) -> Self {
         self.selection = selection;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_connection_settlement(
+        mut self,
+        settlement: ConformanceConnectionSettlement,
+    ) -> Self {
+        self.connection_settlement = settlement;
         self
     }
 
@@ -302,6 +388,27 @@ impl ConformanceStep {
     #[must_use]
     pub const fn with_intent(mut self, intent: ConformanceIntent) -> Self {
         self.expected.intent = intent;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_terminal(mut self, terminal: ConformanceTerminal) -> Self {
+        self.expected.terminal = Some(terminal);
+        self
+    }
+
+    #[must_use]
+    pub const fn with_connection_settlement(
+        mut self,
+        settlement: ConformanceConnectionSettlement,
+    ) -> Self {
+        self.expected.connection_settlement = settlement;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_optimistic_presentation(mut self) -> Self {
+        self.expected.optimistic_presentation = true;
         self
     }
 }
@@ -353,6 +460,10 @@ pub enum ConformanceFieldMismatch {
     Ticket {
         expected: ConformanceTicket,
         actual: ConformanceTicket,
+    },
+    ConnectionSettlement {
+        expected: ConformanceConnectionSettlement,
+        actual: ConformanceConnectionSettlement,
     },
     Intent {
         expected: ConformanceIntent,
@@ -487,6 +598,12 @@ fn observation_mismatches(
             actual: actual.ticket,
         });
     }
+    if expected.connection_settlement != actual.connection_settlement {
+        fields.push(ConformanceFieldMismatch::ConnectionSettlement {
+            expected: expected.connection_settlement,
+            actual: actual.connection_settlement,
+        });
+    }
     if expected.intent != actual.intent {
         fields.push(ConformanceFieldMismatch::Intent {
             expected: expected.intent,
@@ -532,14 +649,14 @@ fn observation_mismatches(
     fields
 }
 
-/// Returns every command settlement used by canonical mutation scenarios.
+/// Returns every terminal command-evidence case used by the canonical mutation matrix.
 #[must_use]
-pub const fn canonical_command_outcomes() -> [ConformanceCommandOutcome; 4] {
+pub const fn canonical_command_evidence() -> [ConformanceCommandEvidence; 4] {
     [
-        ConformanceCommandOutcome::Applied,
-        ConformanceCommandOutcome::Rejected,
-        ConformanceCommandOutcome::Conflict,
-        ConformanceCommandOutcome::NotDispatched,
+        ConformanceCommandEvidence::Completion(ConformanceCommandCompletion::Applied),
+        ConformanceCommandEvidence::Completion(ConformanceCommandCompletion::Rejected),
+        ConformanceCommandEvidence::Completion(ConformanceCommandCompletion::Conflict),
+        ConformanceCommandEvidence::Transport(ConformanceAdapterTransportEvidence::NotDispatched),
     ]
 }
 
@@ -547,19 +664,22 @@ pub const fn canonical_command_outcomes() -> [ConformanceCommandOutcome; 4] {
 #[must_use]
 pub fn canonical_scenarios() -> Vec<ConformanceScenario> {
     let mut scenarios = Vec::new();
-    for outcome in canonical_command_outcomes() {
-        scenarios.push(new_connection_scenario(outcome));
+    for evidence in canonical_command_evidence() {
+        scenarios.push(new_connection_scenario(evidence));
         scenarios.push(reconnect_scenario(
             ConformanceReconnectEndpoint::Source,
-            outcome,
+            evidence,
         ));
         scenarios.push(reconnect_scenario(
             ConformanceReconnectEndpoint::Target,
-            outcome,
+            evidence,
         ));
-        scenarios.push(create_from_wire_scenario(outcome));
-        scenarios.push(node_drag_scenario(outcome));
+        scenarios.push(create_from_wire_scenario(evidence));
+        scenarios.push(node_drag_scenario(evidence));
     }
+    scenarios.push(reconnect_target_noop_scenario());
+    scenarios.push(invalid_connection_release_scenario());
+    scenarios.push(connection_uncertain_retry_cancel_scenario());
     scenarios.push(native_control_scenario());
     scenarios.push(edge_pick_scenario());
     scenarios.extend(connection_prefix_wait_scenarios());
@@ -571,12 +691,12 @@ pub fn canonical_scenarios() -> Vec<ConformanceScenario> {
 }
 
 #[must_use]
-pub fn new_connection_scenario(outcome: ConformanceCommandOutcome) -> ConformanceScenario {
+pub fn new_connection_scenario(evidence: ConformanceCommandEvidence) -> ConformanceScenario {
     connection_scenario(
-        ConformanceScenarioId::NewConnection(outcome),
+        ConformanceScenarioId::NewConnection(evidence),
         "new-connection",
         ConformanceTarget::SourcePort,
-        outcome,
+        evidence,
     )
 }
 
@@ -586,7 +706,9 @@ pub fn new_connection_scenario(outcome: ConformanceCommandOutcome) -> Conformanc
 /// a release. It must not be represented by truncating a full mutation scenario in place.
 #[must_use]
 pub fn new_connection_probe_prefix_scenario() -> ConformanceScenario {
-    let full = new_connection_scenario(ConformanceCommandOutcome::Applied);
+    let full = new_connection_scenario(ConformanceCommandEvidence::Completion(
+        ConformanceCommandCompletion::Applied,
+    ));
     ConformanceScenario {
         id: ConformanceScenarioId::NewConnectionProbePrefix,
         display_name: "new-connection-probe-prefix",
@@ -597,28 +719,28 @@ pub fn new_connection_probe_prefix_scenario() -> ConformanceScenario {
 #[must_use]
 pub fn reconnect_scenario(
     endpoint: ConformanceReconnectEndpoint,
-    outcome: ConformanceCommandOutcome,
+    evidence: ConformanceCommandEvidence,
 ) -> ConformanceScenario {
     let (id, name, target) = match endpoint {
         ConformanceReconnectEndpoint::Source => (
-            ConformanceScenarioId::ReconnectSource(outcome),
+            ConformanceScenarioId::ReconnectSource(evidence),
             "reconnect-source",
             ConformanceTarget::ReconnectSource,
         ),
         ConformanceReconnectEndpoint::Target => (
-            ConformanceScenarioId::ReconnectTarget(outcome),
+            ConformanceScenarioId::ReconnectTarget(evidence),
             "reconnect-target",
             ConformanceTarget::ReconnectTarget,
         ),
     };
-    connection_scenario(id, name, target, outcome)
+    connection_scenario(id, name, target, evidence)
 }
 
 fn connection_scenario(
     id: ConformanceScenarioId,
     display_name: &'static str,
     target: ConformanceTarget,
-    outcome: ConformanceCommandOutcome,
+    evidence: ConformanceCommandEvidence,
 ) -> ConformanceScenario {
     let (selection, intent, applied_graph) = match target {
         ConformanceTarget::ReconnectSource => (
@@ -681,30 +803,100 @@ fn connection_scenario(
             pending_step(ConformanceAction::AdvanceFrame, ConformanceEffect::None)
                 .with_intent(intent)
                 .with_selection(selection),
-            settlement_step(outcome, ConformancePhase::Idle, applied_graph)
-                .with_selection(selection),
+            {
+                let phase = if matches!(
+                    evidence,
+                    ConformanceCommandEvidence::Transport(
+                        ConformanceAdapterTransportEvidence::OutcomeUnknown
+                    )
+                ) {
+                    ConformancePhase::Committing
+                } else {
+                    ConformancePhase::Idle
+                };
+                let step =
+                    settlement_step(evidence, phase, applied_graph).with_selection(selection);
+                if matches!(
+                    evidence,
+                    ConformanceCommandEvidence::Transport(
+                        ConformanceAdapterTransportEvidence::OutcomeUnknown
+                    )
+                ) {
+                    step.with_intent(intent).with_optimistic_presentation()
+                } else {
+                    step
+                }
+            },
         ],
     }
 }
 
+/// Reconnects the detached target to its original port and proves a real runtime no-op.
+///
+/// The completion may settle atomically because the unchanged authoritative route already proves
+/// the final presentation at the no-op revision. Delayed layout publication is covered separately
+/// by the create-from-wire scenarios.
 #[must_use]
-pub fn create_from_wire_scenario(outcome: ConformanceCommandOutcome) -> ConformanceScenario {
-    let settlement_phase = match outcome {
-        ConformanceCommandOutcome::Applied => ConformancePhase::Idle,
-        ConformanceCommandOutcome::Rejected
-        | ConformanceCommandOutcome::Conflict
-        | ConformanceCommandOutcome::NotDispatched => ConformancePhase::Searching,
-    };
-    let settlement_step =
-        settlement_step(outcome, settlement_phase, ConformanceGraph::CreateFromWire);
-    let settlement_step = if settlement_phase == ConformancePhase::Searching {
-        settlement_step.with_intent(ConformanceIntent::Connect)
-    } else {
-        settlement_step
-    };
+pub fn reconnect_target_noop_scenario() -> ConformanceScenario {
+    let selection = ConformanceSelection::CanonicalEdge;
+    let intent = ConformanceIntent::ReconnectTarget;
     ConformanceScenario {
-        id: ConformanceScenarioId::CreateFromWire(outcome),
-        display_name: "create-from-wire",
+        id: ConformanceScenarioId::ReconnectTargetNoop,
+        display_name: "reconnect-target-noop",
+        steps: vec![
+            held_step(
+                ConformanceAction::Press(ConformanceTarget::ReconnectTarget),
+                ConformancePhase::Armed,
+                ConformanceEffect::None,
+            )
+            .with_intent(intent)
+            .with_selection(selection),
+            held_step(
+                ConformanceAction::CrossDragThreshold,
+                ConformancePhase::ConnectionDrag,
+                ConformanceEffect::ProbeConnection,
+            )
+            .with_intent(intent)
+            .with_selection(selection),
+            held_step(
+                ConformanceAction::MoveToCandidate(ConformanceCandidate::Invalid),
+                ConformancePhase::ConnectionDrag,
+                ConformanceEffect::ProbeConnection,
+            )
+            .with_intent(intent)
+            .with_selection(selection),
+            held_step(
+                ConformanceAction::MoveToCandidate(ConformanceCandidate::Valid),
+                ConformancePhase::Candidate,
+                ConformanceEffect::ProbeConnection,
+            )
+            .with_intent(intent)
+            .with_selection(selection),
+            pending_step(
+                ConformanceAction::Release,
+                ConformanceEffect::SubmitConnection,
+            )
+            .with_intent(intent)
+            .with_selection(selection),
+            pending_step(ConformanceAction::AdvanceFrame, ConformanceEffect::None)
+                .with_intent(intent)
+                .with_selection(selection),
+            settlement_step(
+                ConformanceCommandEvidence::Completion(ConformanceCommandCompletion::Noop),
+                ConformancePhase::Idle,
+                ConformanceGraph::Baseline,
+            )
+            .with_selection(selection),
+        ],
+    }
+}
+
+/// Releases a connection over an invalid target without manufacturing a command submission.
+#[must_use]
+pub fn invalid_connection_release_scenario() -> ConformanceScenario {
+    ConformanceScenario {
+        id: ConformanceScenarioId::InvalidConnectionRelease,
+        display_name: "invalid-connection-release",
         steps: vec![
             held_step(
                 ConformanceAction::Press(ConformanceTarget::SourcePort),
@@ -719,33 +911,181 @@ pub fn create_from_wire_scenario(outcome: ConformanceCommandOutcome) -> Conforma
             )
             .with_intent(ConformanceIntent::Connect),
             held_step(
-                ConformanceAction::MoveToCandidate(ConformanceCandidate::None),
+                ConformanceAction::MoveToCandidate(ConformanceCandidate::Invalid),
                 ConformancePhase::ConnectionDrag,
                 ConformanceEffect::ProbeConnection,
             )
             .with_intent(ConformanceIntent::Connect),
             released_step(
                 ConformanceAction::Release,
-                ConformancePhase::Searching,
-                ConformanceEffect::OpenSearch,
+                ConformancePhase::Idle,
+                ConformanceEffect::None,
             )
-            .with_intent(ConformanceIntent::Connect),
-            pending_step(
-                ConformanceAction::SelectSearchCandidate,
-                ConformanceEffect::SubmitConnection,
-            )
-            .with_intent(ConformanceIntent::Connect),
-            pending_step(ConformanceAction::AdvanceFrame, ConformanceEffect::None)
-                .with_intent(ConformanceIntent::Connect),
-            settlement_step,
+            .with_terminal(ConformanceTerminal::InvalidTarget),
         ],
     }
 }
 
+/// Proves that post-admission uncertainty requires authoritative absence and a fresh retry ticket.
 #[must_use]
-pub fn node_drag_scenario(outcome: ConformanceCommandOutcome) -> ConformanceScenario {
+pub fn connection_uncertain_retry_cancel_scenario() -> ConformanceScenario {
+    let evidence =
+        ConformanceCommandEvidence::Transport(ConformanceAdapterTransportEvidence::OutcomeUnknown);
+    let mut scenario = new_connection_scenario(evidence);
+    scenario.id = ConformanceScenarioId::ConnectionUncertainRetryCancel;
+    scenario.display_name = "connection-uncertain-retry-cancel";
+    scenario.steps.push(
+        ConformanceStep::new(
+            ConformanceAction::AdvanceAuthoritativeAbsence,
+            NormalizedObservation::new(
+                ConformancePhase::Committing,
+                ConformanceEffect::None,
+                ConformanceOwnership::Released,
+                ConformanceTicket::None,
+                0,
+                ConformanceGeometry::Baseline,
+            )
+            .with_terminal(ConformanceTerminal::Uncertain)
+            .with_connection_settlement(ConformanceConnectionSettlement::Uncertain {
+                retryable: true,
+            }),
+        )
+        .with_intent(ConformanceIntent::Connect)
+        .with_optimistic_presentation(),
+    );
+    scenario.steps.push(
+        pending_step(
+            ConformanceAction::RetryConnectionSettlement,
+            ConformanceEffect::SubmitConnection,
+        )
+        .with_intent(ConformanceIntent::Connect),
+    );
+    scenario.steps.push(
+        settlement_step(
+            evidence,
+            ConformancePhase::Committing,
+            ConformanceGraph::NewConnection,
+        )
+        .with_intent(ConformanceIntent::Connect)
+        .with_optimistic_presentation(),
+    );
+    scenario.steps.push(
+        released_step(
+            ConformanceAction::CancelConnectionSettlement,
+            ConformancePhase::Idle,
+            ConformanceEffect::RestorePresentation,
+        )
+        .with_terminal(ConformanceTerminal::Cancelled),
+    );
+    scenario
+}
+
+#[must_use]
+pub fn create_from_wire_scenario(evidence: ConformanceCommandEvidence) -> ConformanceScenario {
+    let settlement_phase = match evidence {
+        ConformanceCommandEvidence::Completion(
+            ConformanceCommandCompletion::Applied | ConformanceCommandCompletion::Noop,
+        )
+        | ConformanceCommandEvidence::Transport(
+            ConformanceAdapterTransportEvidence::OutcomeUnknown,
+        ) => ConformancePhase::Committing,
+        ConformanceCommandEvidence::Completion(
+            ConformanceCommandCompletion::Rejected
+            | ConformanceCommandCompletion::Conflict
+            | ConformanceCommandCompletion::Failed,
+        )
+        | ConformanceCommandEvidence::Transport(
+            ConformanceAdapterTransportEvidence::NotDispatched,
+        ) => ConformancePhase::Searching,
+    };
+    let settlement_step =
+        settlement_step(evidence, settlement_phase, ConformanceGraph::CreateFromWire);
+    let settlement_step = match evidence {
+        ConformanceCommandEvidence::Completion(
+            ConformanceCommandCompletion::Applied | ConformanceCommandCompletion::Noop,
+        )
+        | ConformanceCommandEvidence::Transport(
+            ConformanceAdapterTransportEvidence::OutcomeUnknown,
+        ) => {
+            let settlement_step = settlement_step.with_intent(ConformanceIntent::Connect);
+            let settlement_step = if matches!(
+                evidence,
+                ConformanceCommandEvidence::Completion(ConformanceCommandCompletion::Applied)
+            ) {
+                settlement_step.with_connection_settlement(
+                    ConformanceConnectionSettlement::AwaitingPublication,
+                )
+            } else {
+                settlement_step
+            };
+            settlement_step.with_optimistic_presentation()
+        }
+        ConformanceCommandEvidence::Completion(
+            ConformanceCommandCompletion::Rejected
+            | ConformanceCommandCompletion::Conflict
+            | ConformanceCommandCompletion::Failed,
+        )
+        | ConformanceCommandEvidence::Transport(
+            ConformanceAdapterTransportEvidence::NotDispatched,
+        ) => settlement_step.with_intent(ConformanceIntent::Connect),
+    };
+    let mut steps = vec![
+        held_step(
+            ConformanceAction::Press(ConformanceTarget::SourcePort),
+            ConformancePhase::Armed,
+            ConformanceEffect::None,
+        )
+        .with_intent(ConformanceIntent::Connect),
+        held_step(
+            ConformanceAction::CrossDragThreshold,
+            ConformancePhase::ConnectionDrag,
+            ConformanceEffect::ProbeConnection,
+        )
+        .with_intent(ConformanceIntent::Connect),
+        held_step(
+            ConformanceAction::MoveToCandidate(ConformanceCandidate::None),
+            ConformancePhase::ConnectionDrag,
+            ConformanceEffect::ProbeConnection,
+        )
+        .with_intent(ConformanceIntent::Connect),
+        released_step(
+            ConformanceAction::Release,
+            ConformancePhase::Searching,
+            ConformanceEffect::OpenSearch,
+        )
+        .with_intent(ConformanceIntent::Connect),
+        pending_step(
+            ConformanceAction::SelectSearchCandidate,
+            ConformanceEffect::SubmitConnection,
+        )
+        .with_intent(ConformanceIntent::Connect),
+        pending_step(ConformanceAction::AdvanceFrame, ConformanceEffect::None)
+            .with_intent(ConformanceIntent::Connect),
+        settlement_step,
+    ];
+    if matches!(
+        evidence,
+        ConformanceCommandEvidence::Completion(ConformanceCommandCompletion::Applied)
+    ) {
+        steps.push(published_connection_step(
+            ConformanceTerminal::Applied,
+            1,
+            ConformanceGraph::CreateFromWire,
+            ConformanceGeometry::CreateFromWireRouted,
+            ConformanceSelection::Empty,
+        ));
+    }
     ConformanceScenario {
-        id: ConformanceScenarioId::NodeDrag(outcome),
+        id: ConformanceScenarioId::CreateFromWire(evidence),
+        display_name: "create-from-wire",
+        steps,
+    }
+}
+
+#[must_use]
+pub fn node_drag_scenario(evidence: ConformanceCommandEvidence) -> ConformanceScenario {
+    ConformanceScenario {
+        id: ConformanceScenarioId::NodeDrag(evidence),
         display_name: "node-drag",
         steps: vec![
             held_step(
@@ -766,8 +1106,12 @@ pub fn node_drag_scenario(outcome: ConformanceCommandOutcome) -> ConformanceScen
             .with_selection(ConformanceSelection::SourceNode),
             pending_step(ConformanceAction::AdvanceFrame, ConformanceEffect::None)
                 .with_selection(ConformanceSelection::SourceNode),
-            settlement_step(outcome, ConformancePhase::Idle, ConformanceGraph::NodeMoved)
-                .with_selection(ConformanceSelection::SourceNode),
+            settlement_step(
+                evidence,
+                ConformancePhase::Idle,
+                ConformanceGraph::NodeMoved,
+            )
+            .with_selection(ConformanceSelection::SourceNode),
         ],
     }
 }
@@ -799,7 +1143,9 @@ pub fn node_press_below_threshold_scenario() -> ConformanceScenario {
 pub fn connection_prefix_wait_scenarios() -> [ConformanceScenario; 4] {
     [
         with_prefix_wait(
-            new_connection_scenario(ConformanceCommandOutcome::Applied),
+            new_connection_scenario(ConformanceCommandEvidence::Completion(
+                ConformanceCommandCompletion::Applied,
+            )),
             ConformanceScenarioId::NewConnectionPrefixWait,
             "new-connection-prefix-wait",
             ConformanceSelection::Empty,
@@ -807,7 +1153,7 @@ pub fn connection_prefix_wait_scenarios() -> [ConformanceScenario; 4] {
         with_prefix_wait(
             reconnect_scenario(
                 ConformanceReconnectEndpoint::Source,
-                ConformanceCommandOutcome::Applied,
+                ConformanceCommandEvidence::Completion(ConformanceCommandCompletion::Applied),
             ),
             ConformanceScenarioId::ReconnectSourcePrefixWait,
             "reconnect-source-prefix-wait",
@@ -816,14 +1162,16 @@ pub fn connection_prefix_wait_scenarios() -> [ConformanceScenario; 4] {
         with_prefix_wait(
             reconnect_scenario(
                 ConformanceReconnectEndpoint::Target,
-                ConformanceCommandOutcome::Applied,
+                ConformanceCommandEvidence::Completion(ConformanceCommandCompletion::Applied),
             ),
             ConformanceScenarioId::ReconnectTargetPrefixWait,
             "reconnect-target-prefix-wait",
             ConformanceSelection::CanonicalEdge,
         ),
         with_prefix_wait(
-            create_from_wire_scenario(ConformanceCommandOutcome::Applied),
+            create_from_wire_scenario(ConformanceCommandEvidence::Completion(
+                ConformanceCommandCompletion::Applied,
+            )),
             ConformanceScenarioId::CreateFromWirePrefixWait,
             "create-from-wire-prefix-wait",
             ConformanceSelection::Empty,
@@ -848,7 +1196,17 @@ fn with_prefix_wait(
         )
         .with_selection(initial_selection),
     );
-    let settlement_index = scenario.steps.len() - 1;
+    let settlement_index = scenario
+        .steps
+        .iter()
+        .position(|step| {
+            matches!(
+                step.action,
+                ConformanceAction::CompleteCommand(_)
+                    | ConformanceAction::ReportTransportEvidence(_)
+            )
+        })
+        .expect("a prefix-wait mutation scenario has one command evidence step");
     let active_selection = scenario.steps[settlement_index].expected.selection;
     let active_intent = scenario.steps[settlement_index - 1].expected.intent;
     scenario.steps.insert(
@@ -901,7 +1259,7 @@ pub fn node_drag_prefix_wait_scenario() -> ConformanceScenario {
             pending_step(ConformanceAction::AdvanceFrame, ConformanceEffect::None)
                 .with_selection(ConformanceSelection::SourceNode),
             settlement_step(
-                ConformanceCommandOutcome::Applied,
+                ConformanceCommandEvidence::Completion(ConformanceCommandCompletion::Applied),
                 ConformancePhase::Idle,
                 ConformanceGraph::NodeMoved,
             )
@@ -1138,10 +1496,14 @@ const fn terminal_step(
             .with_selection(ConformanceSelection::Unavailable)
             .with_view_status(ConformanceViewStatus::HostClosed),
         ConformanceTerminal::Applied
-        | ConformanceTerminal::NotDispatched
+        | ConformanceTerminal::Noop
         | ConformanceTerminal::Rejected
         | ConformanceTerminal::Conflict
+        | ConformanceTerminal::ExecutionFailed
+        | ConformanceTerminal::TransportFailure
+        | ConformanceTerminal::Uncertain
         | ConformanceTerminal::Cancelled
+        | ConformanceTerminal::InvalidTarget
         | ConformanceTerminal::OwnerRetired => observation,
     };
     ConformanceStep::new(action, observation)
@@ -1199,52 +1561,134 @@ const fn pending_step(action: ConformanceAction, effect: ConformanceEffect) -> C
 }
 
 const fn settlement_step(
-    outcome: ConformanceCommandOutcome,
+    evidence: ConformanceCommandEvidence,
     phase: ConformancePhase,
     applied_graph: ConformanceGraph,
 ) -> ConformanceStep {
-    let (effect, terminal, revision_delta, graph, geometry) = match outcome {
-        ConformanceCommandOutcome::Applied => (
+    let (effect, terminal, revision_delta, graph, geometry) = match evidence {
+        ConformanceCommandEvidence::Completion(ConformanceCommandCompletion::Applied) => (
             ConformanceEffect::None,
             ConformanceTerminal::Applied,
             1,
             applied_graph,
             geometry_for_graph(applied_graph),
         ),
-        ConformanceCommandOutcome::Rejected => (
+        ConformanceCommandEvidence::Completion(ConformanceCommandCompletion::Noop) => (
+            ConformanceEffect::None,
+            ConformanceTerminal::Noop,
+            0,
+            ConformanceGraph::Baseline,
+            ConformanceGeometry::Baseline,
+        ),
+        ConformanceCommandEvidence::Completion(ConformanceCommandCompletion::Rejected) => (
             ConformanceEffect::RestorePresentation,
             ConformanceTerminal::Rejected,
             0,
             ConformanceGraph::Baseline,
             ConformanceGeometry::Baseline,
         ),
-        ConformanceCommandOutcome::Conflict => (
+        ConformanceCommandEvidence::Completion(ConformanceCommandCompletion::Conflict) => (
             ConformanceEffect::RestorePresentation,
             ConformanceTerminal::Conflict,
             0,
             ConformanceGraph::Baseline,
             ConformanceGeometry::Baseline,
         ),
-        ConformanceCommandOutcome::NotDispatched => (
+        ConformanceCommandEvidence::Completion(ConformanceCommandCompletion::Failed) => (
             ConformanceEffect::RestorePresentation,
-            ConformanceTerminal::NotDispatched,
+            ConformanceTerminal::ExecutionFailed,
+            0,
+            ConformanceGraph::Baseline,
+            ConformanceGeometry::Baseline,
+        ),
+        ConformanceCommandEvidence::Transport(
+            ConformanceAdapterTransportEvidence::NotDispatched,
+        ) => (
+            ConformanceEffect::RestorePresentation,
+            ConformanceTerminal::TransportFailure,
+            0,
+            ConformanceGraph::Baseline,
+            ConformanceGeometry::Baseline,
+        ),
+        ConformanceCommandEvidence::Transport(
+            ConformanceAdapterTransportEvidence::OutcomeUnknown,
+        ) => (
+            ConformanceEffect::None,
+            ConformanceTerminal::Uncertain,
             0,
             ConformanceGraph::Baseline,
             ConformanceGeometry::Baseline,
         ),
     };
+    let action = match evidence {
+        ConformanceCommandEvidence::Completion(completion) => {
+            ConformanceAction::CompleteCommand(completion)
+        }
+        ConformanceCommandEvidence::Transport(evidence) => {
+            ConformanceAction::ReportTransportEvidence(evidence)
+        }
+    };
+    let observation = NormalizedObservation::new(
+        phase,
+        effect,
+        ConformanceOwnership::Released,
+        ConformanceTicket::None,
+        revision_delta,
+        geometry,
+    )
+    .with_terminal(terminal)
+    .with_graph(graph);
+    let observation = match (evidence, applied_graph) {
+        (
+            ConformanceCommandEvidence::Transport(
+                ConformanceAdapterTransportEvidence::OutcomeUnknown,
+            ),
+            ConformanceGraph::NodeMoved,
+        ) => observation,
+        (
+            ConformanceCommandEvidence::Transport(
+                ConformanceAdapterTransportEvidence::OutcomeUnknown,
+            ),
+            ConformanceGraph::Baseline
+            | ConformanceGraph::SourceRetired
+            | ConformanceGraph::NewConnection
+            | ConformanceGraph::ReconnectSource
+            | ConformanceGraph::ReconnectTarget
+            | ConformanceGraph::CreateFromWire,
+        ) => observation.with_connection_settlement(ConformanceConnectionSettlement::Uncertain {
+            retryable: false,
+        }),
+        (ConformanceCommandEvidence::Completion(_), _)
+        | (
+            ConformanceCommandEvidence::Transport(
+                ConformanceAdapterTransportEvidence::NotDispatched,
+            ),
+            _,
+        ) => observation,
+    };
+    ConformanceStep::new(action, observation)
+}
+
+const fn published_connection_step(
+    terminal: ConformanceTerminal,
+    revision_delta: u64,
+    graph: ConformanceGraph,
+    geometry: ConformanceGeometry,
+    selection: ConformanceSelection,
+) -> ConformanceStep {
     ConformanceStep::new(
-        ConformanceAction::CompleteCommand(outcome),
+        ConformanceAction::PublishAuthoritativeFrame,
         NormalizedObservation::new(
-            phase,
-            effect,
+            ConformancePhase::Idle,
+            ConformanceEffect::None,
             ConformanceOwnership::Released,
             ConformanceTicket::None,
             revision_delta,
             geometry,
         )
         .with_terminal(terminal)
-        .with_graph(graph),
+        .with_graph(graph)
+        .with_selection(selection),
     )
 }
 
@@ -1266,7 +1710,9 @@ mod tests {
 
     #[test]
     fn mismatch_reports_each_drifted_semantic_field() {
-        let scenario = new_connection_scenario(ConformanceCommandOutcome::Applied);
+        let scenario = new_connection_scenario(ConformanceCommandEvidence::Completion(
+            ConformanceCommandCompletion::Applied,
+        ));
         let mut actual = scenario
             .steps()
             .iter()
@@ -1302,5 +1748,101 @@ mod tests {
                 actual: ConformanceGeometry::Unavailable,
             }
         )));
+    }
+
+    #[test]
+    fn command_completion_and_transport_evidence_use_distinct_actions() {
+        let applied = new_connection_scenario(ConformanceCommandEvidence::Completion(
+            ConformanceCommandCompletion::Applied,
+        ));
+        assert!(applied.steps().iter().any(|step| {
+            step.action()
+                == ConformanceAction::CompleteCommand(ConformanceCommandCompletion::Applied)
+        }));
+        assert!(
+            !applied
+                .steps()
+                .iter()
+                .any(|step| matches!(step.action(), ConformanceAction::ReportTransportEvidence(_)))
+        );
+
+        let not_dispatched = new_connection_scenario(ConformanceCommandEvidence::Transport(
+            ConformanceAdapterTransportEvidence::NotDispatched,
+        ));
+        assert!(not_dispatched.steps().iter().any(|step| {
+            step.action()
+                == ConformanceAction::ReportTransportEvidence(
+                    ConformanceAdapterTransportEvidence::NotDispatched,
+                )
+        }));
+        assert!(
+            !not_dispatched
+                .steps()
+                .iter()
+                .any(|step| matches!(step.action(), ConformanceAction::CompleteCommand(_)))
+        );
+    }
+
+    #[test]
+    fn p0_connection_exits_are_explicit_and_terminal() {
+        let invalid = invalid_connection_release_scenario();
+        let invalid_terminal = invalid.steps().last().expect("invalid release terminal");
+        assert_eq!(invalid_terminal.action(), ConformanceAction::Release);
+        assert_eq!(
+            invalid_terminal.expected().terminal,
+            Some(ConformanceTerminal::InvalidTarget)
+        );
+        assert!(!invalid.steps().iter().any(|step| matches!(
+            step.action(),
+            ConformanceAction::CompleteCommand(_) | ConformanceAction::ReportTransportEvidence(_)
+        )));
+
+        let noop = reconnect_target_noop_scenario();
+        let published = noop.steps().last().expect("noop completion terminal");
+        assert_eq!(
+            published.action(),
+            ConformanceAction::CompleteCommand(ConformanceCommandCompletion::Noop)
+        );
+        assert_eq!(published.expected().phase, ConformancePhase::Idle);
+        assert_eq!(published.expected().graph_revision_delta, 0);
+        assert_eq!(published.expected().graph, ConformanceGraph::Baseline);
+        assert_eq!(published.expected().geometry, ConformanceGeometry::Baseline);
+
+        let uncertain = connection_uncertain_retry_cancel_scenario();
+        let evidence_steps = uncertain
+            .steps()
+            .iter()
+            .filter(|step| {
+                step.action()
+                    == ConformanceAction::ReportTransportEvidence(
+                        ConformanceAdapterTransportEvidence::OutcomeUnknown,
+                    )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(evidence_steps.len(), 2);
+        for step in evidence_steps {
+            assert_eq!(
+                step.expected().connection_settlement,
+                ConformanceConnectionSettlement::Uncertain { retryable: false }
+            );
+        }
+        let retryable = uncertain
+            .steps()
+            .iter()
+            .find(|step| step.action() == ConformanceAction::AdvanceAuthoritativeAbsence)
+            .expect("uncertainty waits for authoritative absence");
+        assert_eq!(
+            retryable.expected().connection_settlement,
+            ConformanceConnectionSettlement::Uncertain { retryable: true }
+        );
+        assert_eq!(
+            uncertain
+                .steps()
+                .last()
+                .expect("uncertainty terminal")
+                .expected()
+                .terminal,
+            Some(ConformanceTerminal::Cancelled)
+        );
     }
 }

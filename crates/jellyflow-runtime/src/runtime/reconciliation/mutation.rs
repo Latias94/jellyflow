@@ -138,6 +138,17 @@ impl<I> MutationRetry<I> {
     pub const fn intent(&self) -> &I {
         &self.intent
     }
+
+    /// Rebinds product facts while preserving the exact retry authority.
+    ///
+    /// Callers use this after refreshing an intent against the authoritative retry base. The
+    /// source attempt and retry classification remain unchanged and are still validated by
+    /// [`MutationReconciler::begin_retry`].
+    #[must_use]
+    pub fn rebind_intent(mut self, intent: I) -> Self {
+        self.intent = intent;
+        self
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -405,16 +416,16 @@ impl<I: Clone> MutationReconciler<I> {
         }
         let attempt = allocate_mutation_attempt().ok_or(MutationBeginError::IdentityExhausted)?;
         let state = std::mem::replace(&mut self.state, State::Idle);
-        let intent = match state {
-            State::Retryable { intent, .. } | State::Uncertain { intent, .. } => intent,
+        match state {
+            State::Retryable { .. } | State::Uncertain { .. } => {}
             state => {
                 self.state = state;
                 return Err(MutationBeginError::RetryExpired);
             }
-        };
+        }
         self.state = State::Pending {
             attempt,
-            intent,
+            intent: retry.intent,
             base_revision,
             observation: None,
         };
@@ -1139,6 +1150,31 @@ mod tests {
         assert!(reducer.retry(true).is_none());
         reducer.observe(6, |_| false);
         assert!(reducer.retry(true).is_some());
+    }
+
+    #[test]
+    fn retry_authority_can_rebind_refreshed_intent_without_changing_attempt_identity() {
+        let mut reducer = MutationReconciler::default();
+        let original = reducer.begin("original", 4).expect("begin original");
+        reducer
+            .complete(
+                original,
+                MutationCommandResult::Uncertain {
+                    diagnostic: "completion lost".to_owned(),
+                },
+            )
+            .expect("record uncertainty");
+        reducer.observe(5, |_| false);
+        let retry = reducer
+            .retry(true)
+            .expect("later absence authorizes retry")
+            .rebind_intent("refreshed");
+        assert_eq!(retry.source_attempt(), original);
+
+        let successor = reducer.begin_retry(retry, 5).expect("begin rebound retry");
+        assert_ne!(successor, original);
+        assert_eq!(reducer.active_intent(), Some(&"refreshed"));
+        assert_eq!(reducer.active_attempt(), Some(successor));
     }
 
     #[test]

@@ -1,4 +1,5 @@
 use std::cell::Cell;
+use std::collections::BTreeSet;
 use std::rc::Rc;
 
 use jellyflow_core::{
@@ -24,8 +25,8 @@ use jellyflow_runtime::{
 use open_gpui::{
     App, AppContext, Context, Entity, FocusHandle, HitboxId, InteractiveElement, KeyDownEvent,
     KeyUpEvent, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, ParentElement,
-    PinchEvent, Render, ScrollDelta, ScrollWheelEvent, StatefulInteractiveElement, Styled,
-    TouchPhase, VisualContext, Window, div, point, px,
+    PinchEvent, Render, RequestFrameOptions, ScrollDelta, ScrollWheelEvent,
+    StatefulInteractiveElement, Styled, TouchPhase, VisualContext, Window, div, point, px,
 };
 
 use crate::activity::{OpenGpuiActivityKind, OpenGpuiActivityLease};
@@ -45,12 +46,16 @@ use crate::registry::{
 use crate::size_policy::{OpenGpuiContentHeightPolicy, OpenGpuiNodeSizePolicy};
 
 use super::connection::OpenGpuiConnectionPreviewProbeOutcome;
+use super::edge_layer::OpenGpuiVisibleRouteIdentity;
 use super::edge_semantics::{
     OPEN_GPUI_EDGE_SEMANTIC_SIZE_IN_VIEW, open_gpui_edge_semantic_selector,
 };
 use super::focus_navigation::OpenGpuiGraphFocusTarget;
 use super::retained_node_owner::RetainedFrameReconcileFault;
-use super::scene_render::{edge_path_endpoints, visit_edge_chrome_wires_in_paint_order};
+use super::scene_render::{
+    OpenGpuiNodeLayerEntry, edge_path_endpoints, promote_incident_routes,
+    visit_edge_chrome_wires_in_paint_order,
+};
 use super::{
     LayoutReceiptAction, OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY, OPEN_GPUI_SCENE_LAYER_ORDER,
     OpenGpuiBlankCanvasContextHandler, OpenGpuiBlankCanvasContextRequest,
@@ -347,7 +352,10 @@ impl Render for InteractiveScene {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> impl open_gpui::IntoElement {
-        div().size_full().child(self.host.clone())
+        div()
+            .size_full()
+            .on_key_down(|_, _, _| {})
+            .child(self.host.clone())
     }
 }
 
@@ -387,40 +395,44 @@ impl Render for InteractiveRoutedNode {
     ) -> impl open_gpui::IntoElement {
         let binding = self.binding.read(cx);
         let authoring = binding.authoring().expect("live node authoring");
-        let port = authoring
+        let ports = authoring
             .ports()
-            .find(|port| {
-                matches!(
-                    (authoring.node().pos.x, port.facts().dir),
-                    (x, PortDirection::Out) if x < 300.0
-                ) || matches!(
-                    (authoring.node().pos.x, port.facts().dir),
-                    (x, PortDirection::In) if x >= 300.0
-                )
-            })
-            .expect("one routed port for this fixture node");
-        let direction = port.facts().dir;
-        let handle = port.handle().clone();
+            .map(|port| (port.id(), port.facts().dir, port.handle().clone()))
+            .collect::<Vec<_>>();
         let drag_handle = binding.drag_handle();
-        let selector = test_port_selector(port.id(), direction);
-        let marker = div()
-            .debug_selector(move || selector.clone())
-            .w(px(14.0))
-            .h(px(14.0));
-        let positioned = match direction {
-            PortDirection::In => div().absolute().left(px(0.0)).top(px(43.0)),
-            PortDirection::Out => div().absolute().right(px(0.0)).top(px(43.0)),
-        };
-        let interactive = handle.interactive_with_observer(marker, {
+        let mut input_index = 0usize;
+        let mut output_index = 0usize;
+        let mut root = div().relative().size_full();
+        for (port, direction, handle) in ports {
+            let row = match direction {
+                PortDirection::In => {
+                    let row = input_index;
+                    input_index = input_index.saturating_add(1);
+                    row
+                }
+                PortDirection::Out => {
+                    let row = output_index;
+                    output_index = output_index.saturating_add(1);
+                    row
+                }
+            };
+            let selector = test_port_selector(port, direction);
+            let marker = div()
+                .debug_selector(move || selector.clone())
+                .w(px(14.0))
+                .h(px(14.0));
+            let positioned = match direction {
+                PortDirection::In => div().absolute().left(px(0.0)),
+                PortDirection::Out => div().absolute().right(px(0.0)),
+            }
+            .top(px(43.0 + row as f32 * 22.0));
             let events = self.events.clone();
-            move |_, _, _| events.set(events.get() + 1)
-        });
-        drag_handle.wrap(
-            div()
-                .relative()
-                .size_full()
-                .child(positioned.child(interactive)),
-        )
+            let interactive = handle.interactive_with_observer(marker, move |_, _, _| {
+                events.set(events.get() + 1);
+            });
+            root = root.child(positioned.child(interactive));
+        }
+        drag_handle.wrap(root)
     }
 }
 
@@ -1007,21 +1019,29 @@ fn fresh_route_is_painted_after_edges_and_before_retained_nodes(
         "hover must not restart the visible-route query",
     );
     assert_eq!(
-        hovered.edge_layer_plans(),
-        after.edge_layer_plans(),
-        "hover must reuse the immutable prepared route list",
+        hovered.edge_layer_plans() - after.edge_layer_plans(),
+        1,
+        "hover must rebuild exactly one style-aware wire plan",
     );
-    assert!(hovered.edge_route_list_reuses() > after.edge_route_list_reuses());
+    assert_eq!(
+        hovered.edge_route_previous_plan_reuses() - after.edge_route_previous_plan_reuses(),
+        1,
+        "hover must reuse the completed visible-route query",
+    );
     assert_eq!(
         hovered.edge_path_cache_misses() - after.edge_path_cache_misses(),
         1,
         "only the changed edge builds its wider hover tessellation",
     );
-    assert!(hovered.edge_paint_plan_reuses() > after.edge_paint_plan_reuses());
+    assert_eq!(
+        hovered.edge_paint_preparations() - after.edge_paint_preparations(),
+        1,
+        "hover must prepare one ordered composed plan without re-querying routes",
+    );
     assert_eq!(
         hovered.edge_native_paint_calls() - after.edge_native_paint_calls(),
         2,
-        "one base batch and one changed-edge overlay are submitted",
+        "the changed wire submits its halo and base batches in runtime order",
     );
     assert_eq!(hovered.retained_edge_entities(), 0);
 }
@@ -1080,7 +1100,7 @@ fn matching_edge_markers_share_native_submissions_and_reuse_their_plan(
 }
 
 #[open_gpui::test]
-fn alternating_edge_styles_merge_globally_within_their_visual_layer(
+fn alternating_edge_styles_preserve_runtime_order_in_native_submissions(
     cx: &mut open_gpui::TestAppContext,
 ) {
     const EDGE_COUNT: usize = 6;
@@ -1111,8 +1131,8 @@ fn alternating_edge_styles_merge_globally_within_their_visual_layer(
     assert!(path_passes > 0);
     assert_eq!(
         after.edge_native_paint_calls() - before.edge_native_paint_calls(),
-        path_passes * 2,
-        "each paint pass must globally merge alternating edges into two style batches",
+        path_passes * EDGE_COUNT as u64,
+        "alternating styles must remain separate adjacent batches so native paint order matches runtime order",
     );
     let painted_markers =
         after.edge_native_markers_painted() - before.edge_native_markers_painted();
@@ -1121,14 +1141,14 @@ fn alternating_edge_styles_merge_globally_within_their_visual_layer(
     assert!(marker_passes > 0);
     assert_eq!(
         after.edge_native_marker_paint_calls() - before.edge_native_marker_paint_calls(),
-        marker_passes * 2,
-        "each marker pass must use the same two complete visual-style keys",
+        marker_passes * EDGE_COUNT as u64,
+        "marker submissions must preserve the same adjacent runtime order as their routes",
     );
     assert_eq!(after.retained_edge_entities(), 0);
 }
 
 #[open_gpui::test]
-fn edge_chrome_paints_hovered_labels_between_ordinary_and_selected_chrome(
+fn edge_chrome_keeps_hover_style_in_the_authoritative_runtime_position(
     cx: &mut open_gpui::TestAppContext,
 ) {
     let (graph, edges) = bounded_edge_graph_with(3, 0, |output, input| {
@@ -1150,7 +1170,14 @@ fn edge_chrome_paints_hovered_labels_between_ordinary_and_selected_chrome(
     });
     cx.run_until_parked();
     draw(cx);
-    let before_hover = cx.read_entity(&host, |host, _| host.work_ledger_snapshot());
+    let before_hover = cx.update_entity(&host, |host, _| {
+        host.scene_wires()
+            .expect("ordered edge plan before hover")
+            .published
+            .iter()
+            .map(|wire| wire.edge)
+            .collect::<Vec<_>>()
+    });
 
     let pointer = cx.read_entity(&host, |host, _| {
         let geometry = host.view.geometry_snapshot().expect("edge geometry");
@@ -1173,19 +1200,18 @@ fn edge_chrome_paints_hovered_labels_between_ordinary_and_selected_chrome(
     cx.simulate_mouse_move(pointer, None, Default::default());
     cx.run_until_parked();
     draw_once(cx);
-    let after_hover = cx.read_entity(&host, |host, _| host.work_ledger_snapshot());
-    assert_eq!(
-        after_hover.edge_marker_preparations() - before_hover.edge_marker_preparations(),
-        1,
-        "hover builds one marker overlay instead of regrouping the published marker list",
-    );
-    assert!(
-        after_hover.edge_marker_plan_reuses() >= before_hover.edge_marker_plan_reuses() + 2,
-        "ordinary and emphasized marker plans remain reusable across hover",
-    );
 
     let paint_order = cx.update_entity(&host, |host, _| {
-        let wires = host.scene_wires().expect("layered edge chrome plan");
+        let wires = host.scene_wires().expect("ordered edge chrome plan");
+        assert_eq!(
+            wires
+                .published
+                .iter()
+                .map(|wire| wire.edge)
+                .collect::<Vec<_>>(),
+            before_hover,
+            "hover must invalidate style without moving the route to an adapter overlay",
+        );
         let mut order = Vec::new();
         visit_edge_chrome_wires_in_paint_order(&wires, |wire| {
             order.push((wire.edge, wire.visual_facts));
@@ -1205,7 +1231,7 @@ fn edge_chrome_paints_hovered_labels_between_ordinary_and_selected_chrome(
                 OpenGpuiEdgeVisualFacts::default().with_selected(true),
             ),
         ],
-        "paths, endpoint markers, and labels must share one explicit visual-layer order",
+        "paths, endpoint markers, labels, and hit visitation share runtime route order",
     );
 }
 
@@ -1380,7 +1406,7 @@ fn edge_layer_stays_empty_without_fresh_endpoint_geometry(cx: &mut open_gpui::Te
 }
 
 #[test]
-fn edge_layer_culls_offscreen_routes_and_prioritizes_selection_within_its_own_budget() {
+fn edge_layer_culls_offscreen_routes_and_keeps_the_frontmost_runtime_suffix() {
     const VISIBLE_EDGES: usize = 4;
     const OFFSCREEN_EDGES: usize = 12;
     const EDGE_BUDGET: usize = 2;
@@ -1412,7 +1438,7 @@ fn edge_layer_culls_offscreen_routes_and_prioritizes_selection_within_its_own_bu
             .map(|wire| wire.edge)
             .collect::<Vec<_>>(),
         vec![visible_edges[2], selected],
-        "the topmost ordinary route is admitted before the selected route paints above it",
+        "the adapter budget keeps the frontmost suffix without classifying route styles",
     );
     assert_eq!(
         wires.published[0].visual_facts,
@@ -1482,14 +1508,49 @@ fn edge_layer_culls_offscreen_routes_and_prioritizes_selection_within_its_own_bu
         .expect("incomplete query retains the complete paint plan");
     assert_eq!(resumed.published.len(), EDGE_BUDGET);
     assert_eq!(
-        resumed.published.last().map(|wire| wire.edge),
-        Some(reselected),
-        "the current selection remains emphasized while the spatial refresh is incomplete",
+        resumed
+            .published
+            .iter()
+            .map(|wire| wire.edge)
+            .collect::<Vec<_>>(),
+        vec![visible_edges[2], visible_edges[3]],
+        "an incomplete refresh retains the previous complete runtime order without adapter elevation",
     );
     let overflow = host.last_edge_layer_overflow();
     assert!(overflow.query_pending());
     assert!(overflow.reused_previous_plan());
     assert!(overflow.query_entries_examined() <= 1);
+}
+
+#[test]
+fn incident_route_promotion_reserves_a_saturated_handoff_budget() {
+    let (graph, incident, ordinary) = overlapping_edge_graph();
+    let runtime = GraphRuntime::builder(catalog())
+        .build(graph.clone())
+        .expect("valid promotion graph");
+    let view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("attach promotion view");
+    let mut routes = vec![OpenGpuiVisibleRouteIdentity {
+        edge: ordinary,
+        geometry_revision: None,
+    }];
+
+    let promoted = promote_incident_routes(
+        &view,
+        Some(&graph),
+        &BTreeSet::from([NodeId::from_u128(10)]),
+        &mut routes,
+        1,
+    )
+    .expect("promote incident route");
+
+    assert_eq!(promoted, BTreeSet::from([incident]));
+    assert_eq!(
+        routes.iter().map(|route| route.edge).collect::<Vec<_>>(),
+        vec![ordinary, incident],
+        "the incident route must occupy the retained frontmost budget slot",
+    );
 }
 
 #[test]
@@ -2807,12 +2868,20 @@ fn node_drag_cohort_materializes_never_mounted_and_parked_peers_until_applied_fr
         let stats = host.work_ledger_snapshot();
         assert_eq!(stats.active_nodes() + stats.parked_nodes(), 2);
         assert!(host.retained_nodes.retained_instance(offscreen).is_some());
-        assert!(!host.interaction_owner.has_node_drag_residency());
+        assert!(host.interaction_owner.has_node_drag_residency());
+        assert!(
+            host.interaction_owner
+                .node_drag_route_handoff_token()
+                .is_some()
+        );
     });
 
-    cx.update_entity(&host, |_, cx| cx.notify());
-    draw(cx);
+    assert!(cx.simulate_frame(RequestFrameOptions {
+        require_presentation: true,
+        ..Default::default()
+    }));
     cx.read_entity(&host, |host, _| {
+        assert!(!host.interaction_owner.has_node_drag_residency());
         assert_eq!(host.resource_snapshot().active_nodes(), 1);
         assert_eq!(host.resource_snapshot().parked_nodes(), 1);
     });
@@ -3431,7 +3500,7 @@ fn focused_edge_delete_uses_native_key_semantics_and_falls_back_in_graph_order(
     }
     let edge_focus = edge_focus.expect("edge focus after nodes and ports");
 
-    simulate_key_up(cx, "enter");
+    simulate_key_press(cx, "enter");
     cx.run_until_parked();
     draw(cx);
     cx.read_entity(&host, |host, _| {
@@ -3913,11 +3982,7 @@ fn space_plus_left_drag_pans_only_while_the_graph_root_owns_focus(
         host.interaction_owner.focus_handle().expect("canvas focus")
     });
     cx.update(|window, cx| window.focus(&root_focus, cx));
-    cx.simulate_event(KeyDownEvent {
-        keystroke: Keystroke::parse("space").expect("space keystroke"),
-        is_held: false,
-        prefer_character_input: false,
-    });
+    simulate_key_down(cx, "space", false);
     draw(cx);
     cx.read_entity(&host, |host, _| {
         assert!(host.interaction_owner.space_pan_held())
@@ -3941,18 +4006,12 @@ fn space_plus_left_drag_pans_only_while_the_graph_root_owns_focus(
     });
     assert_ne!(after.pan, before.pan);
 
-    cx.simulate_event(KeyUpEvent {
-        keystroke: Keystroke::parse("space").expect("space keystroke"),
-    });
+    simulate_key_up(cx, "space");
     cx.read_entity(&host, |host, _| {
         assert!(!host.interaction_owner.space_pan_held())
     });
 
-    cx.simulate_event(KeyDownEvent {
-        keystroke: Keystroke::parse("space").expect("space keystroke"),
-        is_held: false,
-        prefer_character_input: false,
-    });
+    simulate_key_down(cx, "space", false);
     cx.read_entity(&host, |host, _| {
         assert!(host.interaction_owner.space_pan_held())
     });
@@ -5392,6 +5451,67 @@ fn selected_node_chrome_matches_native_node_bounds(cx: &mut open_gpui::TestAppCo
 }
 
 #[open_gpui::test]
+fn overlapping_node_chrome_stays_inside_each_runtime_ordered_wrapper(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let (_runtime, host, cx) = mount_gesture_scene_for_graph(cx, overlapping_target_graph());
+    let source = NodeId::from_u128(10);
+    let lower = NodeId::from_u128(11);
+    let front = NodeId::from_u128(12);
+    cx.read_entity(&host, |host, _| {
+        set_selection_by_id(&host.view, [lower, front], Vec::new())
+            .expect("select both overlapping nodes");
+    });
+
+    draw(cx);
+
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(
+            host.scene_evidence
+                .last_node_layer_sequence
+                .borrow()
+                .as_slice(),
+            [
+                OpenGpuiNodeLayerEntry::Content(source),
+                OpenGpuiNodeLayerEntry::Content(lower),
+                OpenGpuiNodeLayerEntry::Chrome(lower),
+                OpenGpuiNodeLayerEntry::Content(front),
+                OpenGpuiNodeLayerEntry::Chrome(front),
+            ],
+            "a back-node chrome must paint before the next runtime-ordered node content",
+        );
+    });
+    for node in [lower, front] {
+        let content = cx
+            .debug_bounds(&test_node_selector(node))
+            .expect("overlapping node content bounds");
+        let chrome = cx
+            .debug_bounds(&super::scene_render::open_gpui_node_chrome_selector(node))
+            .expect("overlapping node chrome bounds");
+        assert_eq!(chrome, content);
+    }
+
+    let overlap = cx
+        .debug_bounds(&test_node_selector(front))
+        .expect("front overlapping node bounds")
+        .center();
+    cx.simulate_mouse_down(overlap, MouseButton::Left, Default::default());
+    cx.read_entity(&host, |host, _| {
+        assert!(
+            matches!(
+                host.scene_evidence.last_scene_kind.borrow().as_ref(),
+                Some(OpenGpuiSceneGestureKind::Node(instance)) if instance.node() == front
+            ),
+            "paint-only chrome must not intercept the front node pointer target",
+        );
+    });
+    cx.simulate_mouse_up(overlap, MouseButton::Left, Default::default());
+    cx.run_until_parked();
+    draw(cx);
+    cx.read_entity(&host, |host, _| assert!(!host.active_scene_gesture()));
+}
+
+#[open_gpui::test]
 fn box_selection_additive_modifiers_preserve_existing_selection_and_release_overlay(
     cx: &mut open_gpui::TestAppContext,
 ) {
@@ -6161,8 +6281,20 @@ fn dragging_a_real_output_to_a_real_input_commits_through_the_scene_host(
     });
     cx.simulate_mouse_move(input.center(), Some(MouseButton::Left), Default::default());
     cx.simulate_mouse_up(input.center(), MouseButton::Left, Default::default());
-    cx.run_until_parked();
-    draw(cx);
+    for frame in 0..4 {
+        draw(cx);
+        cx.read_entity(&host, |host, _| {
+            assert_eq!(
+                host.scene_evidence.last_planned_wire_count.get()
+                    + host
+                        .scene_evidence
+                        .last_painted_connection_preview_count
+                        .get(),
+                1,
+                "frame {frame}: connection settlement atomically replaces preview with the published route",
+            );
+        });
+    }
 
     let snapshot = runtime.snapshot().expect("committed graph");
     assert_eq!(snapshot.graph().edges().len(), 1);
@@ -7881,7 +8013,7 @@ fn keyboard_activation_arms_an_exact_source_and_commits_through_an_exact_target(
         );
         assert_eq!(
             host.interaction_owner
-                .keyboard_connection_source()
+                .armed_keyboard_connection_source()
                 .map(|source| source.port()),
             Some(PortId::from_u128(20)),
         );
@@ -7980,7 +8112,7 @@ fn mouse_click_connect_uses_the_same_source_target_authority_as_keyboard_activat
     cx.read_entity(&host, |host, _| {
         assert_eq!(
             host.interaction_owner
-                .keyboard_connection_source()
+                .armed_keyboard_connection_source()
                 .map(|source| source.port()),
             Some(PortId::from_u128(20)),
         );
@@ -8049,7 +8181,7 @@ fn blueprint_pointer_click_does_not_arm_click_to_connect(cx: &mut open_gpui::Tes
         );
         assert!(
             host.interaction_owner
-                .keyboard_connection_source()
+                .armed_keyboard_connection_source()
                 .is_none()
         );
     });
@@ -8298,7 +8430,7 @@ fn pointer_empty_release_enters_search_while_semantic_activation_only_arms_the_s
             );
             assert_eq!(
                 host.interaction_owner
-                    .keyboard_connection_source()
+                    .armed_keyboard_connection_source()
                     .map(|source| source.port()),
                 Some(PortId::from_u128(21)),
             );
@@ -8306,6 +8438,60 @@ fn pointer_empty_release_enters_search_while_semantic_activation_only_arms_the_s
             assert!(host.apply_canvas_interaction_result(update, window, cx));
         });
     }
+}
+
+#[open_gpui::test]
+fn retried_connection_search_rejects_a_stale_cancel_capability(cx: &mut open_gpui::TestAppContext) {
+    let (_runtime, host, cx) = mount_connection_scene_for_graph(cx, unconnected_graph());
+    draw(cx);
+    let output = cx
+        .debug_bounds("jellyflow-test-output-port")
+        .expect("output bounds");
+    cx.simulate_mouse_down(output.center(), MouseButton::Left, Default::default());
+    cx.simulate_mouse_up(
+        point(px(700.0), px(500.0)),
+        MouseButton::Left,
+        Default::default(),
+    );
+    cx.run_until_parked();
+
+    let first = cx.update_window_entity(&host, |host, window, cx| {
+        let request = host
+            .connection_search_request()
+            .expect("initial search request");
+        let failed = host
+            .interaction_owner
+            .search_failed(&request)
+            .expect("current request can publish failure");
+        host.apply_canvas_interaction_update(failed, window, cx);
+        host.retry_connection_search(&request, window, cx)
+            .expect("failed search can retry");
+        request
+    });
+    let successor = cx.read_entity(&host, |host, _| {
+        host.connection_search_request()
+            .expect("retry publishes a successor request")
+    });
+    assert_ne!(successor, first);
+
+    cx.update_window_entity(&host, |host, window, cx| {
+        assert!(matches!(
+            host.cancel_connection_search(&first, window, cx),
+            Err(super::OpenGpuiConnectionSearchError::StaleGeneration)
+        ));
+        assert_eq!(
+            host.connection_search_request().as_ref(),
+            Some(&successor),
+            "a stale capability cannot cancel its successor",
+        );
+        host.cancel_connection_search(&successor, window, cx)
+            .expect("the current capability can cancel its search");
+        assert_eq!(host.connection_search_request(), None);
+        assert_eq!(
+            host.interaction_presentation().phase(),
+            CanvasInteractionPhase::Idle,
+        );
+    });
 }
 
 #[open_gpui::test]
@@ -8373,7 +8559,7 @@ fn rejected_keyboard_reconnect_target_retains_the_exact_source_and_feedback(
     cx.update_window_entity(&host, |host, window, cx| {
         assert_eq!(
             host.interaction_owner
-                .keyboard_connection_source()
+                .armed_keyboard_connection_source()
                 .map(|source| source.port()),
             Some(PortId::from_u128(21)),
         );
@@ -8464,12 +8650,39 @@ fn create_from_wire_query_and_selection_add_one_node_and_edge_atomically(
         ));
         submission
     });
-    draw(cx);
-    draw(cx);
+    for _ in 0..8 {
+        draw(cx);
+        let settled = cx.read_entity(&host, |host, _| {
+            let presentation = host.interaction_presentation();
+            presentation.phase() == CanvasInteractionPhase::Idle
+        });
+        if settled {
+            break;
+        }
+    }
     cx.read_entity(&host, |host, _| {
+        let graph = runtime.snapshot().expect("create-from-wire graph evidence");
+        let (edge_id, edge) = graph
+            .graph()
+            .edges()
+            .iter()
+            .next()
+            .expect("created connection edge");
+        let geometry = host
+            .view
+            .geometry_snapshot()
+            .expect("create-from-wire geometry evidence");
+        let settlement_evidence = format!(
+            "created_node={}, target_port={}, final_route={}, diagnostic={:?}",
+            geometry.node(submission.node()).is_some(),
+            geometry.port(edge.to).is_some(),
+            geometry.route(*edge_id).is_some(),
+            host.last_diagnostic(),
+        );
         assert_eq!(
             host.interaction_presentation().phase(),
-            CanvasInteractionPhase::Idle
+            CanvasInteractionPhase::Idle,
+            "{settlement_evidence}",
         );
         assert!(host.interaction_presentation().connection().is_none());
         assert_eq!(host.scene_evidence.last_connection_preview.get(), None);
@@ -8982,6 +9195,159 @@ fn content_size_mutation_coalesces_the_latest_target_while_pending(
 }
 
 #[open_gpui::test]
+fn content_size_publication_settles_against_layout_generation_at_semantic_zoom(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let (runtime, host, cx) = mount_content_size_scene(cx);
+    draw(cx);
+
+    let source = NodeId::from_u128(10);
+    cx.update_entity(&host, |host, cx| {
+        host.view
+            .set_viewport(ViewportTransform::new(CanvasPoint::default(), 2.0).unwrap())
+            .expect("set non-unit semantic zoom");
+        issue_content_height_update(host, source, 172.0);
+        host.schedule_content_size_prefix(cx);
+    });
+
+    for _ in 0..12 {
+        draw(cx);
+    }
+
+    assert_eq!(
+        runtime
+            .snapshot()
+            .expect("semantic-zoom content-size graph")
+            .graph()
+            .node(&source)
+            .expect("content-sized source")
+            .size,
+        Some(CanvasSize {
+            width: 180.0,
+            height: 172.0,
+        })
+    );
+    cx.read_entity(&host, |host, _| {
+        let geometry = host.view.geometry_snapshot().expect("published geometry");
+        let published = geometry.node(source).expect("published source geometry");
+        assert_eq!(
+            published.bounds().size,
+            CanvasSize {
+                width: 90.0,
+                height: 86.0,
+            },
+            "semantic detail stays at native pixels while runtime geometry remains in canvas space"
+        );
+        assert_eq!(host.content_sizes.pending_command_counts(), None);
+        assert_eq!(host.commands.capacity_usage(), (0, 0, 0));
+    });
+}
+
+#[cfg(feature = "test-support")]
+#[open_gpui::test]
+fn smoke_footprint_reports_the_semantic_visual_size_at_detail_zoom(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let (_runtime, host, cx) = mount_content_size_scene(cx);
+    draw(cx);
+
+    let source = NodeId::from_u128(10);
+    cx.read_entity(&host, |host, _| {
+        host.view
+            .set_viewport(ViewportTransform::new(CanvasPoint::default(), 2.0).unwrap())
+            .expect("set detail viewport");
+    });
+    draw(cx);
+    draw(cx);
+
+    cx.read_entity(&host, |host, _| {
+        let transform = host.view.viewport_transform().expect("detail viewport");
+        let geometry = host.view.geometry_snapshot().expect("published geometry");
+        let published = geometry.node(source).expect("published source geometry");
+        let canonical = host
+            .retained_nodes
+            .active_in_order()
+            .find(|(instance, _)| instance.node() == source)
+            .map(|(_, mounted)| mounted.canonical_bounds())
+            .expect("materialized source node");
+        let footprint = host
+            .smoke_node_footprints()
+            .into_iter()
+            .find(|footprint| footprint.node() == source)
+            .expect("retained source footprint");
+
+        assert!(footprint.materialized());
+        assert_eq!(
+            footprint.bounds().size,
+            ViewSize::new(canonical.size.width, canonical.size.height),
+            "detail content remains at native pixel size"
+        );
+        assert_eq!(
+            CanvasSize {
+                width: footprint.bounds().size.width / transform.zoom,
+                height: footprint.bounds().size.height / transform.zoom,
+            },
+            published.bounds().size,
+            "native footprint converts back to the semantic canvas footprint"
+        );
+        assert_eq!(
+            published.bounds().size,
+            CanvasSize {
+                width: 90.0,
+                height: 50.0,
+            },
+            "the semantic footprint must not reuse the full document size at 2x zoom"
+        );
+    });
+}
+
+#[open_gpui::test]
+fn content_size_settlement_restores_a_parked_node_for_geometry_publication(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let (runtime, host, cx) = mount_content_size_scene(cx);
+    draw(cx);
+
+    let source = NodeId::from_u128(10);
+    cx.update_entity(&host, |host, cx| {
+        issue_content_height_update(host, source, 172.0);
+        host.schedule_content_size_prefix(cx);
+        host.set_frame_bounds(CanvasRect {
+            origin: CanvasPoint {
+                x: 10_000.0,
+                y: 10_000.0,
+            },
+            size: CanvasSize {
+                width: 100.0,
+                height: 100.0,
+            },
+        });
+    });
+
+    for _ in 0..12 {
+        draw(cx);
+    }
+
+    assert_eq!(
+        runtime
+            .snapshot()
+            .expect("parked content-size graph")
+            .graph()
+            .node(&source)
+            .expect("parked content-sized node")
+            .size,
+        Some(CanvasSize {
+            width: 180.0,
+            height: 172.0,
+        })
+    );
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(host.content_sizes.pending_command_counts(), None);
+        assert_eq!(host.commands.capacity_usage(), (0, 0, 0));
+    });
+}
+
+#[open_gpui::test]
 fn content_epoch_invalidation_isolates_a_pending_prefix_callback(
     cx: &mut open_gpui::TestAppContext,
 ) {
@@ -9247,6 +9613,7 @@ fn occupied_input_replacement_is_atomic_and_one_undo_restores_the_old_edge(
         *scene_host.borrow_mut() = Some(host.clone());
         InteractiveScene { host }
     });
+    let host = captured_host.borrow().clone().expect("captured host");
     draw(cx);
 
     let replacement_output = cx
@@ -9270,7 +9637,20 @@ fn occupied_input_replacement_is_atomic_and_one_undo_restores_the_old_edge(
         MouseButton::Left,
         Default::default(),
     );
-    cx.run_until_parked();
+    for frame in 0..4 {
+        draw(cx);
+        cx.read_entity(&host, |host, _| {
+            assert_eq!(
+                host.scene_evidence.last_planned_wire_count.get()
+                    + host
+                        .scene_evidence
+                        .last_painted_connection_preview_count
+                        .get(),
+                1,
+                "frame {frame}: replacement settlement never drops or duplicates the routed edge",
+            );
+        });
+    }
 
     let replaced = runtime.snapshot().expect("replacement snapshot");
     assert_eq!(replaced.graph().edges().len(), 1);
@@ -9717,7 +10097,9 @@ fn test_canvas_rect_contains(bounds: CanvasRect, point: CanvasPoint) -> bool {
 
 fn simulate_key_down(cx: &mut open_gpui::VisualTestContext, key: &str, is_held: bool) {
     cx.simulate_event(KeyDownEvent {
-        keystroke: Keystroke::parse(key).expect("valid test keystroke"),
+        keystroke: Keystroke::parse(key)
+            .expect("valid test keystroke")
+            .with_simulated_ime(),
         is_held,
         prefer_character_input: false,
     });
@@ -9725,8 +10107,15 @@ fn simulate_key_down(cx: &mut open_gpui::VisualTestContext, key: &str, is_held: 
 
 fn simulate_key_up(cx: &mut open_gpui::VisualTestContext, key: &str) {
     cx.simulate_event(KeyUpEvent {
-        keystroke: Keystroke::parse(key).expect("valid test keystroke"),
+        keystroke: Keystroke::parse(key)
+            .expect("valid test keystroke")
+            .with_simulated_ime(),
     });
+}
+
+fn simulate_key_press(cx: &mut open_gpui::VisualTestContext, key: &str) {
+    cx.simulate_keystrokes(key);
+    simulate_key_up(cx, key);
 }
 
 fn draw_once(cx: &mut open_gpui::VisualTestContext) {

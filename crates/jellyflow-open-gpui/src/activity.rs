@@ -273,6 +273,12 @@ impl OpenGpuiNodeActivityHandle {
         self.registry.active_count()
     }
 
+    /// Returns whether this retained node currently owns an activity lease of `kind`.
+    #[must_use]
+    pub fn has_activity(&self, kind: OpenGpuiActivityKind) -> bool {
+        self.registry.has_activity(kind)
+    }
+
     #[must_use]
     pub fn protected_count(&self) -> usize {
         self.registry.protected_count()
@@ -349,6 +355,14 @@ impl OpenGpuiNodeActivityRegistry {
 
     pub(crate) fn active_count(&self) -> usize {
         self.state.borrow().entries.len()
+    }
+
+    pub(crate) fn has_activity(&self, kind: OpenGpuiActivityKind) -> bool {
+        self.state
+            .borrow()
+            .entries
+            .values()
+            .any(|entry| entry.kind == ActivityEntryKind::Activity(kind))
     }
 
     pub(crate) fn protected_count(&self) -> usize {
@@ -670,6 +684,24 @@ mod tests {
         drop(draft);
         assert_eq!(registry.active_count(), 0);
         assert_eq!(registry.protected_count(), 0);
+    }
+
+    #[test]
+    fn activity_kind_queries_follow_exact_lease_lifetimes() {
+        let registry = OpenGpuiNodeActivityRegistry::detached();
+        let handle = registry.renderer_handle();
+        let ime = handle.acquire(OpenGpuiActivityKind::Ime).unwrap();
+        let overlay = handle.acquire(OpenGpuiActivityKind::Overlay).unwrap();
+
+        assert!(handle.has_activity(OpenGpuiActivityKind::Ime));
+        assert!(handle.has_activity(OpenGpuiActivityKind::Overlay));
+        assert!(!handle.has_activity(OpenGpuiActivityKind::Focus));
+
+        drop(ime);
+        assert!(!handle.has_activity(OpenGpuiActivityKind::Ime));
+        assert!(handle.has_activity(OpenGpuiActivityKind::Overlay));
+        drop(overlay);
+        assert_eq!(handle.active_count(), 0);
     }
 
     #[test]

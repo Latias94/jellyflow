@@ -6,7 +6,7 @@ use jellyflow_core::core::{CanvasPoint, CanvasRect, EdgeId, NodeId, PortId};
 use rpds::{RedBlackTreeMapSync, RedBlackTreeSetSync};
 
 use crate::runtime::geometry::{EdgeRouteFacts, HandlePosition};
-use crate::runtime::graph_runtime::{EdgeInstanceKey, NodeLifetimeKey};
+use crate::runtime::graph_runtime::{EdgeInstanceKey, NodeLifetimeKey, PortInstanceKey};
 use crate::runtime::view_session::ViewProvenance;
 
 use super::RendererStamp;
@@ -15,6 +15,8 @@ use super::RendererStamp;
 pub struct PublishedEdgeRoute {
     provenance: ViewProvenance,
     instance: EdgeInstanceKey,
+    source: PortInstanceKey,
+    target: PortInstanceKey,
     facts: EdgeRouteFacts,
     publication_incarnation: Arc<()>,
 }
@@ -23,11 +25,18 @@ impl PublishedEdgeRoute {
     pub(crate) fn new(
         provenance: ViewProvenance,
         instance: EdgeInstanceKey,
+        source: PortInstanceKey,
+        target: PortInstanceKey,
         facts: EdgeRouteFacts,
     ) -> Option<Self> {
-        (provenance.runtime() == instance.provenance()).then_some(Self {
+        (provenance.runtime() == instance.provenance()
+            && instance.provenance() == source.provenance()
+            && instance.provenance() == target.provenance())
+        .then_some(Self {
             provenance,
             instance,
+            source,
+            target,
             facts,
             publication_incarnation: Arc::new(()),
         })
@@ -38,6 +47,8 @@ impl PublishedEdgeRoute {
         Self::new(
             ViewProvenance::unavailable(),
             EdgeInstanceKey::unavailable(edge),
+            PortInstanceKey::unavailable(NodeId::from_u128(0), PortId::from_u128(0)),
+            PortInstanceKey::unavailable(NodeId::from_u128(1), PortId::from_u128(1)),
             facts,
         )
         .expect("test view and edge provenance must match")
@@ -54,6 +65,16 @@ impl PublishedEdgeRoute {
     /// Returns the unforgeable runtime identity of this exact edge lifetime.
     pub fn instance(&self) -> EdgeInstanceKey {
         self.instance
+    }
+
+    /// Returns the exact source-port lifetime used to publish this route.
+    pub fn source_instance(&self) -> PortInstanceKey {
+        self.source
+    }
+
+    /// Returns the exact target-port lifetime used to publish this route.
+    pub fn target_instance(&self) -> PortInstanceKey {
+        self.target
     }
 
     pub fn facts(&self) -> &EdgeRouteFacts {
@@ -77,6 +98,8 @@ impl PartialEq for PublishedEdgeRoute {
     fn eq(&self, other: &Self) -> bool {
         self.provenance == other.provenance
             && self.instance == other.instance
+            && self.source == other.source
+            && self.target == other.target
             && self.facts == other.facts
     }
 }

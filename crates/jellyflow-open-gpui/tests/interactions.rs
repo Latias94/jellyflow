@@ -93,6 +93,7 @@ impl Render for InteractiveNode {
         let node_scroll_events = self.node_events.clone();
         let control_down_events = self.control_events.clone();
         let control_up_events = self.control_events.clone();
+        let control_key_events = self.control_events.clone();
         let control_focus = self.control_focus.clone();
         let focus_on_mouse_down = control_focus.clone();
         let scroll_events = self.scroll_events.clone();
@@ -128,6 +129,14 @@ impl Render for InteractiveNode {
                         })
                         .on_mouse_up(MouseButton::Left, move |_, _, _| {
                             control_up_events.borrow_mut().push("up")
+                        })
+                        .on_key_down(move |event, _, cx| {
+                            if event.keystroke.key.eq_ignore_ascii_case("tab")
+                                && control_key_events.borrow().contains(&"consume-tab")
+                            {
+                                control_key_events.borrow_mut().push("tab");
+                                cx.stop_propagation();
+                            }
                         }),
                 ),
             )
@@ -192,6 +201,7 @@ impl Render for InteractionScene {
         let scroll_events = self.canvas_events.clone();
         div()
             .size_full()
+            .on_key_down(|_, _, _| {})
             .on_any_mouse_down(move |_, _, _| down_events.borrow_mut().push("down"))
             .on_mouse_move(move |event, _, _| {
                 if event.pressed_button.is_some() {
@@ -239,9 +249,9 @@ fn tab_shift_tab_enter_and_space_use_native_keyboard_semantics_without_pointer_d
     cx.simulate_keystrokes("tab");
     cx.update(|window, cx| assert_eq!(window.focused(cx), Some(port_focus.clone())));
 
-    simulate_key_up(cx, "enter");
-    simulate_key_up(cx, "space");
-    simulate_key_up(cx, "shift-enter");
+    simulate_key_press(cx, "enter");
+    simulate_key_press(cx, "space");
+    simulate_key_press(cx, "shift-enter");
     cx.run_until_parked();
 
     assert_eq!(
@@ -261,6 +271,34 @@ fn tab_shift_tab_enter_and_space_use_native_keyboard_semantics_without_pointer_d
 }
 
 #[open_gpui::test]
+fn native_control_can_consume_tab_before_graph_focus_fallback(cx: &mut open_gpui::TestAppContext) {
+    let (_runtime, host, cx, port, node_events, canvas_events, control_events, _, _, _) =
+        mount_scene(cx);
+    draw(cx);
+
+    let control = cx.debug_bounds(CONTROL_SELECTOR).expect("control bounds");
+    cx.simulate_click(control.center(), Default::default());
+    let focused = cx.update(|window, cx| window.focused(cx));
+    node_events.borrow_mut().clear();
+    control_events.borrow_mut().clear();
+    control_events.borrow_mut().push("consume-tab");
+
+    cx.simulate_keystrokes("tab");
+
+    assert_eq!(cx.update(|window, cx| window.focused(cx)), focused);
+    assert_eq!(control_events.borrow().as_slice(), ["consume-tab", "tab"]);
+    assert!(port.activations.borrow().is_empty());
+    assert!(node_events.borrow().is_empty());
+    assert!(canvas_events.borrow().is_empty());
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(
+            host.interaction_presentation().phase(),
+            CanvasInteractionPhase::Idle
+        );
+    });
+}
+
+#[open_gpui::test]
 fn semantic_only_port_keeps_keyboard_and_pointer_connection_behavior_without_an_observer(
     cx: &mut open_gpui::TestAppContext,
 ) {
@@ -272,7 +310,7 @@ fn semantic_only_port_keeps_keyboard_and_pointer_connection_behavior_without_an_
     cx.simulate_click(control.center(), Default::default());
     node_events.borrow_mut().clear();
     cx.simulate_keystrokes("tab");
-    simulate_key_up(cx, "enter");
+    simulate_key_press(cx, "enter");
     cx.run_until_parked();
 
     cx.read_entity(&host, |host, _| {
@@ -319,7 +357,7 @@ fn rejected_pointer_start_reports_start_before_cancel_without_cancelling_keyboar
     let control = cx.debug_bounds(CONTROL_SELECTOR).expect("control bounds");
     cx.simulate_click(control.center(), Default::default());
     cx.simulate_keystrokes("tab");
-    simulate_key_up(cx, "enter");
+    simulate_key_press(cx, "enter");
     cx.run_until_parked();
     cx.read_entity(&host, |host, _| {
         assert_eq!(
@@ -383,8 +421,8 @@ fn disabled_port_is_skipped_and_blocks_pointer_and_keyboard_activation(
     cx.update_entity(&host, |_, cx| cx.notify());
     draw(cx);
 
-    simulate_key_up(cx, "enter");
-    simulate_key_up(cx, "space");
+    simulate_key_press(cx, "enter");
+    simulate_key_press(cx, "space");
     cx.run_until_parked();
     assert!(port_events.activations.borrow().is_empty());
 
@@ -553,7 +591,7 @@ fn removing_a_keyboard_activated_dynamic_port_cancels_keyboard_connection(
         .expect("mounted control focus");
     cx.update(|window, cx| assert_eq!(window.focused(cx), Some(control_focus)));
     cx.simulate_keystrokes("tab");
-    simulate_key_up(cx, "enter");
+    simulate_key_press(cx, "enter");
     cx.run_until_parked();
     cx.read_entity(&host, |host, _| {
         assert_eq!(
@@ -1285,8 +1323,15 @@ fn draw(cx: &mut open_gpui::VisualTestContext) {
 
 fn simulate_key_up(cx: &mut open_gpui::VisualTestContext, key: &str) {
     cx.simulate_event(KeyUpEvent {
-        keystroke: Keystroke::parse(key).expect("valid test keystroke"),
+        keystroke: Keystroke::parse(key)
+            .expect("valid test keystroke")
+            .with_simulated_ime(),
     });
+}
+
+fn simulate_key_press(cx: &mut open_gpui::VisualTestContext, key: &str) {
+    cx.simulate_keystrokes(key);
+    simulate_key_up(cx, key);
 }
 
 fn graph() -> jellyflow_core::Graph {

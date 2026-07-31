@@ -15,7 +15,7 @@ use jellyflow_runtime::{
 use open_gpui::{
     AnyElement, App, Bounds, CursorStyle, DispatchPhase, Div, Element, ElementId, EntityId,
     FocusHandle, GlobalElementId, Hitbox, HitboxBehavior, InspectorElementId, InteractiveElement,
-    IntoElement, KeyUpEvent, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    IntoElement, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     ParentElement, Pixels, Role, Stateful, StatefulInteractiveElement, Window, div, point, px,
     size,
 };
@@ -350,8 +350,6 @@ impl OpenGpuiPortHandle {
             };
             host_listener(&event, observer, window, cx);
         });
-        let keyboard_listener = listener.clone();
-        let keyboard_owner = owner.clone();
         let accessibility_listener = listener.clone();
         let accessibility_owner = owner.clone();
         let focus_handle = self
@@ -364,24 +362,6 @@ impl OpenGpuiPortHandle {
             interaction_enabled,
             focus_handle.as_ref(),
             child,
-            move |event: &KeyUpEvent, window, cx| {
-                let keystroke = &event.keystroke;
-                if !keystroke.modifiers.modified()
-                    && (keystroke.key.eq_ignore_ascii_case("enter")
-                        || keystroke.key.eq_ignore_ascii_case("space"))
-                {
-                    keyboard_listener(
-                        OpenGpuiPortEvent::Activation(OpenGpuiPortActivationEvent::new(
-                            keyboard_owner.clone(),
-                            OpenGpuiPortActivationSource::Keyboard,
-                        )),
-                        window,
-                        cx,
-                    );
-                    window.prevent_default();
-                    cx.stop_propagation();
-                }
-            },
             move |_, window, cx| {
                 accessibility_listener(
                     OpenGpuiPortEvent::Activation(OpenGpuiPortActivationEvent::new(
@@ -441,7 +421,6 @@ fn interactive_port_semantic_element(
     enabled: bool,
     focus_handle: Option<&FocusHandle>,
     child: impl IntoElement,
-    on_key_up: impl Fn(&KeyUpEvent, &mut Window, &mut App) + 'static,
     on_a11y_click: impl FnMut(Option<&open_gpui::accesskit::ActionData>, &mut Window, &mut App)
     + 'static,
 ) -> Stateful<Div> {
@@ -457,9 +436,7 @@ fn interactive_port_semantic_element(
     }
     .tab_stop(enabled);
     if enabled {
-        element = element
-            .on_key_up(on_key_up)
-            .on_a11y_action(open_gpui::accesskit::Action::Click, on_a11y_click);
+        element = element.on_a11y_action(open_gpui::accesskit::Action::Click, on_a11y_click);
     }
     element
 }
@@ -698,6 +675,9 @@ impl Element for OpenGpuiPortInteractionElement {
             child.paint(window, cx);
             return;
         }
+
+        self.interactions
+            .register_keyboard_port(self.owner.clone(), self.listener.clone());
 
         let hitbox = hitbox.clone();
         window.set_cursor_style(CursorStyle::Crosshair, &hitbox);
@@ -2290,7 +2270,6 @@ mod tests {
             enabled,
             None,
             div(),
-            |_, _, _| {},
             |_, _, _| {},
         );
         assert_eq!(element.a11y_role(), Some(OPEN_GPUI_INTERACTIVE_PORT_ROLE));

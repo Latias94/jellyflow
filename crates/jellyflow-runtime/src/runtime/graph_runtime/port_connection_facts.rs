@@ -483,6 +483,10 @@ impl PortConnectionDragIntent {
 /// Foreign and stale capabilities remain distinct even though native adapters commonly project
 /// both into a rejected gesture start. Keeping the classification inside the query outcome lets
 /// every branch retain its operation-scoped work receipt.
+///
+/// The ready value intentionally remains inline so this one-shot query preserves its `Copy`,
+/// allocation-free value semantics across renderer adapters.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PortConnectionDragQueryOutcome {
     /// The exact live port capability resolved to a drag decision.

@@ -5,13 +5,15 @@ use std::pin::Pin;
 use std::task::{Context as TaskContext, Poll, Waker};
 
 use jellyflow_runtime::adapter::conformance::{
-    ConformanceAction, ConformanceCancelReason, ConformanceCandidate, ConformanceCommandOutcome,
-    ConformanceEffect, ConformanceGeometry, ConformanceGraph, ConformanceIntent,
-    ConformanceOwnership, ConformancePhase, ConformanceScenario, ConformanceScenarioId,
-    ConformanceSelection, ConformanceTarget, ConformanceTerminal, ConformanceTicket,
-    ConformanceViewStatus, NormalizedObservation, canonical_scenarios, compare_observations,
-    new_connection_probe_prefix_scenario,
+    ConformanceAction, ConformanceAdapterTransportEvidence, ConformanceCancelReason,
+    ConformanceCandidate, ConformanceCommandCompletion, ConformanceCommandEvidence,
+    ConformanceConnectionSettlement, ConformanceEffect, ConformanceGeometry, ConformanceGraph,
+    ConformanceIntent, ConformanceOwnership, ConformancePhase, ConformanceScenario,
+    ConformanceScenarioId, ConformanceSelection, ConformanceTarget, ConformanceTerminal,
+    ConformanceTicket, ConformanceViewStatus, NormalizedObservation, canonical_scenarios,
+    compare_observations, new_connection_probe_prefix_scenario,
 };
+use jellyflow_runtime::interaction::{ConnectionSettlementPresentation, InteractionTicketId};
 use open_gpui::{InputEvent, MouseMoveEvent, MouseUpEvent};
 
 use super::super::scene_render::open_gpui_reconnect_hit_selector;
@@ -65,6 +67,7 @@ fn canonical_edge() -> EdgeId {
 struct CanonicalNode {
     binding: Entity<OpenGpuiNodeBinding>,
     control_hits: std::rc::Rc<std::cell::Cell<u32>>,
+    dynamic_ports_published: std::rc::Rc<std::cell::Cell<bool>>,
 }
 
 struct RejectCanonicalCommand;
@@ -82,6 +85,20 @@ impl GraphRuntimeMiddleware for RejectCanonicalCommand {
     }
 }
 
+struct FailCanonicalCommand;
+
+impl GraphRuntimeMiddleware for FailCanonicalCommand {
+    fn before_command(
+        &mut self,
+        _snapshot: GraphRuntimeMiddlewareSnapshot,
+        _command: &GraphCommand,
+    ) -> Result<(), ApplyPipelineError> {
+        Err(ApplyPipelineError::InternalMutation {
+            message: "canonical command execution failed".to_owned(),
+        })
+    }
+}
+
 impl Render for CanonicalNode {
     fn render(
         &mut self,
@@ -91,26 +108,32 @@ impl Render for CanonicalNode {
         let binding = self.binding.read(cx);
         let authoring = binding.authoring().expect("live canonical authoring");
         let node_id = authoring.node_id();
-        let port = authoring.ports().next().expect("one canonical port");
-        let direction = port.facts().dir;
-        let handle = port.handle().clone();
+        let ports = authoring
+            .ports()
+            .map(|port| (port.id(), port.facts().dir, port.handle().clone()))
+            .collect::<Vec<_>>();
+        assert!(!ports.is_empty(), "canonical nodes expose real ports");
         let drag_handle = binding.drag_handle();
-        let selector = canonical_port_selector(port.id());
-        let marker = div()
-            .debug_selector(move || selector.clone())
-            .w(px(14.0))
-            .h(px(14.0));
-        let positioned = match direction {
-            PortDirection::In => div().absolute().left(px(0.0)).top(px(43.0)),
-            PortDirection::Out => div().absolute().right(px(0.0)).top(px(43.0)),
-        };
         let node_selector = canonical_node_selector(node_id);
 
         let mut root = div()
             .debug_selector(move || node_selector.clone())
             .relative()
-            .size_full()
-            .child(positioned.child(handle.interactive(marker)));
+            .size_full();
+        if ports.len() == 1 || self.dynamic_ports_published.get() {
+            for (port, direction, handle) in ports {
+                let selector = canonical_port_selector(port);
+                let marker = div()
+                    .debug_selector(move || selector.clone())
+                    .w(px(14.0))
+                    .h(px(14.0));
+                let positioned = match direction {
+                    PortDirection::In => div().absolute().left(px(0.0)).top(px(43.0)),
+                    PortDirection::Out => div().absolute().right(px(0.0)).top(px(43.0)),
+                };
+                root = root.child(positioned.child(handle.interactive(marker)));
+            }
+        }
         if node_id == source_node() {
             let control_hits = self.control_hits.clone();
             root = root.child(
@@ -152,6 +175,9 @@ struct CanonicalDriver {
     baseline_source_bounds: CanvasRect,
     query_schedule: CanonicalQuerySchedule,
     max_native_query_frames: usize,
+    prepared_outcome_unknown_ticket: Option<InteractionTicketId>,
+    dynamic_ports_published: std::rc::Rc<std::cell::Cell<bool>>,
+    canonical_nodes: std::rc::Rc<std::cell::RefCell<Vec<Entity<CanonicalNode>>>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -201,6 +227,7 @@ impl CanonicalDriver {
             scenario.id(),
             ConformanceScenarioId::ReconnectSource(_)
                 | ConformanceScenarioId::ReconnectTarget(_)
+                | ConformanceScenarioId::ReconnectTargetNoop
                 | ConformanceScenarioId::ReconnectSourcePrefixWait
                 | ConformanceScenarioId::ReconnectTargetPrefixWait
                 | ConformanceScenarioId::EdgePick
@@ -211,9 +238,12 @@ impl CanonicalDriver {
                 query_schedule.overlaps_valid_targets(),
             ))
             .expect("valid canonical graph");
-        let runtime = match scenario_command_outcome(scenario.id()) {
-            Some(ConformanceCommandOutcome::Rejected) => {
-                runtime.with_middleware(RejectCanonicalCommand)
+        let runtime = match scenario.id().command_evidence() {
+            Some(ConformanceCommandEvidence::Completion(
+                ConformanceCommandCompletion::Rejected,
+            )) => runtime.with_middleware(RejectCanonicalCommand),
+            Some(ConformanceCommandEvidence::Completion(ConformanceCommandCompletion::Failed)) => {
+                runtime.with_middleware(FailCanonicalCommand)
             }
             _ => runtime,
         };
@@ -223,12 +253,19 @@ impl CanonicalDriver {
             .expect("attach canonical view");
         let control_hits = std::rc::Rc::new(std::cell::Cell::new(0));
         let factory_control_hits = control_hits.clone();
+        let dynamic_ports_published = std::rc::Rc::new(std::cell::Cell::new(false));
+        let factory_dynamic_ports_published = dynamic_ports_published.clone();
+        let canonical_nodes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let factory_canonical_nodes = canonical_nodes.clone();
         let mut registry = OpenGpuiNodeRegistry::builder();
         register_test_renderer(&mut registry, move |binding, _window, cx| {
-            cx.new(|_| CanonicalNode {
+            let node = cx.new(|_| CanonicalNode {
                 binding,
                 control_hits: factory_control_hits.clone(),
-            })
+                dynamic_ports_published: factory_dynamic_ports_published.clone(),
+            });
+            factory_canonical_nodes.borrow_mut().push(node.clone());
+            node
         });
         let captured_host = std::rc::Rc::new(std::cell::RefCell::new(None));
         let scene_host = captured_host.clone();
@@ -257,6 +294,7 @@ impl CanonicalDriver {
             scenario.id(),
             ConformanceScenarioId::ReconnectSource(_)
                 | ConformanceScenarioId::ReconnectTarget(_)
+                | ConformanceScenarioId::ReconnectTargetNoop
                 | ConformanceScenarioId::ReconnectSourcePrefixWait
                 | ConformanceScenarioId::ReconnectTargetPrefixWait
         ) {
@@ -325,6 +363,9 @@ impl CanonicalDriver {
                 baseline_source_bounds,
                 query_schedule,
                 max_native_query_frames: 0,
+                prepared_outcome_unknown_ticket: None,
+                dynamic_ports_published,
+                canonical_nodes,
             },
             cx,
         )
@@ -332,6 +373,7 @@ impl CanonicalDriver {
 
     fn perform(&mut self, action: ConformanceAction, cx: &mut open_gpui::VisualTestContext) {
         let before = self.effect_evidence(cx);
+        let mut explicit_effect = None;
         match action {
             ConformanceAction::Press(target) => self.press(target, cx),
             ConformanceAction::CrossDragThreshold => {
@@ -378,13 +420,27 @@ impl CanonicalDriver {
             ConformanceAction::DrainPrefix => self.drain_prefix(cx),
             ConformanceAction::AdvanceFrame => {
                 draw_once(cx);
-                self.prepare_injected_receipt(cx);
+                self.prepare_injected_evidence(cx);
             }
-            ConformanceAction::CompleteCommand(settlement) => {
-                if settlement == ConformanceCommandOutcome::NotDispatched {
-                    self.settle_not_dispatched(cx);
-                }
+            ConformanceAction::PublishAuthoritativeFrame => {
+                self.publish_authoritative_frame(cx);
+            }
+            ConformanceAction::AdvanceAuthoritativeAbsence => {
+                self.advance_authoritative_absence(cx);
+            }
+            ConformanceAction::RetryConnectionSettlement => {
+                self.retry_connection_settlement(cx);
+                explicit_effect = Some(ConformanceEffect::SubmitConnection);
+            }
+            ConformanceAction::CancelConnectionSettlement => {
+                self.cancel_connection_settlement(cx);
+                explicit_effect = Some(ConformanceEffect::RestorePresentation);
+            }
+            ConformanceAction::CompleteCommand(_) => {
                 self.settle_retained_frames(cx);
+            }
+            ConformanceAction::ReportTransportEvidence(evidence) => {
+                self.report_transport_evidence(evidence, cx);
             }
             ConformanceAction::LoseCapture => self.lose_capture(cx),
             ConformanceAction::ReplaceOwner => self.replace_owner(cx),
@@ -393,8 +449,15 @@ impl CanonicalDriver {
                 cx.simulate_keystrokes("escape");
             }
             ConformanceAction::Cancel(ConformanceCancelReason::OutsideClick) => {
-                let position = self.pointer.expect("outside cancellation position");
-                cx.simulate_mouse_up(position, MouseButton::Left, Default::default());
+                cx.update(|window, cx| {
+                    self.host.update(cx, |host, cx| {
+                        host.cancel_connection_for_drag(
+                            OpenGpuiPortDragCancelReason::InteractionUnavailable,
+                            window,
+                            cx,
+                        );
+                    });
+                });
             }
             ConformanceAction::RetireSource => self.retire_source(cx),
             ConformanceAction::CloseHost => {
@@ -409,7 +472,7 @@ impl CanonicalDriver {
         let native_query_frames = self.drain_native_query_frames(cx);
         self.max_native_query_frames = self.max_native_query_frames.max(native_query_frames);
         let after = self.effect_evidence(cx);
-        self.last_effect = effect_from_transition(before, after);
+        self.last_effect = explicit_effect.unwrap_or_else(|| effect_from_transition(before, after));
     }
 
     fn drain_native_query_frames(&self, cx: &mut open_gpui::VisualTestContext) -> usize {
@@ -565,16 +628,159 @@ impl CanonicalDriver {
     }
 
     fn settle_retained_frames(&self, cx: &mut open_gpui::VisualTestContext) {
+        if self.waits_for_explicit_publication() {
+            for _ in 0..4 {
+                if cx.read_entity(&self.host, |host, _| {
+                    let presentation = host.interaction_presentation();
+                    presentation.phase() == CanvasInteractionPhase::Committing
+                        && presentation.connection_settlement().is_some()
+                }) {
+                    return;
+                }
+                draw_once(cx);
+                for _ in 0..64 {
+                    if cx.read_entity(&self.host, |host, _| {
+                        let presentation = host.interaction_presentation();
+                        presentation.phase() == CanvasInteractionPhase::Committing
+                            && presentation.connection_settlement().is_some()
+                    }) {
+                        return;
+                    }
+                    if !cx.executor().tick() {
+                        break;
+                    }
+                }
+            }
+            let state = cx.read_entity(&self.host, |host, _| {
+                format!("presentation={:?}", host.interaction_presentation())
+            });
+            panic!(
+                "canonical scenario {:?} did not expose completion before publication: {state}",
+                self.id,
+            );
+        }
         cx.run_until_parked();
         for _ in 0..4 {
             if cx.read_entity(&self.host, |host, _| {
-                host.interaction_presentation().phase() != CanvasInteractionPhase::Committing
+                let presentation = host.interaction_presentation();
+                presentation.phase() != CanvasInteractionPhase::Committing
+                    || (self.waits_for_explicit_publication()
+                        && presentation.connection_settlement().is_some())
             }) {
                 return;
             }
             draw(cx);
         }
-        panic!("canonical interaction did not settle within retained-frame bound");
+        let state = cx.read_entity(&self.host, |host, _| {
+            format!("presentation={:?}", host.interaction_presentation())
+        });
+        panic!(
+            "canonical scenario {:?} did not settle within retained-frame bound: {state}",
+            self.id,
+        );
+    }
+
+    fn waits_for_explicit_publication(&self) -> bool {
+        matches!(
+            self.id,
+            ConformanceScenarioId::CreateFromWire(ConformanceCommandEvidence::Completion(
+                ConformanceCommandCompletion::Applied
+            )) | ConformanceScenarioId::CreateFromWirePrefixWait
+        )
+    }
+
+    fn publish_authoritative_frame(&self, cx: &mut open_gpui::VisualTestContext) {
+        self.dynamic_ports_published.set(true);
+        let canonical_nodes = self.canonical_nodes.borrow().clone();
+        for node in canonical_nodes {
+            cx.update_entity(&node, |_, cx| cx.notify());
+        }
+        for _ in 0..8 {
+            draw(cx);
+            if cx.read_entity(&self.host, |host, _| {
+                host.interaction_presentation().phase() == CanvasInteractionPhase::Idle
+            }) {
+                return;
+            }
+        }
+        let state = cx.read_entity(&self.host, |host, _| {
+            format!("presentation={:?}", host.interaction_presentation())
+        });
+        panic!(
+            "canonical scenario {:?} did not publish authoritative geometry: {state}",
+            self.id,
+        );
+    }
+
+    fn advance_authoritative_absence(&mut self, cx: &mut open_gpui::VisualTestContext) {
+        let snapshot = self
+            .runtime
+            .snapshot()
+            .expect("uncertain canonical snapshot");
+        self.runtime
+            .execute(GraphCommand::set_node_data(
+                snapshot.version(),
+                invalid_node(),
+                serde_json::json!({ "external": "uncertain-absence" }),
+            ))
+            .into_result()
+            .expect("uncertain absence command executes")
+            .applied()
+            .expect("uncertain absence command applies");
+        self.excluded_revision_delta = self.excluded_revision_delta.saturating_add(1);
+        cx.run_until_parked();
+        for _ in 0..4 {
+            draw(cx);
+            if cx.read_entity(&self.host, |host, _| {
+                matches!(
+                    host.interaction_presentation().connection_settlement(),
+                    Some(ConnectionSettlementPresentation::Uncertain {
+                        can_retry: true,
+                        ..
+                    })
+                )
+            }) {
+                return;
+            }
+        }
+        let state = cx.read_entity(&self.host, |host, _| {
+            format!("presentation={:?}", host.interaction_presentation())
+        });
+        panic!("canonical uncertainty did not become retryable: {state}");
+    }
+
+    fn retry_connection_settlement(&self, cx: &mut open_gpui::VisualTestContext) {
+        cx.update_window_entity(&self.host, |host, window, cx| {
+            let capability = match host.interaction_presentation().connection_settlement() {
+                Some(ConnectionSettlementPresentation::Uncertain {
+                    capability,
+                    can_retry: true,
+                })
+                | Some(ConnectionSettlementPresentation::Retryable {
+                    capability,
+                    can_retry: true,
+                }) => capability,
+                settlement => panic!("expected retryable canonical settlement, got {settlement:?}"),
+            };
+            host.retry_connection_settlement(capability, window, cx)
+                .expect("canonical settlement retry starts a fresh attempt");
+        });
+    }
+
+    fn cancel_connection_settlement(&self, cx: &mut open_gpui::VisualTestContext) {
+        cx.update_window_entity(&self.host, |host, window, cx| {
+            let capability = match host.interaction_presentation().connection_settlement() {
+                Some(ConnectionSettlementPresentation::Uncertain { capability, .. })
+                | Some(ConnectionSettlementPresentation::Retryable { capability, .. }) => {
+                    capability
+                }
+                settlement => {
+                    panic!("expected cancellable canonical settlement, got {settlement:?}")
+                }
+            };
+            host.cancel_connection_settlement(capability, window, cx)
+                .expect("canonical settlement cancellation restores presentation");
+        });
     }
 
     fn queue_prefix(&mut self, cx: &mut open_gpui::VisualTestContext) {
@@ -648,30 +854,15 @@ impl CanonicalDriver {
         );
     }
 
-    fn prepare_injected_receipt(&mut self, cx: &mut open_gpui::VisualTestContext) {
-        let Some(settlement) = scenario_command_outcome(self.id) else {
+    fn prepare_injected_evidence(&mut self, cx: &mut open_gpui::VisualTestContext) {
+        let Some(evidence) = self.id.command_evidence() else {
             return;
         };
-        if settlement != ConformanceCommandOutcome::Conflict {
-            return;
-        }
-
-        let ticket = cx.update_entity(&self.host, |host, _| {
-            assert!(
-                host.interaction_owner.test_has_pending_submission(),
-                "a native release must reach the command prefix boundary"
-            );
-            let presentation = host.interaction_presentation();
-            presentation
-                .connection()
-                .and_then(|connection| connection.ticket())
-                .or_else(|| presentation.node_drag().and_then(|drag| drag.ticket()))
-                .expect("pending canonical interaction ticket")
-        });
-        let snapshot = self.runtime.snapshot().expect("receipt injection snapshot");
-        let expected_version = snapshot.version();
-        let command = match settlement {
-            ConformanceCommandOutcome::Conflict => {
+        match evidence {
+            ConformanceCommandEvidence::Completion(ConformanceCommandCompletion::Conflict) => {
+                let ticket = self.pending_interaction_ticket(cx);
+                let snapshot = self.runtime.snapshot().expect("receipt injection snapshot");
+                let expected_version = snapshot.version();
                 let (bound_ticket, command) = cx.update_entity(&self.host, |host, _| {
                     host.bind_pending_interaction_submission_for_execution()
                         .expect("canonical conflict binds the real pending submission")
@@ -688,22 +879,43 @@ impl CanonicalDriver {
                     .applied()
                     .expect("external conflict setup applies");
                 self.excluded_revision_delta = self.excluded_revision_delta.saturating_add(1);
-                command.expect("canonical conflict mutation is not a no-op")
+                let command = command.expect("canonical conflict mutation is not a no-op");
+                cx.update_entity(&self.host, |host, _| {
+                    host.commands
+                        .enqueue_detached(command, OpenGpuiCommandOrigin::Interaction { ticket })
+                        .expect("inject canonical conflict completion");
+                });
             }
-            _ => unreachable!("only conflict reaches command injection"),
-        };
-        cx.update_entity(&self.host, |host, _| {
-            host.commands
-                .enqueue_detached(command, OpenGpuiCommandOrigin::Interaction { ticket })
-                .expect("inject canonical command receipt");
-        });
+            ConformanceCommandEvidence::Transport(
+                ConformanceAdapterTransportEvidence::OutcomeUnknown,
+            ) => {
+                let (ticket, command) = cx.update_entity(&self.host, |host, _| {
+                    host.bind_pending_interaction_submission_for_execution()
+                        .expect("canonical uncertainty binds the admitted submission")
+                });
+                drop(command.expect("canonical uncertainty follows command admission"));
+                self.prepared_outcome_unknown_ticket = Some(ticket);
+            }
+            ConformanceCommandEvidence::Completion(
+                ConformanceCommandCompletion::Applied
+                | ConformanceCommandCompletion::Noop
+                | ConformanceCommandCompletion::Rejected
+                | ConformanceCommandCompletion::Failed,
+            )
+            | ConformanceCommandEvidence::Transport(
+                ConformanceAdapterTransportEvidence::NotDispatched,
+            ) => {}
+        }
     }
 
-    fn settle_not_dispatched(&self, cx: &mut open_gpui::VisualTestContext) {
-        let ticket = cx.update_entity(&self.host, |host, _| {
+    fn pending_interaction_ticket(
+        &self,
+        cx: &mut open_gpui::VisualTestContext,
+    ) -> InteractionTicketId {
+        cx.update_entity(&self.host, |host, _| {
             assert!(
                 host.interaction_owner.test_has_pending_submission(),
-                "a native release must remain pending before an undispatched settlement"
+                "a native release must reach the command prefix boundary"
             );
             let presentation = host.interaction_presentation();
             presentation
@@ -711,7 +923,39 @@ impl CanonicalDriver {
                 .and_then(|connection| connection.ticket())
                 .or_else(|| presentation.node_drag().and_then(|drag| drag.ticket()))
                 .expect("pending canonical interaction ticket")
-        });
+        })
+    }
+
+    fn report_transport_evidence(
+        &mut self,
+        evidence: ConformanceAdapterTransportEvidence,
+        cx: &mut open_gpui::VisualTestContext,
+    ) {
+        match evidence {
+            ConformanceAdapterTransportEvidence::NotDispatched => {
+                self.settle_not_dispatched(cx);
+            }
+            ConformanceAdapterTransportEvidence::OutcomeUnknown => {
+                let ticket = self
+                    .prepared_outcome_unknown_ticket
+                    .take()
+                    .unwrap_or_else(|| {
+                        let (ticket, command) = cx.update_entity(&self.host, |host, _| {
+                            host.bind_pending_interaction_submission_for_execution()
+                                .expect("canonical retry binds its admitted submission")
+                        });
+                        drop(command.expect("canonical retry follows command admission"));
+                        ticket
+                    });
+                cx.update_entity(&self.host, |host, _| {
+                    host.interaction_submission_outcome_unknown(ticket);
+                });
+            }
+        }
+    }
+
+    fn settle_not_dispatched(&self, cx: &mut open_gpui::VisualTestContext) {
+        let ticket = self.pending_interaction_ticket(cx);
         cx.update_entity(&self.host, |host, _| {
             host.interaction_submission_not_dispatched(ticket);
         });
@@ -867,9 +1111,30 @@ impl CanonicalDriver {
                     .saturating_sub(self.excluded_revision_delta),
                 geometry,
             );
-            observation.optimistic_presentation = ticket.is_some()
-                && (presentation.connection().is_some() || presentation.node_drag().is_some());
+            observation.optimistic_presentation = presentation
+                .connection()
+                .is_some_and(|connection| connection.ticket().is_some())
+                || presentation.connection_settlement().is_some()
+                || presentation
+                    .node_drag()
+                    .is_some_and(|drag| drag.ticket().is_some());
             observation.terminal = presentation.terminal().map(normalized_terminal);
+            observation.connection_settlement = match presentation.connection_settlement() {
+                None => ConformanceConnectionSettlement::None,
+                Some(ConnectionSettlementPresentation::AwaitingPublication) => {
+                    ConformanceConnectionSettlement::AwaitingPublication
+                }
+                Some(ConnectionSettlementPresentation::Uncertain { can_retry, .. }) => {
+                    ConformanceConnectionSettlement::Uncertain {
+                        retryable: can_retry,
+                    }
+                }
+                Some(ConnectionSettlementPresentation::Retryable { can_retry, .. }) => {
+                    ConformanceConnectionSettlement::Retryable {
+                        retryable: can_retry,
+                    }
+                }
+            };
             observation.intent = presentation
                 .connection_intent()
                 .map_or(ConformanceIntent::None, normalized_intent);
@@ -1057,9 +1322,13 @@ impl CanonicalDriver {
                                 .then_some((*id, edge.to))
                         })
                         .expect("canonical Open GPUI create-from-wire edge");
-                    assert!(geometry.port(target).is_none());
-                    assert!(geometry.route(edge).is_none());
-                    ConformanceGeometry::CreateFromWireAwaitingLayout
+                    if geometry.port(target).is_some() {
+                        assert_route_matches(&geometry, edge, source_port(), target);
+                        ConformanceGeometry::CreateFromWireRouted
+                    } else {
+                        assert!(geometry.route(edge).is_none());
+                        ConformanceGeometry::CreateFromWireAwaitingLayout
+                    }
                 }
                 ConformanceGraph::NodeMoved => {
                     let snapshot = host.view.graph_snapshot().unwrap();
@@ -1129,6 +1398,7 @@ fn effect_from_transition(before: EffectEvidence, after: EffectEvidence) -> Conf
             Some(
                 InteractionTerminalReason::Rejected
                 | InteractionTerminalReason::Conflict
+                | InteractionTerminalReason::ExecutionFailed
                 | InteractionTerminalReason::TransportFailure,
             ) => ConformanceEffect::RestorePresentation,
             Some(
@@ -1169,16 +1439,22 @@ fn effect_from_transition(before: EffectEvidence, after: EffectEvidence) -> Conf
 fn normalized_terminal(terminal: InteractionTerminalReason) -> ConformanceTerminal {
     match terminal {
         InteractionTerminalReason::Applied => ConformanceTerminal::Applied,
-        InteractionTerminalReason::Noop => {
-            panic!("canonical Open GPUI trace does not model a no-op command")
-        }
+        InteractionTerminalReason::Noop => ConformanceTerminal::Noop,
         InteractionTerminalReason::Rejected => ConformanceTerminal::Rejected,
         InteractionTerminalReason::Conflict => ConformanceTerminal::Conflict,
-        InteractionTerminalReason::TransportFailure => ConformanceTerminal::NotDispatched,
+        InteractionTerminalReason::ExecutionFailed => ConformanceTerminal::ExecutionFailed,
+        InteractionTerminalReason::TransportFailure => ConformanceTerminal::TransportFailure,
+        InteractionTerminalReason::Uncertain => ConformanceTerminal::Uncertain,
         InteractionTerminalReason::Cancelled => ConformanceTerminal::Cancelled,
+        InteractionTerminalReason::InvalidTarget => ConformanceTerminal::InvalidTarget,
         InteractionTerminalReason::OwnerRetired => ConformanceTerminal::OwnerRetired,
         InteractionTerminalReason::ViewClosed => ConformanceTerminal::HostClosed,
-        other => panic!("unsupported canonical terminal: {other:?}"),
+        terminal @ (InteractionTerminalReason::ProtocolFailure
+        | InteractionTerminalReason::BudgetExhausted
+        | InteractionTerminalReason::GeometryIndeterminate
+        | InteractionTerminalReason::IdentityExhausted) => {
+            panic!("unsupported canonical terminal: {terminal:?}")
+        }
     }
 }
 
@@ -1207,31 +1483,6 @@ fn assert_route_matches(
     let target = geometry.port(to).expect("Open GPUI route target geometry");
     assert_eq!(route.facts().endpoints.source.point, source.route_anchor());
     assert_eq!(route.facts().endpoints.target.point, target.route_anchor());
-}
-
-fn scenario_command_outcome(id: ConformanceScenarioId) -> Option<ConformanceCommandOutcome> {
-    match id {
-        ConformanceScenarioId::NewConnection(settlement)
-        | ConformanceScenarioId::ReconnectSource(settlement)
-        | ConformanceScenarioId::ReconnectTarget(settlement)
-        | ConformanceScenarioId::CreateFromWire(settlement)
-        | ConformanceScenarioId::NodeDrag(settlement) => Some(settlement),
-        ConformanceScenarioId::NewConnectionPrefixWait
-        | ConformanceScenarioId::NewConnectionProbePrefix
-        | ConformanceScenarioId::ReconnectSourcePrefixWait
-        | ConformanceScenarioId::ReconnectTargetPrefixWait
-        | ConformanceScenarioId::CreateFromWirePrefixWait
-        | ConformanceScenarioId::NodeDragPrefixWait => Some(ConformanceCommandOutcome::Applied),
-        ConformanceScenarioId::NodePressBelowThreshold
-        | ConformanceScenarioId::NativeControl
-        | ConformanceScenarioId::EdgePick
-        | ConformanceScenarioId::CaptureLost
-        | ConformanceScenarioId::OwnerReplaced
-        | ConformanceScenarioId::Escape
-        | ConformanceScenarioId::OutsideClick
-        | ConformanceScenarioId::SourceRetired
-        | ConformanceScenarioId::HostClosed => None,
-    }
 }
 
 fn dispatch_mouse_up(
@@ -1291,7 +1542,10 @@ fn run_canonical_scenario_with_query_schedule(
     compare_observations(scenario, &observations)
         .unwrap_or_else(|error| panic!("Open GPUI canonical mismatch: {error}"));
     if query_schedule == CanonicalQuerySchedule::Default
-        && scenario_command_outcome(scenario.id()) == Some(ConformanceCommandOutcome::Applied)
+        && scenario.id().command_evidence()
+            == Some(ConformanceCommandEvidence::Completion(
+                ConformanceCommandCompletion::Applied,
+            ))
     {
         driver.assert_applied_mutation();
     }

@@ -11,7 +11,7 @@ use crate::semantic_zoom::OpenGpuiNodePresentation;
 use super::OpenGpuiSceneHost;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) enum OpenGpuiGraphFocusTarget {
+pub(crate) enum OpenGpuiGraphFocusTarget {
     Node {
         lifetime: NodeLifetimeKey,
         presentation: OpenGpuiNodePresentation,

@@ -8,7 +8,9 @@ use jellyflow_core::interaction::NodeGraphConnectionMode;
 use super::*;
 use crate::rules::EdgeEndpoint;
 use crate::runtime::adapter_protocol::{FrameRequest, RendererStamp, ViewRect};
-use crate::runtime::commands::GraphCommand;
+use crate::runtime::commands::{
+    ConnectionEdit, GraphCommand, IncidentEdgePolicy, NodeGeometryEdit, TopologyEdit, TopologyPort,
+};
 use crate::runtime::geometry::{
     EdgeEndpointPosition, EdgePosition, HandlePosition, resolve_edge_route_path,
 };
@@ -397,7 +399,9 @@ fn reprojected_position_is_resigned_to_the_exact_current_viewport_snapshot() {
         .set_viewport(ViewportTransform::new(CanvasPoint { x: 5.0, y: -2.0 }, 2.0).unwrap())
         .unwrap();
 
-    let reprojected = stale.reproject(current).expect("same-view reprojection");
+    let reprojected = stale
+        .reproject_preserving_view(current)
+        .expect("same-view reprojection");
     assert_eq!(reprojected.provenance(), current.provenance());
     assert_eq!(reprojected.viewport_revision(), current.revision());
     assert_eq!(reprojected.view(), ViewPoint::new(20.0, 10.0));
@@ -408,7 +412,7 @@ fn reprojected_position_is_resigned_to_the_exact_current_viewport_snapshot() {
         .expect("foreign view");
     assert!(
         stale
-            .reproject(other.viewport_snapshot().unwrap())
+            .reproject_preserving_view(other.viewport_snapshot().unwrap())
             .is_none()
     );
 }
@@ -877,6 +881,44 @@ fn direct_connection_reprobes_on_release_and_keeps_preview_until_terminal_receip
     let late = session.submission_outcome_unknown(ticket).unwrap();
     assert!(late.effects().is_empty());
     assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
+}
+
+#[test]
+fn invalid_connection_release_is_distinct_from_explicit_cancel() {
+    let mut invalid = test_session(CanvasInteractionConfig::default());
+    invalid
+        .press_for_test(connection_target(false), position(0.0, 0.0))
+        .unwrap();
+    let moved = invalid.move_to(position(8.0, 0.0)).unwrap();
+    invalid
+        .resolve_connection_probe_for_test(
+            connection_query_id(&invalid, &moved),
+            complete(ConnectionProbe::None),
+        )
+        .unwrap();
+    let released = invalid.release(position(20.0, 0.0)).unwrap();
+    let settled = invalid
+        .resolve_connection_probe_for_test(
+            connection_query_id(&invalid, &released),
+            complete(ConnectionProbe::None),
+        )
+        .unwrap();
+    assert!(settled.effects().is_empty());
+    assert_eq!(invalid.presentation().phase(), CanvasInteractionPhase::Idle);
+    assert_eq!(
+        invalid.presentation().terminal(),
+        Some(InteractionTerminalReason::InvalidTarget)
+    );
+
+    let mut cancelled = test_session(CanvasInteractionConfig::default());
+    cancelled
+        .press_for_test(connection_target(false), position(0.0, 0.0))
+        .unwrap();
+    cancelled.cancel().unwrap();
+    assert_eq!(
+        cancelled.presentation().terminal(),
+        Some(InteractionTerminalReason::Cancelled)
+    );
 }
 
 #[test]
@@ -2168,6 +2210,64 @@ fn search_failure_retry_and_rejected_selection_keep_one_search_owner() {
 }
 
 #[test]
+fn exact_search_request_cancels_its_current_generation() {
+    let mut session = test_session(CanvasInteractionConfig::default());
+    let CanvasPressTarget::Connection(start) = connection_target(true) else {
+        unreachable!("connection fixture must produce a connection target");
+    };
+    session
+        .activate_connection_search_for_test(start, position(12.0, 18.0))
+        .expect("search activation");
+    let request = session.search_request().expect("current search request");
+
+    let cancelled = session
+        .cancel_search(&request)
+        .expect("the exact current request owns cancellation");
+
+    assert!(cancelled.effects().is_empty());
+    assert!(cancelled.damage().presentation);
+    assert_eq!(session.search_request(), None);
+    assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
+    assert_eq!(
+        session.presentation().terminal(),
+        Some(InteractionTerminalReason::Cancelled)
+    );
+}
+
+#[test]
+fn stale_search_request_cannot_cancel_its_successor() {
+    let mut session = test_session(CanvasInteractionConfig::default());
+    let CanvasPressTarget::Connection(start) = connection_target(true) else {
+        unreachable!("connection fixture must produce a connection target");
+    };
+    session
+        .activate_connection_search_for_test(start, position(12.0, 18.0))
+        .expect("first search activation");
+    let stale_request = session.search_request().expect("first search request");
+    let retried = session
+        .retry_search(&stale_request)
+        .expect("retry publishes a successor request");
+    let [CanvasInteractionEffect::Search(successor)] = retried.effects() else {
+        panic!("retry must publish one successor search request");
+    };
+
+    assert!(matches!(
+        session.cancel_search(&stale_request),
+        Err(CanvasInteractionError::ConnectionSearchStaleGeneration)
+    ));
+    assert_eq!(session.search_request(), Some(successor.clone()));
+    assert_eq!(
+        session.presentation().phase(),
+        CanvasInteractionPhase::ConnectionSearch
+    );
+    assert_eq!(
+        session.presentation().connection().unwrap().search(),
+        Some(ConnectionSearchStatus::Loading)
+    );
+    assert_eq!(session.presentation().terminal(), None);
+}
+
+#[test]
 fn search_callbacks_reject_inactive_and_stale_requests_without_state_changes() {
     let mut session = test_session(CanvasInteractionConfig::default());
     let CanvasPressTarget::Connection(start) = connection_target(true) else {
@@ -2809,10 +2909,43 @@ fn foreign_bound_view_terminates_runtime_owned_query_without_retry() {
     assert!(!needs_tick);
     assert!(!update.query_work_pending());
     assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
+    assert_eq!(
+        session.presentation().terminal(),
+        Some(InteractionTerminalReason::ProtocolFailure)
+    );
 
     let settled = session.advance_query_work(1);
     assert_eq!(settled.receipt().pages_attempted(), 0);
     assert!(!settled.needs_tick());
+}
+
+#[test]
+fn query_failure_terminal_distinguishes_protocol_transport_and_lifecycle_failures() {
+    let session = InteractionSessionId(41);
+    let query = InteractionQueryId(InteractionIdentity::new(session, 7));
+    let other_query = InteractionQueryId(InteractionIdentity::new(session, 8));
+
+    for error in [
+        CanvasInteractionError::MissingInteractionQueryProof { query },
+        CanvasInteractionError::MismatchedInteractionQueryProof {
+            expected: query,
+            actual: other_query,
+        },
+        CanvasInteractionError::ForeignInteractionFacts,
+    ] {
+        assert_eq!(
+            query_failure_terminal(error),
+            InteractionTerminalReason::ProtocolFailure
+        );
+    }
+    assert_eq!(
+        query_failure_terminal(CanvasInteractionError::ViewUnavailable),
+        InteractionTerminalReason::TransportFailure
+    );
+    assert_eq!(
+        query_failure_terminal(CanvasInteractionError::Closed),
+        InteractionTerminalReason::ViewClosed
+    );
 }
 
 #[test]
@@ -3165,6 +3298,47 @@ fn opaque_prefix_continuation_reemits_direct_submission_without_classification()
 }
 
 #[test]
+fn ordinary_cancel_after_command_binding_retains_the_admitted_connection() {
+    let (runtime, view, mut session) = bound_test_session();
+    let submission =
+        begin_bound_search_submission(&mut session, &view, bound_connection_start(&view));
+    let ticket = submission.ticket();
+    let command = session
+        .bind_submission(submission)
+        .expect("current submission binds")
+        .expect("connection submission emits a command");
+
+    let ignored = session
+        .cancel()
+        .expect("post-admission cancellation is an explicit no-op");
+    assert!(ignored.effects().is_empty());
+    assert_eq!(ignored.damage(), InteractionDamage::default());
+    assert_eq!(
+        session.presentation().phase(),
+        CanvasInteractionPhase::Committing
+    );
+    assert_eq!(
+        session.presentation().connection().unwrap().ticket(),
+        Some(ticket)
+    );
+    assert_eq!(session.presentation().terminal(), None);
+
+    let completion = runtime.execute(command);
+    assert_eq!(completion.kind(), CommandExecutionKind::Applied);
+    session
+        .complete_submission(ticket, completion)
+        .expect("the retained admission still owns its completion");
+    assert_eq!(
+        session.presentation().connection_settlement(),
+        Some(ConnectionSettlementPresentation::AwaitingPublication)
+    );
+    assert_eq!(
+        session.presentation().terminal(),
+        Some(InteractionTerminalReason::Applied)
+    );
+}
+
+#[test]
 fn old_prefix_ticket_does_not_reconcile_a_retired_current_owner() {
     let runtime = GraphRuntime::builder(Default::default())
         .build(prospective_graph())
@@ -3178,7 +3352,10 @@ fn old_prefix_ticket_does_not_reconcile_a_retired_current_owner() {
 
     let first_submission = begin_bound_search_submission(&mut session, &view, start.clone());
     let first_ticket = first_submission.ticket();
-    complete_with_kind(&mut session, first_ticket, CommandExecutionKind::Applied).unwrap();
+    complete_with_kind(&mut session, first_ticket, CommandExecutionKind::Rejected).unwrap();
+    session
+        .cancel()
+        .expect("settled search projection can be dismissed before its successor");
     let current_submission = begin_bound_search_submission(&mut session, &view, start);
     let current_ticket = current_submission.ticket();
     assert_ne!(first_ticket, current_ticket);
@@ -3223,6 +3400,1332 @@ fn old_prefix_ticket_does_not_reconcile_a_retired_current_owner() {
     assert_eq!(
         session.presentation().terminal(),
         Some(InteractionTerminalReason::OwnerRetired)
+    );
+}
+
+#[test]
+fn connection_applied_waits_for_published_route_before_clearing_projection() {
+    let (runtime, view, mut session) = bound_test_session();
+    let precommit = view.graph_snapshot().expect("precommit graph snapshot");
+    let start = bound_connection_start(&view);
+    let submission = begin_bound_search_submission(&mut session, &view, start);
+    let ticket = submission.ticket();
+    let command = session
+        .bind_submission(submission)
+        .expect("current connection submission binds")
+        .expect("connection submission emits one command");
+    let completion = runtime.execute(command);
+    assert_eq!(completion.kind(), CommandExecutionKind::Applied);
+
+    let completed = session
+        .complete_submission(ticket, completion)
+        .expect("applied completion enters publication settlement");
+    assert!(completed.damage().edges);
+    let pending = session.presentation();
+    assert_eq!(pending.phase(), CanvasInteractionPhase::Committing);
+    assert_eq!(pending.terminal(), Some(InteractionTerminalReason::Applied));
+    assert_eq!(pending.connection().unwrap().ticket(), None);
+    assert_eq!(
+        pending.connection_settlement(),
+        Some(ConnectionSettlementPresentation::AwaitingPublication)
+    );
+    assert!(
+        pending
+            .connection()
+            .unwrap()
+            .wire()
+            .suppressed_edge()
+            .is_none()
+    );
+    assert!(
+        view.geometry_snapshot()
+            .unwrap()
+            .route(EdgeId::from_u128(9))
+            .is_none()
+    );
+    let ignored = session
+        .cancel()
+        .expect("ordinary cancel cannot revoke an applied publication wait");
+    assert!(ignored.effects().is_empty());
+    assert_eq!(ignored.damage(), InteractionDamage::default());
+    assert_eq!(
+        session.presentation().connection_settlement(),
+        Some(ConnectionSettlementPresentation::AwaitingPublication)
+    );
+    assert_eq!(
+        session.presentation().terminal(),
+        Some(InteractionTerminalReason::Applied)
+    );
+    let projection = match &session.state {
+        InteractionState::ConnectionProjection(projection) => projection,
+        state => panic!("expected terminal connection projection, got {state:?}"),
+    };
+    let route = projection
+        .settlement
+        .publication_proof()
+        .expect("applied completion carries an exact publication proof")
+        .route();
+    let committed = view.graph_snapshot().expect("committed graph snapshot");
+    assert!(precommit.revision() < committed.revision());
+    assert_eq!(
+        route.edge(),
+        committed
+            .edge_instance_key(EdgeId::from_u128(9))
+            .expect("committed edge lifetime"),
+    );
+    assert_eq!(
+        route.source(),
+        committed
+            .port_instance_key(source_port())
+            .expect("committed source lifetime"),
+    );
+    assert_eq!(
+        route.target(),
+        committed
+            .port_instance_key(target_port())
+            .expect("committed target lifetime"),
+    );
+
+    let unchanged = session
+        .reconcile_authoritative_state()
+        .expect("missing route keeps the optimistic projection");
+    assert_eq!(unchanged.damage(), InteractionDamage::default());
+    assert_eq!(
+        session.presentation().phase(),
+        CanvasInteractionPhase::Committing
+    );
+    assert!(session.presentation().connection().is_some());
+
+    publish_connection_fixture_geometry(&view);
+    assert!(
+        view.geometry_snapshot()
+            .unwrap()
+            .route(EdgeId::from_u128(9))
+            .is_some()
+    );
+    let published = session
+        .reconcile_authoritative_state()
+        .expect("exact published route settles the projection");
+    assert!(published.damage().edges);
+    assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
+    assert!(session.presentation().connection().is_none());
+    assert_eq!(
+        session.presentation().terminal(),
+        Some(InteractionTerminalReason::Applied)
+    );
+}
+
+#[test]
+fn connection_noop_consumes_the_already_published_exact_route() {
+    let edge = EdgeId::from_u128(9);
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(reconnect_graph(edge))
+        .expect("noop reconnect runtime");
+    let view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("noop reconnect view");
+    publish_connection_fixture_geometry(&view);
+    let snapshot = runtime.snapshot().expect("noop reconnect snapshot");
+    let intent = bound_reconnect_settlement_intent(&view, &snapshot, edge);
+
+    let completion = runtime.execute(GraphCommand::reconnect(
+        snapshot.version(),
+        edge,
+        EdgeEndpoint::To,
+        target_port(),
+        NodeGraphConnectionMode::Strict,
+    ));
+    let noop = match completion.result().expect("semantic reconnect outcome") {
+        crate::runtime::commands::GraphCommandOutcome::Noop(noop) => noop,
+        outcome => panic!("same-target reconnect must be a noop, got {outcome:?}"),
+    };
+    let owner = ConnectionSettlementOwner::awaiting_publication(intent, noop.snapshot())
+        .expect("the noop snapshot proves the exact reconnect intent");
+
+    assert!(
+        owner.is_published(
+            noop.snapshot(),
+            &view
+                .geometry_snapshot()
+                .expect("already published reconnect geometry"),
+        )
+    );
+}
+
+#[test]
+fn connection_publication_rejects_an_authoritative_snapshot_without_the_exact_intent() {
+    let edge = EdgeId::from_u128(9);
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(reconnect_graph(edge))
+        .expect("publication mismatch runtime");
+    let view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("publication mismatch view");
+    let connected = runtime.snapshot().expect("connected snapshot");
+    runtime
+        .execute(GraphCommand::disconnect(connected.version(), edge))
+        .into_result()
+        .expect("disconnect before publication mismatch")
+        .applied()
+        .expect("disconnect applies");
+    let authoritative = runtime.snapshot().expect("authoritative mismatch snapshot");
+    let target = authoritative
+        .port_instance_key(target_port())
+        .expect("target remains current");
+    let intent = bound_connect_settlement_intent(&view, &authoritative, edge, target);
+
+    assert!(
+        ConnectionSettlementOwner::awaiting_publication(intent, &authoritative).is_none(),
+        "an Applied/Noop projection must not wait forever when authoritative facts do not prove its exact edge",
+    );
+}
+
+#[test]
+fn reconnect_noop_session_waits_for_authoritative_route_publication() {
+    let edge = EdgeId::from_u128(9);
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(reconnect_graph(edge))
+        .expect("noop reconnect session runtime");
+    let view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("noop reconnect session view");
+    publish_connection_fixture_geometry(&view);
+    let snapshot = runtime.snapshot().expect("noop reconnect session snapshot");
+    let route = view
+        .geometry_snapshot()
+        .expect("noop reconnect geometry")
+        .route(edge)
+        .expect("noop reconnect route")
+        .clone();
+    let start = ConnectionInteractionStart::reconnect_from_graph_route(
+        view.provenance().expect("noop reconnect provenance"),
+        &snapshot,
+        &route,
+        EdgeEndpoint::To,
+        route.facts().endpoints.source,
+        NodeGraphConnectionMode::Strict,
+        false,
+    )
+    .expect("target reconnect is permitted");
+    let mut session = CanvasInteractionSession::attach(&view, CanvasInteractionConfig::default())
+        .expect("noop reconnect interaction session");
+    let source = route.facts().endpoints.source.point;
+    let target = route.facts().endpoints.target.point;
+    let source_position = bound_position(&session, &view, source.x, source.y);
+    let target_position = bound_position(&session, &view, target.x, target.y);
+
+    session
+        .press(CanvasPressTarget::Connection(start), source_position)
+        .expect("press noop reconnect endpoint");
+    let moved = session
+        .move_to(target_position)
+        .expect("move over original target");
+    resolve_bound_connection_query(&mut session, moved);
+    let released = session
+        .release(target_position)
+        .expect("release over original target");
+    let committed = if released.query_work_pending() {
+        resolve_bound_connection_query(&mut session, released)
+    } else {
+        released
+    };
+    let submission = take_submission(committed);
+    let ticket = submission.ticket();
+    let command = session
+        .bind_submission(submission)
+        .expect("noop reconnect submission binds")
+        .expect("noop reconnect remains an authoritative command");
+    let completion = runtime.execute(command);
+    assert_eq!(completion.kind(), CommandExecutionKind::Noop);
+    session
+        .complete_submission(ticket, completion)
+        .expect("noop reconnect enters publication settlement");
+    assert_eq!(
+        session.presentation().connection_settlement(),
+        Some(ConnectionSettlementPresentation::AwaitingPublication)
+    );
+    assert_eq!(
+        session.presentation().terminal(),
+        Some(InteractionTerminalReason::Noop)
+    );
+
+    let ignored = session
+        .cancel()
+        .expect("ordinary cancel cannot revoke a noop publication wait");
+    assert!(ignored.effects().is_empty());
+    assert_eq!(ignored.damage(), InteractionDamage::default());
+    assert_eq!(
+        session.presentation().connection_settlement(),
+        Some(ConnectionSettlementPresentation::AwaitingPublication)
+    );
+    assert_eq!(
+        session.presentation().terminal(),
+        Some(InteractionTerminalReason::Noop)
+    );
+
+    session
+        .reconcile_authoritative_state()
+        .expect("already published exact route settles noop reconnect");
+    assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
+}
+
+#[test]
+fn uncertain_reconnect_rejects_a_same_id_edge_successor() {
+    let edge = EdgeId::from_u128(9);
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(reconnect_graph(edge))
+        .expect("edge ABA runtime");
+    let view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("edge ABA view");
+    let original = runtime.snapshot().expect("original edge snapshot");
+    let original_edge = original
+        .edge_instance_key(edge)
+        .expect("original edge lifetime");
+    let intent = bound_reconnect_settlement_intent(&view, &original, edge);
+    let mut owner =
+        ConnectionSettlementOwner::uncertain(intent).expect("uncertain reconnect owner");
+
+    runtime
+        .execute(GraphCommand::disconnect(original.version(), edge))
+        .into_result()
+        .expect("disconnect successor preparation")
+        .applied()
+        .expect("disconnect applies");
+    let disconnected = runtime.snapshot().expect("disconnected snapshot");
+    runtime
+        .execute(GraphCommand::connect(
+            disconnected.version(),
+            edge,
+            source_port(),
+            target_port(),
+            NodeGraphConnectionMode::Strict,
+        ))
+        .into_result()
+        .expect("same-id successor connect")
+        .applied()
+        .expect("same-id successor applies");
+    let successor = runtime.snapshot().expect("edge successor snapshot");
+    assert_ne!(
+        successor.edge_instance_key(edge),
+        Some(original_edge),
+        "the fixture must actually replace the edge lifetime",
+    );
+
+    assert_eq!(
+        owner.reconcile(
+            &successor,
+            view.graph_policy().expect("edge ABA graph policy"),
+        ),
+        ConnectionSettlementReconciliation::OwnerRetired,
+    );
+}
+
+#[test]
+fn uncertain_new_connect_rejects_a_same_id_edge_successor() {
+    let edge = EdgeId::from_u128(9);
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(reconnect_graph(edge))
+        .expect("new-edge ABA runtime");
+    let view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("new-edge ABA view");
+    let connected = runtime.snapshot().expect("initial edge snapshot");
+    runtime
+        .execute(GraphCommand::disconnect(connected.version(), edge))
+        .into_result()
+        .expect("disconnect before uncertain connect")
+        .applied()
+        .expect("disconnect applies");
+    let pending = runtime.snapshot().expect("pending new-edge snapshot");
+    let target = pending
+        .port_instance_key(target_port())
+        .expect("pending target lifetime");
+    let intent = bound_connect_settlement_intent(&view, &pending, edge, target);
+    let mut owner = ConnectionSettlementOwner::uncertain(intent).expect("uncertain new edge");
+
+    runtime
+        .execute(GraphCommand::connect(
+            pending.version(),
+            edge,
+            source_port(),
+            target_port(),
+            NodeGraphConnectionMode::Strict,
+        ))
+        .into_result()
+        .expect("original uncertain edge installation")
+        .applied()
+        .expect("original uncertain edge applies");
+    let installed = runtime.snapshot().expect("installed uncertain edge");
+    let installed_edge = installed
+        .edge_instance_key(edge)
+        .expect("installed edge lifetime");
+    runtime
+        .execute(GraphCommand::disconnect(installed.version(), edge))
+        .into_result()
+        .expect("remove original uncertain edge")
+        .applied()
+        .expect("original uncertain edge removal applies");
+    let removed = runtime.snapshot().expect("removed uncertain edge");
+    runtime
+        .execute(GraphCommand::connect(
+            removed.version(),
+            edge,
+            source_port(),
+            target_port(),
+            NodeGraphConnectionMode::Strict,
+        ))
+        .into_result()
+        .expect("same-id new-edge successor")
+        .applied()
+        .expect("same-id new-edge successor applies");
+    let successor = runtime.snapshot().expect("new-edge successor snapshot");
+    assert_ne!(successor.edge_instance_key(edge), Some(installed_edge));
+
+    assert_eq!(
+        owner.reconcile(
+            &successor,
+            view.graph_policy().expect("new-edge ABA graph policy"),
+        ),
+        ConnectionSettlementReconciliation::OwnerRetired,
+    );
+}
+
+#[test]
+fn uncertain_connect_rejects_a_same_id_target_port_successor() {
+    let edge = EdgeId::from_u128(9);
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(reconnect_graph(edge))
+        .expect("port ABA runtime");
+    let view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("port ABA view");
+    let connected = runtime.snapshot().expect("connected port snapshot");
+    runtime
+        .execute(GraphCommand::disconnect(connected.version(), edge))
+        .into_result()
+        .expect("disconnect before prospective connect")
+        .applied()
+        .expect("disconnect applies");
+    let original = runtime.snapshot().expect("prospective port snapshot");
+    let original_target = original
+        .port_instance_key(target_port())
+        .expect("original target lifetime");
+    let intent = bound_connect_settlement_intent(&view, &original, edge, original_target);
+    let mut owner = ConnectionSettlementOwner::uncertain(intent).expect("uncertain connect owner");
+
+    runtime
+        .execute(GraphCommand::topology(
+            original.version(),
+            TopologyEdit::new().replace_node_ports(
+                NodeId::from_u128(2),
+                [],
+                IncidentEdgePolicy::Cascade,
+            ),
+        ))
+        .into_result()
+        .expect("remove target port")
+        .applied()
+        .expect("target-port removal applies");
+    let removed = runtime.snapshot().expect("target port removed snapshot");
+    runtime
+        .execute(GraphCommand::topology(
+            removed.version(),
+            TopologyEdit::new().replace_node_ports(
+                NodeId::from_u128(2),
+                [TopologyPort::new(
+                    target_port(),
+                    test_port(NodeId::from_u128(2), "in", PortDirection::In),
+                )],
+                IncidentEdgePolicy::Reject,
+            ),
+        ))
+        .into_result()
+        .expect("re-add target port")
+        .applied()
+        .expect("target-port replacement applies");
+    let replaced = runtime.snapshot().expect("target port successor snapshot");
+    let successor_target = replaced
+        .port_instance_key(target_port())
+        .expect("successor target lifetime");
+    assert_ne!(successor_target, original_target);
+    runtime
+        .execute(GraphCommand::connect(
+            replaced.version(),
+            edge,
+            source_port(),
+            target_port(),
+            NodeGraphConnectionMode::Strict,
+        ))
+        .into_result()
+        .expect("connect through target successor")
+        .applied()
+        .expect("successor connect applies");
+    let successor = runtime.snapshot().expect("connected successor snapshot");
+
+    assert_eq!(
+        owner.reconcile(
+            &successor,
+            view.graph_policy().expect("port ABA graph policy"),
+        ),
+        ConnectionSettlementReconciliation::OwnerRetired,
+    );
+}
+
+#[test]
+fn uncertain_create_from_wire_rejects_same_id_successors_after_completion_loss() {
+    let edge = EdgeId::from_u128(9);
+    let created_node = NodeId::from_u128(2);
+    let (runtime, view, mut session) = bound_test_session();
+    let submission =
+        begin_bound_search_submission(&mut session, &view, bound_connection_start(&view));
+    let ticket = submission.ticket();
+    let command = session
+        .bind_submission(submission)
+        .expect("create-from-wire submission binds")
+        .expect("create-from-wire submission emits one command");
+    let completion = runtime.execute(command);
+    let applied = completion
+        .result()
+        .expect("create-from-wire execution completes")
+        .applied()
+        .expect("create-from-wire execution applies");
+    let installed = applied.patch().snapshot();
+    let installed_node = installed
+        .node_lifetime_key(created_node)
+        .expect("created node lifetime");
+    let installed_target = installed
+        .port_instance_key(target_port())
+        .expect("created target lifetime");
+    let installed_edge = installed
+        .edge_instance_key(edge)
+        .expect("created edge lifetime");
+
+    session
+        .submission_outcome_unknown(ticket)
+        .expect("lost completion becomes uncertain");
+
+    runtime
+        .execute(GraphCommand::topology(
+            installed.version(),
+            TopologyEdit::new().remove_node(created_node, IncidentEdgePolicy::Cascade),
+        ))
+        .into_result()
+        .expect("created node removal executes")
+        .applied()
+        .expect("created node removal applies");
+    let removed = runtime
+        .snapshot()
+        .expect("removed create-from-wire snapshot");
+    runtime
+        .execute(GraphCommand::undo(removed.version()))
+        .into_result()
+        .expect("created node restoration executes")
+        .applied()
+        .expect("created node restoration applies");
+    let successor = runtime.snapshot().expect("same-id successor snapshot");
+    assert_ne!(
+        successor.node_lifetime_key(created_node),
+        Some(installed_node)
+    );
+    assert_ne!(
+        successor.port_instance_key(target_port()),
+        Some(installed_target)
+    );
+    assert_ne!(successor.edge_instance_key(edge), Some(installed_edge));
+
+    let reconciled = session
+        .reconcile_authoritative_state()
+        .expect("successor identities reconcile deterministically");
+    assert!(reconciled.damage().edges);
+    assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
+    assert_eq!(
+        session.presentation().terminal(),
+        Some(InteractionTerminalReason::OwnerRetired)
+    );
+    assert!(session.presentation().connection().is_none());
+}
+
+#[test]
+fn uncertain_create_from_wire_accepts_the_original_installation_after_an_unrelated_revision() {
+    let (runtime, view, mut session) = bound_test_session();
+    let submission =
+        begin_bound_search_submission(&mut session, &view, bound_connection_start(&view));
+    let ticket = submission.ticket();
+    let command = session
+        .bind_submission(submission)
+        .expect("create-from-wire submission binds")
+        .expect("create-from-wire emits one command");
+    runtime
+        .execute(command)
+        .into_result()
+        .expect("create-from-wire executes")
+        .applied()
+        .expect("create-from-wire applies");
+    session
+        .submission_outcome_unknown(ticket)
+        .expect("lost completion becomes uncertain");
+
+    let installed = runtime
+        .snapshot()
+        .expect("installed create-from-wire graph");
+    let source = installed
+        .graph()
+        .node(&source_node())
+        .expect("unrelated source node");
+    runtime
+        .execute(GraphCommand::set_node_geometry(
+            installed.version(),
+            [
+                NodeGeometryEdit::new(source_node()).with_position(CanvasPoint {
+                    x: source.pos.x + 1.0,
+                    y: source.pos.y,
+                }),
+            ],
+        ))
+        .into_result()
+        .expect("unrelated revision executes")
+        .applied()
+        .expect("unrelated revision applies");
+
+    session
+        .reconcile_authoritative_state()
+        .expect("original installation remains causally valid");
+    assert_eq!(
+        session.presentation().connection_settlement(),
+        Some(ConnectionSettlementPresentation::AwaitingPublication)
+    );
+    assert_eq!(
+        session.presentation().terminal(),
+        Some(InteractionTerminalReason::Applied)
+    );
+    publish_connection_fixture_geometry(&view);
+    session
+        .reconcile_authoritative_state()
+        .expect("published original installation settles");
+    assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
+}
+
+#[test]
+fn uncertain_create_from_wire_rejects_a_replaced_declared_non_target_port() {
+    let edge = EdgeId::from_u128(9);
+    let created_node = NodeId::from_u128(2);
+    let auxiliary_port = PortId::from_u128(3);
+    let (runtime, view, mut session) = bound_test_session();
+    let start = bound_connection_start(&view);
+    let position = bound_position(&session, &view, 0.0, 0.0);
+    session
+        .activate_connection_search(start, position)
+        .expect("activate multi-port create search");
+    let request = session.search_request().expect("multi-port search request");
+    session
+        .search_ready(&request, 1)
+        .expect("multi-port search ready");
+    let selection = session
+        .create_search_selection(
+            &request,
+            target_port(),
+            prospective_creation_with_auxiliary_port(auxiliary_port),
+        )
+        .expect("multi-port selection query")
+        .expect("multi-port selection");
+    let submission = take_submission(
+        session
+            .select_search_result(selection)
+            .expect("multi-port selection submission"),
+    );
+    let ticket = submission.ticket();
+    let command = session
+        .bind_submission(submission)
+        .expect("multi-port submission binds")
+        .expect("multi-port submission emits one command");
+    runtime
+        .execute(command)
+        .into_result()
+        .expect("multi-port create executes")
+        .applied()
+        .expect("multi-port create applies");
+    session
+        .submission_outcome_unknown(ticket)
+        .expect("multi-port completion loss becomes uncertain");
+    let installed = runtime.snapshot().expect("multi-port installed graph");
+    let installed_target = installed
+        .port_instance_key(target_port())
+        .expect("installed target lifetime");
+    let installed_auxiliary = installed
+        .port_instance_key(auxiliary_port)
+        .expect("installed auxiliary lifetime");
+
+    runtime
+        .execute(GraphCommand::topology(
+            installed.version(),
+            TopologyEdit::new().replace_node_ports(
+                created_node,
+                [TopologyPort::new(
+                    target_port(),
+                    test_port(created_node, "in", PortDirection::In),
+                )],
+                IncidentEdgePolicy::Reject,
+            ),
+        ))
+        .into_result()
+        .expect("remove declared auxiliary port")
+        .applied()
+        .expect("auxiliary removal applies");
+    let removed = runtime.snapshot().expect("auxiliary removed graph");
+    runtime
+        .execute(GraphCommand::topology(
+            removed.version(),
+            TopologyEdit::new().replace_node_ports(
+                created_node,
+                [
+                    TopologyPort::new(
+                        target_port(),
+                        test_port(created_node, "in", PortDirection::In),
+                    ),
+                    TopologyPort::new(
+                        auxiliary_port,
+                        test_port(created_node, "aux", PortDirection::Out),
+                    ),
+                ],
+                IncidentEdgePolicy::Reject,
+            ),
+        ))
+        .into_result()
+        .expect("restore declared auxiliary port")
+        .applied()
+        .expect("auxiliary restoration applies");
+    let successor = runtime.snapshot().expect("auxiliary successor graph");
+    assert_eq!(
+        successor.port_instance_key(target_port()),
+        Some(installed_target),
+        "unchanged target lifetime must remain exact",
+    );
+    assert_ne!(
+        successor.port_instance_key(auxiliary_port),
+        Some(installed_auxiliary),
+        "declared non-target port must have a successor lifetime",
+    );
+
+    session
+        .reconcile_authoritative_state()
+        .expect("declared port replacement reconciles");
+    assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
+    assert_eq!(
+        session.presentation().terminal(),
+        Some(InteractionTerminalReason::OwnerRetired)
+    );
+    assert!(successor.graph().edge(&edge).is_some());
+}
+
+#[test]
+fn create_from_wire_reconnect_preserves_the_preexisting_edge_identity() {
+    let edge = EdgeId::from_u128(9);
+    let created_node = NodeId::from_u128(3);
+    let created_port = PortId::from_u128(3);
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(reconnect_graph(edge))
+        .expect("create-from-wire reconnect runtime");
+    let view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("create-from-wire reconnect view");
+    let before = runtime.snapshot().expect("preexisting reconnect graph");
+    let original_edge = before
+        .edge_instance_key(edge)
+        .expect("preexisting edge lifetime");
+    let fixed = before
+        .port_instance_key(source_port())
+        .expect("fixed source lifetime");
+    let detached = before
+        .port_instance_key(target_port())
+        .expect("detached target lifetime");
+    let binding = ConnectionGestureBinding::reconnect(
+        original_edge,
+        EdgeEndpoint::To,
+        detached,
+        fixed,
+        NodeGraphConnectionMode::Strict,
+    )
+    .expect("exact reconnect binding");
+    let mut node = test_node(CanvasPoint { x: 200.0, y: 0.0 });
+    node.ports = vec![created_port];
+    let creation = NodeCreation::from_parts_for_test(
+        created_node,
+        node,
+        vec![(
+            created_port,
+            test_port(created_node, "in", PortDirection::In),
+        )],
+    );
+    let target =
+        ConnectionCommitTarget::from_node_creation(&before, created_port, creation.clone())
+            .expect("prospective reconnect target");
+    let intent = ConnectionSettlementIntent::new(
+        view.provenance().expect("reconnect provenance"),
+        binding,
+        target,
+        before.revision(),
+    );
+    let edit = creation
+        .into_topology_edit()
+        .connection(ConnectionEdit::reconnect(
+            edge,
+            EdgeEndpoint::To,
+            created_port,
+            NodeGraphConnectionMode::Strict,
+        ));
+    let result = runtime
+        .execute(GraphCommand::topology(before.version(), edit))
+        .into_result()
+        .expect("create-from-wire reconnect executes");
+    let applied = result
+        .applied()
+        .expect("create-from-wire reconnect applies");
+    let installed = applied.patch().snapshot();
+
+    assert_eq!(installed.edge_instance_key(edge), Some(original_edge));
+    assert!(
+        ConnectionSettlementOwner::awaiting_publication(intent, installed)
+            .expect("the applied snapshot proves the exact reconnect intent")
+            .publication_proof()
+            .is_some(),
+        "reconnect settlement must not require the preexisting edge to be born with the new node",
+    );
+}
+
+#[test]
+fn uncertain_connect_accepts_later_satisfaction_without_issuing_a_retry() {
+    let edge = EdgeId::from_u128(9);
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(reconnect_graph(edge))
+        .expect("later satisfaction runtime");
+    let view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("later satisfaction view");
+    let connected = runtime.snapshot().expect("initial connected snapshot");
+    runtime
+        .execute(GraphCommand::disconnect(connected.version(), edge))
+        .into_result()
+        .expect("disconnect before uncertain connect")
+        .applied()
+        .expect("disconnect applies");
+    let pending = runtime.snapshot().expect("uncertain connect snapshot");
+    let target = pending
+        .port_instance_key(target_port())
+        .expect("uncertain target lifetime");
+    let intent = bound_connect_settlement_intent(&view, &pending, edge, target);
+    let mut owner = ConnectionSettlementOwner::uncertain(intent).expect("uncertain connect owner");
+
+    runtime
+        .execute(GraphCommand::connect(
+            pending.version(),
+            edge,
+            source_port(),
+            target_port(),
+            NodeGraphConnectionMode::Strict,
+        ))
+        .into_result()
+        .expect("late authoritative connect")
+        .applied()
+        .expect("late authoritative connect applies");
+    let satisfied = runtime.snapshot().expect("later satisfied snapshot");
+    assert_eq!(
+        owner.reconcile(
+            &satisfied,
+            view.graph_policy()
+                .expect("later satisfaction graph policy"),
+        ),
+        ConnectionSettlementReconciliation::AwaitingPublication,
+    );
+    assert!(!owner.can_retry());
+    assert!(
+        !owner.is_published(
+            &satisfied,
+            &view
+                .geometry_snapshot()
+                .expect("unpublished satisfied geometry"),
+        )
+    );
+
+    publish_connection_fixture_geometry(&view);
+    assert!(
+        owner.is_published(
+            &satisfied,
+            &view
+                .geometry_snapshot()
+                .expect("published satisfied geometry"),
+        )
+    );
+}
+
+#[test]
+fn hidden_final_route_is_published_by_exact_authoritative_absence() {
+    let edge = EdgeId::from_u128(9);
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(hidden_reconnect_graph(edge))
+        .expect("hidden-route runtime");
+    let view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("hidden-route view");
+    let snapshot = runtime.snapshot().expect("hidden-route snapshot");
+    let intent = bound_reconnect_settlement_intent(&view, &snapshot, edge);
+    let owner = ConnectionSettlementOwner::awaiting_publication(intent, &snapshot)
+        .expect("the hidden edge still proves the exact reconnect intent");
+    let geometry = view
+        .geometry_snapshot()
+        .expect("hidden route geometry snapshot");
+
+    assert!(geometry.route(edge).is_none());
+    assert!(owner.is_published(&snapshot, &geometry));
+}
+
+#[test]
+fn connection_uncertainty_retains_projection_until_cancel_or_explicit_new_ticket_retry() {
+    let (runtime, view, mut retrying) = bound_test_session();
+    let submission =
+        begin_bound_search_submission(&mut retrying, &view, bound_connection_start(&view));
+    let first_ticket = submission.ticket();
+    let command = retrying
+        .bind_submission(submission)
+        .expect("uncertain connection submission binds")
+        .expect("uncertain connection has an admitted command");
+    drop(command);
+
+    retrying
+        .submission_outcome_unknown(first_ticket)
+        .expect("post-admission loss becomes uncertain");
+    let uncertain = retrying.presentation();
+    assert_eq!(uncertain.phase(), CanvasInteractionPhase::Committing);
+    assert_eq!(
+        uncertain.terminal(),
+        Some(InteractionTerminalReason::Uncertain)
+    );
+    assert_eq!(
+        uncertain.connection().unwrap().search(),
+        Some(ConnectionSearchStatus::Uncertain)
+    );
+    assert_eq!(uncertain.connection().unwrap().ticket(), None);
+    let capability = match uncertain.connection_settlement() {
+        Some(ConnectionSettlementPresentation::Uncertain {
+            capability,
+            can_retry: false,
+        }) => capability,
+        settlement => panic!("expected non-retryable uncertainty, got {settlement:?}"),
+    };
+
+    let ignored = retrying
+        .cancel()
+        .expect("ordinary cancel cannot revoke uncertain post-admission ownership");
+    assert!(ignored.effects().is_empty());
+    assert_eq!(ignored.damage(), InteractionDamage::default());
+    assert_eq!(
+        retrying.presentation().connection_settlement(),
+        Some(ConnectionSettlementPresentation::Uncertain {
+            capability,
+            can_retry: false,
+        })
+    );
+
+    assert!(
+        matches!(
+            retrying.retry_connection_settlement(capability),
+            Err(CanvasInteractionError::ConnectionSettlementRetryNotReady)
+        ),
+        "the admission revision cannot prove that an uncertain command was absent",
+    );
+
+    let snapshot = runtime.snapshot().expect("uncertain runtime snapshot");
+    let source = snapshot
+        .graph()
+        .node(&source_node())
+        .expect("source node remains present");
+    runtime
+        .execute(GraphCommand::set_node_geometry(
+            snapshot.version(),
+            [
+                NodeGeometryEdit::new(source_node()).with_position(CanvasPoint {
+                    x: source.pos.x + 1.0,
+                    y: source.pos.y,
+                }),
+            ],
+        ))
+        .into_result()
+        .expect("later authoritative revision");
+    retrying
+        .reconcile_graph()
+        .expect("later absence is reconciled");
+    assert_eq!(
+        retrying.presentation().connection_settlement(),
+        Some(ConnectionSettlementPresentation::Uncertain {
+            capability,
+            can_retry: true,
+        })
+    );
+
+    let retried = retrying
+        .retry_connection_settlement(capability)
+        .expect("user-confirmed retry re-enters submission");
+    let retry_submission = take_submission(retried);
+    assert_ne!(retry_submission.ticket(), first_ticket);
+    assert_eq!(
+        retrying.presentation().phase(),
+        CanvasInteractionPhase::Committing
+    );
+    assert_eq!(
+        retrying.presentation().connection().unwrap().ticket(),
+        Some(retry_submission.ticket())
+    );
+    assert_eq!(retrying.presentation().terminal(), None);
+    let retry_ticket = retry_submission.ticket();
+    let retry_command = retrying
+        .bind_submission(retry_submission)
+        .expect("retry submission binds")
+        .expect("retry produces a fresh command");
+    drop(retry_command);
+    retrying
+        .submission_outcome_unknown(retry_ticket)
+        .expect("retry attempt becomes independently uncertain");
+    let successor_capability = match retrying.presentation().connection_settlement() {
+        Some(ConnectionSettlementPresentation::Uncertain { capability, .. }) => capability,
+        settlement => panic!("expected successor uncertainty, got {settlement:?}"),
+    };
+    assert_ne!(successor_capability, capability);
+    assert!(matches!(
+        retrying.retry_connection_settlement(capability),
+        Err(CanvasInteractionError::ConnectionSettlementStaleCapability)
+    ));
+    assert!(matches!(
+        retrying.cancel_connection_settlement(capability),
+        Err(CanvasInteractionError::ConnectionSettlementStaleCapability)
+    ));
+    assert_eq!(
+        retrying.presentation().connection_settlement(),
+        Some(ConnectionSettlementPresentation::Uncertain {
+            capability: successor_capability,
+            can_retry: false,
+        })
+    );
+    retrying
+        .cancel_connection_settlement(successor_capability)
+        .expect("current capability cancels only its own attempt");
+
+    let (_runtime, view, mut cancelled) = bound_test_session();
+    let submission =
+        begin_bound_search_submission(&mut cancelled, &view, bound_connection_start(&view));
+    let ticket = submission.ticket();
+    let command = cancelled
+        .bind_submission(submission)
+        .expect("cancel fixture submission binds")
+        .expect("cancel fixture has an admitted command");
+    drop(command);
+    cancelled
+        .submission_outcome_unknown(ticket)
+        .expect("cancel fixture becomes uncertain");
+    let capability = match cancelled.presentation().connection_settlement() {
+        Some(ConnectionSettlementPresentation::Uncertain { capability, .. }) => capability,
+        settlement => panic!("expected cancellable uncertainty, got {settlement:?}"),
+    };
+    cancelled
+        .cancel_connection_settlement(capability)
+        .expect("explicit cancel clears uncertainty");
+    assert_eq!(
+        cancelled.presentation().phase(),
+        CanvasInteractionPhase::Idle
+    );
+    assert!(cancelled.presentation().connection().is_none());
+    assert_eq!(
+        cancelled.presentation().terminal(),
+        Some(InteractionTerminalReason::Cancelled)
+    );
+}
+
+#[test]
+fn uncertain_connection_retry_rebinds_the_same_reconciler_to_the_fresh_revision() {
+    let (runtime, view, mut session) = bound_test_session();
+    let submission =
+        begin_bound_search_submission(&mut session, &view, bound_connection_start(&view));
+    let first_ticket = submission.ticket();
+    let first_command = session
+        .bind_submission(submission)
+        .expect("first uncertain submission binds")
+        .expect("first uncertain submission emits a command");
+    drop(first_command);
+    session
+        .submission_outcome_unknown(first_ticket)
+        .expect("first attempt becomes uncertain");
+
+    let before_retry = runtime.snapshot().expect("pre-retry graph");
+    let source = before_retry
+        .graph()
+        .node(&source_node())
+        .expect("source remains present");
+    runtime
+        .execute(GraphCommand::set_node_geometry(
+            before_retry.version(),
+            [
+                NodeGeometryEdit::new(source_node()).with_position(CanvasPoint {
+                    x: source.pos.x + 1.0,
+                    y: source.pos.y,
+                }),
+            ],
+        ))
+        .into_result()
+        .expect("later absence revision executes")
+        .applied()
+        .expect("later absence revision applies");
+    session
+        .reconcile_graph()
+        .expect("later absence authorizes explicit retry");
+    let capability = match session.presentation().connection_settlement() {
+        Some(ConnectionSettlementPresentation::Uncertain {
+            capability,
+            can_retry: true,
+        }) => capability,
+        settlement => panic!("expected retryable uncertainty, got {settlement:?}"),
+    };
+
+    let retried = session
+        .retry_connection_settlement(capability)
+        .expect("exact capability begins a fresh attempt");
+    let retry_submission = take_submission(retried);
+    let prefix_snapshot = runtime.snapshot().expect("prefix base snapshot");
+    let prefix_source = prefix_snapshot
+        .graph()
+        .node(&source_node())
+        .expect("source remains present during prefix");
+    runtime
+        .execute(GraphCommand::set_node_geometry(
+            prefix_snapshot.version(),
+            [
+                NodeGeometryEdit::new(source_node()).with_position(CanvasPoint {
+                    x: prefix_source.pos.x + 1.0,
+                    y: prefix_source.pos.y,
+                }),
+            ],
+        ))
+        .into_result()
+        .expect("prefix advances the authoritative revision")
+        .applied()
+        .expect("prefix geometry applies");
+    let retry_submission = take_submission(
+        session
+            .resume_submission_after_prefix(retry_submission)
+            .expect("exact retry is revalidated after its command prefix"),
+    );
+    let retry_ticket = retry_submission.ticket();
+    let retry_command = session
+        .bind_submission(retry_submission)
+        .expect("retry submission binds")
+        .expect("retry emits a command against the fresh revision");
+    let completion = runtime.execute(retry_command);
+    assert_eq!(completion.kind(), CommandExecutionKind::Applied);
+    session
+        .complete_submission(retry_ticket, completion)
+        .expect("retry completion advances the retained reconciler");
+    assert_eq!(
+        session.presentation().connection_settlement(),
+        Some(ConnectionSettlementPresentation::AwaitingPublication)
+    );
+
+    publish_connection_fixture_geometry(&view);
+    session
+        .reconcile_authoritative_state()
+        .expect("published retry route closes the retained owner");
+    assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
+    assert_eq!(
+        session.presentation().terminal(),
+        Some(InteractionTerminalReason::Applied)
+    );
+}
+
+#[test]
+fn cancelling_uncertainty_after_a_lost_applied_callback_waits_for_route_publication() {
+    let (runtime, view, mut session) = bound_test_session();
+    let submission =
+        begin_bound_search_submission(&mut session, &view, bound_connection_start(&view));
+    let ticket = submission.ticket();
+    let command = session
+        .bind_submission(submission)
+        .expect("lost callback submission binds")
+        .expect("lost callback submission emits a command");
+    session
+        .submission_outcome_unknown(ticket)
+        .expect("transport loss retains uncertainty");
+    let capability = match session.presentation().connection_settlement() {
+        Some(ConnectionSettlementPresentation::Uncertain { capability, .. }) => capability,
+        settlement => panic!("expected uncertainty before lost completion, got {settlement:?}"),
+    };
+    let completion = runtime.execute(command);
+    assert_eq!(completion.kind(), CommandExecutionKind::Applied);
+
+    session
+        .cancel_connection_settlement(capability)
+        .expect("cancel reconciles authoritative graph before clearing projection");
+    assert_eq!(
+        session.presentation().connection_settlement(),
+        Some(ConnectionSettlementPresentation::AwaitingPublication),
+    );
+    assert!(session.presentation().connection().is_some());
+
+    publish_connection_fixture_geometry(&view);
+    session
+        .reconcile_authoritative_state()
+        .expect("published route settles the lost applied callback");
+    assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
+    assert_eq!(
+        session.presentation().terminal(),
+        Some(InteractionTerminalReason::Applied),
+    );
+}
+
+#[test]
+fn conflicted_uncertain_retry_retains_a_fresh_retryable_capability() {
+    let (runtime, view, mut session) = bound_test_session();
+    let submission =
+        begin_bound_search_submission(&mut session, &view, bound_connection_start(&view));
+    let first_ticket = submission.ticket();
+    let first_command = session
+        .bind_submission(submission)
+        .expect("first attempt binds")
+        .expect("first attempt emits a command");
+    drop(first_command);
+    session
+        .submission_outcome_unknown(first_ticket)
+        .expect("first attempt becomes uncertain");
+    let absence = runtime.snapshot().expect("absence base");
+    runtime
+        .execute(GraphCommand::set_node_position(
+            absence.version(),
+            source_node(),
+            CanvasPoint { x: 1.0, y: 0.0 },
+        ))
+        .into_result()
+        .expect("absence revision executes")
+        .applied()
+        .expect("absence revision applies");
+    session
+        .reconcile_graph()
+        .expect("absence authorizes the retry");
+    let capability = match session.presentation().connection_settlement() {
+        Some(ConnectionSettlementPresentation::Uncertain {
+            capability,
+            can_retry: true,
+        }) => capability,
+        settlement => panic!("expected retryable uncertainty, got {settlement:?}"),
+    };
+    let retry_submission = take_submission(
+        session
+            .retry_connection_settlement(capability)
+            .expect("retry emits a new exact submission"),
+    );
+    let retry_ticket = retry_submission.ticket();
+    let retry_command = session
+        .bind_submission(retry_submission)
+        .expect("retry submission binds")
+        .expect("retry submission emits a command");
+    let advance = runtime.snapshot().expect("retry command base");
+    runtime
+        .execute(GraphCommand::set_node_position(
+            advance.version(),
+            source_node(),
+            CanvasPoint { x: 2.0, y: 0.0 },
+        ))
+        .into_result()
+        .expect("conflicting prefix executes")
+        .applied()
+        .expect("conflicting prefix applies");
+    let conflict = runtime.execute(retry_command);
+    assert_eq!(conflict.kind(), CommandExecutionKind::Conflict);
+    session
+        .complete_submission(retry_ticket, conflict)
+        .expect("conflict is retained by the settlement reducer");
+
+    let retryable_capability = match session.presentation().connection_settlement() {
+        Some(ConnectionSettlementPresentation::Retryable {
+            capability,
+            can_retry: true,
+        }) => capability,
+        settlement => panic!("expected retryable settlement, got {settlement:?}"),
+    };
+    assert_ne!(retryable_capability, capability);
+    let next = session
+        .retry_connection_settlement(retryable_capability)
+        .expect("retryable settlement emits another exact attempt");
+    assert_ne!(take_submission(next).ticket(), retry_ticket);
+}
+
+#[test]
+fn conflicted_retry_with_an_exact_authoritative_installation_normalizes_to_applied() {
+    let (runtime, view, mut session) = bound_test_session();
+    let submission =
+        begin_bound_search_submission(&mut session, &view, bound_connection_start(&view));
+    let first_ticket = submission.ticket();
+    let first_command = session
+        .bind_submission(submission)
+        .expect("first attempt binds")
+        .expect("first attempt emits a command");
+    drop(first_command);
+    session
+        .submission_outcome_unknown(first_ticket)
+        .expect("first attempt becomes uncertain");
+
+    let absence = runtime.snapshot().expect("absence base");
+    runtime
+        .execute(GraphCommand::set_node_position(
+            absence.version(),
+            source_node(),
+            CanvasPoint { x: 1.0, y: 0.0 },
+        ))
+        .into_result()
+        .expect("absence revision executes")
+        .applied()
+        .expect("absence revision applies");
+    session
+        .reconcile_graph()
+        .expect("authoritative absence authorizes retry");
+    let capability = match session.presentation().connection_settlement() {
+        Some(ConnectionSettlementPresentation::Uncertain {
+            capability,
+            can_retry: true,
+        }) => capability,
+        settlement => panic!("expected retryable uncertainty, got {settlement:?}"),
+    };
+    let retry_submission = take_submission(
+        session
+            .retry_connection_settlement(capability)
+            .expect("retry emits a fresh exact submission"),
+    );
+    let retry_ticket = retry_submission.ticket();
+    let retry_command = session
+        .bind_submission(retry_submission)
+        .expect("retry submission binds")
+        .expect("retry emits a command");
+
+    let ignored = session
+        .cancel()
+        .expect("ordinary cancel cannot revoke a bound retry");
+    assert!(ignored.effects().is_empty());
+    assert_eq!(ignored.damage(), InteractionDamage::default());
+    assert_eq!(
+        session.presentation().connection().unwrap().ticket(),
+        Some(retry_ticket)
+    );
+
+    let lost_applied = runtime.execute(retry_command.clone());
+    assert_eq!(lost_applied.kind(), CommandExecutionKind::Applied);
+    let conflict = runtime.execute(retry_command);
+    assert_eq!(conflict.kind(), CommandExecutionKind::Conflict);
+    session
+        .complete_submission(retry_ticket, conflict)
+        .expect("the exact authoritative installation settles the conflicted retry");
+
+    assert_eq!(
+        session.presentation().connection_settlement(),
+        Some(ConnectionSettlementPresentation::AwaitingPublication)
+    );
+    assert_eq!(
+        session.presentation().terminal(),
+        Some(InteractionTerminalReason::Applied)
     );
 }
 
@@ -3967,6 +5470,64 @@ fn auto_pan_commits_viewport_before_issuing_alignment_query() {
 }
 
 #[test]
+fn consecutive_auto_pan_preserves_drag_anchor_through_release() {
+    let mut session = test_session(CanvasInteractionConfig::default());
+    let node = NodeId::from_u128(10);
+    let start = node_drag_start(node, [node], CanvasPoint::default(), SelectionMode::Replace);
+    session
+        .press_for_test(CanvasPressTarget::NodeDrag(start), position(100.0, 40.0))
+        .unwrap();
+    session.move_to(position(195.0, 40.0)).unwrap();
+
+    session
+        .tick(1.0 / 60.0, ViewSize::new(200.0, 120.0))
+        .unwrap();
+    let first_delta = session
+        .presentation()
+        .node_drag()
+        .expect("first auto-pan frame keeps the node drag active")
+        .delta();
+
+    session
+        .tick(1.0 / 60.0, ViewSize::new(200.0, 120.0))
+        .unwrap();
+    let pending_delta = session
+        .presentation()
+        .node_drag()
+        .expect("second auto-pan frame keeps the node drag active")
+        .delta();
+    assert!(
+        pending_delta.x - first_delta.x > 1.0,
+        "each auto-pan frame must accumulate canvas movement: {first_delta:?} -> {pending_delta:?}"
+    );
+
+    let released = session.release(position(195.0, 40.0)).unwrap();
+    let committed_delta = session
+        .presentation()
+        .node_drag()
+        .expect("release retains the committing node presentation")
+        .delta();
+    assert!(
+        (committed_delta.x - pending_delta.x).abs() <= f32::EPSILON * pending_delta.x.abs(),
+        "release must not jump from its last pending presentation: {pending_delta:?} -> {committed_delta:?}"
+    );
+    assert_eq!(committed_delta.y, pending_delta.y);
+
+    let mut effects = released.into_dispatch().effects;
+    let CanvasInteractionEffect::SubmitGraph { submission } = effects.remove(0) else {
+        panic!("node release must submit its accumulated move");
+    };
+    assert_eq!(
+        submission
+            .move_nodes_for_test()
+            .expect("node release submits a move intent")
+            .delta(),
+        pending_delta
+    );
+    assert!(effects.is_empty());
+}
+
+#[test]
 fn failed_auto_pan_reprojection_preserves_node_drag_state() {
     let node = NodeId::from_u128(10);
     let start = node_drag_start(node, [node], CanvasPoint::default(), SelectionMode::Replace);
@@ -4636,6 +6197,12 @@ fn published_edge_route_for_snapshot(
         snapshot
             .edge_instance_key(edge)
             .expect("fixture edge lifetime"),
+        snapshot
+            .port_instance_key(source_port())
+            .expect("fixture source-port lifetime"),
+        snapshot
+            .port_instance_key(target_port())
+            .expect("fixture target-port lifetime"),
         facts,
     )
     .expect("fixture view and edge provenance match")
@@ -4663,6 +6230,29 @@ fn reconnect_graph(edge: EdgeId) -> Graph {
         )
         .build()
         .expect("valid reconnect graph")
+}
+
+fn hidden_reconnect_graph(edge: EdgeId) -> Graph {
+    let mut source = test_node(CanvasPoint { x: 0.0, y: 0.0 });
+    source.ports.push(source_port());
+    let mut target = test_node(CanvasPoint { x: 100.0, y: 0.0 });
+    target.ports.push(target_port());
+    let mut hidden_edge = Edge::new(EdgeKind::Data, source_port(), target_port());
+    hidden_edge.hidden = true;
+    GraphBuilder::new(GraphId::from_u128(1))
+        .with_node(source_node(), source)
+        .with_port(
+            source_port(),
+            test_port(source_node(), "out", PortDirection::Out),
+        )
+        .with_node(NodeId::from_u128(2), target)
+        .with_port(
+            target_port(),
+            test_port(NodeId::from_u128(2), "in", PortDirection::In),
+        )
+        .with_edge(edge, hidden_edge)
+        .build()
+        .expect("valid hidden reconnect graph")
 }
 
 fn parallel_edge_graph() -> Graph {
@@ -4745,6 +6335,62 @@ fn publish_parallel_edge_geometry(view: &ViewSession) {
     }
     view.submit_feedback(collector.finish().expect("complete geometry feedback"))
         .expect("publish routed geometry");
+}
+
+fn publish_connection_fixture_geometry(view: &ViewSession) {
+    let frame = view
+        .frame(FrameRequest::new(
+            CanvasRect {
+                origin: CanvasPoint {
+                    x: -100.0,
+                    y: -100.0,
+                },
+                size: CanvasSize {
+                    width: 400.0,
+                    height: 300.0,
+                },
+            },
+            RendererStamp::new("test.node", 1),
+        ))
+        .expect("connection geometry frame");
+    let collector = frame.collector();
+    for node in frame.nodes() {
+        let source = node.id() == source_node();
+        let node_x = if source { 0.0 } else { 100.0 };
+        let outward = if source {
+            HandlePosition::Right
+        } else {
+            HandlePosition::Left
+        };
+        let node_bounds = ViewRect::new(ViewPoint::new(node_x, 0.0), ViewSize::new(80.0, 80.0));
+        let port_bounds = ViewRect::new(
+            ViewPoint::new(if source { 74.0 } else { 94.0 }, 34.0),
+            ViewSize::new(12.0, 12.0),
+        );
+        let route_anchor = ViewPoint::new(if source { 80.0 } else { 100.0 }, 40.0);
+        let [port] = node.ports() else {
+            panic!("connection fixture nodes each expose one port");
+        };
+        let mut layout = node.begin_layout(node_bounds);
+        layout
+            .port_rendered(
+                port.layout_target(),
+                port_bounds,
+                port_bounds,
+                route_anchor,
+                outward,
+            )
+            .expect("connection port geometry");
+        collector
+            .layout(layout.finish().expect("complete connection node layout"))
+            .expect("collect connection node layout");
+    }
+    view.submit_feedback(
+        collector
+            .finish()
+            .expect("complete connection geometry feedback"),
+    )
+    .expect("publish connection route geometry");
 }
 
 fn node_drag_start(
@@ -4862,6 +6508,80 @@ fn bound_connection_start(view: &ViewSession) -> ConnectionInteractionStart {
     )
     .expect("bound connection start query")
     .expect("bound source permits connection")
+}
+
+fn bound_reconnect_settlement_intent(
+    view: &ViewSession,
+    snapshot: &GraphSnapshot,
+    edge: EdgeId,
+) -> ConnectionSettlementIntent {
+    let source = snapshot
+        .port_instance_key(source_port())
+        .expect("settlement source lifetime");
+    let target = snapshot
+        .port_instance_key(target_port())
+        .expect("settlement target lifetime");
+    let binding = ConnectionGestureBinding::reconnect(
+        snapshot
+            .edge_instance_key(edge)
+            .expect("settlement edge lifetime"),
+        EdgeEndpoint::To,
+        target,
+        source,
+        NodeGraphConnectionMode::Strict,
+    )
+    .expect("exact reconnect binding");
+    let start = ConnectionInteractionStart::new_with_provenance(
+        view.provenance().expect("settlement view provenance"),
+        snapshot.version(),
+        binding,
+        EdgeEndpoint::From,
+        CanvasPoint { x: 80.0, y: 40.0 },
+        HandlePosition::Right,
+        HandlePosition::Left,
+        false,
+    )
+    .expect("bound reconnect settlement start");
+    ConnectionSettlementIntent::new(
+        start.provenance,
+        start.binding,
+        ConnectionCommitTarget::Existing(target),
+        snapshot.revision(),
+    )
+}
+
+fn bound_connect_settlement_intent(
+    view: &ViewSession,
+    snapshot: &GraphSnapshot,
+    edge: EdgeId,
+    target: PortInstanceKey,
+) -> ConnectionSettlementIntent {
+    let source = snapshot
+        .port_instance_key(source_port())
+        .expect("settlement source lifetime");
+    let binding = ConnectionGestureBinding::connect(
+        source,
+        EdgeEndpoint::From,
+        edge,
+        NodeGraphConnectionMode::Strict,
+    );
+    let start = ConnectionInteractionStart::new_with_provenance(
+        view.provenance().expect("settlement view provenance"),
+        snapshot.version(),
+        binding,
+        EdgeEndpoint::From,
+        CanvasPoint { x: 80.0, y: 40.0 },
+        HandlePosition::Right,
+        HandlePosition::Left,
+        false,
+    )
+    .expect("bound connect settlement start");
+    ConnectionSettlementIntent::new(
+        start.provenance,
+        start.binding,
+        ConnectionCommitTarget::Existing(target),
+        snapshot.revision(),
+    )
 }
 
 fn begin_bound_search_submission(
@@ -5092,6 +6812,20 @@ fn prospective_creation() -> NodeCreation {
         node,
         model,
         vec![(target_port(), test_port(node, "in", PortDirection::In))],
+    )
+}
+
+fn prospective_creation_with_auxiliary_port(auxiliary_port: PortId) -> NodeCreation {
+    let node = NodeId::from_u128(2);
+    let mut model = test_node(CanvasPoint { x: 100.0, y: 0.0 });
+    model.ports = vec![target_port(), auxiliary_port];
+    NodeCreation::from_parts_for_test(
+        node,
+        model,
+        vec![
+            (target_port(), test_port(node, "in", PortDirection::In)),
+            (auxiliary_port, test_port(node, "aux", PortDirection::Out)),
+        ],
     )
 }
 

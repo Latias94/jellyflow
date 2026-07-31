@@ -476,6 +476,7 @@ fn node_snapshot_identity_never_revives_after_same_id_replacement_or_history_rep
     let initial_lifetime = initial
         .node_lifetime_key(node_id)
         .expect("initial snapshot owns node identity");
+    assert!(initial.node_lifetime_was_introduced_at(initial_lifetime, initial.revision()));
     assert_eq!(
         runtime.node_lifetime_key(node_id).unwrap(),
         Some(initial_lifetime),
@@ -512,6 +513,8 @@ fn node_snapshot_identity_never_revives_after_same_id_replacement_or_history_rep
         .node_lifetime_key(node_id)
         .expect("replacement snapshot owns a new node identity");
     assert_ne!(replaced_lifetime, initial_lifetime);
+    assert!(replaced.node_lifetime_was_introduced_at(replaced_lifetime, replaced.revision()));
+    assert!(!replaced.node_lifetime_was_introduced_at(replaced_lifetime, initial.revision()));
 
     undo(&runtime);
     assert_eq!(runtime.snapshot().unwrap().node_lifetime_key(node_id), None);
@@ -522,6 +525,7 @@ fn node_snapshot_identity_never_revives_after_same_id_replacement_or_history_rep
         .expect("undo restores the node under a new lifetime");
     assert_ne!(restored_lifetime, initial_lifetime);
     assert_ne!(restored_lifetime, replaced_lifetime);
+    assert!(restored.node_lifetime_was_introduced_at(restored_lifetime, restored.revision()));
 
     redo(&runtime);
     assert_eq!(runtime.snapshot().unwrap().node_lifetime_key(node_id), None);

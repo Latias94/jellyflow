@@ -10,8 +10,9 @@ use crate::presentation::{OpenGpuiPortCandidateState, OpenGpuiPortInteractionSta
 use crate::theme::{
     OPEN_GPUI_DEFAULT_PORT_EMPHASIZED_OUTLINE_WIDTH, OPEN_GPUI_DEFAULT_PORT_FOCUS_RING_WIDTH,
     OPEN_GPUI_DEFAULT_PORT_HIT_DIAMETER, OPEN_GPUI_DEFAULT_PORT_HOVER_MARKER_DIAMETER,
-    OPEN_GPUI_DEFAULT_PORT_MARKER_DIAMETER, OPEN_GPUI_DEFAULT_PORT_OUTLINE_WIDTH,
-    OpenGpuiGraphPalette, OpenGpuiGraphStyleCue, OpenGpuiGraphStyleSlot, OpenGpuiGraphTheme,
+    OPEN_GPUI_DEFAULT_PORT_LAYOUT_DIAMETER, OPEN_GPUI_DEFAULT_PORT_MARKER_DIAMETER,
+    OPEN_GPUI_DEFAULT_PORT_OUTLINE_WIDTH, OpenGpuiGraphPalette, OpenGpuiGraphStyleCue,
+    OpenGpuiGraphStyleSlot, OpenGpuiGraphTheme,
 };
 
 use super::OpenGpuiEdgeTone;
@@ -355,9 +356,13 @@ impl OpenGpuiGraphTheme {
             OPEN_GPUI_DEFAULT_PORT_HOVER_MARKER_DIAMETER,
         )
         .max(idle_diameter);
-        let layout_diameter = emphasized_diameter;
+        let layout_diameter = positive_or(
+            self.metrics.port_layout_diameter,
+            OPEN_GPUI_DEFAULT_PORT_LAYOUT_DIAMETER,
+        )
+        .max(emphasized_diameter);
         let visual_diameter = if visual_facts.emphasizes_marker() {
-            layout_diameter
+            emphasized_diameter
         } else {
             idle_diameter
         };
@@ -839,7 +844,14 @@ mod tests {
                                 assert_eq!(style.layout_diameter(), 12.0);
                                 assert_eq!(style.layout_diameter() * 0.5, 6.0);
                                 assert_eq!(style.minimum_hit_diameter(), 22.0);
-                                assert!(style.visual_diameter() <= style.layout_diameter());
+                                assert_eq!(
+                                    style.visual_diameter(),
+                                    if hovered || candidate != OpenGpuiPortCandidateVisual::Idle {
+                                        10.0
+                                    } else {
+                                        8.0
+                                    },
+                                );
                                 assert_eq!(style.has_focus_ring(), focused);
                                 assert_eq!(
                                     style.has_dashed_border(),

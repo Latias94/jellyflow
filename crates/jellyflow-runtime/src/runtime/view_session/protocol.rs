@@ -150,7 +150,6 @@ impl ViewSession {
             view_id,
             mut candidates,
             mut candidate_ids,
-            inactive_nodes,
             mut materialization_overflow,
             admission_work,
         ) = {
@@ -374,7 +373,6 @@ impl ViewSession {
                     incident_routing_index_entries_read,
                 )
             };
-            let inactive_nodes = state.derived.inactive_frame_nodes(&candidate_ids);
             let admission_work = FrameAdmissionWork {
                 nodes_visited: rebuild_visits,
                 query_cells_examined,
@@ -391,22 +389,17 @@ impl ViewSession {
                 state.id,
                 candidates,
                 candidate_ids,
-                inactive_nodes,
                 materialization_overflow,
                 admission_work,
             )
         };
-        let fact_nodes = candidate_ids
-            .union(&inactive_nodes)
-            .copied()
-            .collect::<BTreeSet<_>>();
         let port_nodes_in_render_order = candidates
             .iter()
             .map(|candidate| candidate.node)
             .collect::<Vec<_>>();
         let frame_facts = runtime
             .adapter_frame_node_facts(
-                &fact_nodes,
+                &candidate_ids,
                 &port_nodes_in_render_order,
                 request.materialization_budget.port_scan_limit(),
             )

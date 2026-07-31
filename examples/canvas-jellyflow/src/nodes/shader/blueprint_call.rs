@@ -24,7 +24,7 @@ use open_gpui::{
 };
 use open_gpui_ui_components::{Button, ButtonVariant};
 
-use super::{ShaderPort, port_element};
+use super::{ShaderPort, ShaderPortElement, port_element};
 use crate::product_catalog::{NativeProductCatalog, NativeProductNodePresentation};
 use crate::product_domain::blueprint::{
     BlueprintError, BlueprintIntent, BlueprintObservation, BlueprintPin, blueprint_default_data,
@@ -52,7 +52,6 @@ const BLUEPRINT_PIN_HORIZONTAL_PADDING: f32 = 9.0;
 const BLUEPRINT_STATIC_PORT_ROW_HEIGHT: f32 = 32.0;
 const BLUEPRINT_PIN_ROW_HEIGHT: f32 = 38.0;
 const BLUEPRINT_PIN_LIST_MAX_HEIGHT: f32 = 220.0;
-const BLUEPRINT_PORT_DIAMETER: f32 = 12.0;
 const BLUEPRINT_MIN_HEIGHT: f32 = 190.0;
 const BLUEPRINT_MAX_HEIGHT: f32 = 440.0;
 
@@ -323,6 +322,7 @@ impl Render for BlueprintCallNode {
                 .rounded(px(theme.radius.control))
                 .bg(theme.surface.inset);
             if let Some(input) = input {
+                let marker_diameter = input.layout_diameter;
                 let input_label_selector =
                     blueprint_port_label_selector(node_id, input.key.0.as_str());
                 row = row.child(
@@ -332,11 +332,12 @@ impl Render for BlueprintCallNode {
                         .child(
                             div()
                                 .absolute()
-                                .left(px(-(BLUEPRINT_BODY_HORIZONTAL_PADDING
-                                    + BLUEPRINT_PORT_DIAMETER / 2.0)))
-                                .top(px((BLUEPRINT_STATIC_PORT_ROW_HEIGHT
-                                    - BLUEPRINT_PORT_DIAMETER)
-                                    / 2.0))
+                                .left(px(
+                                    -(BLUEPRINT_BODY_HORIZONTAL_PADDING + marker_diameter / 2.0)
+                                ))
+                                .top(px(
+                                    (BLUEPRINT_STATIC_PORT_ROW_HEIGHT - marker_diameter) / 2.0
+                                ))
                                 .child(input.marker),
                         )
                         .child(
@@ -348,6 +349,7 @@ impl Render for BlueprintCallNode {
                 );
             }
             if let Some(output) = output {
+                let marker_diameter = output.layout_diameter;
                 let output_label_selector =
                     blueprint_port_label_selector(node_id, output.key.0.as_str());
                 row = row.child(
@@ -363,11 +365,12 @@ impl Render for BlueprintCallNode {
                         .child(
                             div()
                                 .absolute()
-                                .right(px(-(BLUEPRINT_BODY_HORIZONTAL_PADDING
-                                    + BLUEPRINT_PORT_DIAMETER / 2.0)))
-                                .top(px((BLUEPRINT_STATIC_PORT_ROW_HEIGHT
-                                    - BLUEPRINT_PORT_DIAMETER)
-                                    / 2.0))
+                                .right(px(
+                                    -(BLUEPRINT_BODY_HORIZONTAL_PADDING + marker_diameter / 2.0)
+                                ))
+                                .top(px(
+                                    (BLUEPRINT_STATIC_PORT_ROW_HEIGHT - marker_diameter) / 2.0
+                                ))
                                 .child(output.marker),
                         ),
                 );
@@ -395,7 +398,11 @@ impl Render for BlueprintCallNode {
         let pin_count = data.pins.len();
         for (index, (pin, handle)) in data.pins.drain(..).enumerate() {
             let port_id = pin.port_id();
-            let marker = port_element(
+            let ShaderPortElement {
+                marker,
+                layout_diameter,
+                ..
+            } = port_element(
                 ShaderPort {
                     id: port_id,
                     key: dynamic_pin_key(pin.id()),
@@ -406,8 +413,7 @@ impl Render for BlueprintCallNode {
                 },
                 blueprint_port_selector,
                 theme,
-            )
-            .marker;
+            );
             let row_selector = blueprint_pin_row_selector(node_id, port_id);
             let label_selector = blueprint_pin_label_selector(node_id, port_id);
             let mut actions = div().flex_none().flex().gap(px(4.0));
@@ -490,10 +496,8 @@ impl Render for BlueprintCallNode {
                                 div()
                                     .absolute()
                                     .left(px(-(BLUEPRINT_BODY_HORIZONTAL_PADDING
-                                        + BLUEPRINT_PORT_DIAMETER / 2.0)))
-                                    .top(px(
-                                        (BLUEPRINT_PIN_ROW_HEIGHT - BLUEPRINT_PORT_DIAMETER) / 2.0
-                                    ))
+                                        + layout_diameter / 2.0)))
+                                    .top(px((BLUEPRINT_PIN_ROW_HEIGHT - layout_diameter) / 2.0))
                                     .child(marker),
                             )
                             .child(

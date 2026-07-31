@@ -129,7 +129,7 @@ impl OpenGpuiEdgePainterRecipe {
                 OpenGpuiEdgeStrokePattern::Solid,
                 OpenGpuiEdgeTone::Control,
                 OpenGpuiEdgeMarkerShape::None,
-                OpenGpuiEdgeMarkerShape::Arrow,
+                OpenGpuiEdgeMarkerShape::None,
                 OpenGpuiEdgeLabelAppearance::Plain,
             )
             .with_weight_tier(OpenGpuiEdgeWeightTier::Strong),
@@ -1041,7 +1041,7 @@ mod tests {
         assert_eq!(resolved.style().tone(), OpenGpuiEdgeTone::Control);
         assert_eq!(
             resolved.target_marker().shape(),
-            OpenGpuiEdgeMarkerShape::Arrow
+            OpenGpuiEdgeMarkerShape::None
         );
     }
 

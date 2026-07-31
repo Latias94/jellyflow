@@ -174,7 +174,19 @@ struct NodeDragResidency {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NodeDragResidencyStage {
     Semantic,
-    AwaitingAppliedFrame { revision: GraphRevision },
+    AwaitingAppliedFrame {
+        revision: GraphRevision,
+    },
+    AwaitingRouteHandoff {
+        token: NodeDragRouteHandoffToken,
+        acknowledgement_scheduled: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct NodeDragRouteHandoffToken {
+    generation: InteractionGeneration,
+    revision: GraphRevision,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -294,6 +306,7 @@ struct NativeConnectionContext {
     mount: OpenGpuiMountCapability,
     native_generation: Option<NativeInteractionGeneration>,
     continuation_lease: Option<OpenGpuiActivityLease>,
+    search_focus_owned: bool,
 }
 
 impl NativeConnectionContext {
@@ -303,6 +316,7 @@ impl NativeConnectionContext {
             mount: admission.mount,
             native_generation: admission.native_generation,
             continuation_lease: None,
+            search_focus_owned: false,
         }
     }
 
@@ -323,6 +337,10 @@ impl NativeConnectionContext {
 
     fn promote_to_activation(&mut self) {
         self.native_generation = None;
+    }
+
+    fn mark_search_focus_owned(&mut self) {
+        self.search_focus_owned = true;
     }
 
     fn matches_binding(&self, binding: &ConnectionGestureBinding) -> bool {
@@ -458,7 +476,7 @@ impl OpenGpuiNativeInteractionOwner {
             mode,
             sample,
         );
-        if self.session.keyboard_connection_source() == Some(source) {
+        if self.session.armed_keyboard_connection_source() == Some(source) {
             if let Some(connection) = self.connection.as_mut() {
                 connection.promote_to_activation();
             }
@@ -524,6 +542,10 @@ impl OpenGpuiNativeInteractionOwner {
         )
     }
 
+    pub(super) fn required_connection_nodes(&self, snapshot: &GraphSnapshot) -> BTreeSet<NodeId> {
+        self.session.required_connection_nodes(snapshot)
+    }
+
     pub(super) fn node_drag_member(&self, node: NodeId) -> Option<NodeLifetimeKey> {
         self.node_drag_residency
             .as_ref()
@@ -559,6 +581,85 @@ impl OpenGpuiNativeInteractionOwner {
             return false;
         }
 
+        let residency = self
+            .node_drag_residency
+            .as_mut()
+            .expect("the applied drag residency was validated above");
+        residency.stage = NodeDragResidencyStage::AwaitingRouteHandoff {
+            token: NodeDragRouteHandoffToken {
+                generation: residency.generation,
+                revision: applied,
+            },
+            acknowledgement_scheduled: false,
+        };
+        true
+    }
+
+    pub(super) fn node_drag_route_handoff_token(&self) -> Option<NodeDragRouteHandoffToken> {
+        let residency = self.node_drag_residency.as_ref()?;
+        let NodeDragResidencyStage::AwaitingRouteHandoff { token, .. } = residency.stage else {
+            return None;
+        };
+        Some(token)
+    }
+
+    pub(super) fn node_drag_route_handoff_nodes(&self) -> BTreeSet<NodeId> {
+        self.node_drag_residency
+            .as_ref()
+            .filter(|residency| {
+                matches!(
+                    residency.stage,
+                    NodeDragResidencyStage::AwaitingRouteHandoff { .. }
+                )
+            })
+            .map(|residency| {
+                residency
+                    .members
+                    .iter()
+                    .map(|member| member.node())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    pub(super) fn schedule_node_drag_route_handoff_acknowledgement(
+        &mut self,
+        expected: NodeDragRouteHandoffToken,
+    ) -> bool {
+        let Some(residency) = self.node_drag_residency.as_mut() else {
+            return false;
+        };
+        let NodeDragResidencyStage::AwaitingRouteHandoff {
+            token,
+            acknowledgement_scheduled,
+        } = &mut residency.stage
+        else {
+            return false;
+        };
+        if *token != expected || *acknowledgement_scheduled {
+            return false;
+        }
+        *acknowledgement_scheduled = true;
+        true
+    }
+
+    pub(super) fn finish_node_drag_route_handoff(
+        &mut self,
+        expected: NodeDragRouteHandoffToken,
+    ) -> bool {
+        let Some(residency) = self.node_drag_residency.as_ref() else {
+            return false;
+        };
+        let NodeDragResidencyStage::AwaitingRouteHandoff {
+            token,
+            acknowledgement_scheduled,
+        } = residency.stage
+        else {
+            return false;
+        };
+        if token != expected || !acknowledgement_scheduled {
+            return false;
+        }
         self.node_drag_residency = None;
         true
     }
@@ -691,6 +792,13 @@ impl OpenGpuiNativeInteractionOwner {
         self.session.retry_search(request)
     }
 
+    pub(super) fn cancel_search(
+        &mut self,
+        request: &ConnectionSearchRequest,
+    ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
+        self.session.cancel_search(request)
+    }
+
     pub(super) fn select_search_result(
         &mut self,
         selection: ConnectionSearchSelection,
@@ -708,6 +816,33 @@ impl OpenGpuiNativeInteractionOwner {
         self.settle_node_drag_residency(ticket, applied_revision);
         self.reconcile_node_drag_residency();
         Ok(update)
+    }
+
+    pub(super) fn reconcile_authoritative_state(
+        &mut self,
+    ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
+        let update = self.session.reconcile_authoritative_state()?;
+        self.reconcile_node_drag_residency();
+        self.stop_query_scheduling_if_idle();
+        Ok(update)
+    }
+
+    pub(super) fn needs_authoritative_reconciliation(&self) -> bool {
+        self.session.needs_authoritative_reconciliation()
+    }
+
+    pub(super) fn retry_connection_settlement(
+        &mut self,
+        capability: jellyflow_runtime::interaction::ConnectionSettlementCapability,
+    ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
+        self.session.retry_connection_settlement(capability)
+    }
+
+    pub(super) fn cancel_connection_settlement(
+        &mut self,
+        capability: jellyflow_runtime::interaction::ConnectionSettlementCapability,
+    ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
+        self.session.cancel_connection_settlement(capability)
     }
 
     pub(super) fn complete_submission_without_command(
@@ -935,7 +1070,9 @@ impl OpenGpuiNativeInteractionOwner {
             return Ok(None);
         }
         let update = self.session.activate_connection_search(start, sample)?;
-        self.connection = Some(NativeConnectionContext::from_admission(admission));
+        let mut connection = NativeConnectionContext::from_admission(admission);
+        connection.mark_search_focus_owned();
+        self.connection = Some(connection);
         Ok(Some(update))
     }
 
@@ -949,7 +1086,7 @@ impl OpenGpuiNativeInteractionOwner {
         if self.terminal() {
             return Ok(None);
         }
-        if let Some(source) = self.session.keyboard_connection_source() {
+        if let Some(source) = self.session.armed_keyboard_connection_source() {
             if !self
                 .connection
                 .as_ref()
@@ -968,14 +1105,18 @@ impl OpenGpuiNativeInteractionOwner {
         let update = self
             .session
             .activate_connection_port(port, prospective_edge, mode)?;
-        if self.session.keyboard_connection_source() == Some(port) {
+        if self.session.armed_keyboard_connection_source() == Some(port) {
             self.connection = Some(NativeConnectionContext::from_admission(admission));
         }
         Ok(Some(update))
     }
 
-    pub(super) fn keyboard_connection_source(&self) -> Option<KeyboardConnectionPort> {
-        self.session.keyboard_connection_source()
+    pub(super) fn armed_keyboard_connection_source(&self) -> Option<KeyboardConnectionPort> {
+        self.session.armed_keyboard_connection_source()
+    }
+
+    pub(super) fn retained_keyboard_connection_source(&self) -> Option<KeyboardConnectionPort> {
+        self.session.retained_keyboard_connection_source()
     }
 
     pub(super) fn keyboard_connection_feedback(&self) -> Option<&KeyboardConnectionFeedback> {
@@ -1022,6 +1163,18 @@ impl OpenGpuiNativeInteractionOwner {
         self.connection
             .as_ref()
             .map(|current| (current.owner.clone(), current.mount.clone()))
+    }
+
+    pub(super) fn mark_connection_search_focus_owned(&mut self) {
+        if let Some(connection) = self.connection.as_mut() {
+            connection.mark_search_focus_owned();
+        }
+    }
+
+    pub(super) fn connection_search_focus_owned(&self) -> bool {
+        self.connection
+            .as_ref()
+            .is_some_and(|connection| connection.search_focus_owned)
     }
 
     pub(super) fn connection_matches_pointer(
@@ -2650,7 +2803,7 @@ mod tests {
     }
 
     #[test]
-    fn applied_residency_waits_for_its_revision_and_late_g1_cannot_release_g2() {
+    fn applied_residency_waits_for_its_revision_and_late_command_cannot_release_g2() {
         let mut fixture = node_drag_fixture(2);
         arm_node_drag(&mut fixture, 2);
         fixture
@@ -2738,7 +2891,58 @@ mod tests {
                 .owner
                 .observe_materialized_frame(g2_revision, complete_cohort.iter().copied())
         );
+        assert_eq!(
+            fixture.owner.node_drag_route_handoff_nodes(),
+            fixture.nodes.iter().copied().collect()
+        );
+        let handoff = fixture
+            .owner
+            .node_drag_route_handoff_token()
+            .expect("the materialized cohort requires one route handoff");
+        assert!(fixture.owner.has_node_drag_residency());
+        assert!(!fixture.owner.finish_node_drag_route_handoff(handoff));
+        assert!(
+            fixture
+                .owner
+                .schedule_node_drag_route_handoff_acknowledgement(handoff)
+        );
+        assert!(
+            !fixture
+                .owner
+                .schedule_node_drag_route_handoff_acknowledgement(handoff)
+        );
+        assert!(fixture.owner.finish_node_drag_route_handoff(handoff));
+        assert!(!fixture.owner.finish_node_drag_route_handoff(handoff));
         assert!(!fixture.owner.has_node_drag_residency());
+    }
+
+    #[test]
+    fn stale_route_handoff_token_cannot_schedule_or_release_a_new_drag() {
+        let mut fixture = node_drag_fixture(2);
+        let stale = complete_node_drag_to_route_handoff(&mut fixture);
+        assert!(
+            fixture
+                .owner
+                .schedule_node_drag_route_handoff_acknowledgement(stale)
+        );
+
+        let current = complete_node_drag_to_route_handoff(&mut fixture);
+        assert_ne!(stale, current);
+        assert_eq!(fixture.owner.node_drag_route_handoff_token(), Some(current));
+        assert!(
+            !fixture
+                .owner
+                .schedule_node_drag_route_handoff_acknowledgement(stale)
+        );
+        assert!(!fixture.owner.finish_node_drag_route_handoff(stale));
+        assert_eq!(fixture.owner.node_drag_route_handoff_token(), Some(current));
+
+        assert!(
+            fixture
+                .owner
+                .schedule_node_drag_route_handoff_acknowledgement(current)
+        );
+        assert!(fixture.owner.finish_node_drag_route_handoff(current));
     }
 
     #[test]
@@ -2925,6 +3129,37 @@ mod tests {
                 _ => None,
             })
             .expect("node drag submission")
+    }
+
+    fn complete_node_drag_to_route_handoff(
+        fixture: &mut NodeDragFixture,
+    ) -> NodeDragRouteHandoffToken {
+        arm_node_drag(fixture, 2);
+        let release = pointer_sample(&fixture.view, 40.0, 24.0);
+        fixture.owner.move_to(release).unwrap();
+        let (ticket, submission) = release_node_drag(fixture, release);
+        let command = fixture
+            .owner
+            .bind_submission(submission)
+            .unwrap()
+            .expect("node drag binds a command");
+        let completion = fixture.runtime.execute(command);
+        let revision = completion.applied_revision().unwrap();
+        fixture
+            .owner
+            .complete_submission(ticket, completion)
+            .unwrap();
+        let snapshot = fixture.runtime.snapshot().unwrap();
+        let cohort = fixture
+            .nodes
+            .iter()
+            .map(|node| snapshot.node_lifetime_key(*node).unwrap())
+            .collect::<Vec<_>>();
+        assert!(fixture.owner.observe_materialized_frame(revision, cohort));
+        fixture
+            .owner
+            .node_drag_route_handoff_token()
+            .expect("materialized drag enters route handoff")
     }
 
     fn assert_required_nodes(fixture: &NodeDragFixture, expected: usize) {

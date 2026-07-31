@@ -1,6 +1,7 @@
 use crate::runtime::view_session::{ConnectionProbeQuery, EdgePickQuery, NodeIntersectionQuery};
 
 use super::navigation::AlignmentSnapQuery;
+use super::presentation::InteractionTerminalReason;
 use super::session::{InteractionGeneration, InteractionQueryId};
 
 #[derive(Debug, Default)]
@@ -15,12 +16,12 @@ enum QueryWorkState {
     #[default]
     Empty,
     Pending(PendingInteractionQuery),
-    CleanupPending,
+    CleanupPending(InteractionTerminalReason),
 }
 
 impl QueryWork {
     pub(super) fn replace(&mut self, query: PendingInteractionQuery) {
-        let can_replace = !matches!(self.state, QueryWorkState::CleanupPending);
+        let can_replace = !matches!(self.state, QueryWorkState::CleanupPending(_));
         debug_assert!(
             can_replace,
             "terminal query cleanup must complete before replacement work is queued"
@@ -34,8 +35,8 @@ impl QueryWork {
     pub(super) fn take(&mut self) -> Option<PendingInteractionQuery> {
         match std::mem::take(&mut self.state) {
             QueryWorkState::Pending(query) => Some(query),
-            QueryWorkState::CleanupPending => {
-                self.state = QueryWorkState::CleanupPending;
+            QueryWorkState::CleanupPending(terminal) => {
+                self.state = QueryWorkState::CleanupPending(terminal);
                 None
             }
             QueryWorkState::Empty => None,
@@ -60,18 +61,25 @@ impl QueryWork {
     }
 
     pub(super) fn cleanup_pending(&self) -> bool {
-        matches!(self.state, QueryWorkState::CleanupPending)
+        matches!(self.state, QueryWorkState::CleanupPending(_))
     }
 
-    pub(super) fn require_cleanup(&mut self) {
-        self.state = QueryWorkState::CleanupPending;
+    pub(super) fn cleanup_terminal(&self) -> Option<InteractionTerminalReason> {
+        match self.state {
+            QueryWorkState::CleanupPending(terminal) => Some(terminal),
+            QueryWorkState::Empty | QueryWorkState::Pending(_) => None,
+        }
+    }
+
+    pub(super) fn require_cleanup(&mut self, terminal: InteractionTerminalReason) {
+        self.state = QueryWorkState::CleanupPending(terminal);
     }
 
     #[cfg(test)]
     pub(super) fn pending_for_test(&self) -> Option<&PendingInteractionQuery> {
         match &self.state {
             QueryWorkState::Pending(query) => Some(query),
-            QueryWorkState::Empty | QueryWorkState::CleanupPending => None,
+            QueryWorkState::Empty | QueryWorkState::CleanupPending(_) => None,
         }
     }
 }

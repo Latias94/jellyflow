@@ -13,7 +13,7 @@ use jellyflow_open_gpui::authoring::{
     MutationLayoutEffect, MutationLayoutSettlement, MutationRequest, MutationSettlement,
     OpenGpuiManagedMutation, OpenGpuiNodeAuthoring, OpenGpuiNodeBinding, OpenGpuiPortHandle,
 };
-use jellyflow_open_gpui::chrome::{OpenGpuiPortMarker, OpenGpuiPortTone};
+use jellyflow_open_gpui::chrome::OpenGpuiPortTone;
 use jellyflow_open_gpui::registry::{
     OpenGpuiNodeAdapterPresentation, OpenGpuiNodeRegistrationPolicy, OpenGpuiNodeRegistryBuilder,
     OpenGpuiNodeRendererDescriptor,
@@ -31,8 +31,10 @@ use open_gpui_ui_components::{
     Button, ButtonVariant, ListboxOption, Select, TextInput, gpui_adapter::TextInputController,
 };
 
-use super::WORKFLOW_PORT_DIAMETER;
-use super::{WorkflowNodeStatus, WorkflowPort, open_gpui_side, workflow_alert, workflow_header};
+use super::{
+    WorkflowNodeStatus, WorkflowPort, WorkflowPortElement, open_gpui_side, workflow_alert,
+    workflow_header, workflow_port_element,
+};
 use crate::nodes::sync_activity_lease;
 use crate::product_catalog::{NativeProductCatalog, NativeProductNodePresentation};
 use crate::product_domain::condition::{
@@ -703,61 +705,34 @@ impl Render for WorkflowConditionNode {
         {
             let port_id = case.port_id();
             let row_selector = workflow_condition_case_selector(node_id, port_id);
-            let route_chrome = OpenGpuiPortMarker::new(
-                route_handle.presentation(),
+            let WorkflowPortElement {
+                marker: route_marker,
+                layout_diameter: route_diameter,
+            } = workflow_port_element(
+                route_handle,
                 OpenGpuiPortTone::Control,
-                theme.graph_theme(),
+                row_selector.clone(),
+                theme,
             );
-            let minimum_hit_diameter = route_chrome.minimum_hit_diameter();
-            let route_marker = route_handle
-                .with_minimum_hit_diameter(minimum_hit_diameter)
-                .interactive(
-                    div()
-                        .debug_selector(move || row_selector.clone())
-                        .w(px(WORKFLOW_PORT_DIAMETER))
-                        .h(px(WORKFLOW_PORT_DIAMETER))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(route_chrome),
-                );
             let route_marker = div()
                 .absolute()
-                .top(px(
-                    (CONDITION_CASE_ROW_HEIGHT - WORKFLOW_PORT_DIAMETER) / 2.0
-                ))
+                .top(px((CONDITION_CASE_ROW_HEIGHT - route_diameter) / 2.0))
                 .right(px(-(CONDITION_BODY_HORIZONTAL_PADDING
                     + CONDITION_CASE_HORIZONTAL_PADDING
-                    + WORKFLOW_PORT_DIAMETER / 2.0)))
+                    + route_diameter / 2.0)))
                 .child(route_marker);
             let value_port_id = case.value_port_id();
             let value_selector = workflow_condition_case_value_selector(node_id, value_port_id);
-            let value_chrome = OpenGpuiPortMarker::new(
-                value_handle.presentation(),
-                OpenGpuiPortTone::Data,
-                theme.graph_theme(),
-            );
-            let minimum_hit_diameter = value_chrome.minimum_hit_diameter();
-            let value_marker = value_handle
-                .with_minimum_hit_diameter(minimum_hit_diameter)
-                .interactive(
-                    div()
-                        .debug_selector(move || value_selector.clone())
-                        .w(px(WORKFLOW_PORT_DIAMETER))
-                        .h(px(WORKFLOW_PORT_DIAMETER))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(value_chrome),
-                );
+            let WorkflowPortElement {
+                marker: value_marker,
+                layout_diameter: value_diameter,
+            } = workflow_port_element(value_handle, OpenGpuiPortTone::Data, value_selector, theme);
             let value_marker = div()
                 .absolute()
-                .top(px(
-                    (CONDITION_CASE_ROW_HEIGHT - WORKFLOW_PORT_DIAMETER) / 2.0
-                ))
+                .top(px((CONDITION_CASE_ROW_HEIGHT - value_diameter) / 2.0))
                 .left(px(-(CONDITION_BODY_HORIZONTAL_PADDING
                     + CONDITION_CASE_HORIZONTAL_PADDING
-                    + WORKFLOW_PORT_DIAMETER / 2.0)))
+                    + value_diameter / 2.0)))
                 .child(value_marker);
             let actions_selector = workflow_condition_case_actions_selector(node_id, port_id);
             let mut actions = div()
@@ -880,24 +855,10 @@ impl Render for WorkflowConditionNode {
             let port_id = else_branch.port_id();
             let row_selector = workflow_condition_else_selector(node_id, port_id);
             let label_selector = workflow_condition_else_label_selector(node_id, port_id);
-            let chrome = OpenGpuiPortMarker::new(
-                handle.presentation(),
-                OpenGpuiPortTone::Control,
-                theme.graph_theme(),
-            );
-            let minimum_hit_diameter = chrome.minimum_hit_diameter();
-            let marker = handle
-                .with_minimum_hit_diameter(minimum_hit_diameter)
-                .interactive(
-                    div()
-                        .debug_selector(move || row_selector.clone())
-                        .w(px(WORKFLOW_PORT_DIAMETER))
-                        .h(px(WORKFLOW_PORT_DIAMETER))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(chrome),
-                );
+            let WorkflowPortElement {
+                marker,
+                layout_diameter,
+            } = workflow_port_element(handle, OpenGpuiPortTone::Control, row_selector, theme);
             rows = rows.child(
                 div()
                     .relative()
@@ -928,12 +889,10 @@ impl Render for WorkflowConditionNode {
                     .child(
                         div()
                             .absolute()
-                            .top(px(
-                                (CONDITION_CASE_ROW_HEIGHT - WORKFLOW_PORT_DIAMETER) / 2.0
-                            ))
+                            .top(px((CONDITION_CASE_ROW_HEIGHT - layout_diameter) / 2.0))
                             .right(px(-(CONDITION_BODY_HORIZONTAL_PADDING
                                 + CONDITION_CASE_HORIZONTAL_PADDING
-                                + WORKFLOW_PORT_DIAMETER / 2.0)))
+                                + layout_diameter / 2.0)))
                             .child(marker),
                     ),
             );

@@ -348,6 +348,84 @@ fn keyboard_nudge_uses_one_shared_extent_feasible_delta_and_one_command() {
 }
 
 #[test]
+fn pointer_drag_presentation_and_commit_share_the_extent_feasible_delta() {
+    let node_id = NodeId::from_u128(1);
+    let mut bounded = node("test.node", 40.0);
+    bounded.extent = Some(NodeExtent::Rect {
+        rect: CanvasRect {
+            origin: CanvasPoint::default(),
+            size: CanvasSize {
+                width: 240.0,
+                height: 200.0,
+            },
+        },
+    });
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(
+            GraphBuilder::new(GraphId::from_u128(0x249))
+                .with_node(node_id, bounded)
+                .build()
+                .unwrap(),
+        )
+        .unwrap();
+    let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    let start = node_drag_start_by_id(&view, node_id, SelectionMode::Replace)
+        .unwrap()
+        .unwrap();
+    let mut session = interaction_for(&view);
+    let press = pointer_sample(&view, 40.0, 20.0);
+    let beyond_right_extent = pointer_sample(&view, 140.0, 20.0);
+
+    session
+        .press(CanvasPressTarget::NodeDrag(start), press)
+        .unwrap();
+    session.move_to(beyond_right_extent).unwrap();
+    assert_eq!(
+        session
+            .presentation()
+            .node_drag()
+            .expect("active drag presentation")
+            .delta(),
+        CanvasPoint { x: 40.0, y: 0.0 },
+    );
+
+    let update = session.release(beyond_right_extent).unwrap();
+    assert_eq!(
+        session
+            .presentation()
+            .node_drag()
+            .expect("committing drag presentation")
+            .delta(),
+        CanvasPoint { x: 40.0, y: 0.0 },
+    );
+    let mut effects = update.into_dispatch().effects.into_iter();
+    let Some(CanvasInteractionEffect::SubmitGraph { submission }) = effects.next() else {
+        panic!("bounded drag must emit exactly one graph mutation");
+    };
+    assert!(effects.next().is_none());
+    let ticket = submission.ticket();
+    let command = session
+        .bind_submission(submission)
+        .unwrap()
+        .expect("bounded drag command");
+    let completion = runtime.execute(command);
+    assert!(completion.result().unwrap().applied().is_some());
+    session.complete_submission(ticket, completion).unwrap();
+
+    assert_eq!(
+        runtime
+            .snapshot()
+            .unwrap()
+            .graph()
+            .node(&node_id)
+            .unwrap()
+            .pos
+            .x,
+        80.0,
+    );
+}
+
+#[test]
 fn keyboard_nudge_rejects_a_selected_non_draggable_cohort_without_effects() {
     let node_id = NodeId::from_u128(1);
     let mut blocked = node("test.node", 0.0);

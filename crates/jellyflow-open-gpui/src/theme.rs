@@ -133,10 +133,13 @@ impl OpenGpuiGraphStyleRecipe {
 }
 
 /// Default diameter of an idle native port marker in screen pixels.
-pub const OPEN_GPUI_DEFAULT_PORT_MARKER_DIAMETER: f32 = 10.0;
+pub const OPEN_GPUI_DEFAULT_PORT_MARKER_DIAMETER: f32 = 8.0;
 
-/// Default diameter of emphasized native port chrome and its stable layout slot in screen pixels.
-pub const OPEN_GPUI_DEFAULT_PORT_HOVER_MARKER_DIAMETER: f32 = 12.0;
+/// Default diameter of emphasized native port chrome in screen pixels.
+pub const OPEN_GPUI_DEFAULT_PORT_HOVER_MARKER_DIAMETER: f32 = 10.0;
+
+/// Default stable outer layout-slot diameter for native port chrome in screen pixels.
+pub const OPEN_GPUI_DEFAULT_PORT_LAYOUT_DIAMETER: f32 = 12.0;
 
 /// Default minimum port hit diameter in screen pixels.
 pub const OPEN_GPUI_DEFAULT_PORT_HIT_DIAMETER: f32 = 22.0;
@@ -145,7 +148,7 @@ pub const OPEN_GPUI_DEFAULT_PORT_HIT_DIAMETER: f32 = 22.0;
 pub const OPEN_GPUI_DEFAULT_PORT_OUTLINE_WIDTH: f32 = 1.0;
 
 /// Default emphasized port outline width in screen pixels.
-pub const OPEN_GPUI_DEFAULT_PORT_EMPHASIZED_OUTLINE_WIDTH: f32 = 2.0;
+pub const OPEN_GPUI_DEFAULT_PORT_EMPHASIZED_OUTLINE_WIDTH: f32 = 1.5;
 
 /// Default keyboard-focus ring width around a port in screen pixels.
 pub const OPEN_GPUI_DEFAULT_PORT_FOCUS_RING_WIDTH: f32 = 1.0;
@@ -318,8 +321,10 @@ pub struct OpenGpuiGraphMetrics {
     pub node_corner_radius: f32,
     /// Idle port marker diameter.
     pub port_marker_diameter: f32,
-    /// Emphasized port-marker diameter and stable outer layout-slot diameter.
+    /// Emphasized port-marker diameter.
     pub port_hover_marker_diameter: f32,
+    /// Stable outer port layout-slot diameter.
+    pub port_layout_diameter: f32,
     /// Minimum port hit diameter.
     pub port_hit_diameter: f32,
     /// Idle port outline width.
@@ -370,6 +375,7 @@ impl Default for OpenGpuiGraphMetrics {
             node_corner_radius: OPEN_GPUI_DEFAULT_NODE_CORNER_RADIUS,
             port_marker_diameter: OPEN_GPUI_DEFAULT_PORT_MARKER_DIAMETER,
             port_hover_marker_diameter: OPEN_GPUI_DEFAULT_PORT_HOVER_MARKER_DIAMETER,
+            port_layout_diameter: OPEN_GPUI_DEFAULT_PORT_LAYOUT_DIAMETER,
             port_hit_diameter: OPEN_GPUI_DEFAULT_PORT_HIT_DIAMETER,
             port_outline_width: OPEN_GPUI_DEFAULT_PORT_OUTLINE_WIDTH,
             port_emphasized_outline_width: OPEN_GPUI_DEFAULT_PORT_EMPHASIZED_OUTLINE_WIDTH,
@@ -403,6 +409,7 @@ impl OpenGpuiGraphMetrics {
             self.guide_width,
             self.port_marker_diameter,
             self.port_hover_marker_diameter,
+            self.port_layout_diameter,
             self.port_hit_diameter,
             self.port_outline_width,
             self.port_emphasized_outline_width,
@@ -427,7 +434,8 @@ impl OpenGpuiGraphMetrics {
             .into_iter()
             .all(|value| value.is_finite() && value > 0.0)
             && self.port_hover_marker_diameter >= self.port_marker_diameter
-            && self.port_hit_diameter >= self.port_hover_marker_diameter
+            && self.port_layout_diameter >= self.port_hover_marker_diameter
+            && self.port_hit_diameter >= self.port_layout_diameter
             && self.port_emphasized_outline_width >= self.port_outline_width
             && self.edge_ordinary_width < self.edge_hovered_width
             && self.edge_hovered_width < self.edge_selected_width
@@ -541,11 +549,12 @@ mod tests {
         assert_eq!(metrics.grid_line_width, 1.0);
         assert_eq!(metrics.guide_width, 1.0);
         assert_eq!(metrics.node_corner_radius, 6.0);
-        assert_eq!(metrics.port_marker_diameter, 10.0);
-        assert_eq!(metrics.port_hover_marker_diameter, 12.0);
+        assert_eq!(metrics.port_marker_diameter, 8.0);
+        assert_eq!(metrics.port_hover_marker_diameter, 10.0);
+        assert_eq!(metrics.port_layout_diameter, 12.0);
         assert_eq!(metrics.port_hit_diameter, 22.0);
         assert_eq!(metrics.port_outline_width, 1.0);
-        assert_eq!(metrics.port_emphasized_outline_width, 2.0);
+        assert_eq!(metrics.port_emphasized_outline_width, 1.5);
         assert_eq!(metrics.port_focus_ring_width, 1.0);
         assert_eq!(metrics.edge_ordinary_width, 1.5);
         assert_eq!(metrics.edge_hovered_width, 2.0);
@@ -570,6 +579,12 @@ mod tests {
     fn invalid_hit_or_hover_relationships_are_rejected() {
         let metrics = OpenGpuiGraphMetrics {
             port_hit_diameter: 9.0,
+            ..OpenGpuiGraphMetrics::default()
+        };
+        assert!(!metrics.is_valid());
+
+        let metrics = OpenGpuiGraphMetrics {
+            port_layout_diameter: 9.0,
             ..OpenGpuiGraphMetrics::default()
         };
         assert!(!metrics.is_valid());

@@ -69,7 +69,6 @@ const WORKFLOW_RETRY_EDGE_ID: u128 = 0xd1fa_0303;
 const MATCH_CASE_ID: &str = "case-match";
 const REVIEW_CASE_ID: &str = "case-review";
 const WORKFLOW_HEADER_HEIGHT: f32 = 44.0;
-pub(super) const WORKFLOW_PORT_DIAMETER: f32 = 13.0;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum WorkflowNodeError {
@@ -134,6 +133,28 @@ pub(super) struct WorkflowPort {
     pub(super) handle: OpenGpuiPortHandle,
 }
 
+pub(super) struct WorkflowPortElement {
+    pub(super) marker: AnyElement,
+    pub(super) layout_diameter: f32,
+}
+
+pub(super) fn workflow_port_element(
+    handle: OpenGpuiPortHandle,
+    tone: OpenGpuiPortTone,
+    selector: String,
+    product_theme: NativeProductTheme,
+) -> WorkflowPortElement {
+    let chrome = OpenGpuiPortMarker::new(handle.presentation(), tone, product_theme.graph_theme());
+    let style = chrome.style();
+    let marker = handle
+        .with_minimum_hit_diameter(style.minimum_hit_diameter())
+        .interactive(div().debug_selector(move || selector.clone()).child(chrome));
+    WorkflowPortElement {
+        marker: marker.into_any_element(),
+        layout_diameter: style.layout_diameter(),
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(super) enum WorkflowNodeStatus {
     Ready,
@@ -184,26 +205,17 @@ fn workflow_header_port_elements(
                 kind,
                 handle,
             } = port;
-            let chrome = OpenGpuiPortMarker::new(
-                handle.presentation(),
+            let WorkflowPortElement {
+                marker,
+                layout_diameter,
+            } = workflow_port_element(
+                handle,
                 OpenGpuiPortTone::from(kind),
-                product_theme.graph_theme(),
+                workflow_port_selector(id),
+                product_theme,
             );
-            let minimum_hit_diameter = chrome.minimum_hit_diameter();
-            let marker = handle
-                .with_minimum_hit_diameter(minimum_hit_diameter)
-                .interactive(
-                    div()
-                        .debug_selector(move || workflow_port_selector(id))
-                        .w(px(WORKFLOW_PORT_DIAMETER))
-                        .h(px(WORKFLOW_PORT_DIAMETER))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(chrome),
-                );
-            let top = px((WORKFLOW_HEADER_HEIGHT - WORKFLOW_PORT_DIAMETER) / 2.0);
-            let edge_offset = px(-WORKFLOW_PORT_DIAMETER / 2.0);
+            let top = px((WORKFLOW_HEADER_HEIGHT - layout_diameter) / 2.0);
+            let edge_offset = px(-layout_diameter / 2.0);
             let port = div().absolute().top(top).flex().items_center();
             match direction {
                 PortDirection::In => port.left(edge_offset).child(marker).into_any_element(),

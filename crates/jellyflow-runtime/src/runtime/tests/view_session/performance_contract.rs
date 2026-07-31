@@ -548,14 +548,14 @@ fn high_fanout_equal_frame_feedback_reuses_incident_snapshot_handles() {
             .materialization_receipt()
             .incident_snapshot()
             .entries_read(),
-        EDGE_COUNT
+        0
     );
     assert_eq!(
         culled
             .materialization_receipt()
             .incident_snapshot()
             .materializations(),
-        1
+        0
     );
 }
 

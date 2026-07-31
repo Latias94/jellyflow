@@ -96,20 +96,14 @@ impl OpenGpuiEdgePathCacheKey {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum OpenGpuiEdgePaintPlanSegment {
     Ordinary,
-    Emphasized,
-    Hover(EdgeId),
     Focus(EdgeId),
     FocusBase(EdgeId),
     MarkerOrdinary,
-    MarkerEmphasized,
-    MarkerHover(EdgeId),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum OpenGpuiEdgePaintPlanSlot {
     Ordinary,
-    Emphasized,
-    Hover,
     Focus,
     FocusBase,
 }
@@ -118,18 +112,13 @@ impl OpenGpuiEdgePaintPlanSegment {
     fn slot(self) -> OpenGpuiEdgePaintPlanSlot {
         match self {
             Self::Ordinary | Self::MarkerOrdinary => OpenGpuiEdgePaintPlanSlot::Ordinary,
-            Self::Emphasized | Self::MarkerEmphasized => OpenGpuiEdgePaintPlanSlot::Emphasized,
-            Self::Hover(_) | Self::MarkerHover(_) => OpenGpuiEdgePaintPlanSlot::Hover,
             Self::Focus(_) => OpenGpuiEdgePaintPlanSlot::Focus,
             Self::FocusBase(_) => OpenGpuiEdgePaintPlanSlot::FocusBase,
         }
     }
 
     fn is_marker(self) -> bool {
-        matches!(
-            self,
-            Self::MarkerOrdinary | Self::MarkerEmphasized | Self::MarkerHover(_)
-        )
+        matches!(self, Self::MarkerOrdinary)
     }
 }
 
@@ -1370,24 +1359,17 @@ mod tests {
     fn paint_and_marker_plans_keep_only_one_current_generation_per_slot() {
         let mut cache = OpenGpuiEdgePathCache::default();
         let ordinary = plan_key(1, OpenGpuiEdgePaintPlanSegment::Ordinary, 0.0);
-        let emphasized = plan_key(1, OpenGpuiEdgePaintPlanSegment::Emphasized, 0.0);
-        let hover = plan_key(
-            1,
-            OpenGpuiEdgePaintPlanSegment::Hover(EdgeId::from_u128(1)),
-            0.0,
-        );
         let focus = plan_key(
             1,
             OpenGpuiEdgePaintPlanSegment::Focus(EdgeId::from_u128(1)),
             0.0,
         );
-        let marker_ordinary = plan_key(1, OpenGpuiEdgePaintPlanSegment::MarkerOrdinary, 0.0);
-        let marker_emphasized = plan_key(1, OpenGpuiEdgePaintPlanSegment::MarkerEmphasized, 0.0);
-        let marker_hover = plan_key(
+        let focus_base = plan_key(
             1,
-            OpenGpuiEdgePaintPlanSegment::MarkerHover(EdgeId::from_u128(1)),
+            OpenGpuiEdgePaintPlanSegment::FocusBase(EdgeId::from_u128(1)),
             0.0,
         );
+        let marker_ordinary = plan_key(1, OpenGpuiEdgePaintPlanSegment::MarkerOrdinary, 0.0);
 
         let first = cache.resolve_paint_plan(ordinary, |_, builder| {
             assert!(builder.merge_owned(
@@ -1397,19 +1379,13 @@ mod tests {
         });
         let reused = cache.resolve_paint_plan(ordinary, |_, _| unreachable!("plan must reuse"));
         assert!(Rc::ptr_eq(&first.batches, &reused.batches));
-        cache.resolve_paint_plan(emphasized, |_, builder| {
-            assert!(builder.merge_owned(
-                native_batch_key(),
-                representative_path(OpenGpuiEdgeStrokePattern::Solid),
-            ));
-        });
-        cache.resolve_paint_plan(hover, |_, builder| {
-            assert!(builder.merge_owned(
-                native_batch_key(),
-                representative_path(OpenGpuiEdgeStrokePattern::Solid),
-            ));
-        });
         cache.resolve_paint_plan(focus, |_, builder| {
+            assert!(builder.merge_owned(
+                native_batch_key(),
+                representative_path(OpenGpuiEdgeStrokePattern::Solid),
+            ));
+        });
+        cache.resolve_paint_plan(focus_base, |_, builder| {
             assert!(builder.merge_owned(
                 native_batch_key(),
                 representative_path(OpenGpuiEdgeStrokePattern::Solid),
@@ -1418,16 +1394,10 @@ mod tests {
         cache.resolve_marker_plan(marker_ordinary, |builder| {
             assert!(builder.merge_owned(native_batch_key(), marker_path(false)));
         });
-        cache.resolve_marker_plan(marker_emphasized, |builder| {
-            assert!(builder.merge_owned(native_batch_key(), marker_path(false)));
-        });
-        cache.resolve_marker_plan(marker_hover, |builder| {
-            assert!(builder.merge_owned(native_batch_key(), marker_path(false)));
-        });
 
         let first_generation = cache.usage();
-        assert_eq!(first_generation.resident_paint_plans, 4);
-        assert_eq!(first_generation.resident_marker_plans, 3);
+        assert_eq!(first_generation.resident_paint_plans, 3);
+        assert_eq!(first_generation.resident_marker_plans, 1);
         assert_eq!(first_generation.plan_generations, 1);
 
         let next = plan_key(2, OpenGpuiEdgePaintPlanSegment::Ordinary, 20.0);
@@ -1779,7 +1749,7 @@ mod tests {
     }
 
     #[test]
-    fn incomplete_ordinary_plan_releases_budget_for_emphasized_edges() {
+    fn incomplete_committed_plan_releases_budget_for_focus_chrome() {
         let path = representative_path(OpenGpuiEdgeStrokePattern::Solid);
         let footprint = OpenGpuiEdgeCacheFootprint::for_plan(&[batch(path.clone())]);
         let mut cache = OpenGpuiEdgePathCache::default();
@@ -1802,17 +1772,21 @@ mod tests {
         assert!(!ordinary.is_complete());
         assert_eq!(cache.usage().resident_paint_plans, 0);
 
-        let emphasized = cache.resolve_paint_plan(
-            plan_key(1, OpenGpuiEdgePaintPlanSegment::Emphasized, 0.0),
+        let focus = cache.resolve_paint_plan(
+            plan_key(
+                1,
+                OpenGpuiEdgePaintPlanSegment::Focus(EdgeId::from_u128(1)),
+                0.0,
+            ),
             |_, builder| assert!(builder.merge_owned(native_batch_key(), path.clone())),
         );
-        assert!(emphasized.is_complete());
-        assert_eq!(emphasized.edge_count(), 1);
+        assert!(focus.is_complete());
+        assert_eq!(focus.edge_count(), 1);
         assert_eq!(cache.usage().resident_paint_plans, 1);
     }
 
     #[test]
-    fn ordinary_plan_reservation_keeps_minimum_emphasized_geometry_admissible() {
+    fn committed_plan_reservation_keeps_minimum_focus_geometry_admissible() {
         let ordinary_path = representative_path(OpenGpuiEdgeStrokePattern::Solid);
         let ordinary_footprint =
             OpenGpuiEdgeCacheFootprint::for_plan(&[batch(ordinary_path.clone())]);
@@ -1838,17 +1812,21 @@ mod tests {
         );
         assert!(ordinary.is_complete());
 
-        let emphasized = cache.resolve_paint_plan(
-            plan_key(1, OpenGpuiEdgePaintPlanSegment::Emphasized, 0.0),
+        let focus = cache.resolve_paint_plan(
+            plan_key(
+                1,
+                OpenGpuiEdgePaintPlanSegment::Focus(EdgeId::from_u128(1)),
+                0.0,
+            ),
             |_, builder| assert!(builder.merge_owned(native_batch_key(), marker_path(false))),
         );
-        assert!(emphasized.is_complete());
-        assert_eq!(emphasized.edge_count(), 1);
+        assert!(focus.is_complete());
+        assert_eq!(focus.edge_count(), 1);
         assert_eq!(cache.usage().resident_paint_plans, 2);
     }
 
     #[test]
-    fn alternating_style_reservation_preserves_emphasis_and_markers_under_tight_budget() {
+    fn alternating_style_reservation_preserves_focus_and_markers_under_tight_budget() {
         let first = native_batch_key_for(Some("data"));
         let second = native_batch_key_for(Some("control"));
         assert_ne!(first, second);
@@ -1893,20 +1871,24 @@ mod tests {
         assert!(ordinary.is_complete());
         assert_eq!(ordinary.batches().len(), 2);
 
-        let emphasized_paths = [Rc::new(marker_path(false)), Rc::new(marker_path(false))];
-        let emphasized = cache.resolve_paint_plan_reserving(
-            plan_key(1, OpenGpuiEdgePaintPlanSegment::Emphasized, 0.0),
+        let focus_paths = [Rc::new(marker_path(false)), Rc::new(marker_path(false))];
+        let focus = cache.resolve_paint_plan_reserving(
+            plan_key(
+                1,
+                OpenGpuiEdgePaintPlanSegment::Focus(EdgeId::from_u128(1)),
+                0.0,
+            ),
             1,
             |_, builder| {
-                assert!(builder.merge_shared(first, Rc::clone(&emphasized_paths[0])));
-                assert!(builder.merge_shared(second, Rc::clone(&emphasized_paths[1])));
+                assert!(builder.merge_shared(first, Rc::clone(&focus_paths[0])));
+                assert!(builder.merge_shared(second, Rc::clone(&focus_paths[1])));
             },
         );
-        assert!(emphasized.is_complete());
-        assert_eq!(emphasized.batches().len(), 2);
+        assert!(focus.is_complete());
+        assert_eq!(focus.batches().len(), 2);
 
         let markers = cache.resolve_marker_plan(
-            plan_key(1, OpenGpuiEdgePaintPlanSegment::MarkerEmphasized, 0.0),
+            plan_key(1, OpenGpuiEdgePaintPlanSegment::MarkerOrdinary, 0.0),
             |builder| {
                 assert!(builder.merge_owned(first, marker_path(false)));
             },

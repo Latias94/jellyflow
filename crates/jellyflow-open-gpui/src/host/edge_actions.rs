@@ -18,6 +18,7 @@ use super::endpoint_resolver::{
 };
 use super::focus_navigation::OpenGpuiGraphFocusTarget;
 use super::interaction_session::NativeConnectionAdmission;
+use super::native_input::OpenGpuiGraphKeyOwner;
 
 #[derive(Debug, Clone, Copy)]
 struct ResolvedReconnectEndpoints {
@@ -120,19 +121,13 @@ impl OpenGpuiSceneHost {
 
     pub(super) fn handle_graph_root_key_down(
         &mut self,
+        owner: OpenGpuiGraphKeyOwner,
         event: &KeyDownEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let root_focused = self
-            .interaction_owner
-            .focus_handle()
-            .is_some_and(|focus| focus.is_focused(window));
-        let exact_graph_target = self.interaction_owner.exact_focused_graph_target(window);
-        if !root_focused && exact_graph_target.is_none() {
-            self.interaction_owner.clear_space_pan();
-            return false;
-        }
+        let root_focused = owner.is_root();
+        let exact_graph_target = owner.target();
         if is_unmodified_tab(event) {
             return self.reveal_focused_node_action(window, cx);
         }
@@ -140,7 +135,7 @@ impl OpenGpuiSceneHost {
             && event.keystroke.key.eq_ignore_ascii_case("escape")
             && self
                 .interaction_owner
-                .keyboard_connection_source()
+                .armed_keyboard_connection_source()
                 .is_some()
         {
             let update = self.interaction_owner.cancel();
@@ -200,6 +195,7 @@ impl OpenGpuiSceneHost {
 
     pub(super) fn handle_graph_root_key_up(
         &mut self,
+        owner: OpenGpuiGraphKeyOwner,
         event: &KeyUpEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -207,10 +203,29 @@ impl OpenGpuiSceneHost {
         if !event.keystroke.modifiers.modified()
             && (event.keystroke.key.eq_ignore_ascii_case("enter")
                 || event.keystroke.key.eq_ignore_ascii_case("space"))
-            && let Some(OpenGpuiGraphFocusTarget::Edge(edge)) =
-                self.interaction_owner.exact_focused_graph_target(window)
         {
-            return self.activate_edge_action(edge, SelectionMode::Replace, window, cx);
+            let activated = match owner.target() {
+                Some(OpenGpuiGraphFocusTarget::Node { lifetime, .. }) => {
+                    self.activate_node_action(lifetime, SelectionMode::Replace, window, cx)
+                }
+                Some(OpenGpuiGraphFocusTarget::Port(port)) => self
+                    .interaction_owner
+                    .native_capability()
+                    .activate_keyboard_port(port, window, cx),
+                Some(OpenGpuiGraphFocusTarget::Edge(edge)) => {
+                    self.activate_edge_action(edge, SelectionMode::Replace, window, cx)
+                }
+                Some(OpenGpuiGraphFocusTarget::ReconnectSource(edge)) => {
+                    self.activate_edge_reconnect_action(edge, EdgeEndpoint::From, window, cx)
+                }
+                Some(OpenGpuiGraphFocusTarget::ReconnectTarget(edge)) => {
+                    self.activate_edge_reconnect_action(edge, EdgeEndpoint::To, window, cx)
+                }
+                None => false,
+            };
+            if activated {
+                return true;
+            }
         }
         if !event.keystroke.key.eq_ignore_ascii_case("space") {
             return false;
@@ -219,11 +234,7 @@ impl OpenGpuiSceneHost {
         if was_held {
             cx.notify();
         }
-        was_held
-            && self
-                .interaction_owner
-                .focus_handle()
-                .is_some_and(|focus| focus.is_focused(window))
+        was_held && owner.is_root()
     }
 
     fn delete_selection_action(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {

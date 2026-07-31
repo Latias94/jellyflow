@@ -176,6 +176,42 @@ impl ConnectionCommitTarget {
         }
     }
 
+    pub(super) fn installed_target(
+        &self,
+        snapshot: &GraphSnapshot,
+        expected_revision: GraphRevision,
+    ) -> Option<PortInstanceKey> {
+        match self {
+            Self::Existing(instance) => snapshot
+                .port_instance_is_current(*instance)
+                .then_some(*instance),
+            Self::CreateFromWire {
+                target,
+                node,
+                ports,
+                ..
+            } => {
+                let owner = snapshot.node_lifetime_key(*node)?;
+                if !snapshot.node_lifetime_was_introduced_at(owner, expected_revision) {
+                    return None;
+                }
+                let mut installed_target = None;
+                for port in ports.iter().copied() {
+                    let instance = snapshot.port_instance_key(port)?;
+                    if instance.owner() != owner
+                        || !snapshot.port_instance_was_introduced_at(instance, expected_revision)
+                    {
+                        return None;
+                    }
+                    if port == *target {
+                        installed_target = Some(instance);
+                    }
+                }
+                installed_target
+            }
+        }
+    }
+
     fn into_edit(self) -> TopologyEdit {
         match self {
             Self::Existing(_) => TopologyEdit::new(),
@@ -687,6 +723,109 @@ impl NodeMoveCohort {
     }
 }
 
+/// Immutable movement limits for one admitted node cohort.
+///
+/// Pointer movement, alignment projection, and command binding all use this same constraint so an
+/// optimistic node position cannot cross an extent that the authoritative command will enforce.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct NodeMoveDeltaConstraint {
+    representative: NodeId,
+    min_x: f32,
+    max_x: f32,
+    min_y: f32,
+    max_y: f32,
+}
+
+impl NodeMoveDeltaConstraint {
+    pub(super) fn from_snapshot(
+        snapshot: &GraphSnapshot,
+        cohort: &NodeMoveCohort,
+    ) -> Result<Self, FreshGraphMutationBindError> {
+        let representative = cohort.nodes()[0];
+        let mut constraint = Self {
+            representative,
+            min_x: f32::NEG_INFINITY,
+            max_x: f32::INFINITY,
+            min_y: f32::NEG_INFINITY,
+            max_y: f32::INFINITY,
+        };
+
+        for member in cohort.members() {
+            let node = member.node();
+            if member.provenance() != snapshot.provenance() {
+                return Err(FreshGraphMutationBindError::NodeDragMemberForeignRuntime { node });
+            }
+            let Some(current_lifetime) = snapshot.node_lifetime_key(node) else {
+                return Err(FreshGraphMutationBindError::NodeDragMemberUnavailable { node });
+            };
+            if current_lifetime != *member {
+                return Err(FreshGraphMutationBindError::NodeDragMemberReplaced {
+                    node,
+                    expected: *member,
+                    current: current_lifetime,
+                });
+            }
+            let current = snapshot
+                .graph()
+                .node(&node)
+                .ok_or(FreshGraphMutationBindError::NodeDragMemberUnavailable { node })?;
+            if !current.draggable.unwrap_or(true) {
+                return Err(FreshGraphMutationBindError::NodeDragMemberNotDraggable { node });
+            }
+            let Some(extent) = movement_extent(snapshot, node, current.extent)? else {
+                continue;
+            };
+            let Some((min_x, max_x, min_y, max_y)) =
+                movement_delta_bounds(current.pos, current.origin, current.size, extent)
+            else {
+                return Err(FreshGraphMutationBindError::NodeDragMemberPositionOverflow { node });
+            };
+            constraint.min_x = constraint.min_x.max(min_x);
+            constraint.max_x = constraint.max_x.min(max_x);
+            constraint.min_y = constraint.min_y.max(min_y);
+            constraint.max_y = constraint.max_y.min(max_y);
+        }
+
+        Ok(constraint)
+    }
+
+    #[cfg(test)]
+    pub(super) fn unbounded_for_test(cohort: &NodeMoveCohort) -> Self {
+        Self {
+            representative: cohort.nodes()[0],
+            min_x: f32::NEG_INFINITY,
+            max_x: f32::INFINITY,
+            min_y: f32::NEG_INFINITY,
+            max_y: f32::INFINITY,
+        }
+    }
+
+    pub(super) fn constrain(
+        self,
+        requested: CanvasPoint,
+    ) -> Result<Option<CanvasPoint>, FreshGraphMutationBindError> {
+        if !requested.is_finite() {
+            return Err(
+                FreshGraphMutationBindError::NodeDragMemberPositionOverflow {
+                    node: self.representative,
+                },
+            );
+        }
+        let delta = CanvasPoint {
+            x: clamp_shared_axis(requested.x, self.min_x, self.max_x),
+            y: clamp_shared_axis(requested.y, self.min_y, self.max_y),
+        };
+        if !delta.is_finite() {
+            return Err(
+                FreshGraphMutationBindError::NodeDragMemberPositionOverflow {
+                    node: self.representative,
+                },
+            );
+        }
+        Ok((delta.x != 0.0 || delta.y != 0.0).then_some(delta))
+    }
+}
+
 /// Relative node movement captured independently from any stale press-time graph snapshot.
 #[derive(Debug)]
 pub(super) struct RelativeNodeMoveIntent {
@@ -779,68 +918,7 @@ pub(super) fn feasible_cohort_delta(
     cohort: &NodeMoveCohort,
     requested: CanvasPoint,
 ) -> Result<Option<CanvasPoint>, FreshGraphMutationBindError> {
-    if !requested.is_finite() {
-        return Err(
-            FreshGraphMutationBindError::NodeDragMemberPositionOverflow {
-                node: cohort.nodes()[0],
-            },
-        );
-    }
-
-    let mut min_x = f32::NEG_INFINITY;
-    let mut max_x = f32::INFINITY;
-    let mut min_y = f32::NEG_INFINITY;
-    let mut max_y = f32::INFINITY;
-
-    for member in cohort.members() {
-        let node = member.node();
-        if member.provenance() != snapshot.provenance() {
-            return Err(FreshGraphMutationBindError::NodeDragMemberForeignRuntime { node });
-        }
-        let Some(current_lifetime) = snapshot.node_lifetime_key(node) else {
-            return Err(FreshGraphMutationBindError::NodeDragMemberUnavailable { node });
-        };
-        if current_lifetime != *member {
-            return Err(FreshGraphMutationBindError::NodeDragMemberReplaced {
-                node,
-                expected: *member,
-                current: current_lifetime,
-            });
-        }
-        let current = snapshot
-            .graph()
-            .node(&node)
-            .ok_or(FreshGraphMutationBindError::NodeDragMemberUnavailable { node })?;
-        if !current.draggable.unwrap_or(true) {
-            return Err(FreshGraphMutationBindError::NodeDragMemberNotDraggable { node });
-        }
-        let extent = movement_extent(snapshot, node, current.extent)?;
-        let Some(extent) = extent else {
-            continue;
-        };
-        let Some((member_min_x, member_max_x, member_min_y, member_max_y)) =
-            movement_delta_bounds(current.pos, current.origin, current.size, extent)
-        else {
-            return Err(FreshGraphMutationBindError::NodeDragMemberPositionOverflow { node });
-        };
-        min_x = min_x.max(member_min_x);
-        max_x = max_x.min(member_max_x);
-        min_y = min_y.max(member_min_y);
-        max_y = max_y.min(member_max_y);
-    }
-
-    let delta = CanvasPoint {
-        x: clamp_shared_axis(requested.x, min_x, max_x),
-        y: clamp_shared_axis(requested.y, min_y, max_y),
-    };
-    if !delta.is_finite() {
-        return Err(
-            FreshGraphMutationBindError::NodeDragMemberPositionOverflow {
-                node: cohort.nodes()[0],
-            },
-        );
-    }
-    Ok((delta.x != 0.0 || delta.y != 0.0).then_some(delta))
+    NodeMoveDeltaConstraint::from_snapshot(snapshot, cohort)?.constrain(requested)
 }
 
 fn movement_extent(

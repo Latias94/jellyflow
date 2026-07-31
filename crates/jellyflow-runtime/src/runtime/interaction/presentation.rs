@@ -13,7 +13,8 @@ use crate::runtime::viewport::{ViewportPointerSample, ViewportRevision, Viewport
 
 use super::intent::NodeMoveCohort;
 use super::{
-    ConnectionGestureBinding, ConnectionProbe, InteractionGeneration, InteractionTicketId,
+    ConnectionGestureBinding, ConnectionProbe, ConnectionSettlementCapability,
+    InteractionGeneration, InteractionTicketId,
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -39,8 +40,10 @@ pub enum InteractionTerminalReason {
     Conflict,
     ExecutionFailed,
     TransportFailure,
+    ProtocolFailure,
     Uncertain,
     Cancelled,
+    InvalidTarget,
     OwnerRetired,
     ViewClosed,
     BudgetExhausted,
@@ -82,7 +85,7 @@ impl InteractionPosition {
         Self::from_sample(ViewportPointerSample::new(snapshot, view)?)
     }
 
-    pub(super) fn reproject(self, snapshot: ViewportSnapshot) -> Option<Self> {
+    pub(super) fn reproject_preserving_view(self, snapshot: ViewportSnapshot) -> Option<Self> {
         if self.provenance != snapshot.provenance() {
             return None;
         }
@@ -92,6 +95,19 @@ impl InteractionPosition {
             viewport_revision: snapshot.revision(),
             view: self.view,
             canvas,
+        })
+    }
+
+    pub(super) fn reproject_preserving_canvas(self, snapshot: ViewportSnapshot) -> Option<Self> {
+        if self.provenance != snapshot.provenance() {
+            return None;
+        }
+        let view = snapshot.transform().screen_point_for_canvas(self.canvas)?;
+        Some(Self {
+            provenance: snapshot.provenance(),
+            viewport_revision: snapshot.revision(),
+            view,
+            canvas: self.canvas,
         })
     }
 
@@ -119,6 +135,7 @@ pub enum ConnectionSearchStatus {
     Empty,
     Error,
     CommitRejected,
+    Uncertain,
 }
 
 /// Probe result captured by one immutable interaction-wire projection.
@@ -252,6 +269,20 @@ pub struct ConnectionPresentation {
     search: Option<ConnectionSearchStatus>,
     release_pending: bool,
     ticket: Option<InteractionTicketId>,
+}
+
+/// Runtime-owned terminal state retained while graph and route publication settle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectionSettlementPresentation {
+    AwaitingPublication,
+    Uncertain {
+        capability: ConnectionSettlementCapability,
+        can_retry: bool,
+    },
+    Retryable {
+        capability: ConnectionSettlementCapability,
+        can_retry: bool,
+    },
 }
 
 impl ConnectionPresentation {
@@ -443,6 +474,7 @@ pub struct CanvasInteractionPresentation {
     generation: Option<InteractionGeneration>,
     connection_intent: Option<ConnectionGestureBinding>,
     connection: Option<ConnectionPresentation>,
+    connection_settlement: Option<ConnectionSettlementPresentation>,
     node_drag: Option<NodeDragPresentation>,
     marquee: Option<CanvasRect>,
     active_edge: Option<EdgeInstanceKey>,
@@ -457,6 +489,7 @@ impl CanvasInteractionPresentation {
             generation: None,
             connection_intent: None,
             connection: None,
+            connection_settlement: None,
             node_drag: None,
             marquee: None,
             active_edge: None,
@@ -472,6 +505,14 @@ impl CanvasInteractionPresentation {
 
     pub(super) fn with_connection(mut self, connection: ConnectionPresentation) -> Self {
         self.connection = Some(connection);
+        self
+    }
+
+    pub(super) fn with_connection_settlement(
+        mut self,
+        settlement: ConnectionSettlementPresentation,
+    ) -> Self {
+        self.connection_settlement = Some(settlement);
         self
     }
 
@@ -523,6 +564,11 @@ impl CanvasInteractionPresentation {
 
     pub fn connection(&self) -> Option<&ConnectionPresentation> {
         self.connection.as_ref()
+    }
+
+    /// Returns the authoritative terminal settlement for any connection input origin.
+    pub fn connection_settlement(&self) -> Option<ConnectionSettlementPresentation> {
+        self.connection_settlement
     }
 
     pub fn node_drag(&self) -> Option<&NodeDragPresentation> {

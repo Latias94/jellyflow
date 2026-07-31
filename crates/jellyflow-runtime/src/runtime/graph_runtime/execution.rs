@@ -22,9 +22,9 @@ use crate::schema::NodeCatalog;
 
 use super::impact::InstalledTransactionImpact;
 use super::{
-    EdgeIncarnation, EdgeIncarnationEntry, GraphRuntimeError, GraphSnapshot, GraphVersion,
-    HistoryState, NodeIncarnation, PortIncarnation, PortIncarnationEntry, RuntimePatch,
-    RuntimeShared, RuntimeState,
+    EdgeIncarnation, EdgeIncarnationEntry, GraphRevision, GraphRuntimeError, GraphSnapshot,
+    GraphVersion, HistoryState, NodeIncarnation, PortIncarnation, PortIncarnationEntry,
+    RuntimePatch, RuntimeShared, RuntimeState,
 };
 
 pub(super) struct MutationGuard<'a>(&'a Cell<bool>);
@@ -201,7 +201,7 @@ pub(super) fn execute_command_locked(
         return Ok(CommandExecution::Outcome(GraphCommandOutcome::Noop(
             GraphCommandNoop::new(
                 command.identity().clone(),
-                current_version,
+                snapshot_from_state(state),
                 footprint,
                 planning_work,
             ),
@@ -245,7 +245,7 @@ fn execute_history_command_locked(
         return Ok(CommandExecution::Outcome(GraphCommandOutcome::Noop(
             GraphCommandNoop::new(
                 command.identity().clone(),
-                current_version,
+                snapshot_from_state(state),
                 GraphMutationFootprint::new(),
                 GraphCommandPlanningWork::empty(),
             ),
@@ -268,7 +268,7 @@ fn execute_history_command_locked(
         return Ok(CommandExecution::Outcome(GraphCommandOutcome::Noop(
             GraphCommandNoop::new(
                 command.identity().clone(),
-                current_version,
+                snapshot_from_state(state),
                 GraphMutationFootprint::new(),
                 GraphCommandPlanningWork::empty(),
             ),
@@ -475,19 +475,23 @@ fn command_rejection_from_apply(
 
 pub(super) fn middleware_snapshot(state: &RuntimeState) -> GraphRuntimeMiddlewareSnapshot {
     GraphRuntimeMiddlewareSnapshot::new(
-        GraphSnapshot::new(
-            state.provenance,
-            state.graph.clone(),
-            state.revision,
-            state.document_epoch,
-            state.incarnations.clone(),
-            state.edge_incarnations.clone(),
-            state.port_incarnations.clone(),
-        ),
+        snapshot_from_state(state),
         HistoryState {
             undo_len: state.history.undo_len(),
             redo_len: state.history.redo_len(),
         },
+    )
+}
+
+fn snapshot_from_state(state: &RuntimeState) -> GraphSnapshot {
+    GraphSnapshot::new(
+        state.provenance,
+        state.graph.clone(),
+        state.revision,
+        state.document_epoch,
+        state.incarnations.clone(),
+        state.edge_incarnations.clone(),
+        state.port_incarnations.clone(),
     )
 }
 
@@ -516,7 +520,10 @@ pub(super) fn install_incremental(
         incarnation_delta.insert(*node, None);
     }
     for node in &identities.added {
-        incarnation_delta.insert(*node, Some(allocate_incarnation(&mut next_incarnation)?));
+        incarnation_delta.insert(
+            *node,
+            Some(allocate_incarnation(&mut next_incarnation, to_revision)?),
+        );
     }
     let mut incarnations = state.incarnations.clone();
     for node in &identities.retired {
@@ -535,7 +542,10 @@ pub(super) fn install_incremental(
         for edge in &edge_identities.added {
             edge_incarnations.insert_mut(
                 *edge,
-                EdgeIncarnationEntry(allocate_edge_incarnation(&mut next_incarnation)?),
+                EdgeIncarnationEntry(allocate_edge_incarnation(
+                    &mut next_incarnation,
+                    to_revision,
+                )?),
             );
         }
     }
@@ -547,7 +557,10 @@ pub(super) fn install_incremental(
         for port in &port_identities.added {
             port_incarnations.insert_mut(
                 *port,
-                PortIncarnationEntry(allocate_port_incarnation(&mut next_incarnation)?),
+                PortIncarnationEntry(allocate_port_incarnation(
+                    &mut next_incarnation,
+                    to_revision,
+                )?),
             );
         }
     }
@@ -607,20 +620,25 @@ pub(super) fn collect_live_sessions(
     live
 }
 
-pub(super) fn allocate_incarnation(next: &mut u64) -> Result<NodeIncarnation, GraphRuntimeError> {
-    allocate_identity(next).map(NodeIncarnation)
+pub(super) fn allocate_incarnation(
+    next: &mut u64,
+    introduced_at: GraphRevision,
+) -> Result<NodeIncarnation, GraphRuntimeError> {
+    allocate_identity(next).map(|serial| NodeIncarnation::new(serial, introduced_at))
 }
 
 pub(super) fn allocate_edge_incarnation(
     next: &mut u64,
+    introduced_at: GraphRevision,
 ) -> Result<EdgeIncarnation, GraphRuntimeError> {
-    allocate_identity(next).map(EdgeIncarnation)
+    allocate_identity(next).map(|serial| EdgeIncarnation::new(serial, introduced_at))
 }
 
 pub(super) fn allocate_port_incarnation(
     next: &mut u64,
+    introduced_at: GraphRevision,
 ) -> Result<PortIncarnation, GraphRuntimeError> {
-    allocate_identity(next).map(PortIncarnation)
+    allocate_identity(next).map(|serial| PortIncarnation::new(serial, introduced_at))
 }
 
 fn allocate_identity(next: &mut u64) -> Result<u64, GraphRuntimeError> {
