@@ -2,6 +2,7 @@ mod events;
 mod evidence;
 mod phase;
 mod planning;
+mod presented_frames;
 mod scenario;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -17,6 +18,7 @@ use open_gpui::{
     App, Entity, FocusHandle, MouseButton, PinchEvent, PlatformInput, TouchPhase, Window, point, px,
 };
 use open_gpui_canvas_jellyflow::connection_search::NativeGraphSurface;
+use open_gpui_canvas_jellyflow::smoke_receipt::{SmokeFrameStageV1, SmokePresentedFrameV1};
 
 use self::events::{key_down, key_up, mouse_down, mouse_move, mouse_up};
 use self::evidence::{
@@ -25,15 +27,15 @@ use self::evidence::{
 };
 use self::phase::ProbePhase;
 use self::planning::{
-    AutoPanPointerStrategy, EdgePlan, NodePlan, ReconnectPlan, VisibleEdgePickPoint,
-    auto_pan_pointer_strategy, auto_pan_pointer_toward, blank_surface_point, choose_reconnect,
-    dragged_geometry_status, free_connection_port, geometry_fits_surface, graph_contains_edge,
-    point_changed, point_inside_surface, port_owner_view_center, port_point,
-    position_node_for_selection, refresh_edge_plan, reveal_canvas_points,
-    set_zoom_centered_on_canvas_point, set_zoom_preserving_surface_center,
-    settled_connection_target_point, steer_auto_pan_pointer_toward, visible_port_point,
+    EdgePlan, NodePlan, ReconnectPlan, VisibleEdgePickPoint, auto_pan_pointer_toward,
+    blank_surface_point, choose_reconnect, dragged_geometry_status, edge_owner_reveal_anchor,
+    free_connection_port, geometry_fits_surface, graph_contains_edge, point_changed,
+    point_inside_surface, port_owner_view_center, port_point, position_node_for_selection,
+    refresh_edge_plan, reveal_canvas_points, set_zoom_centered_on_canvas_point,
+    set_zoom_preserving_surface_center, settled_connection_target_point, visible_port_point,
     visible_reconnect_grip, visible_unique_edge_point,
 };
+use self::presented_frames::PresentedFrameRecorder;
 use super::{
     INTERACTION_CAPTURE_STATES, LOD_CAPTURE_STATES, SMOKE_AUTOPAN_MIN_FRAMES,
     SMOKE_INPUT_EVENT_COUNT, SmokeCaptureState, SmokeConfig, SmokeExpectations,
@@ -87,16 +89,15 @@ struct InteractionProbeState {
     auto_pan_frames: u8,
     connection_auto_pan_last: Option<ViewportTransform>,
     connection_auto_pan_frames: u8,
-    connection_auto_pan_strategy: Option<AutoPanPointerStrategy>,
     reconnect_auto_pan_last: Option<ViewportTransform>,
     reconnect_auto_pan_frames: u8,
-    reconnect_auto_pan_strategy: Option<AutoPanPointerStrategy>,
-    auto_pan_steering_events: u16,
+    auto_pan_reframes: u16,
     rendered_frame_fence: RenderedFrameFence,
     release_wire_path: Option<EdgePath>,
     tab_focus_origin: Option<FocusHandle>,
     tab_focus_forward: Option<FocusHandle>,
     selection_reframed: bool,
+    reconnect_selection_reframed: bool,
     selection_chrome_fitted: bool,
     selection_chrome_sides: u8,
     selection_chrome_detached_run: usize,
@@ -206,6 +207,7 @@ pub(super) struct RealWindowSmokeProbe {
     scenario: ScenarioProbeState,
     paint_palette: SmokePaintPalette,
     bounds_verified: bool,
+    presented_frames: PresentedFrameRecorder,
 }
 
 impl RealWindowSmokeProbe {
@@ -230,6 +232,7 @@ impl RealWindowSmokeProbe {
             scenario,
             paint_palette,
             bounds_verified: false,
+            presented_frames: PresentedFrameRecorder::default(),
         }
     }
 
@@ -239,6 +242,23 @@ impl RealWindowSmokeProbe {
 
     pub(super) fn paint(&self) -> Option<&SmokePaintEvidence> {
         self.paint.as_ref()
+    }
+
+    pub(super) fn presented_frames(&self) -> Vec<SmokePresentedFrameV1> {
+        self.presented_frames.frames()
+    }
+
+    pub(super) fn record_lod_presented_frame(
+        &self,
+        surface: &Entity<NativeGraphSurface>,
+        cx: &App,
+    ) -> Result<(), &'static str> {
+        let host = surface.read(cx).host();
+        let scene = host
+            .read(cx)
+            .smoke_presented_scene_snapshot()
+            .ok_or("presented_frame_scene_snapshot_missing")?;
+        self.presented_frames.record_lod_frame(scene)
     }
 
     pub(super) fn progress(&self) -> (String, u16) {
@@ -283,7 +303,15 @@ impl RealWindowSmokeProbe {
         expectations: &SmokeExpectations,
         surface_size: ViewSize,
     ) -> Result<Option<SmokeInputEvidence>, &'static str> {
-        scenario::advance(self, window, cx, surface, view, expectations, surface_size)
+        if let Some(reason) = self.presented_frames.failure() {
+            return Err(reason);
+        }
+        let outcome =
+            scenario::advance(self, window, cx, surface, view, expectations, surface_size);
+        if self.presented_frames.is_active() && matches!(&outcome, Ok(None)) {
+            jellyflow_open_gpui::host::request_native_test_frame(window);
+        }
+        outcome
     }
 
     fn capture_visual(
@@ -311,16 +339,20 @@ impl RealWindowSmokeProbe {
     fn capture_checkpoint(
         &mut self,
         window: &mut Window,
+        surface: &Entity<NativeGraphSurface>,
+        cx: &App,
         view: &WeakViewSession,
         surface_size: ViewSize,
         state: SmokeCaptureState,
     ) -> Result<(), &'static str> {
-        self.capture_checkpoint_omitting_edge(window, view, surface_size, state, None)
+        self.capture_checkpoint_omitting_edge(window, surface, cx, view, surface_size, state, None)
     }
 
     fn capture_checkpoint_omitting_edge(
         &mut self,
         window: &mut Window,
+        surface: &Entity<NativeGraphSurface>,
+        cx: &App,
         view: &WeakViewSession,
         surface_size: ViewSize,
         state: SmokeCaptureState,
@@ -349,6 +381,8 @@ impl RealWindowSmokeProbe {
         };
         let (_, _, geometry, paint, selection_chrome) = inspect_current_frame(
             window,
+            surface,
+            cx,
             view,
             &expectations,
             surface_size,
@@ -370,18 +404,23 @@ impl RealWindowSmokeProbe {
         }
         self.geometry = Some(geometry);
         self.paint = Some(paint);
-        self.interaction_mut()?.record_capture(state)
+        self.interaction_mut()?.record_capture(state)?;
+        Ok(())
     }
 
     fn plan_input(
         &mut self,
         window: &mut Window,
+        surface: &Entity<NativeGraphSurface>,
+        cx: &App,
         view: &WeakViewSession,
         expectations: &SmokeExpectations,
         surface_size: ViewSize,
     ) -> Result<(), &'static str> {
         let (snapshot, transform, geometry, paint, _) = inspect_current_frame(
             window,
+            surface,
+            cx,
             view,
             expectations,
             surface_size,
@@ -584,14 +623,12 @@ impl RealWindowSmokeProbe {
     fn complete(&self) -> Result<Option<SmokeInputEvidence>, &'static str> {
         let scenario = match (&self.scenario, self.config.scenario()) {
             (ScenarioProbeState::Interaction(state), SmokeScenario::Interaction) => {
-                if state.dispatched_events
-                    != SMOKE_INPUT_EVENT_COUNT.saturating_add(state.auto_pan_steering_events)
-                {
+                if state.dispatched_events != SMOKE_INPUT_EVENT_COUNT {
                     return Err("input_dispatch_incomplete");
                 }
                 SmokeScenarioEvidence::Interaction(SmokeInteractionEvidence {
                     dispatched_events: state.dispatched_events,
-                    auto_pan_steering_events: state.auto_pan_steering_events,
+                    auto_pan_reframes: state.auto_pan_reframes,
                     captures: state.captures.clone(),
                     node_dragged: state.node_dragged,
                     selection_chrome_fitted: state.selection_chrome_fitted,
@@ -684,8 +721,14 @@ fn connection_candidate_failure(
                 Some(InteractionTerminalReason::TransportFailure) => {
                     "input_connection_drag_transport_failure"
                 }
+                Some(InteractionTerminalReason::ProtocolFailure) => {
+                    "input_connection_drag_protocol_failure"
+                }
                 Some(InteractionTerminalReason::Uncertain) => {
                     "input_connection_drag_outcome_unknown"
+                }
+                Some(InteractionTerminalReason::InvalidTarget) => {
+                    "input_connection_drag_invalid_target"
                 }
                 Some(InteractionTerminalReason::Cancelled) => "input_connection_drag_cancelled",
                 Some(InteractionTerminalReason::OwnerRetired) => {
@@ -814,52 +857,5 @@ mod tests {
             auto_pan_pointer_toward(ViewPoint::new(340.0, 160.0), surface),
             Some(ViewPoint::new(340.0, 12.0))
         );
-    }
-
-    #[test]
-    fn auto_pan_steering_stops_the_axis_that_settles_first() {
-        let surface = ViewSize::new(680.0, 640.0);
-
-        assert_eq!(
-            steer_auto_pan_pointer_toward(ViewPoint::new(-240.0, -800.0), surface),
-            Some(ViewPoint::new(12.0, 12.0))
-        );
-        assert_eq!(
-            steer_auto_pan_pointer_toward(ViewPoint::new(120.0, -500.0), surface),
-            Some(ViewPoint::new(120.0, 12.0))
-        );
-    }
-
-    #[test]
-    fn auto_pan_steering_recovers_one_axis_after_unequal_distance_overshoot() {
-        let surface = ViewSize::new(680.0, 640.0);
-
-        assert_eq!(
-            steer_auto_pan_pointer_toward(ViewPoint::new(660.0, -100.0), surface),
-            Some(ViewPoint::new(668.0, 12.0))
-        );
-        assert_eq!(
-            steer_auto_pan_pointer_toward(ViewPoint::new(100.0, 700.0), surface),
-            Some(ViewPoint::new(100.0, 628.0))
-        );
-    }
-
-    #[test]
-    fn auto_pan_strategy_changes_as_the_target_crosses_the_surface() {
-        let surface = ViewSize::new(680.0, 640.0);
-        let strategy_for = |target| {
-            let pointer = steer_auto_pan_pointer_toward(target, surface)
-                .expect("a finite target on a valid surface must produce a pointer");
-            auto_pan_pointer_strategy(pointer, surface)
-                .expect("the planned pointer must produce a strategy")
-        };
-
-        let leading = strategy_for(ViewPoint::new(834.0, 20.0));
-        let neutral = strategy_for(ViewPoint::new(834.0, 320.0));
-        let trailing = strategy_for(ViewPoint::new(834.0, 3_974.0));
-
-        assert_ne!(leading, neutral);
-        assert_ne!(neutral, trailing);
-        assert_ne!(leading, trailing);
     }
 }

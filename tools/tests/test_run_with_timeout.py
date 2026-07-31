@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import signal
 import subprocess
 import sys
@@ -19,6 +20,26 @@ SPEC.loader.exec_module(timeout_runner)
 
 
 class RunWithTimeoutTests(unittest.TestCase):
+    def test_passes_stdin_and_an_explicit_environment_to_the_child(self) -> None:
+        environment = dict(os.environ)
+        environment["JELLYFLOW_TIMEOUT_TEST"] = "explicit"
+        completed = timeout_runner.run_process(
+            [
+                sys.executable,
+                "-c",
+                "import os, sys; print(os.environ['JELLYFLOW_TIMEOUT_TEST']); "
+                "print(sys.stdin.read())",
+            ],
+            timeout_seconds=5,
+            env=environment,
+            input="receipt",
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(completed.returncode, 0)
+        self.assertEqual(completed.stdout.splitlines(), ["explicit", "receipt"])
+
     def test_returns_the_child_exit_code(self) -> None:
         self.assertEqual(
             timeout_runner.run_with_timeout(

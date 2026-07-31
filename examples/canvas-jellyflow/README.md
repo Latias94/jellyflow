@@ -59,8 +59,9 @@ Smoke mode drives the production window through the bounded Shader and Workflow 
 A pass requires retained lifecycle invariants, complete current-graph geometry, non-blank native
 paint, fixed-zoom node and connection auto-pan, focus traversal, edge deletion and reconnect,
 create-from-wire search, fitted selection chrome, and the directed semantic-LOD continuity probe.
-The process emits one `JELLYFLOW_REAL_WINDOW_SMOKE` marker and exits automatically; any failed
-invariant, early close, or timeout exits non-zero. See the
+The process emits one `JELLYFLOW_REAL_WINDOW_SMOKE_RECEIPT` JSON receipt and exits automatically;
+any failed invariant, early close, or timeout exits non-zero. The matrix runner validates that
+receipt through the Rust `smoke_receipt_contract` binary before accepting it. See the
 [node UI authoring regression contract](../../docs/testing/node-ui-authoring-regression.md) for the
 authoritative scenarios, window and zoom matrix, screenshot checkpoints, and required commands.
 The non-default `real-window-smoke` feature only enables framebuffer readback for this gate; normal

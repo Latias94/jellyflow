@@ -77,16 +77,15 @@ feedback submissions must have completed; feedback, layout, and measurement fail
 remain zero; and the host must have no diagnostic or close reason.
 
 The gate runs the production `open_gpui_platform::application()` entrypoint, not a test platform.
-Each process emits one `JELLYFLOW_REAL_WINDOW_SMOKE` marker containing the named bounds, scenario,
-configured and observed zoom evidence, initial fixture topology, current checkpoint geometry
-topology, surface dimensions, retained lifecycle counts, feedback counts, and diagnostic state.
-Log consumers must match a line beginning exactly with
-`JELLYFLOW_REAL_WINDOW_SMOKE status=` and must also require a zero process exit code. The
-`JELLYFLOW_REAL_WINDOW_SMOKE_AUTOPAN` failure diagnostic is not a result marker.
-The marker serializes typed interaction or LOD evidence from the configured scenario. Evidence that
-was never observed remains `missing`; it is never replaced with compact, interaction, or zoom-1
-defaults. Capture totals are derived from unique named checkpoints, so a duplicate checkpoint fails
-the process instead of inflating its count.
+Each process emits exactly one single-line `JELLYFLOW_REAL_WINDOW_SMOKE_RECEIPT` JSON value. The
+versioned Rust contract owns its schema and semantic validation for the named run, initial topology,
+current geometry and paint, retained lifecycle, typed interaction or LOD evidence, and every
+contiguous presented frame. Python rejects missing, duplicate, malformed, or contract-invalid
+receipts and requires the process exit status to agree with the validated receipt status. It does
+not duplicate the receipt field table. Evidence that was never observed remains absent rather than
+being replaced with compact, interaction, or zoom-1 defaults. Capture totals are derived from
+unique named checkpoints, so a duplicate checkpoint fails the process instead of inflating its
+count.
 Shader and Workflow run the full interaction path at compact
 `960x640` bounds with zooms `0.5`, `1`, and `2`, plus one normal `1440x900` run at zoom `1`. The
 configured zoom remains active for every dispatched interaction and all nine checkpoints; the
@@ -107,7 +106,7 @@ stable node's screen-space bounds and every real port's node-relative route anch
 samples, captures all three frames, and fails on a presentation jump. Keeping this directed probe
 outside the product/bounds/zoom interaction matrix avoids a Cartesian expansion. Interaction
 checkpoints validate complete graph geometry plus nonblank paint for every visible node; the process
-marker and exit status remain the behavioral authority, while CI uploads PNGs for visual inspection
+receipt and exit status remain the behavioral authority, while CI uploads PNGs for visual inspection
 of overlap, endpoint shifts, and route discontinuity. The workflow starts from an empty capture
 directory, requires the exact 75-file matrix rather than only its count, and uploads its sorted
 manifest with the images.
@@ -163,17 +162,19 @@ python3 tools/check_open_gpui_native_frame_clock.py --require-native
 
 # Build once, then run the bounded visual and interaction matrix through the CI orchestrator.
 cargo build --manifest-path examples/canvas-jellyflow/Cargo.toml \
-  -p open-gpui-canvas-jellyflow --locked --features real-window-smoke
+  -p open-gpui-canvas-jellyflow --bins --locked --features real-window-smoke
 set -euo pipefail
 capture_output="$(mktemp)"
 trap 'rm -f "$capture_output"' EXIT
 python3 tools/run_real_window_smoke_matrix.py \
   --binary examples/canvas-jellyflow/target/debug/open-gpui-canvas-jellyflow \
+  --receipt-validator examples/canvas-jellyflow/target/debug/smoke_receipt_contract \
   --capture-root target/real-window-smoke \
   --timeout-seconds 60 \
   --capture-dir-output "$capture_output"
 python3 tools/check_real_window_smoke_evidence.py \
-  --capture-dir-from-output "$capture_output"
+  --capture-dir-from-output "$capture_output" \
+  --receipt-validator examples/canvas-jellyflow/target/debug/smoke_receipt_contract
 ```
 
 The Open GPUI executable is the only product example. `jellyflow-egui` and the external

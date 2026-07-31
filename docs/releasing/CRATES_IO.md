@@ -32,15 +32,18 @@ cargo fmt --manifest-path examples/canvas-jellyflow/Cargo.toml --all -- --check
 cargo nextest run --manifest-path examples/canvas-jellyflow/Cargo.toml -p open-gpui-canvas-jellyflow --locked --no-fail-fast
 cargo test --manifest-path examples/canvas-jellyflow/Cargo.toml --workspace --doc --locked
 cargo clippy --manifest-path examples/canvas-jellyflow/Cargo.toml --workspace --all-targets --locked -- -D warnings
-cargo build --manifest-path examples/canvas-jellyflow/Cargo.toml -p open-gpui-canvas-jellyflow --locked --features real-window-smoke
+cargo build --manifest-path examples/canvas-jellyflow/Cargo.toml -p open-gpui-canvas-jellyflow --bins --locked --features real-window-smoke
 capture_output="$(mktemp)"
 trap 'rm -f "$capture_output"' EXIT
 python3 tools/run_real_window_smoke_matrix.py \
   --binary examples/canvas-jellyflow/target/debug/open-gpui-canvas-jellyflow \
+  --receipt-validator examples/canvas-jellyflow/target/debug/smoke_receipt_contract \
   --capture-root target/real-window-smoke \
   --timeout-seconds 60 \
   --capture-dir-output "$capture_output"
-python3 tools/check_real_window_smoke_evidence.py --capture-dir-from-output "$capture_output"
+python3 tools/check_real_window_smoke_evidence.py \
+  --capture-dir-from-output "$capture_output" \
+  --receipt-validator examples/canvas-jellyflow/target/debug/smoke_receipt_contract
 git diff --check
 ```
 

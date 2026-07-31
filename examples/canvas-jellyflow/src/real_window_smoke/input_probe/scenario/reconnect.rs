@@ -11,6 +11,22 @@ impl RealWindowSmokeProbe {
     ) -> Result<Option<SmokeInputEvidence>, &'static str> {
         match self.phase {
             ProbePhase::ReconnectEdgePress => {
+                if !self.interaction()?.reconnect_selection_reframed {
+                    let edge = self
+                        .interaction()?
+                        .created_edge
+                        .ok_or("input_created_edge_missing")?;
+                    let anchor = edge_owner_reveal_anchor(view, edge, surface_size)?
+                        .ok_or("input_reconnect_owner_geometry_missing")?;
+                    let zoom = view
+                        .viewport_transform()
+                        .map_err(|_| "input_viewport_read_failed")?
+                        .zoom;
+                    set_zoom_centered_on_canvas_point(view, surface_size, zoom, anchor)?;
+                    self.interaction_mut()?.reconnect_selection_reframed = true;
+                    let _ = self.wait_for_rendered_interaction_frame(window, cx, surface)?;
+                    return Ok(None);
+                }
                 if self.rendered_interaction_frame_pending()?
                     && !self.wait_for_rendered_interaction_frame(window, cx, surface)?
                 {
@@ -60,6 +76,8 @@ impl RealWindowSmokeProbe {
                 if selection.edges().contains(&edge) && route_selected {
                     self.capture_checkpoint(
                         window,
+                        surface,
+                        cx,
                         view,
                         surface_size,
                         SmokeCaptureState::ReconnectSelected,
@@ -98,12 +116,9 @@ impl RealWindowSmokeProbe {
                     .ok_or("input_reconnect_target_projection_failed")?;
                 let edge = auto_pan_pointer_toward(target, surface_size)
                     .ok_or("input_autopan_plan_invalid")?;
-                let strategy = auto_pan_pointer_strategy(edge, surface_size)
-                    .ok_or("input_autopan_plan_invalid")?;
                 let interaction = self.interaction_mut()?;
                 interaction.press = Some(source);
                 interaction.release = Some(edge);
-                interaction.reconnect_auto_pan_strategy = Some(strategy);
                 self.dispatch_at_target_zoom(
                     window,
                     cx,
@@ -158,9 +173,20 @@ impl RealWindowSmokeProbe {
                 let settled_target =
                     target.and_then(|point| settled_connection_target_point(point, surface_size));
                 let _ = interaction;
-                if frames >= SMOKE_AUTOPAN_MIN_FRAMES
-                    && let Some(target) = settled_target
-                {
+                if frames >= SMOKE_AUTOPAN_MIN_FRAMES {
+                    let target = if let Some(target) = settled_target {
+                        target
+                    } else {
+                        set_zoom_centered_on_canvas_point(
+                            view,
+                            surface_size,
+                            current.zoom,
+                            target_anchor,
+                        )?;
+                        let reframes = self.interaction()?.auto_pan_reframes.saturating_add(1);
+                        self.interaction_mut()?.auto_pan_reframes = reframes;
+                        ViewPoint::new(surface_size.width * 0.5, surface_size.height * 0.5)
+                    };
                     self.interaction_mut()?.release = Some(target);
                     self.dispatch_at_target_zoom(
                         window,
@@ -170,27 +196,6 @@ impl RealWindowSmokeProbe {
                     )?;
                     self.transition(ProbePhase::ReconnectMaterializeTarget);
                     return Ok(None);
-                }
-                if settled_target.is_none()
-                    && let Some(target) = target
-                {
-                    let steering = steer_auto_pan_pointer_toward(target, surface_size)
-                        .ok_or("input_autopan_plan_invalid")?;
-                    let strategy = auto_pan_pointer_strategy(steering, surface_size)
-                        .ok_or("input_autopan_plan_invalid")?;
-                    if self.interaction()?.reconnect_auto_pan_strategy != Some(strategy) {
-                        self.dispatch_at_target_zoom(
-                            window,
-                            cx,
-                            view,
-                            mouse_move(MouseButton::Left, steering),
-                        )?;
-                        let interaction = self.interaction_mut()?;
-                        interaction.release = Some(steering);
-                        interaction.reconnect_auto_pan_strategy = Some(strategy);
-                        interaction.auto_pan_steering_events =
-                            interaction.auto_pan_steering_events.saturating_add(1);
-                    }
                 }
                 if self.wait_ticks == MAX_PHASE_WAIT_TICKS {
                     let geometry = view
@@ -256,6 +261,8 @@ impl RealWindowSmokeProbe {
                         .ok_or("input_reconnect_suppressed_edge_missing")?;
                     self.capture_checkpoint_omitting_edge(
                         window,
+                        surface,
+                        cx,
                         view,
                         surface_size,
                         SmokeCaptureState::ReconnectPreview,
@@ -313,6 +320,9 @@ impl RealWindowSmokeProbe {
                 {
                     return self.wait_with_reason("input_reconnect_release_unresolved");
                 }
+                if !self.wait_for_rendered_interaction_frame(window, cx, surface)? {
+                    return self.wait_or_timeout();
+                }
                 let path = self
                     .interaction()?
                     .release_wire_path
@@ -356,6 +366,8 @@ impl RealWindowSmokeProbe {
                     }
                     self.capture_checkpoint(
                         window,
+                        surface,
+                        cx,
                         view,
                         surface_size,
                         SmokeCaptureState::ReconnectCommitted,

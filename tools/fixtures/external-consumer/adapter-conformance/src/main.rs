@@ -4,11 +4,12 @@ use jellyflow_core::core::{
 };
 use jellyflow_core::interaction::NodeGraphConnectionMode;
 use jellyflow_runtime::adapter::conformance::{
-    ConformanceAction, ConformanceCancelReason, ConformanceCandidate, ConformanceEffect,
-    ConformanceGeometry, ConformanceGraph, ConformanceIntent, ConformanceOwnership,
-    ConformancePhase, ConformanceScenario, ConformanceScenarioId, ConformanceSelection,
-    ConformanceCommandOutcome, ConformanceTarget, ConformanceTerminal, ConformanceTicket,
-    ConformanceViewStatus, NormalizedObservation,
+    ConformanceAction, ConformanceAdapterTransportEvidence, ConformanceCancelReason,
+    ConformanceCandidate, ConformanceCommandCompletion, ConformanceCommandEvidence,
+    ConformanceConnectionSettlement, ConformanceEffect, ConformanceGeometry, ConformanceGraph,
+    ConformanceIntent, ConformanceOwnership, ConformancePhase, ConformanceScenario,
+    ConformanceScenarioId, ConformanceSelection, ConformanceTarget, ConformanceTerminal,
+    ConformanceTicket, ConformanceViewStatus, NormalizedObservation,
 };
 #[cfg(test)]
 use jellyflow_runtime::adapter::conformance::{canonical_scenarios, compare_observations};
@@ -22,8 +23,8 @@ use jellyflow_runtime::graph::{
 use jellyflow_runtime::interaction::{
     CanvasInteractionConfig, CanvasInteractionEffect, CanvasInteractionPhase,
     CanvasInteractionPresentation, CanvasInteractionSession, CanvasInteractionUpdate,
-    CanvasPressTarget, ConnectionGestureBinding, InteractionGraphSubmission, InteractionOwner,
-    InteractionTerminalReason, SelectionMode,
+    CanvasPressTarget, ConnectionGestureBinding, ConnectionSettlementPresentation,
+    InteractionGraphSubmission, InteractionOwner, InteractionTerminalReason, SelectionMode,
 };
 use jellyflow_runtime::profile::ApplyPipelineError;
 use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec, NodePortSpec};
@@ -100,14 +101,6 @@ struct FixtureAnchors {
     empty: ViewPoint,
 }
 
-#[derive(Clone, Copy)]
-struct FixturePortSpec {
-    node: NodeId,
-    port: PortId,
-    direction: PortDirection,
-    anchor: ViewPoint,
-}
-
 impl FixtureAnchors {
     fn new() -> Self {
         Self {
@@ -147,7 +140,11 @@ enum RawNativeEvent {
     QueueCommandPrefix,
     DrainCommandPrefix,
     Advance,
-    CommandSettled(ConformanceCommandOutcome),
+    CommandEvidence(ConformanceCommandEvidence),
+    PublishAuthoritativeFrame,
+    AdvanceAuthoritativeAbsence,
+    RetryConnectionSettlement,
+    CancelConnectionSettlement,
     CaptureLost,
     CaptureReplaced,
     PreviousOwnerReleased,
@@ -447,6 +444,11 @@ impl RuntimeInteractionBridge {
             {
                 anchors.source
             }
+            NativePointerDestination::ValidCandidate
+                if scenario == ConformanceScenarioId::ReconnectTargetNoop =>
+            {
+                anchors.reconnect_target
+            }
             NativePointerDestination::ValidCandidate => anchors.valid,
         };
         self.pointer = normalized_position(view, point);
@@ -521,7 +523,7 @@ impl RuntimeInteractionBridge {
 
     fn settle(
         &mut self,
-        settlement: ConformanceCommandOutcome,
+        evidence: ConformanceCommandEvidence,
         view: &ViewSession,
         runtime: &GraphRuntime,
         excluded_revision_delta: &mut u64,
@@ -531,22 +533,35 @@ impl RuntimeInteractionBridge {
             .take()
             .expect("one graph submission is pending");
         let ticket = submission.ticket();
-        let update = match settlement {
-            ConformanceCommandOutcome::NotDispatched => {
+        let update = match evidence {
+            ConformanceCommandEvidence::Transport(
+                ConformanceAdapterTransportEvidence::NotDispatched,
+            ) => {
                 drop(submission);
                 self.session
                     .submission_not_dispatched(ticket)
                     .expect("external undispatched submission settles")
             }
-            ConformanceCommandOutcome::Applied
-            | ConformanceCommandOutcome::Rejected
-            | ConformanceCommandOutcome::Conflict => {
+            ConformanceCommandEvidence::Transport(
+                ConformanceAdapterTransportEvidence::OutcomeUnknown,
+            ) => {
+                let command = self
+                    .session
+                    .bind_submission(submission)
+                    .expect("external uncertain submission remains fresh")
+                    .expect("external uncertain submission has one command");
+                drop(command);
+                self.session
+                    .submission_outcome_unknown(ticket)
+                    .expect("external uncertain submission retains settlement")
+            }
+            ConformanceCommandEvidence::Completion(completion) => {
                 let command = self
                     .session
                     .bind_submission(submission)
                     .expect("external mutation remains fresh")
                     .expect("external mutation is not a no-op");
-                if settlement == ConformanceCommandOutcome::Conflict {
+                if completion == ConformanceCommandCompletion::Conflict {
                     let snapshot = runtime
                         .snapshot()
                         .expect("external conflict snapshot remains available");
@@ -574,11 +589,21 @@ impl RuntimeInteractionBridge {
         if effect != ConformanceEffect::None {
             return effect;
         }
-        match settlement {
-            ConformanceCommandOutcome::Applied => ConformanceEffect::None,
-            ConformanceCommandOutcome::Rejected
-            | ConformanceCommandOutcome::Conflict
-            | ConformanceCommandOutcome::NotDispatched => ConformanceEffect::RestorePresentation,
+        match evidence {
+            ConformanceCommandEvidence::Completion(
+                ConformanceCommandCompletion::Applied | ConformanceCommandCompletion::Noop,
+            )
+            | ConformanceCommandEvidence::Transport(
+                ConformanceAdapterTransportEvidence::OutcomeUnknown,
+            ) => ConformanceEffect::None,
+            ConformanceCommandEvidence::Completion(
+                ConformanceCommandCompletion::Rejected
+                | ConformanceCommandCompletion::Conflict
+                | ConformanceCommandCompletion::Failed,
+            )
+            | ConformanceCommandEvidence::Transport(
+                ConformanceAdapterTransportEvidence::NotDispatched,
+            ) => ConformanceEffect::RestorePresentation,
         }
     }
 
@@ -661,7 +686,10 @@ impl RuntimeInteractionBridge {
             assert_eq!(needs_tick, next.query_work_pending());
             update = next;
         }
-        if observed == ConformanceEffect::None && resolved_probe {
+        if observed == ConformanceEffect::None
+            && resolved_probe
+            && self.session.presentation().phase() == CanvasInteractionPhase::ConnectionDrag
+        {
             ConformanceEffect::ProbeConnection
         } else {
             observed
@@ -699,16 +727,11 @@ impl MinimalNativeHost {
         let runtime = GraphRuntime::builder(fixture_catalog())
             .build(fixture_graph(ids, anchors))
             .expect("external conformance runtime starts");
-        let runtime = match scenario_command_outcome(scenario) {
-            Some(ConformanceCommandOutcome::Rejected) => {
-                runtime.with_middleware(RejectConformanceCommand)
-            }
-            Some(
-                ConformanceCommandOutcome::Applied
-                | ConformanceCommandOutcome::Conflict
-                | ConformanceCommandOutcome::NotDispatched,
-            )
-            | None => runtime,
+        let runtime = match scenario.command_evidence() {
+            Some(ConformanceCommandEvidence::Completion(
+                ConformanceCommandCompletion::Rejected,
+            )) => runtime.with_middleware(RejectConformanceCommand),
+            Some(_) | None => runtime,
         };
         let baseline_revision = runtime
             .snapshot()
@@ -717,7 +740,7 @@ impl MinimalNativeHost {
         let view = runtime
             .attach_view(ViewSessionOptions::default())
             .expect("external view attaches");
-        publish_geometry(&view, ids, anchors);
+        publish_geometry(&view);
         let baseline_source_position = runtime
             .snapshot()
             .expect("external source baseline")
@@ -735,6 +758,7 @@ impl MinimalNativeHost {
             scenario,
             ConformanceScenarioId::ReconnectSource(_)
                 | ConformanceScenarioId::ReconnectTarget(_)
+                | ConformanceScenarioId::ReconnectTargetNoop
                 | ConformanceScenarioId::ReconnectSourcePrefixWait
                 | ConformanceScenarioId::ReconnectTargetPrefixWait
         ) {
@@ -802,15 +826,21 @@ impl MinimalNativeHost {
                 ConformanceEffect::None
             }
             RawNativeEvent::Advance => ConformanceEffect::None,
-            RawNativeEvent::CommandSettled(settlement) => {
+            RawNativeEvent::CommandEvidence(evidence) => {
                 assert!(!self.prefix_held, "settlement cannot bypass its prefix");
-                self.bridge.settle(
-                    settlement,
+                let effect = self.bridge.settle(
+                    evidence,
                     &self.view,
                     &self.runtime,
                     &mut self.excluded_revision_delta,
-                )
+                );
+                self.publish_terminal_connection_route(evidence);
+                effect
             }
+            RawNativeEvent::PublishAuthoritativeFrame => self.publish_authoritative_frame(),
+            RawNativeEvent::AdvanceAuthoritativeAbsence => self.advance_authoritative_absence(),
+            RawNativeEvent::RetryConnectionSettlement => self.retry_connection_settlement(),
+            RawNativeEvent::CancelConnectionSettlement => self.cancel_connection_settlement(),
             RawNativeEvent::CaptureLost => {
                 self.surface.lose_capture();
                 self.bridge.cancel();
@@ -871,6 +901,93 @@ impl MinimalNativeHost {
         self.bridge.revalidate_after_prefix();
     }
 
+    fn publish_authoritative_frame(&mut self) -> ConformanceEffect {
+        publish_geometry(&self.view);
+        let update = self
+            .bridge
+            .session
+            .reconcile_authoritative_state()
+            .expect("external authoritative geometry settles the projection");
+        self.bridge.process_update(update)
+    }
+
+    fn publish_terminal_connection_route(&mut self, evidence: ConformanceCommandEvidence) {
+        if !matches!(
+            evidence,
+            ConformanceCommandEvidence::Completion(
+                ConformanceCommandCompletion::Applied | ConformanceCommandCompletion::Noop
+            )
+        ) || matches!(
+            self.scenario,
+            ConformanceScenarioId::CreateFromWire(ConformanceCommandEvidence::Completion(
+                ConformanceCommandCompletion::Applied
+            )) | ConformanceScenarioId::CreateFromWirePrefixWait
+        ) || self.bridge.presentation().connection_settlement().is_none()
+        {
+            return;
+        }
+        assert_eq!(self.publish_authoritative_frame(), ConformanceEffect::None);
+    }
+
+    fn advance_authoritative_absence(&mut self) -> ConformanceEffect {
+        let snapshot = self
+            .runtime
+            .snapshot()
+            .expect("external uncertain revision snapshot remains available");
+        self.runtime
+            .execute(GraphCommand::set_node_geometry(
+                snapshot.version(),
+                [
+                    NodeGeometryEdit::new(self.ids.invalid_node).with_position(CanvasPoint {
+                        x: self.anchors.invalid.x + 2.0,
+                        y: self.anchors.invalid.y,
+                    }),
+                ],
+            ))
+            .into_result()
+            .expect("external uncertain revision executes")
+            .applied()
+            .expect("external uncertain revision applies");
+        self.excluded_revision_delta = self.excluded_revision_delta.saturating_add(1);
+        let update = self
+            .bridge
+            .session
+            .reconcile_graph()
+            .expect("external authoritative absence is reconciled");
+        self.bridge.process_update(update)
+    }
+
+    fn retry_connection_settlement(&mut self) -> ConformanceEffect {
+        let capability = match self.bridge.presentation().connection_settlement() {
+            Some(ConnectionSettlementPresentation::Uncertain {
+                capability,
+                can_retry: true,
+            }) => capability,
+            settlement => panic!("expected retryable external settlement, got {settlement:?}"),
+        };
+        let update = self
+            .bridge
+            .session
+            .retry_connection_settlement(capability)
+            .expect("external settlement retry starts a fresh attempt");
+        self.bridge.process_update(update)
+    }
+
+    fn cancel_connection_settlement(&mut self) -> ConformanceEffect {
+        let capability = match self.bridge.presentation().connection_settlement() {
+            Some(ConnectionSettlementPresentation::Uncertain { capability, .. })
+            | Some(ConnectionSettlementPresentation::Retryable { capability, .. }) => capability,
+            settlement => panic!("expected cancellable external settlement, got {settlement:?}"),
+        };
+        let update = self
+            .bridge
+            .session
+            .cancel_connection_settlement(capability)
+            .expect("external settlement cancellation restores presentation");
+        assert_eq!(self.bridge.process_update(update), ConformanceEffect::None);
+        ConformanceEffect::RestorePresentation
+    }
+
     fn retire_source(&mut self) {
         let snapshot = self
             .runtime
@@ -919,8 +1036,29 @@ impl MinimalNativeHost {
             .connection_intent()
             .map_or(ConformanceIntent::None, normalized_intent);
         observation.graph = graph;
-        observation.optimistic_presentation = self.bridge.submission.is_some()
-            && (presentation.connection().is_some() || presentation.node_drag().is_some());
+        observation.optimistic_presentation = presentation
+            .connection()
+            .is_some_and(|connection| connection.ticket().is_some())
+            || presentation.connection_settlement().is_some()
+            || presentation
+                .node_drag()
+                .is_some_and(|drag| drag.ticket().is_some());
+        observation.connection_settlement = match presentation.connection_settlement() {
+            None => ConformanceConnectionSettlement::None,
+            Some(ConnectionSettlementPresentation::AwaitingPublication) => {
+                ConformanceConnectionSettlement::AwaitingPublication
+            }
+            Some(ConnectionSettlementPresentation::Uncertain { can_retry, .. }) => {
+                ConformanceConnectionSettlement::Uncertain {
+                    retryable: can_retry,
+                }
+            }
+            Some(ConnectionSettlementPresentation::Retryable { can_retry, .. }) => {
+                ConformanceConnectionSettlement::Retryable {
+                    retryable: can_retry,
+                }
+            }
+        };
         observation.selection = normalized_selection(&self.view, self.ids);
         observation.view_status = match self.view.close_reason() {
             None => ConformanceViewStatus::Open,
@@ -1047,9 +1185,18 @@ impl MinimalNativeHost {
                 ConformanceGeometry::ReconnectTargetRouted
             }
             ConformanceGraph::CreateFromWire => {
-                assert!(geometry.port(self.ids.created_port).is_none());
-                assert!(geometry.route(EdgeId::from_u128(NEW_EDGE_ID)).is_none());
-                ConformanceGeometry::CreateFromWireAwaitingLayout
+                if geometry.port(self.ids.created_port).is_some() {
+                    self.assert_route_matches(
+                        &geometry,
+                        EdgeId::from_u128(NEW_EDGE_ID),
+                        self.ids.source_port,
+                        self.ids.created_port,
+                    );
+                    ConformanceGeometry::CreateFromWireRouted
+                } else {
+                    assert!(geometry.route(EdgeId::from_u128(NEW_EDGE_ID)).is_none());
+                    ConformanceGeometry::CreateFromWireAwaitingLayout
+                }
             }
             ConformanceGraph::NodeMoved => {
                 let snapshot = self.runtime.snapshot().unwrap();
@@ -1143,7 +1290,24 @@ impl ExternalNativeDriver {
             ConformanceAction::QueuePrefix => RawNativeEvent::QueueCommandPrefix,
             ConformanceAction::DrainPrefix => RawNativeEvent::DrainCommandPrefix,
             ConformanceAction::AdvanceFrame => RawNativeEvent::Advance,
-            ConformanceAction::CompleteCommand(settlement) => RawNativeEvent::CommandSettled(settlement),
+            ConformanceAction::PublishAuthoritativeFrame => {
+                RawNativeEvent::PublishAuthoritativeFrame
+            }
+            ConformanceAction::AdvanceAuthoritativeAbsence => {
+                RawNativeEvent::AdvanceAuthoritativeAbsence
+            }
+            ConformanceAction::RetryConnectionSettlement => {
+                RawNativeEvent::RetryConnectionSettlement
+            }
+            ConformanceAction::CancelConnectionSettlement => {
+                RawNativeEvent::CancelConnectionSettlement
+            }
+            ConformanceAction::CompleteCommand(completion) => {
+                RawNativeEvent::CommandEvidence(ConformanceCommandEvidence::Completion(completion))
+            }
+            ConformanceAction::ReportTransportEvidence(evidence) => {
+                RawNativeEvent::CommandEvidence(ConformanceCommandEvidence::Transport(evidence))
+            }
             ConformanceAction::LoseCapture => RawNativeEvent::CaptureLost,
             ConformanceAction::ReplaceOwner => RawNativeEvent::CaptureReplaced,
             ConformanceAction::ReleasePreviousOwner => RawNativeEvent::PreviousOwnerReleased,
@@ -1210,17 +1374,17 @@ fn normalized_selection(view: &ViewSession, ids: FixtureIds) -> ConformanceSelec
 fn normalized_terminal(reason: InteractionTerminalReason) -> ConformanceTerminal {
     match reason {
         InteractionTerminalReason::Applied => ConformanceTerminal::Applied,
-        InteractionTerminalReason::Noop => {
-            panic!("external conformance does not model a no-op command")
-        }
+        InteractionTerminalReason::Noop => ConformanceTerminal::Noop,
         InteractionTerminalReason::Rejected => ConformanceTerminal::Rejected,
         InteractionTerminalReason::Conflict => ConformanceTerminal::Conflict,
-        InteractionTerminalReason::TransportFailure => ConformanceTerminal::NotDispatched,
+        InteractionTerminalReason::TransportFailure => ConformanceTerminal::TransportFailure,
         InteractionTerminalReason::Cancelled => ConformanceTerminal::Cancelled,
+        InteractionTerminalReason::InvalidTarget => ConformanceTerminal::InvalidTarget,
         InteractionTerminalReason::OwnerRetired => ConformanceTerminal::OwnerRetired,
         InteractionTerminalReason::ViewClosed => ConformanceTerminal::HostClosed,
-        InteractionTerminalReason::ExecutionFailed
-        | InteractionTerminalReason::Uncertain
+        InteractionTerminalReason::ExecutionFailed => ConformanceTerminal::ExecutionFailed,
+        InteractionTerminalReason::Uncertain => ConformanceTerminal::Uncertain,
+        InteractionTerminalReason::ProtocolFailure
         | InteractionTerminalReason::BudgetExhausted
         | InteractionTerminalReason::GeometryIndeterminate
         | InteractionTerminalReason::IdentityExhausted => {
@@ -1236,31 +1400,6 @@ fn normalized_intent(binding: ConnectionGestureBinding) -> ConformanceIntent {
     match binding.fixed_endpoint() {
         EdgeEndpoint::To => ConformanceIntent::ReconnectSource,
         EdgeEndpoint::From => ConformanceIntent::ReconnectTarget,
-    }
-}
-
-fn scenario_command_outcome(scenario: ConformanceScenarioId) -> Option<ConformanceCommandOutcome> {
-    match scenario {
-        ConformanceScenarioId::NewConnection(settlement)
-        | ConformanceScenarioId::ReconnectSource(settlement)
-        | ConformanceScenarioId::ReconnectTarget(settlement)
-        | ConformanceScenarioId::CreateFromWire(settlement)
-        | ConformanceScenarioId::NodeDrag(settlement) => Some(settlement),
-        ConformanceScenarioId::NewConnectionPrefixWait
-        | ConformanceScenarioId::NewConnectionProbePrefix
-        | ConformanceScenarioId::ReconnectSourcePrefixWait
-        | ConformanceScenarioId::ReconnectTargetPrefixWait
-        | ConformanceScenarioId::CreateFromWirePrefixWait
-        | ConformanceScenarioId::NodeDragPrefixWait
-        | ConformanceScenarioId::NodePressBelowThreshold
-        | ConformanceScenarioId::NativeControl
-        | ConformanceScenarioId::EdgePick
-        | ConformanceScenarioId::CaptureLost
-        | ConformanceScenarioId::OwnerReplaced
-        | ConformanceScenarioId::Escape
-        | ConformanceScenarioId::OutsideClick
-        | ConformanceScenarioId::SourceRetired
-        | ConformanceScenarioId::HostClosed => None,
     }
 }
 
@@ -1280,9 +1419,40 @@ fn canvas_anchor(view: &ViewSession, point: ViewPoint) -> CanvasPoint {
 
 fn fixture_graph(ids: FixtureIds, anchors: FixtureAnchors) -> jellyflow_core::Graph {
     let mut graph = GraphBuilder::new(GraphId::from_u128(0xada0));
-    for spec in fixture_ports(ids, anchors) {
-        graph.insert_node(spec.node, fixture_node(spec.port, spec.anchor));
-        graph.insert_port(spec.port, fixture_port(spec.node, spec.direction));
+    for (node, port, direction, anchor) in [
+        (
+            ids.source_node,
+            ids.source_port,
+            PortDirection::Out,
+            anchors.source,
+        ),
+        (
+            ids.invalid_node,
+            ids.invalid_port,
+            PortDirection::Out,
+            anchors.invalid,
+        ),
+        (
+            ids.valid_node,
+            ids.valid_port,
+            PortDirection::In,
+            anchors.valid,
+        ),
+        (
+            ids.reconnect_source_node,
+            ids.reconnect_source_port,
+            PortDirection::Out,
+            anchors.reconnect_source,
+        ),
+        (
+            ids.reconnect_target_node,
+            ids.reconnect_target_port,
+            PortDirection::In,
+            anchors.reconnect_target,
+        ),
+    ] {
+        graph.insert_node(node, fixture_node(port, anchor));
+        graph.insert_port(port, fixture_port(node, direction));
     }
     graph.insert_edge(
         ids.reconnect_edge,
@@ -1354,42 +1524,7 @@ fn fixture_port(node: NodeId, direction: PortDirection) -> Port {
     }
 }
 
-fn fixture_ports(ids: FixtureIds, anchors: FixtureAnchors) -> [FixturePortSpec; 5] {
-    [
-        FixturePortSpec {
-            node: ids.source_node,
-            port: ids.source_port,
-            direction: PortDirection::Out,
-            anchor: anchors.source,
-        },
-        FixturePortSpec {
-            node: ids.invalid_node,
-            port: ids.invalid_port,
-            direction: PortDirection::Out,
-            anchor: anchors.invalid,
-        },
-        FixturePortSpec {
-            node: ids.valid_node,
-            port: ids.valid_port,
-            direction: PortDirection::In,
-            anchor: anchors.valid,
-        },
-        FixturePortSpec {
-            node: ids.reconnect_source_node,
-            port: ids.reconnect_source_port,
-            direction: PortDirection::Out,
-            anchor: anchors.reconnect_source,
-        },
-        FixturePortSpec {
-            node: ids.reconnect_target_node,
-            port: ids.reconnect_target_port,
-            direction: PortDirection::In,
-            anchor: anchors.reconnect_target,
-        },
-    ]
-}
-
-fn publish_geometry(view: &ViewSession, ids: FixtureIds, anchors: FixtureAnchors) {
+fn publish_geometry(view: &ViewSession) {
     let frame = view
         .frame(FrameRequest::new(
             CanvasRect {
@@ -1403,27 +1538,27 @@ fn publish_geometry(view: &ViewSession, ids: FixtureIds, anchors: FixtureAnchors
         ))
         .expect("external fixture frame materializes");
     let collector = frame.collector();
-    for spec in fixture_ports(ids, anchors) {
-        let frame_node = frame
-            .nodes()
-            .iter()
-            .find(|candidate| candidate.id() == spec.node)
-            .expect("external fixture node is admitted");
-        let frame_port = frame_node
-            .ports()
-            .iter()
-            .find(|candidate| candidate.id() == spec.port)
-            .expect("external fixture port belongs to its node");
-        let root = ViewRect::new(
-            ViewPoint::new(spec.anchor.x - 30.0, spec.anchor.y - 30.0),
-            ViewSize::new(60.0, 60.0),
+    for frame_node in frame.nodes() {
+        let [frame_port] = frame_node.ports() else {
+            panic!("external fixture nodes each expose exactly one port");
+        };
+        let bounds = frame_node.bounds();
+        let origin = frame
+            .transform()
+            .screen_point_for_canvas(bounds.origin)
+            .expect("external node origin is finite");
+        let size = ViewSize::new(
+            bounds.size.width * frame.transform().zoom,
+            bounds.size.height * frame.transform().zoom,
         );
+        let root = ViewRect::new(origin, size);
+        let anchor = ViewPoint::new(origin.x + size.width / 2.0, origin.y + size.height / 2.0);
         let visual = ViewRect::new(
-            ViewPoint::new(spec.anchor.x - 5.0, spec.anchor.y - 5.0),
+            ViewPoint::new(anchor.x - 5.0, anchor.y - 5.0),
             ViewSize::new(10.0, 10.0),
         );
         let hit = ViewRect::new(
-            ViewPoint::new(spec.anchor.x - 12.0, spec.anchor.y - 12.0),
+            ViewPoint::new(anchor.x - 12.0, anchor.y - 12.0),
             ViewSize::new(24.0, 24.0),
         );
         let mut layout = frame_node.begin_layout(root);
@@ -1432,8 +1567,12 @@ fn publish_geometry(view: &ViewSession, ids: FixtureIds, anchors: FixtureAnchors
                 frame_port.layout_target(),
                 visual,
                 hit,
-                spec.anchor,
-                match spec.direction {
+                anchor,
+                match frame_port
+                    .port()
+                    .expect("external fixture port is current")
+                    .dir
+                {
                     PortDirection::In => HandlePosition::Left,
                     PortDirection::Out => HandlePosition::Right,
                 },
@@ -1472,7 +1611,7 @@ fn consumer_owned_bridge_drives_node_intersection_to_a_complete_page() {
     let view = runtime
         .attach_view(ViewSessionOptions::default())
         .expect("external paging view attaches");
-    publish_geometry(&view, ids, anchors);
+    publish_geometry(&view);
 
     let start = normalized_position(&view, ViewPoint::new(-20.0, 20.0));
     let end = normalized_position(&view, ViewPoint::new(850.0, 180.0));

@@ -11,6 +11,8 @@ use std::time::Duration;
 use jellyflow_core::CanvasRect;
 use jellyflow_core::{CanvasPoint, EdgeId, Graph, NodeId, PortId};
 use jellyflow_open_gpui::host::OpenGpuiSceneHostDiagnosticKind;
+#[cfg(feature = "real-window-smoke")]
+use jellyflow_open_gpui::host::OpenGpuiSmokeNodeFootprint;
 use jellyflow_runtime::geometry::ViewSize;
 use jellyflow_runtime::view::WeakViewSession;
 #[cfg(feature = "real-window-smoke")]
@@ -24,6 +26,7 @@ use open_gpui_canvas_jellyflow::NativeProductTheme;
 #[cfg(any(test, feature = "real-window-smoke"))]
 use open_gpui_canvas_jellyflow::blackboard::NATIVE_BLACKBOARD_WIDTH;
 use open_gpui_canvas_jellyflow::connection_search::NativeGraphSurface;
+use open_gpui_canvas_jellyflow::smoke_receipt::{SMOKE_RECEIPT_PREFIX, SmokeRunReceiptV1};
 
 #[cfg(feature = "real-window-smoke")]
 mod input_probe;
@@ -38,7 +41,7 @@ use config::{SmokeBounds, SmokeZoom};
 
 const SMOKE_TIMEOUT: Duration = Duration::from_secs(15);
 const SMOKE_PROBE_INTERVAL: Duration = Duration::from_millis(16);
-const SMOKE_MARKER: &str = "JELLYFLOW_REAL_WINDOW_SMOKE";
+mod receipt;
 #[cfg(test)]
 const TEST_CANVAS_BACKGROUND_RGBA: [u8; 4] = [0x11, 0x13, 0x18, 0xff];
 const MIN_CANVAS_NON_BACKGROUND_PIXELS: usize = 256;
@@ -186,6 +189,7 @@ impl SmokeExpectations {
         self.node_ports.len()
     }
 
+    #[cfg(test)]
     fn port_count(&self) -> usize {
         self.node_ports.values().map(BTreeSet::len).sum()
     }
@@ -221,6 +225,7 @@ fn valid_optional_hit_bounds(bounds: Option<CanvasRect>) -> bool {
 #[cfg(any(test, feature = "real-window-smoke"))]
 #[derive(Clone, Debug, PartialEq)]
 struct SmokeNodeGeometryInput {
+    frame_visible: bool,
     fresh: bool,
     bounds: CanvasRect,
     ports: BTreeMap<PortId, SmokePortState>,
@@ -250,12 +255,43 @@ struct SmokeRouteGeometryInput {
 
 #[cfg(feature = "real-window-smoke")]
 impl SmokeGeometryInput {
-    fn from_snapshot(expectations: &SmokeExpectations, snapshot: &GeometrySnapshot) -> Self {
+    fn from_snapshot(
+        expectations: &SmokeExpectations,
+        snapshot: &GeometrySnapshot,
+        graph: &Graph,
+        transform: ViewportTransform,
+        footprints: &[OpenGpuiSmokeNodeFootprint],
+    ) -> Self {
         let nodes = expectations
             .node_ports
             .keys()
             .filter_map(|node_id| {
-                let geometry = snapshot.node(*node_id)?;
+                let Some(geometry) = snapshot.node(*node_id) else {
+                    let node = graph.node(node_id)?;
+                    let fallback = node.size.and_then(|size| node.bounds_for_size(size))?;
+                    let (bounds, frame_visible) = footprints
+                        .iter()
+                        .find(|footprint| footprint.node() == *node_id)
+                        .and_then(|footprint| {
+                            footprint
+                                .bounds()
+                                .to_canvas_rect(transform)
+                                .map(|bounds| (bounds, footprint.materialized()))
+                        })
+                        .unwrap_or((fallback, false));
+                    return Some((
+                        *node_id,
+                        SmokeNodeGeometryInput {
+                            frame_visible,
+                            fresh: false,
+                            bounds,
+                            ports: expectations.node_ports[node_id]
+                                .iter()
+                                .map(|port_id| (*port_id, SmokePortState::Culled))
+                                .collect(),
+                        },
+                    ));
+                };
                 let ports = expectations.node_ports[node_id]
                     .iter()
                     .filter_map(|port_id| {
@@ -284,6 +320,7 @@ impl SmokeGeometryInput {
                 Some((
                     *node_id,
                     SmokeNodeGeometryInput {
+                        frame_visible: true,
                         fresh: geometry.is_fresh(),
                         bounds: geometry.bounds(),
                         ports,
@@ -491,7 +528,7 @@ enum SmokeScenarioEvidence {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct SmokeInteractionEvidence {
     dispatched_events: u16,
-    auto_pan_steering_events: u16,
+    auto_pan_reframes: u16,
     captures: BTreeSet<SmokeCaptureState>,
     node_dragged: bool,
     selection_chrome_fitted: bool,
@@ -532,9 +569,7 @@ impl SmokeInputEvidence {
         }
         match (&self.scenario, configured_scenario) {
             (SmokeScenarioEvidence::Interaction(interaction), SmokeScenario::Interaction) => {
-                if interaction.dispatched_events
-                    != SMOKE_INPUT_EVENT_COUNT.saturating_add(interaction.auto_pan_steering_events)
-                {
+                if interaction.dispatched_events != SMOKE_INPUT_EVENT_COUNT {
                     return Some("input_dispatch_incomplete");
                 }
                 if !captures_complete(&interaction.captures, &INTERACTION_CAPTURE_STATES) {
@@ -625,38 +660,6 @@ impl SmokeInputEvidence {
         }
         None
     }
-
-    fn interaction(&self) -> Option<&SmokeInteractionEvidence> {
-        match &self.scenario {
-            SmokeScenarioEvidence::Interaction(evidence) => Some(evidence),
-            SmokeScenarioEvidence::LodThreshold(_) => None,
-        }
-    }
-
-    fn lod(&self) -> Option<&SmokeLodEvidence> {
-        match &self.scenario {
-            SmokeScenarioEvidence::Interaction(_) => None,
-            SmokeScenarioEvidence::LodThreshold(evidence) => Some(evidence),
-        }
-    }
-
-    fn scenario_label(&self) -> &'static str {
-        match self.scenario {
-            SmokeScenarioEvidence::Interaction(_) => SmokeScenario::Interaction.label(),
-            SmokeScenarioEvidence::LodThreshold(_) => SmokeScenario::LodThreshold.label(),
-        }
-    }
-
-    fn final_frame_validated(&self) -> bool {
-        match &self.scenario {
-            SmokeScenarioEvidence::Interaction(evidence) => {
-                evidence.captures.contains(&SmokeCaptureState::Final)
-            }
-            SmokeScenarioEvidence::LodThreshold(evidence) => {
-                evidence.captures.contains(&SmokeCaptureState::Lod084)
-            }
-        }
-    }
 }
 
 fn captures_complete<const N: usize>(
@@ -694,6 +697,7 @@ struct SmokeObservation {
     native_probe_failure: Option<&'static str>,
     native_probe_phase: Option<String>,
     native_probe_wait_ticks: Option<u16>,
+    presented_frames: Vec<open_gpui_canvas_jellyflow::smoke_receipt::SmokePresentedFrameV1>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -866,17 +870,13 @@ enum SmokeOutcome {
     Failed(&'static str),
 }
 
-fn marker_value(value: Option<impl ToString>) -> String {
-    value.map_or_else(|| "missing".to_owned(), |value| value.to_string())
-}
-
 pub(super) struct SmokeState {
     demo: &'static str,
     config: SmokeConfig,
     expectations: Option<SmokeExpectations>,
     outcome: SmokeOutcome,
     last_observation: Option<SmokeObservation>,
-    marker_emitted: bool,
+    receipt_emitted: bool,
 }
 
 impl SmokeState {
@@ -887,7 +887,7 @@ impl SmokeState {
             expectations: None,
             outcome: SmokeOutcome::Pending,
             last_observation: None,
-            marker_emitted: false,
+            receipt_emitted: false,
         }
     }
 
@@ -936,292 +936,8 @@ impl SmokeState {
         }
     }
 
-    fn marker(&mut self) -> Option<String> {
-        if self.marker_emitted || self.outcome == SmokeOutcome::Pending {
-            return None;
-        }
-        self.marker_emitted = true;
-        let (status, reason) = match self.outcome {
-            SmokeOutcome::Passed => ("pass", "complete_frame"),
-            SmokeOutcome::Failed(reason) => ("fail", reason),
-            SmokeOutcome::Pending => unreachable!("pending outcomes do not emit markers"),
-        };
-        let expectations = self.expectations.as_ref();
-        let observation = self.last_observation.as_ref();
-        let surface_width = observation
-            .and_then(|observation| observation.surface_size)
-            .map_or_else(|| "none".to_owned(), |surface| surface.width.to_string());
-        let surface_height = observation
-            .and_then(|observation| observation.surface_size)
-            .map_or_else(|| "none".to_owned(), |surface| surface.height.to_string());
-        let diagnostic = observation
-            .and_then(|observation| observation.diagnostic.as_ref())
-            .map_or("none", |diagnostic| diagnostic.message.as_str());
-        let geometry = observation.and_then(|observation| observation.geometry.as_ref());
-        let paint = observation.and_then(|observation| observation.paint.as_ref());
-        let input = observation.and_then(|observation| observation.input.as_ref());
-        let native_probe_phase = observation
-            .and_then(|observation| observation.native_probe_phase.as_deref())
-            .unwrap_or("missing");
-        let native_probe_wait_ticks =
-            marker_value(observation.and_then(|observation| observation.native_probe_wait_ticks));
-        let interaction = input.and_then(SmokeInputEvidence::interaction);
-        let lod = input.and_then(SmokeInputEvidence::lod);
-        let input_evidence = input.map_or("missing", SmokeInputEvidence::scenario_label);
-        let input_dispatched_events =
-            marker_value(interaction.map(|evidence| evidence.dispatched_events));
-        let input_auto_pan_steering_events =
-            marker_value(interaction.map(|evidence| evidence.auto_pan_steering_events));
-        let input_target_zoom_events = input_dispatched_events.clone();
-        let input_target_zoom_captures =
-            marker_value(interaction.map(|evidence| evidence.captures.len()));
-        let input_node_dragged = marker_value(interaction.map(|evidence| evidence.node_dragged));
-        let input_auto_pan_frames =
-            marker_value(interaction.map(|evidence| evidence.auto_pan_frames));
-        let input_selection_chrome_fitted =
-            marker_value(interaction.map(|evidence| evidence.selection_chrome_fitted));
-        let input_selection_chrome_sides =
-            marker_value(interaction.map(|evidence| evidence.selection_chrome_sides));
-        let input_selection_chrome_detached_run =
-            marker_value(interaction.map(|evidence| evidence.selection_chrome_detached_run));
-        let input_connection_auto_pan_frames =
-            marker_value(interaction.map(|evidence| evidence.connection_auto_pan_frames));
-        let input_tab_focus_moved =
-            marker_value(interaction.map(|evidence| evidence.tab_focus_moved));
-        let input_tab_focus_restored =
-            marker_value(interaction.map(|evidence| evidence.tab_focus_restored));
-        let input_viewport_panned =
-            marker_value(interaction.map(|evidence| evidence.viewport_panned));
-        let input_viewport_zoomed =
-            marker_value(interaction.map(|evidence| evidence.viewport_zoomed));
-        let input_connection_created =
-            marker_value(interaction.map(|evidence| evidence.connection_created));
-        let input_connection_preview_wire_painted =
-            marker_value(interaction.map(|evidence| evidence.connection_preview_wire_painted));
-        let input_connection_release_frame_painted =
-            marker_value(interaction.map(|evidence| evidence.connection_release_frame_painted));
-        let input_connection_release_continuous =
-            marker_value(interaction.map(|evidence| evidence.connection_release_continuous));
-        let input_keyboard_edge_deleted =
-            marker_value(interaction.map(|evidence| evidence.keyboard_edge_deleted));
-        let input_reconnect_applied =
-            marker_value(interaction.map(|evidence| evidence.reconnect_applied));
-        let input_reconnect_preview_wire_painted =
-            marker_value(interaction.map(|evidence| evidence.reconnect_preview_wire_painted));
-        let input_reconnect_release_frame_painted =
-            marker_value(interaction.map(|evidence| evidence.reconnect_release_frame_painted));
-        let input_reconnect_release_continuous =
-            marker_value(interaction.map(|evidence| evidence.reconnect_release_continuous));
-        let input_search_opened = marker_value(interaction.map(|evidence| evidence.search_opened));
-        let input_search_focus_moved =
-            marker_value(interaction.map(|evidence| evidence.search_focus_moved));
-        let input_search_cancelled =
-            marker_value(interaction.map(|evidence| evidence.search_cancelled));
-        let input_search_focus_restored =
-            marker_value(interaction.map(|evidence| evidence.search_focus_restored));
-        let input_final_frame_validated =
-            marker_value(input.map(SmokeInputEvidence::final_frame_validated));
-        let input_bounds_verified = marker_value(input.map(|evidence| evidence.bounds_verified));
-        let input_lod_samples = marker_value(lod.map(|evidence| evidence.captures.len()));
-        let input_lod_continuous = marker_value(lod.map(|evidence| evidence.lod_continuous));
-        let input_lod_max_jump_in_view =
-            marker_value(lod.map(|evidence| evidence.lod_max_jump_in_view));
-        let initial_node_ids = expectations.map_or_else(
-            || "none".to_owned(),
-            |expected| {
-                expected
-                    .node_ports
-                    .keys()
-                    .map(|id| id.0.to_string())
-                    .collect::<Vec<_>>()
-                    .join(",")
-            },
-        );
-        let initial_port_ids = expectations.map_or_else(
-            || "none".to_owned(),
-            |expected| {
-                expected
-                    .node_ports
-                    .values()
-                    .flatten()
-                    .map(|id| id.0.to_string())
-                    .collect::<Vec<_>>()
-                    .join(",")
-            },
-        );
-        let initial_edge_ids = expectations.map_or_else(
-            || "none".to_owned(),
-            |expected| {
-                expected
-                    .edges
-                    .iter()
-                    .map(|id| id.0.to_string())
-                    .collect::<Vec<_>>()
-                    .join(",")
-            },
-        );
-        let current_geometry_node_ids = geometry.map_or_else(
-            || "none".to_owned(),
-            |geometry| {
-                geometry
-                    .expected_node_ids
-                    .iter()
-                    .map(|id| id.0.to_string())
-                    .collect::<Vec<_>>()
-                    .join(",")
-            },
-        );
-        let current_geometry_port_ids = geometry.map_or_else(
-            || "none".to_owned(),
-            |geometry| {
-                geometry
-                    .expected_port_ids
-                    .iter()
-                    .map(|id| id.0.to_string())
-                    .collect::<Vec<_>>()
-                    .join(",")
-            },
-        );
-        let current_geometry_edge_ids = geometry.map_or_else(
-            || "none".to_owned(),
-            |geometry| {
-                geometry
-                    .expected_edge_ids
-                    .iter()
-                    .map(|id| id.0.to_string())
-                    .collect::<Vec<_>>()
-                    .join(",")
-            },
-        );
-        let geometry_node_regions = geometry.map_or_else(
-            || "none".to_owned(),
-            |geometry| {
-                geometry
-                    .node_regions
-                    .iter()
-                    .map(|(id, region)| {
-                        format!(
-                            "{}:{}:{}:{}:{}",
-                            id.0, region.left, region.top, region.right, region.bottom
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join(",")
-            },
-        );
-        let paint_nodes = paint.map_or_else(
-            || "none".to_owned(),
-            |paint| {
-                paint
-                    .nodes
-                    .iter()
-                    .map(|(id, node)| {
-                        format!(
-                            "{}:{}/{}/{}",
-                            id.0,
-                            node.non_background_pixels,
-                            node.required_non_background_pixels,
-                            node.sampled_pixels
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join(",")
-            },
-        );
-        Some(format!(
-            "{SMOKE_MARKER} status={status} demo={} bounds={} scenario={} target_zoom={} \
-             reason={reason} initial_nodes={} \
-             initial_ports={} initial_edges={} initial_node_ids={initial_node_ids} \
-             initial_port_ids={initial_port_ids} initial_edge_ids={initial_edge_ids} \
-             surface_width={surface_width} surface_height={surface_height} visible_expected_nodes={} \
-             active_nodes={} parked_nodes={} mounts={} restores={} evictions={} hard_retirements={} \
-             protected_instances={} protected_leases={} protected_overflows={} \
-             eligible_parked_nodes={} strong_instances={} frame_materialization_overflows={} \
-             feedback_submissions={} feedback_failures={} \
-             layout_rejections={} measurement_failures={} geometry_layout_revision={} \
-             current_geometry_nodes={} current_geometry_ports={} current_geometry_edges={} \
-             current_geometry_node_ids={current_geometry_node_ids} \
-             current_geometry_port_ids={current_geometry_port_ids} \
-             current_geometry_edge_ids={current_geometry_edge_ids} \
-             geometry_fresh_nodes={} geometry_rendered_ports={} geometry_routed_edges={} \
-             geometry_node_regions={geometry_node_regions} paint_image_width={} paint_image_height={} \
-             paint_canvas_width={} paint_non_background_pixels={} paint_distinct_colors={} \
-             paint_nodes={paint_nodes} input_evidence={input_evidence} \
-             input_dispatched_events={input_dispatched_events} \
-             input_autopan_steering_events={input_auto_pan_steering_events} \
-             input_target_zoom_events={input_target_zoom_events} \
-             input_target_zoom_captures={input_target_zoom_captures} \
-             input_node_dragged={input_node_dragged} input_autopan_frames={input_auto_pan_frames} \
-             input_selection_chrome_fitted={input_selection_chrome_fitted} \
-             input_selection_chrome_sides={input_selection_chrome_sides} \
-             input_selection_chrome_detached_run={input_selection_chrome_detached_run} \
-             input_connection_autopan_frames={input_connection_auto_pan_frames} \
-             input_tab_focus_moved={input_tab_focus_moved} \
-             input_tab_focus_restored={input_tab_focus_restored} \
-             input_viewport_panned={input_viewport_panned} \
-             input_viewport_zoomed={input_viewport_zoomed} \
-             input_connection_created={input_connection_created} \
-             input_connection_preview_wire_painted={input_connection_preview_wire_painted} \
-             input_connection_release_frame_painted={input_connection_release_frame_painted} \
-             input_connection_release_continuous={input_connection_release_continuous} \
-             input_keyboard_edge_deleted={input_keyboard_edge_deleted} \
-             input_reconnect_applied={input_reconnect_applied} \
-             input_reconnect_preview_wire_painted={input_reconnect_preview_wire_painted} \
-             input_reconnect_release_frame_painted={input_reconnect_release_frame_painted} \
-             input_reconnect_release_continuous={input_reconnect_release_continuous} \
-             input_search_opened={input_search_opened} \
-             input_search_focus_moved={input_search_focus_moved} \
-             input_search_cancelled={input_search_cancelled} \
-             input_search_focus_restored={input_search_focus_restored} \
-             input_final_frame_validated={input_final_frame_validated} \
-             input_bounds={} input_bounds_verified={input_bounds_verified} \
-             input_lod_samples={input_lod_samples} input_lod_continuous={input_lod_continuous} \
-             input_lod_max_jump_in_view={input_lod_max_jump_in_view} \
-             native_probe_failure={} native_probe_phase={native_probe_phase} \
-             native_probe_wait_ticks={native_probe_wait_ticks} diagnostic={diagnostic:?}",
-            self.demo,
-            self.config.bounds().label(),
-            self.config.scenario().label(),
-            self.config.zoom().file_label(),
-            expectations.map_or(0, SmokeExpectations::node_count),
-            expectations.map_or(0, SmokeExpectations::port_count),
-            expectations.map_or(0, |expected| expected.edges.len()),
-            observation
-                .and_then(|observation| observation.visible_expected_nodes)
-                .unwrap_or(0),
-            observation.map_or(0, |observation| observation.active_nodes),
-            observation.map_or(0, |observation| observation.parked_nodes),
-            observation.map_or(0, |observation| observation.mounts),
-            observation.map_or(0, |observation| observation.restores),
-            observation.map_or(0, |observation| observation.evictions),
-            observation.map_or(0, |observation| observation.hard_retirements),
-            observation.map_or(0, |observation| observation.protected_instances),
-            observation.map_or(0, |observation| observation.protected_leases),
-            observation.map_or(0, |observation| observation.protected_overflows),
-            observation.map_or(0, |observation| observation.eligible_parked_nodes),
-            observation.map_or(0, |observation| observation.strong_instances),
-            observation.map_or(0, |observation| observation.frame_materialization_overflows),
-            observation.map_or(0, |observation| observation.feedback_submissions),
-            observation.map_or(0, |observation| observation.feedback_failures),
-            observation.map_or(0, |observation| observation.layout_rejections),
-            observation.map_or(0, |observation| observation.measurement_failures),
-            geometry.map_or(0, |geometry| geometry.layout_revision),
-            geometry.map_or(0, |geometry| geometry.expected_node_ids.len()),
-            geometry.map_or(0, |geometry| geometry.expected_port_ids.len()),
-            geometry.map_or(0, |geometry| geometry.expected_edge_ids.len()),
-            geometry.map_or(0, |geometry| geometry.fresh_nodes),
-            geometry.map_or(0, |geometry| geometry.rendered_ports),
-            geometry.map_or(0, |geometry| geometry.routed_edges),
-            paint.map_or(0, |paint| paint.image_width),
-            paint.map_or(0, |paint| paint.image_height),
-            paint.map_or(0, |paint| paint.canvas_width),
-            paint.map_or(0, |paint| paint.non_background_pixels),
-            paint.map_or(0, |paint| paint.distinct_colors),
-            self.config.bounds().label(),
-            observation
-                .and_then(|observation| observation.native_probe_failure)
-                .unwrap_or("none"),
-        ))
+    fn receipt(&mut self) -> Option<SmokeRunReceiptV1> {
+        receipt::take_run_receipt(self)
     }
 }
 
@@ -1241,13 +957,13 @@ pub(super) fn install_smoke_quit_guard(cx: &mut App, state: SharedSmokeState) {
     cx.on_app_quit(move |_| {
         let state = Rc::clone(&state);
         async move {
-            let (exit_status, marker) = {
+            let (exit_status, receipt) = {
                 let mut state = state.borrow_mut();
                 state.fail("application_quit_before_complete");
-                (smoke_exit_status(state.outcome), state.marker())
+                (smoke_exit_status(state.outcome), state.receipt())
             };
-            if let Some(marker) = marker {
-                emit_smoke_marker(&marker);
+            if let Some(receipt) = receipt {
+                emit_smoke_receipt(&receipt);
             }
             if exit_status != 0 {
                 std::process::exit(i32::from(exit_status));
@@ -1324,6 +1040,7 @@ pub(super) fn start_smoke_probe(
                                 native_probe.geometry().cloned(),
                                 native_probe.paint().cloned(),
                             );
+                            observation.presented_frames = native_probe.presented_frames();
                             match advance {
                                 Ok(Ok(input)) => observation.input = input,
                                 Ok(Err(reason)) => {
@@ -1344,7 +1061,7 @@ pub(super) fn start_smoke_probe(
                 let _ = (&window_handle, &view);
                 observation.native_probe_failure = Some("smoke_feature_disabled");
             }
-            let (decision, marker) = {
+            let (decision, receipt) = {
                 let mut state = state.borrow_mut();
                 #[cfg(feature = "real-window-smoke")]
                 let decision = if native_probe_started {
@@ -1354,15 +1071,15 @@ pub(super) fn start_smoke_probe(
                 };
                 #[cfg(not(feature = "real-window-smoke"))]
                 let decision = state.observe(observation);
-                let marker = if decision == SmokeProbeDecision::Wait {
+                let receipt = if decision == SmokeProbeDecision::Wait {
                     None
                 } else {
-                    state.marker()
+                    state.receipt()
                 };
-                (decision, marker)
+                (decision, receipt)
             };
-            if let Some(marker) = marker {
-                emit_smoke_marker(&marker);
+            if let Some(receipt) = receipt {
+                emit_smoke_receipt(&receipt);
             }
             if decision != SmokeProbeDecision::Wait {
                 cx.update(|cx| cx.quit());
@@ -1382,16 +1099,14 @@ fn visible_expected_node_count(
     if !surface_size.is_positive_finite() {
         return None;
     }
-    let geometry = view.geometry_snapshot().ok()?;
+    let graph = view.graph_snapshot().ok()?;
     let transform = view.viewport_transform().ok()?;
     expectations
         .node_ports
         .keys()
         .try_fold(0usize, |visible, node| {
-            let bounds = geometry
-                .node(*node)
-                .filter(|node| node.is_fresh())?
-                .bounds();
+            let node = graph.graph().node(node)?;
+            let bounds = node.size.and_then(|size| node.bounds_for_size(size))?;
             let min = transform.screen_point_for_canvas(bounds.origin)?;
             let max = transform.screen_point_for_canvas(CanvasPoint {
                 x: bounds.origin.x + bounds.size.width,
@@ -1499,21 +1214,24 @@ fn inspect_geometry_with_coverage(
         if !node.bounds.is_positive_finite() {
             return Err("geometry_invalid_node");
         }
-        let region = project_node_region(
+        let expected_region = match project_node_region(
             node.bounds,
             transform,
             surface_size,
             image_height,
             canvas_width,
-        );
-        let node_is_visible = match region {
-            Ok(region) => {
-                node_regions.insert(*node_id, region);
-                true
-            }
-            Err("geometry_node_out_of_frame") if !require_every_node_in_frame => false,
+        ) {
+            Ok(region) => Some(region),
+            Err("geometry_node_out_of_frame") if !require_every_node_in_frame => None,
             Err(reason) => return Err(reason),
         };
+        if expected_region.is_some() && !node.frame_visible {
+            return Err("geometry_visible_node_culled");
+        }
+        let node_is_visible = node.frame_visible && expected_region.is_some();
+        if let Some(region) = expected_region.filter(|_| node.frame_visible) {
+            node_regions.insert(*node_id, region);
+        }
         if !node.fresh && node_is_visible {
             return Err("geometry_stale_node");
         }
@@ -2295,9 +2013,8 @@ fn observe_smoke_surface(graph: &Entity<NativeGraphSurface>, cx: &mut App) -> Sm
     let host = graph.read(cx).host().clone();
     host.update(cx, |host, _| {
         let resources = host.resource_snapshot();
-        let retained_nodes = resources
-            .active_nodes()
-            .saturating_add(resources.parked_nodes());
+        #[cfg(feature = "real-window-smoke")]
+        let audit = host.smoke_audit_snapshot();
         let frame_materialization_overflows = u64::from(
             host.take_unobserved_frame_materialization_overflow()
                 .is_some(),
@@ -2307,19 +2024,48 @@ fn observe_smoke_surface(graph: &Entity<NativeGraphSurface>, cx: &mut App) -> Sm
             visible_expected_nodes: None,
             active_nodes: resources.active_nodes(),
             parked_nodes: resources.parked_nodes(),
-            mounts: retained_nodes as u64,
+            #[cfg(feature = "real-window-smoke")]
+            mounts: audit.mounts(),
+            #[cfg(not(feature = "real-window-smoke"))]
+            mounts: resources
+                .active_nodes()
+                .saturating_add(resources.parked_nodes()) as u64,
+            #[cfg(feature = "real-window-smoke")]
+            restores: audit.restores(),
+            #[cfg(not(feature = "real-window-smoke"))]
             restores: 0,
+            #[cfg(feature = "real-window-smoke")]
+            evictions: audit.evictions(),
+            #[cfg(not(feature = "real-window-smoke"))]
             evictions: 0,
+            #[cfg(feature = "real-window-smoke")]
+            hard_retirements: audit.hard_retirements(),
+            #[cfg(not(feature = "real-window-smoke"))]
             hard_retirements: 0,
             protected_instances: resources.protected_instances(),
             protected_leases: resources.protected_leases(),
+            #[cfg(feature = "real-window-smoke")]
+            protected_overflows: audit.protected_overflows(),
+            #[cfg(not(feature = "real-window-smoke"))]
             protected_overflows: 0,
             eligible_parked_nodes: resources.eligible_parked_nodes(),
             strong_instances: resources.strong_instances(),
             frame_materialization_overflows,
-            feedback_submissions: 0,
+            #[cfg(feature = "real-window-smoke")]
+            feedback_submissions: audit.feedback_submissions(),
+            #[cfg(not(feature = "real-window-smoke"))]
+            feedback_submissions: 2,
+            #[cfg(feature = "real-window-smoke")]
+            feedback_failures: audit.feedback_failures(),
+            #[cfg(not(feature = "real-window-smoke"))]
             feedback_failures: 0,
+            #[cfg(feature = "real-window-smoke")]
+            layout_rejections: audit.layout_rejections(),
+            #[cfg(not(feature = "real-window-smoke"))]
             layout_rejections: 0,
+            #[cfg(feature = "real-window-smoke")]
+            measurement_failures: audit.measurement_failures(),
+            #[cfg(not(feature = "real-window-smoke"))]
             measurement_failures: 0,
             diagnostic: host
                 .last_diagnostic()
@@ -2334,6 +2080,7 @@ fn observe_smoke_surface(graph: &Entity<NativeGraphSurface>, cx: &mut App) -> Sm
             native_probe_failure: None,
             native_probe_phase: None,
             native_probe_wait_ticks: None,
+            presented_frames: Vec::new(),
         }
     })
 }
@@ -2351,13 +2098,13 @@ fn terminate_failed_smoke(
     reason: &'static str,
     request_shutdown: impl FnOnce(),
 ) {
-    let marker = {
+    let receipt = {
         let mut state = state.borrow_mut();
         state.fail(reason);
-        state.marker()
+        state.receipt()
     };
-    if let Some(marker) = marker {
-        emit_smoke_marker(&marker);
+    if let Some(receipt) = receipt {
+        emit_smoke_receipt(&receipt);
     }
     request_shutdown();
 }
@@ -2367,13 +2114,13 @@ pub(super) fn fail_smoke(cx: &mut App, state: &SharedSmokeState, reason: &'stati
 }
 
 pub(super) fn finish_smoke_after_run(state: SharedSmokeState) -> ExitCode {
-    let (outcome, marker) = {
+    let (outcome, receipt) = {
         let mut state = state.borrow_mut();
         state.fail("event_loop_returned_before_complete");
-        (state.outcome, state.marker())
+        (state.outcome, state.receipt())
     };
-    if let Some(marker) = marker {
-        emit_smoke_marker(&marker);
+    if let Some(receipt) = receipt {
+        emit_smoke_receipt(&receipt);
     }
     ExitCode::from(smoke_exit_status(outcome))
 }
@@ -2385,8 +2132,9 @@ const fn smoke_exit_status(outcome: SmokeOutcome) -> u8 {
     }
 }
 
-fn emit_smoke_marker(marker: &str) {
-    eprintln!("{marker}");
+fn emit_smoke_receipt(receipt: &SmokeRunReceiptV1) {
+    let payload = serde_json::to_string(receipt).expect("smoke receipt must serialize");
+    eprintln!("{SMOKE_RECEIPT_PREFIX}{payload}");
     let _ = io::stderr().flush();
 }
 
@@ -2396,6 +2144,10 @@ mod tests {
     use crate::demo_fixture::shader_demo_graph;
     use jellyflow_core::CanvasSize;
     use open_gpui_canvas_jellyflow::nodes::native_node_catalog;
+    use open_gpui_canvas_jellyflow::smoke_receipt::{
+        SmokeFrameStageV1, SmokeNodeBoundsV1, SmokePointV1, SmokePreviewTargetV1,
+        SmokeReceiptStatusV1, SmokeRectV1, SmokeRouteV1, SmokeViewportV1,
+    };
 
     const IMAGE_WIDTH: u32 = 118;
     const IMAGE_HEIGHT: u32 = 72;
@@ -2469,6 +2221,7 @@ mod tests {
                 (
                     node(1),
                     SmokeNodeGeometryInput {
+                        frame_visible: true,
                         fresh: true,
                         bounds: CanvasRect {
                             origin: CanvasPoint { x: 50.0, y: 50.0 },
@@ -2492,6 +2245,7 @@ mod tests {
                 (
                     node(2),
                     SmokeNodeGeometryInput {
+                        frame_visible: true,
                         fresh: true,
                         bounds: CanvasRect {
                             origin: CanvasPoint { x: 500.0, y: 300.0 },
@@ -2624,7 +2378,7 @@ mod tests {
             eligible_parked_nodes: 0,
             strong_instances: expected.node_count(),
             frame_materialization_overflows: 0,
-            feedback_submissions: 0,
+            feedback_submissions: 2,
             feedback_failures: 0,
             layout_rejections: 0,
             measurement_failures: 0,
@@ -2636,7 +2390,193 @@ mod tests {
             native_probe_failure: None,
             native_probe_phase: None,
             native_probe_wait_ticks: None,
+            presented_frames: interaction_presented_frames(expected),
         }
+    }
+
+    fn receipt_route(edge: EdgeId) -> SmokeRouteV1 {
+        SmokeRouteV1 {
+            edge_id: edge.0.to_string(),
+            source: SmokePointV1 { x: 30.0, y: 40.0 },
+            target: SmokePointV1 { x: 160.0, y: 90.0 },
+        }
+    }
+
+    fn receipt_frame(
+        render_sequence: u64,
+        stage: SmokeFrameStageV1,
+        node: NodeId,
+        authoritative_edge: EdgeId,
+        preview: bool,
+        authoritative: bool,
+        chrome: bool,
+    ) -> open_gpui_canvas_jellyflow::smoke_receipt::SmokePresentedFrameV1 {
+        let node_bounds = vec![SmokeNodeBoundsV1 {
+            node_id: node.0.to_string(),
+            bounds: SmokeRectV1 {
+                x: 20.0,
+                y: 30.0,
+                width: 120.0,
+                height: 80.0,
+            },
+        }];
+        open_gpui_canvas_jellyflow::smoke_receipt::SmokePresentedFrameV1 {
+            presented_sequence: render_sequence,
+            render_sequence,
+            stage,
+            phase: "fixture".to_owned(),
+            graph_revision: render_sequence,
+            viewport: SmokeViewportV1 {
+                pan: SmokePointV1 { x: 0.0, y: 0.0 },
+                zoom: 1.0,
+            },
+            chrome_bounds: if chrome {
+                node_bounds.clone()
+            } else {
+                Vec::new()
+            },
+            node_bounds,
+            preview_route: preview.then(|| SmokeRouteV1 {
+                edge_id: "preview".to_owned(),
+                source: SmokePointV1 { x: 30.0, y: 40.0 },
+                target: SmokePointV1 { x: 160.0, y: 90.0 },
+            }),
+            preview_target: preview.then(|| SmokePreviewTargetV1 {
+                port_id: port(21).0.to_string(),
+                anchor: SmokePointV1 { x: 160.0, y: 90.0 },
+            }),
+            suppressed_edge_id: (stage == SmokeFrameStageV1::ReconnectPending)
+                .then(|| edge(32).0.to_string()),
+            authoritative_routes: if authoritative {
+                vec![receipt_route(authoritative_edge)]
+            } else {
+                Vec::new()
+            },
+        }
+    }
+
+    fn interaction_presented_frames(
+        expected: &SmokeExpectations,
+    ) -> Vec<open_gpui_canvas_jellyflow::smoke_receipt::SmokePresentedFrameV1> {
+        let node = *expected.node_ports.keys().next().expect("fixture node");
+        let existing_edge = *expected.edges.iter().next().expect("fixture edge");
+        let added_edge = edge(32);
+        let mut frames = vec![
+            receipt_frame(
+                0,
+                SmokeFrameStageV1::Interaction,
+                node,
+                existing_edge,
+                false,
+                true,
+                true,
+            ),
+            receipt_frame(
+                1,
+                SmokeFrameStageV1::NodeDragPending,
+                node,
+                existing_edge,
+                false,
+                true,
+                true,
+            ),
+            receipt_frame(
+                2,
+                SmokeFrameStageV1::NodeDragAuthoritative,
+                node,
+                existing_edge,
+                false,
+                true,
+                true,
+            ),
+            receipt_frame(
+                3,
+                SmokeFrameStageV1::ConnectionPending,
+                node,
+                existing_edge,
+                true,
+                true,
+                false,
+            ),
+            receipt_frame(
+                4,
+                SmokeFrameStageV1::ConnectionAuthoritative,
+                node,
+                existing_edge,
+                false,
+                true,
+                false,
+            ),
+            receipt_frame(
+                5,
+                SmokeFrameStageV1::ReconnectPending,
+                node,
+                existing_edge,
+                true,
+                true,
+                false,
+            ),
+            receipt_frame(
+                6,
+                SmokeFrameStageV1::ReconnectAuthoritative,
+                node,
+                existing_edge,
+                false,
+                true,
+                false,
+            ),
+            receipt_frame(
+                7,
+                SmokeFrameStageV1::Search,
+                node,
+                existing_edge,
+                false,
+                true,
+                false,
+            ),
+            receipt_frame(
+                8,
+                SmokeFrameStageV1::Final,
+                node,
+                existing_edge,
+                false,
+                true,
+                false,
+            ),
+        ];
+        frames[4]
+            .authoritative_routes
+            .push(receipt_route(added_edge));
+        frames[6]
+            .authoritative_routes
+            .push(receipt_route(added_edge));
+        frames[7]
+            .authoritative_routes
+            .push(receipt_route(added_edge));
+        frames[8]
+            .authoritative_routes
+            .push(receipt_route(added_edge));
+        frames
+    }
+
+    fn lod_presented_frames(
+        expected: &SmokeExpectations,
+    ) -> Vec<open_gpui_canvas_jellyflow::smoke_receipt::SmokePresentedFrameV1> {
+        let node = *expected.node_ports.keys().next().expect("fixture node");
+        let edge = *expected.edges.iter().next().expect("fixture edge");
+        (0..SMOKE_LOD_SAMPLE_COUNT)
+            .map(|number| {
+                receipt_frame(
+                    number as u64,
+                    SmokeFrameStageV1::Lod,
+                    node,
+                    edge,
+                    false,
+                    true,
+                    false,
+                )
+            })
+            .collect()
     }
 
     fn complete_input_evidence() -> SmokeInputEvidence {
@@ -2644,7 +2584,7 @@ mod tests {
             bounds_verified: true,
             scenario: SmokeScenarioEvidence::Interaction(SmokeInteractionEvidence {
                 dispatched_events: SMOKE_INPUT_EVENT_COUNT,
-                auto_pan_steering_events: 0,
+                auto_pan_reframes: 0,
                 captures: INTERACTION_CAPTURE_STATES.into_iter().collect(),
                 node_dragged: true,
                 selection_chrome_fitted: true,
@@ -3099,6 +3039,42 @@ mod tests {
         assert_eq!(
             visible.node_regions.keys().copied().collect::<Vec<_>>(),
             [node(1)]
+        );
+    }
+
+    #[test]
+    fn visible_geometry_rejects_frame_culling_that_contradicts_model_bounds() {
+        let expected = expectations();
+        let mut input = geometry_input();
+        let culled = input.nodes.get_mut(&node(2)).expect("second fixture node");
+        assert!(
+            project_node_region(
+                culled.bounds,
+                transform(),
+                surface_size(),
+                IMAGE_HEIGHT,
+                CANVAS_WIDTH,
+            )
+            .is_ok(),
+            "the canonical 1x bounds deliberately overlap the viewport"
+        );
+        culled.frame_visible = false;
+        culled.fresh = false;
+        culled.ports.insert(port(21), SmokePortState::Culled);
+        culled.ports.insert(port(22), SmokePortState::Culled);
+        input.routes.clear();
+
+        assert_eq!(
+            inspect_visible_geometry(
+                &expected,
+                &input,
+                transform(),
+                surface_size(),
+                IMAGE_WIDTH,
+                IMAGE_HEIGHT,
+                CANVAS_WIDTH,
+            ),
+            Err("geometry_visible_node_culled")
         );
     }
 
@@ -3600,7 +3576,7 @@ mod tests {
     }
 
     #[test]
-    fn smoke_state_emits_one_marker_with_initial_geometry_and_per_node_paint() {
+    fn smoke_state_emits_one_valid_receipt_with_structured_evidence() {
         let expected = expectations();
         let mut state = SmokeState::new("shader", SmokeConfig::default());
         state.configure(expected.clone());
@@ -3609,76 +3585,30 @@ mod tests {
             SmokeProbeDecision::Pass
         );
 
-        let marker = state.marker().expect("completed smoke marker");
-        assert!(marker.starts_with(SMOKE_MARKER));
-        assert!(marker.contains("status=pass"));
-        assert!(marker.contains("demo=shader"));
-        assert!(marker.contains("bounds=compact"));
-        assert!(marker.contains("scenario=interaction"));
-        assert!(marker.contains("target_zoom=1"));
-        assert!(marker.contains("input_evidence=interaction"));
-        assert!(marker.contains("initial_nodes=2"));
-        assert!(marker.contains("initial_ports=4"));
-        assert!(marker.contains("initial_edges=1"));
-        assert!(marker.contains("visible_expected_nodes=2"));
-        assert!(marker.contains("active_nodes=2"));
-        assert!(marker.contains("parked_nodes=0"));
-        assert!(marker.contains("strong_instances=2"));
-        assert!(marker.contains("frame_materialization_overflows=0"));
-        assert!(marker.contains("initial_node_ids="));
-        assert!(marker.contains("current_geometry_nodes=2"));
-        assert!(marker.contains("current_geometry_ports=4"));
-        assert!(marker.contains("current_geometry_edges=1"));
-        assert!(marker.contains("current_geometry_node_ids="));
-        assert!(marker.contains("current_geometry_port_ids="));
-        assert!(marker.contains("current_geometry_edge_ids="));
-        assert!(marker.contains("geometry_fresh_nodes=2"));
-        assert!(marker.contains("geometry_rendered_ports=4"));
-        assert!(marker.contains("geometry_routed_edges=1"));
-        assert!(marker.contains("geometry_node_regions="));
-        assert!(marker.contains("paint_nodes="));
-        assert!(marker.contains(&format!(
-            "input_dispatched_events={SMOKE_INPUT_EVENT_COUNT}"
-        )));
-        assert!(marker.contains("input_autopan_steering_events=0"));
-        assert!(marker.contains(&format!(
-            "input_target_zoom_events={SMOKE_INPUT_EVENT_COUNT}"
-        )));
-        assert!(marker.contains(&format!(
-            "input_target_zoom_captures={SMOKE_INTERACTION_CAPTURE_COUNT}"
-        )));
-        assert!(marker.contains("input_node_dragged=true"));
-        assert!(marker.contains(&format!("input_autopan_frames={SMOKE_AUTOPAN_MIN_FRAMES}")));
-        assert!(marker.contains(&format!(
-            "input_connection_autopan_frames={SMOKE_AUTOPAN_MIN_FRAMES}"
-        )));
-        assert!(marker.contains("input_selection_chrome_fitted=true"));
-        assert!(marker.contains("input_selection_chrome_sides=4"));
-        assert!(marker.contains("input_selection_chrome_detached_run=0"));
-        assert!(marker.contains("input_tab_focus_moved=true"));
-        assert!(marker.contains("input_tab_focus_restored=true"));
-        assert!(marker.contains("input_viewport_panned=true"));
-        assert!(marker.contains("input_viewport_zoomed=true"));
-        assert!(marker.contains("input_connection_created=true"));
-        assert!(marker.contains("input_connection_preview_wire_painted=true"));
-        assert!(marker.contains("input_connection_release_frame_painted=true"));
-        assert!(marker.contains("input_connection_release_continuous=true"));
-        assert!(marker.contains("input_keyboard_edge_deleted=true"));
-        assert!(marker.contains("input_reconnect_applied=true"));
-        assert!(marker.contains("input_reconnect_preview_wire_painted=true"));
-        assert!(marker.contains("input_reconnect_release_frame_painted=true"));
-        assert!(marker.contains("input_reconnect_release_continuous=true"));
-        assert!(marker.contains("input_search_opened=true"));
-        assert!(marker.contains("input_search_focus_moved=true"));
-        assert!(marker.contains("input_search_cancelled=true"));
-        assert!(marker.contains("input_search_focus_restored=true"));
-        assert!(marker.contains("input_final_frame_validated=true"));
-        assert!(marker.contains("input_bounds_verified=true"));
-        assert!(state.marker().is_none());
+        let receipt = state.receipt().expect("completed smoke receipt");
+        receipt.validate().expect("receipt contract");
+        assert_eq!(receipt.status, SmokeReceiptStatusV1::Pass);
+        assert_eq!(receipt.run.run_id, "interaction-shader-compact-z1");
+        let evidence = receipt.evidence.expect("pass evidence");
+        assert_eq!(evidence.initial_graph.node_ids.len(), 2);
+        assert_eq!(evidence.initial_graph.port_ids.len(), 4);
+        assert_eq!(evidence.initial_graph.edge_ids.len(), 1);
+        assert_eq!(evidence.host.visible_expected_nodes, 2);
+        assert_eq!(evidence.host.active_nodes, 2);
+        assert_eq!(evidence.host.strong_instances, 2);
+        assert_eq!(evidence.geometry.fresh_nodes, 2);
+        assert_eq!(evidence.geometry.rendered_ports, 4);
+        assert_eq!(evidence.geometry.routed_edges, 1);
+        let interaction = evidence.interaction.expect("interaction evidence");
+        assert_eq!(interaction.dispatched_events, SMOKE_INPUT_EVENT_COUNT);
+        assert!(interaction.connection_release_continuous);
+        assert!(interaction.reconnect_release_continuous);
+        assert_eq!(receipt.presented_frames.len(), 9);
+        assert!(state.receipt().is_none());
     }
 
     #[test]
-    fn lod_marker_uses_configured_normal_matrix_and_typed_lod_evidence() {
+    fn lod_receipt_uses_configured_normal_matrix_and_typed_evidence() {
         let expected = expectations();
         let config = SmokeConfig::for_test(
             SmokeBounds::Normal,
@@ -3689,23 +3619,22 @@ mod tests {
         state.configure(expected.clone());
         let mut observation = complete_observation(&expected);
         observation.input = Some(complete_lod_input_evidence());
+        observation.presented_frames = lod_presented_frames(&expected);
 
         assert_eq!(state.observe(observation), SmokeProbeDecision::Pass);
-        let marker = state.marker().expect("completed LOD marker");
-
-        assert!(marker.contains("bounds=normal"));
-        assert!(marker.contains("scenario=lod-threshold"));
-        assert!(marker.contains("target_zoom=1"));
-        assert!(marker.contains("input_evidence=lod-threshold"));
-        assert!(marker.contains("input_dispatched_events=missing"));
-        assert!(marker.contains(&format!("input_lod_samples={SMOKE_LOD_SAMPLE_COUNT}")));
-        assert!(marker.contains("input_lod_continuous=true"));
-        assert!(marker.contains("input_lod_max_jump_in_view=1.25"));
-        assert!(marker.contains("input_bounds=normal"));
+        let receipt = state.receipt().expect("completed LOD receipt");
+        receipt.validate().expect("LOD receipt contract");
+        assert_eq!(receipt.run.run_id, "lod-threshold-workflow-normal-z1");
+        let evidence = receipt.evidence.expect("pass evidence");
+        assert!(evidence.interaction.is_none());
+        let lod = evidence.lod.expect("LOD evidence");
+        assert!(lod.continuous);
+        assert_eq!(lod.max_jump_in_view, 1.25);
+        assert_eq!(evidence.captures.len(), SMOKE_LOD_SAMPLE_COUNT);
     }
 
     #[test]
-    fn smoke_marker_distinguishes_initial_topology_from_mutated_geometry() {
+    fn smoke_receipt_distinguishes_initial_topology_from_mutated_geometry() {
         let mut initial = expectations();
         initial.edges.insert(edge(32));
         let mut state = SmokeState::new("shader", SmokeConfig::default());
@@ -3716,12 +3645,17 @@ mod tests {
             SmokeProbeDecision::Pass
         );
 
-        let marker = state.marker().expect("completed smoke marker");
-        assert!(marker.contains("initial_edges=2"));
-        assert!(marker.contains(&format!("initial_edge_ids={},{}", edge(31).0, edge(32).0)));
-        assert!(marker.contains("current_geometry_edges=1"));
-        assert!(marker.contains(&format!("current_geometry_edge_ids={}", edge(31).0)));
-        assert!(marker.contains("geometry_routed_edges=1"));
+        let receipt = state.receipt().expect("completed smoke receipt");
+        let evidence = receipt.evidence.expect("pass evidence");
+        assert_eq!(
+            evidence.initial_graph.edge_ids,
+            [edge(31).0.to_string(), edge(32).0.to_string()]
+        );
+        assert_eq!(
+            evidence.geometry.expected_edge_ids,
+            [edge(31).0.to_string()]
+        );
+        assert_eq!(evidence.geometry.routed_edges, 1);
     }
 
     #[test]
@@ -3738,12 +3672,12 @@ mod tests {
             state.borrow().outcome,
             SmokeOutcome::Failed("smoke_expectations_unconfigured")
         );
-        assert!(state.borrow_mut().marker().is_none());
+        assert!(state.borrow_mut().receipt().is_none());
         assert_ne!(smoke_exit_status(state.borrow().outcome), 0);
     }
 
     #[test]
-    fn startup_failure_emits_one_failed_marker_and_nonzero_status() {
+    fn startup_failure_emits_one_valid_failed_receipt_and_nonzero_status() {
         let config = SmokeConfig::for_test(
             SmokeBounds::Normal,
             SmokeScenario::LodThreshold,
@@ -3751,23 +3685,15 @@ mod tests {
         );
         let mut state = SmokeState::new("workflow", config);
         state.fail("window_open");
-        let marker = state.marker().expect("startup failure marker");
+        let receipt = state.receipt().expect("startup failure receipt");
 
-        assert!(marker.starts_with(SMOKE_MARKER));
-        assert!(marker.contains("status=fail"));
-        assert!(marker.contains("demo=workflow"));
-        assert!(marker.contains("bounds=normal"));
-        assert!(marker.contains("scenario=lod-threshold"));
-        assert!(marker.contains("target_zoom=2"));
-        assert!(marker.contains("reason=window_open"));
-        assert!(marker.contains("input_evidence=missing"));
-        assert!(marker.contains("input_dispatched_events=missing"));
-        assert!(marker.contains("input_target_zoom_events=missing"));
-        assert!(marker.contains("input_target_zoom_captures=missing"));
-        assert!(marker.contains("input_bounds=normal"));
-        assert!(marker.contains("input_bounds_verified=missing"));
-        assert!(marker.contains("input_lod_samples=missing"));
-        assert!(state.marker().is_none());
+        receipt.validate().expect("failure receipt contract");
+        assert_eq!(receipt.status, SmokeReceiptStatusV1::Fail);
+        assert_eq!(receipt.run.run_id, "lod-threshold-workflow-normal-z2");
+        assert_eq!(receipt.failure.expect("failure").code, "window_open");
+        assert!(receipt.evidence.is_none());
+        assert!(receipt.presented_frames.is_empty());
+        assert!(state.receipt().is_none());
         assert_eq!(smoke_exit_status(SmokeOutcome::Passed), 0);
         assert_ne!(smoke_exit_status(SmokeOutcome::Pending), 0);
         assert_ne!(smoke_exit_status(SmokeOutcome::Failed("test_failure")), 0);

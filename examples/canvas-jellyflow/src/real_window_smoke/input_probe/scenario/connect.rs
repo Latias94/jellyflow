@@ -54,12 +54,9 @@ impl RealWindowSmokeProbe {
                     .ok_or("input_connection_target_projection_failed")?;
                 let edge = auto_pan_pointer_toward(target, surface_size)
                     .ok_or("input_autopan_plan_invalid")?;
-                let strategy = auto_pan_pointer_strategy(edge, surface_size)
-                    .ok_or("input_autopan_plan_invalid")?;
                 let interaction = self.interaction_mut()?;
                 interaction.press = Some(source);
                 interaction.release = Some(edge);
-                interaction.connection_auto_pan_strategy = Some(strategy);
                 self.dispatch_at_target_zoom(
                     window,
                     cx,
@@ -111,9 +108,20 @@ impl RealWindowSmokeProbe {
                 let settled_target =
                     target.and_then(|point| settled_connection_target_point(point, surface_size));
                 let _ = interaction;
-                if frames >= SMOKE_AUTOPAN_MIN_FRAMES
-                    && let Some(target) = settled_target
-                {
+                if frames >= SMOKE_AUTOPAN_MIN_FRAMES {
+                    let target = if let Some(target) = settled_target {
+                        target
+                    } else {
+                        set_zoom_centered_on_canvas_point(
+                            view,
+                            surface_size,
+                            current.zoom,
+                            target_anchor,
+                        )?;
+                        let reframes = self.interaction()?.auto_pan_reframes.saturating_add(1);
+                        self.interaction_mut()?.auto_pan_reframes = reframes;
+                        ViewPoint::new(surface_size.width * 0.5, surface_size.height * 0.5)
+                    };
                     self.interaction_mut()?.release = Some(target);
                     self.dispatch_at_target_zoom(
                         window,
@@ -123,27 +131,6 @@ impl RealWindowSmokeProbe {
                     )?;
                     self.transition(ProbePhase::ConnectMaterializeTarget);
                     return Ok(None);
-                }
-                if settled_target.is_none()
-                    && let Some(target) = target
-                {
-                    let steering = steer_auto_pan_pointer_toward(target, surface_size)
-                        .ok_or("input_autopan_plan_invalid")?;
-                    let strategy = auto_pan_pointer_strategy(steering, surface_size)
-                        .ok_or("input_autopan_plan_invalid")?;
-                    if self.interaction()?.connection_auto_pan_strategy != Some(strategy) {
-                        self.dispatch_at_target_zoom(
-                            window,
-                            cx,
-                            view,
-                            mouse_move(MouseButton::Left, steering),
-                        )?;
-                        let interaction = self.interaction_mut()?;
-                        interaction.release = Some(steering);
-                        interaction.connection_auto_pan_strategy = Some(strategy);
-                        interaction.auto_pan_steering_events =
-                            interaction.auto_pan_steering_events.saturating_add(1);
-                    }
                 }
                 if self.wait_ticks == MAX_PHASE_WAIT_TICKS {
                     let geometry = view
@@ -204,6 +191,8 @@ impl RealWindowSmokeProbe {
                 } else {
                     self.capture_checkpoint(
                         window,
+                        surface,
+                        cx,
                         view,
                         surface_size,
                         SmokeCaptureState::ConnectionPreview,
@@ -261,6 +250,9 @@ impl RealWindowSmokeProbe {
                 {
                     return self.wait_with_reason("input_connection_release_unresolved");
                 }
+                if !self.wait_for_rendered_interaction_frame(window, cx, surface)? {
+                    return self.wait_or_timeout();
+                }
                 let path = self
                     .interaction()?
                     .release_wire_path
@@ -298,6 +290,8 @@ impl RealWindowSmokeProbe {
                     }
                     self.capture_checkpoint(
                         window,
+                        surface,
+                        cx,
                         view,
                         surface_size,
                         SmokeCaptureState::ConnectionCommitted,

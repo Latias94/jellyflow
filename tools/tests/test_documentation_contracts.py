@@ -49,6 +49,8 @@ class DocumentationContractTests(unittest.TestCase):
         for path in paths:
             source = path.read_text(encoding="utf-8")
             self.assertIn("python3 tools/run_real_window_smoke_matrix.py", source)
+            self.assertIn("--receipt-validator", source)
+            self.assertIn("smoke_receipt_contract", source)
             self.assertIn("--capture-dir-output", source)
             self.assertIn("--capture-dir-from-output", source)
         self.assertNotIn("run_smoke()", paths[0].read_text(encoding="utf-8"))

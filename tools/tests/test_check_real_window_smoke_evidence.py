@@ -26,15 +26,7 @@ NODE_IDS = (
     "00000000-0000-0000-0000-000000007100",
     "00000000-0000-0000-0000-000000007200",
 )
-PORT_IDS = (
-    "00000000-0000-0000-0000-000000008000",
-    "00000000-0000-0000-0000-000000008001",
-    "00000000-0000-0000-0000-000000008002",
-    "00000000-0000-0000-0000-000000008003",
-)
-INITIAL_EDGE_ID = "00000000-0000-0000-0000-000000009000"
 CURRENT_EDGE_ID = "00000000-0000-0000-0000-000000009001"
-FOREIGN_NODE_ID = "ffffffff-ffff-ffff-ffff-ffffffffffff"
 
 
 INTERACTION_STATES = (
@@ -278,8 +270,8 @@ def write_pngs(capture_dir: Path, names: set[str], *, scale: int = 1) -> dict[st
     return payloads
 
 
-def final_marker(spec: Any, capture_dir: Path | None = None) -> str:
-    logical_width, logical_height = evidence.RUN_WINDOW_SIZES[spec.bounds]
+def canonical_receipt(spec: Any, capture_dir: Path | None = None) -> dict[str, object]:
+    window_width, window_height = evidence.RUN_WINDOW_SIZES[spec.bounds]
     final_state = "final" if spec.scenario == "interaction" else "lod-0.84"
     capture_path = (
         capture_dir / evidence._capture_name(spec, final_state)
@@ -291,109 +283,50 @@ def final_marker(spec: Any, capture_dir: Path | None = None) -> str:
         if capture_path is not None and capture_path.is_file()
         else None
     )
-    fields = {field: "missing" for field in matrix.MARKER_FIELDS}
-    fields.update(
-        status="pass",
-        demo=spec.demo,
-        bounds=spec.bounds,
-        scenario=spec.scenario,
-        target_zoom=spec.zoom,
-        reason="complete_frame",
-        initial_nodes="2",
-        initial_ports="4",
-        initial_edges="1",
-        initial_node_ids=",".join(NODE_IDS),
-        initial_port_ids=",".join(PORT_IDS),
-        initial_edge_ids=INITIAL_EDGE_ID,
-        surface_width=str(logical_width - evidence.NATIVE_BLACKBOARD_LOGICAL_WIDTH),
-        surface_height=str(logical_height),
-        visible_expected_nodes="2",
-        active_nodes="2",
-        parked_nodes="0",
-        mounts="2",
-        restores="0",
-        evictions="0",
-        hard_retirements="0",
-        protected_instances="0",
-        protected_leases="0",
-        protected_overflows="0",
-        eligible_parked_nodes="0",
-        strong_instances="2",
-        frame_materialization_overflows="0",
-        feedback_submissions="2",
-        feedback_failures="0",
-        layout_rejections="0",
-        measurement_failures="0",
-        geometry_layout_revision="7",
-        current_geometry_nodes="2",
-        current_geometry_ports="4",
-        current_geometry_edges="1",
-        current_geometry_node_ids=",".join(NODE_IDS),
-        current_geometry_port_ids=",".join(PORT_IDS),
-        current_geometry_edge_ids=CURRENT_EDGE_ID,
-        geometry_fresh_nodes="2",
-        geometry_rendered_ports="4",
-        geometry_routed_edges="1",
-        geometry_node_regions=(
-            f"{NODE_IDS[0]}:40:40:240:180,{NODE_IDS[1]}:300:220:520:380"
-        ),
-        paint_image_width=str(capture.width if capture else logical_width),
-        paint_image_height=str(capture.height if capture else logical_height),
-        paint_canvas_width=str(
-            capture.canvas_width
-            if capture
-            else logical_width - evidence.NATIVE_BLACKBOARD_LOGICAL_WIDTH
-        ),
-        paint_non_background_pixels=str(capture.non_background_pixels if capture else 400),
-        paint_distinct_colors=str(capture.distinct_colors if capture else 4),
-        paint_nodes=(
-            f"{NODE_IDS[0]}:100/16/200,{NODE_IDS[1]}:120/16/220"
-        ),
-        input_evidence=spec.scenario,
-        input_final_frame_validated="true",
-        input_bounds=spec.bounds,
-        input_bounds_verified="true",
-        native_probe_failure="none",
-        native_probe_phase="Complete",
-        native_probe_wait_ticks="0",
-        diagnostic="none",
-    )
-    if spec.scenario == "interaction":
-        fields.update(
-            input_dispatched_events="36",
-            input_autopan_steering_events="0",
-            input_target_zoom_events="36",
-            input_target_zoom_captures="9",
-            input_autopan_frames="3",
-            input_selection_chrome_sides="4",
-            input_selection_chrome_detached_run="0",
-            input_connection_autopan_frames="3",
-            **{key: "true" for key in matrix.INTERACTION_TRUE_FIELDS},
-        )
-    else:
-        fields.update(
-            input_lod_samples="3",
-            input_lod_continuous="true",
-            input_lod_max_jump_in_view="1.25",
-        )
-    return "JELLYFLOW_REAL_WINDOW_SMOKE " + " ".join(
-        f"{key}={value}" for key, value in sorted(fields.items())
-    )
+    return {
+        "schema_version": 1,
+        "status": "pass",
+        "run": spec.receipt_run(),
+        "failure": None,
+        "evidence": {
+            "paint": {
+                "image_width": capture.width if capture else window_width,
+                "image_height": capture.height if capture else window_height,
+                "canvas_width": (
+                    capture.canvas_width
+                    if capture
+                    else window_width - evidence.NATIVE_BLACKBOARD_LOGICAL_WIDTH
+                ),
+                "non_background_pixels": (
+                    capture.non_background_pixels if capture else 400
+                ),
+                "distinct_colors": capture.distinct_colors if capture else 4,
+                "painted_node_ids": list(NODE_IDS),
+                "painted_edge_ids": [CURRENT_EDGE_ID],
+            }
+        },
+        "presented_frames": [],
+    }
+
+
+def receipt_line(receipt: dict[str, object]) -> str:
+    return matrix.RECEIPT_PREFIX + json.dumps(receipt, separators=(",", ":"))
 
 
 def valid_results_document(capture_dir: Path | None = None) -> dict[str, object]:
     runs = []
     for spec in evidence.RUN_SPECS:
-        marker = final_marker(spec, capture_dir)
+        receipt = canonical_receipt(spec, capture_dir)
+        line = receipt_line(receipt)
         runs.append(
             {
                 "run_id": spec.run_id,
                 "config": spec.config(),
                 "exit_code": 0,
                 "timed_out": False,
-                "marker_count": 1,
-                "marker": marker,
-                "stdout": marker + "\n",
+                "receipt_count": 1,
+                "receipt": receipt,
+                "stdout": line + "\n",
                 "stderr": "",
                 "status": "pass",
                 "errors": [],
@@ -415,14 +348,55 @@ def results_manifest_line(payload: bytes) -> str:
     return f"{evidence.RESULTS_NAME}\tsha256={hashlib.sha256(payload).hexdigest()}"
 
 
-def replace_run_marker_field(run: dict[str, object], key: str, value: str) -> None:
-    fields = matrix.parse_marker_line(str(run["marker"]))
-    fields[key] = value
-    marker = "JELLYFLOW_REAL_WINDOW_SMOKE " + " ".join(
-        f"{field}={field_value}" for field, field_value in sorted(fields.items())
+def refresh_run_output(run: dict[str, object]) -> None:
+    receipt = run["receipt"]
+    if not isinstance(receipt, dict):
+        raise TypeError("fixture receipt must be an object")
+    run["stdout"] = receipt_line(receipt) + "\n"
+
+
+VALIDATOR_CALLS = 0
+
+
+def fake_validate_receipt(
+    payload: str, *, receipt_validator: Path, environment: object
+) -> dict[str, object]:
+    global VALIDATOR_CALLS
+    del receipt_validator, environment
+    VALIDATOR_CALLS += 1
+    try:
+        value = json.loads(
+            payload,
+            object_pairs_hook=matrix.reject_duplicate_json_object_keys,
+        )
+    except (json.JSONDecodeError, ValueError) as error:
+        raise matrix.ReceiptTransportError(
+            "malformed_receipt", f"fixture validator rejected malformed JSON: {error}"
+        ) from error
+    if not isinstance(value, dict):
+        raise matrix.ReceiptTransportError(
+            "validator_failure", "fixture validator requires an object"
+        )
+    return value
+
+
+evidence.validate_receipt = fake_validate_receipt
+
+
+def validate_results_receipt(path: Path) -> evidence.ResultsEvidence:
+    return evidence.validate_results_receipt(
+        path,
+        receipt_validator=Path("fixture-validator"),
+        environment={},
     )
-    run["marker"] = marker
-    run["stdout"] = marker + "\n"
+
+
+def write_evidence_manifest(capture_dir: Path) -> Path:
+    return evidence.write_evidence_manifest(
+        capture_dir,
+        receipt_validator=Path("fixture-validator"),
+        environment={},
+    )
 
 
 class RealWindowSmokeEvidenceTests(unittest.TestCase):
@@ -439,7 +413,7 @@ class RealWindowSmokeEvidenceTests(unittest.TestCase):
             (capture_dir / name).write_bytes(b"png")
 
             with self.assertRaisesRegex(RuntimeError, rf"{name}: invalid PNG signature"):
-                evidence.write_evidence_manifest(capture_dir)
+                write_evidence_manifest(capture_dir)
 
             self.assertEqual(
                 (capture_dir / evidence.MANIFEST_NAME).read_text(encoding="utf-8"), ""
@@ -603,7 +577,7 @@ class RealWindowSmokeEvidenceTests(unittest.TestCase):
             )
 
             with self.assertRaisesRegex(RuntimeError, rf"{name}: IHDR CRC mismatch"):
-                evidence.write_evidence_manifest(capture_dir)
+                write_evidence_manifest(capture_dir)
 
             self.assertNotIn(
                 name,
@@ -619,7 +593,7 @@ class RealWindowSmokeEvidenceTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 RuntimeError, rf"{name}: truncated PNG chunk header"
             ):
-                evidence.write_evidence_manifest(capture_dir)
+                write_evidence_manifest(capture_dir)
 
             self.assertNotIn(
                 name,
@@ -636,7 +610,7 @@ class RealWindowSmokeEvidenceTests(unittest.TestCase):
                 RuntimeError,
                 rf"{name}: decoded scanline payload has .* expected",
             ):
-                evidence.write_evidence_manifest(capture_dir)
+                write_evidence_manifest(capture_dir)
 
             self.assertNotIn(
                 name,
@@ -652,7 +626,7 @@ class RealWindowSmokeEvidenceTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 RuntimeError, rf"{name}: width scale 2 and height scale 1 do not match"
             ):
-                evidence.write_evidence_manifest(capture_dir)
+                write_evidence_manifest(capture_dir)
 
     def test_non_integer_or_out_of_range_scale_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -665,7 +639,7 @@ class RealWindowSmokeEvidenceTests(unittest.TestCase):
             (capture_dir / too_large).write_bytes(make_png(4800, 3200))
 
             with self.assertRaises(RuntimeError) as context:
-                evidence.write_evidence_manifest(capture_dir)
+                write_evidence_manifest(capture_dir)
 
             message = str(context.exception)
             self.assertIn(f"{non_integer}: actual dimensions 961x640", message)
@@ -684,7 +658,7 @@ class RealWindowSmokeEvidenceTests(unittest.TestCase):
                 "stale evidence\n", encoding="utf-8"
             )
 
-            manifest = evidence.write_evidence_manifest(capture_dir)
+            manifest = write_evidence_manifest(capture_dir)
 
             expected_lines = [results_manifest_line(results_payload)]
             for name in sorted(expected):
@@ -708,7 +682,7 @@ class RealWindowSmokeEvidenceTests(unittest.TestCase):
             )
 
             with self.assertRaisesRegex(RuntimeError, f"missing=.*{missing}"):
-                evidence.write_evidence_manifest(capture_dir)
+                write_evidence_manifest(capture_dir)
 
             expected_lines = [results_manifest_line(results_payload)]
             for name in sorted(names):
@@ -731,7 +705,7 @@ class RealWindowSmokeEvidenceTests(unittest.TestCase):
             (capture_dir / unexpected).write_bytes(make_png(960, 640))
 
             with self.assertRaises(RuntimeError) as context:
-                evidence.write_evidence_manifest(capture_dir)
+                write_evidence_manifest(capture_dir)
 
             message = str(context.exception)
             self.assertIn(f"missing=['{missing}']", message)
@@ -752,81 +726,35 @@ class RealWindowSmokeEvidenceTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 RuntimeError, r"capture matrix uses inconsistent scales=\[1, 2\]"
             ):
-                evidence.write_evidence_manifest(capture_dir)
+                write_evidence_manifest(capture_dir)
 
-    def test_receipt_accepts_canonical_uuid_identity_schema(self) -> None:
+    def test_receipt_accepts_canonical_json_from_the_runner(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             capture_dir = Path(directory)
             document = valid_results_document()
             write_results(capture_dir, document)
 
-            result = evidence.validate_results_receipt(
+            result = validate_results_receipt(
                 capture_dir / evidence.RESULTS_NAME
             )
 
             first_run_id = evidence.RUN_SPECS[0].run_id
             self.assertEqual(
-                result.marker_fields[first_run_id]["initial_node_ids"],
-                ",".join(NODE_IDS),
+                result.receipts[first_run_id]["run"],
+                evidence.RUN_SPECS[0].receipt_run(),
             )
 
-    def test_receipt_rejects_malformed_uuid_identity(self) -> None:
+    def test_checker_routes_every_receipt_through_the_contract_boundary(self) -> None:
+        global VALIDATOR_CALLS
         with tempfile.TemporaryDirectory() as directory:
             capture_dir = Path(directory)
             document = valid_results_document()
-            run = document["runs"][0]
-            replace_run_marker_field(
-                run,
-                "initial_node_ids",
-                f"not-a-uuid,{NODE_IDS[1]}",
-            )
             write_results(capture_dir, document)
+            calls_before = VALIDATOR_CALLS
 
-            with self.assertRaisesRegex(
-                evidence.ResultsValidationError,
-                "initial_node_ids identity is not a canonical UUID",
-            ):
-                evidence.validate_results_receipt(capture_dir / evidence.RESULTS_NAME)
+            validate_results_receipt(capture_dir / evidence.RESULTS_NAME)
 
-    def test_receipt_rejects_invalid_or_foreign_uuid_keyed_node_evidence(self) -> None:
-        cases = (
-            (
-                "geometry_node_regions",
-                f"not-a-uuid:40:40:240:180,{NODE_IDS[1]}:300:220:520:380",
-                "geometry_node_regions node identity is not a canonical UUID",
-            ),
-            (
-                "paint_nodes",
-                f"not-a-uuid:100/16/200,{NODE_IDS[1]}:120/16/220",
-                "paint_nodes node identity is not a canonical UUID",
-            ),
-            (
-                "geometry_node_regions",
-                f"{FOREIGN_NODE_ID}:40:40:240:180,"
-                f"{NODE_IDS[1]}:300:220:520:380",
-                "node-region identities differ from current geometry",
-            ),
-            (
-                "paint_nodes",
-                f"{FOREIGN_NODE_ID}:100/16/200,{NODE_IDS[1]}:120/16/220",
-                "paint-node identities differ from current geometry",
-            ),
-        )
-        for field, value, expected_error in cases:
-            with self.subTest(
-                field=field, value=value
-            ), tempfile.TemporaryDirectory() as directory:
-                capture_dir = Path(directory)
-                document = valid_results_document()
-                replace_run_marker_field(document["runs"][0], field, value)
-                write_results(capture_dir, document)
-
-                with self.assertRaisesRegex(
-                    evidence.ResultsValidationError, expected_error
-                ):
-                    evidence.validate_results_receipt(
-                        capture_dir / evidence.RESULTS_NAME
-                    )
+            self.assertEqual(VALIDATOR_CALLS - calls_before, len(evidence.RUN_SPECS))
 
     def test_receipt_rejects_missing_and_duplicate_run_ids_by_name(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -836,7 +764,7 @@ class RealWindowSmokeEvidenceTests(unittest.TestCase):
             write_results(Path(directory), missing_document)
 
             with self.assertRaises(evidence.ResultsValidationError) as context:
-                evidence.validate_results_receipt(results_path)
+                validate_results_receipt(results_path)
 
             message = str(context.exception)
             self.assertIn("run count is 8, expected exactly 9", message)
@@ -849,7 +777,7 @@ class RealWindowSmokeEvidenceTests(unittest.TestCase):
             write_results(Path(directory), duplicate_document)
 
             with self.assertRaises(evidence.ResultsValidationError) as context:
-                evidence.validate_results_receipt(results_path)
+                validate_results_receipt(results_path)
 
             message = str(context.exception)
             self.assertIn(
@@ -857,29 +785,76 @@ class RealWindowSmokeEvidenceTests(unittest.TestCase):
             )
             self.assertIn(removed_run["run_id"], message)
 
-    def test_receipt_rejects_tampered_exit_marker_and_marker_count(self) -> None:
+    def test_receipt_rejects_failed_transport_envelopes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            capture_dir = Path(directory)
+            cases = (
+                ({"exit_code": 7}, "exit_code is 7, expected 0"),
+                ({"timed_out": True}, "timed_out is True, expected false"),
+                ({"status": "fail"}, "receipt status is 'fail', expected 'pass'"),
+                (
+                    {"errors": ["transport.timeout: fixture"]},
+                    "receipt errors are ['transport.timeout: fixture'], expected []",
+                ),
+                ({"receipt": None}, "receipt is not a canonical JSON object"),
+            )
+            for changes, expected in cases:
+                with self.subTest(changes=changes):
+                    document = valid_results_document(capture_dir)
+                    document["runs"][0].update(changes)
+                    write_results(capture_dir, document)
+                    with self.assertRaises(
+                        evidence.ResultsValidationError
+                    ) as context:
+                        validate_results_receipt(
+                            capture_dir / evidence.RESULTS_NAME
+                        )
+                    self.assertIn(expected, str(context.exception))
+
+    def test_receipt_count_and_stored_payload_are_bound_to_output(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             capture_dir = Path(directory)
             document = valid_results_document(capture_dir)
             run = document["runs"][0]
-            run["exit_code"] = 7
-            run["marker"] = run["marker"].replace("demo=shader", "demo=workflow")
             run["stdout"] += run["stdout"]
             write_results(capture_dir, document)
 
-            with self.assertRaises(evidence.ResultsValidationError) as context:
-                evidence.validate_results_receipt(capture_dir / evidence.RESULTS_NAME)
+            with self.assertRaisesRegex(
+                evidence.ResultsValidationError,
+                "receipt_count is 1, captured output proves 2",
+            ):
+                validate_results_receipt(capture_dir / evidence.RESULTS_NAME)
 
-            message = str(context.exception)
-            self.assertIn(f"{run['run_id']}: exit_code is 7, expected 0", message)
-            self.assertIn(
-                f"{run['run_id']}: marker_count is 1, captured output proves 2",
-                message,
-            )
-            self.assertIn(
-                f"{run['run_id']}: stored marker does not match captured output",
-                message,
-            )
+            document = valid_results_document(capture_dir)
+            run = document["runs"][0]
+            run["receipt"]["status"] = "fail"
+            write_results(capture_dir, document)
+            with self.assertRaisesRegex(
+                evidence.ResultsValidationError,
+                "stored receipt does not match Rust-canonical output",
+            ):
+                validate_results_receipt(capture_dir / evidence.RESULTS_NAME)
+
+    def test_receipt_rejects_malformed_emitted_json_and_run_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            capture_dir = Path(directory)
+            document = valid_results_document()
+            document["runs"][0]["stdout"] = matrix.RECEIPT_PREFIX + "{not-json\n"
+            write_results(capture_dir, document)
+            with self.assertRaisesRegex(
+                evidence.ResultsValidationError, "Rust receipt validation failed"
+            ):
+                validate_results_receipt(capture_dir / evidence.RESULTS_NAME)
+
+            document = valid_results_document()
+            run = document["runs"][0]
+            run["receipt"]["run"]["demo"] = "workflow"
+            refresh_run_output(run)
+            write_results(capture_dir, document)
+            with self.assertRaisesRegex(
+                evidence.ResultsValidationError, "canonical receipt run is"
+            ):
+                validate_results_receipt(capture_dir / evidence.RESULTS_NAME)
 
     def test_manifest_hash_binding_changes_with_a_valid_receipt_change(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -889,12 +864,12 @@ class RealWindowSmokeEvidenceTests(unittest.TestCase):
             document = valid_results_document(capture_dir)
             first_payload = write_results(capture_dir, document)
 
-            manifest = evidence.write_evidence_manifest(capture_dir)
+            manifest = write_evidence_manifest(capture_dir)
             first_lines = manifest.read_text(encoding="utf-8").splitlines()
 
-            document["runs"][0]["stderr"] = "non-marker diagnostic\n"
+            document["runs"][0]["stderr"] = "non-receipt diagnostic\n"
             second_payload = write_results(capture_dir, document)
-            manifest = evidence.write_evidence_manifest(capture_dir)
+            manifest = write_evidence_manifest(capture_dir)
             second_lines = manifest.read_text(encoding="utf-8").splitlines()
 
             self.assertNotEqual(first_payload, second_payload)
@@ -902,43 +877,6 @@ class RealWindowSmokeEvidenceTests(unittest.TestCase):
             self.assertEqual(second_lines[0], results_manifest_line(second_payload))
             self.assertNotEqual(first_lines[0], second_lines[0])
             self.assertEqual(first_lines[1:], second_lines[1:])
-
-    def test_receipt_rejects_minimal_marker_and_false_or_zero_invariants(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            capture_dir = Path(directory)
-            minimal = valid_results_document()
-            run = minimal["runs"][0]
-            marker = (
-                "JELLYFLOW_REAL_WINDOW_SMOKE status=pass demo=shader bounds=compact "
-                "scenario=interaction target_zoom=0.5"
-            )
-            run["marker"] = marker
-            run["stdout"] = marker + "\n"
-            write_results(capture_dir, minimal)
-
-            with self.assertRaisesRegex(
-                evidence.ResultsValidationError, "marker fields mismatch"
-            ):
-                evidence.validate_results_receipt(capture_dir / evidence.RESULTS_NAME)
-
-            for key, value, message in (
-                (
-                    "paint_non_background_pixels",
-                    "0",
-                    "paint_non_background_pixels is 0",
-                ),
-                ("input_node_dragged", "false", "input_node_dragged is 'false'"),
-            ):
-                with self.subTest(key=key):
-                    document = valid_results_document()
-                    replace_run_marker_field(document["runs"][0], key, value)
-                    write_results(capture_dir, document)
-                    with self.assertRaisesRegex(
-                        evidence.ResultsValidationError, message
-                    ):
-                        evidence.validate_results_receipt(
-                            capture_dir / evidence.RESULTS_NAME
-                        )
 
     def test_matrix_rejects_identical_preview_and_committed_pixels(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -960,26 +898,23 @@ class RealWindowSmokeEvidenceTests(unittest.TestCase):
                 RuntimeError,
                 "connection-preview and connection-committed decode to identical pixels",
             ):
-                evidence.write_evidence_manifest(capture_dir)
+                write_evidence_manifest(capture_dir)
 
-    def test_final_png_counts_are_bound_to_the_strict_marker(self) -> None:
+    def test_final_png_counts_are_bound_to_canonical_receipt_paint(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             capture_dir = Path(directory)
             write_pngs(capture_dir, known_expected_names())
             document = valid_results_document(capture_dir)
             run = document["runs"][0]
-            fields = matrix.parse_marker_line(str(run["marker"]))
-            replace_run_marker_field(
-                run,
-                "paint_non_background_pixels",
-                str(int(fields["paint_non_background_pixels"]) + 1),
-            )
+            paint = run["receipt"]["evidence"]["paint"]
+            paint["non_background_pixels"] += 1
+            refresh_run_output(run)
             write_results(capture_dir, document)
 
             with self.assertRaisesRegex(
                 RuntimeError, "final PNG proves"
             ):
-                evidence.write_evidence_manifest(capture_dir)
+                write_evidence_manifest(capture_dir)
 
     def test_capture_dir_output_uses_the_last_complete_matrix_run(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

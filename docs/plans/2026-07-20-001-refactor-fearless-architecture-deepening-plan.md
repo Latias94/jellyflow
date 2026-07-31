@@ -1820,9 +1820,9 @@ cargo test --manifest-path examples/canvas-jellyflow/Cargo.toml --workspace --do
 cargo clippy --manifest-path examples/canvas-jellyflow/Cargo.toml --workspace --all-targets --locked -- -D warnings
 cargo build --manifest-path examples/canvas-jellyflow/Cargo.toml -p open-gpui-canvas-jellyflow --locked --no-default-features --bin open-gpui-native-frame-clock-witness
 python3 tools/check_open_gpui_native_frame_clock.py --require-native
-cargo build --manifest-path examples/canvas-jellyflow/Cargo.toml -p open-gpui-canvas-jellyflow --locked --features real-window-smoke
-python3 tools/run_real_window_smoke_matrix.py --binary examples/canvas-jellyflow/target/debug/open-gpui-canvas-jellyflow --capture-root target/real-window-smoke-final --timeout-seconds 60 --capture-dir-output target/real-window-smoke-final.output
-python3 tools/check_real_window_smoke_evidence.py --capture-dir-from-output target/real-window-smoke-final.output
+cargo build --manifest-path examples/canvas-jellyflow/Cargo.toml -p open-gpui-canvas-jellyflow --bins --locked --features real-window-smoke
+python3 tools/run_real_window_smoke_matrix.py --binary examples/canvas-jellyflow/target/debug/open-gpui-canvas-jellyflow --receipt-validator examples/canvas-jellyflow/target/debug/smoke_receipt_contract --capture-root target/real-window-smoke-final --timeout-seconds 60 --capture-dir-output target/real-window-smoke-final.output
+python3 tools/check_real_window_smoke_evidence.py --capture-dir-from-output target/real-window-smoke-final.output --receipt-validator examples/canvas-jellyflow/target/debug/smoke_receipt_contract
 ```
 
 The matrix command runs eight shader/workflow interaction witnesses across compact/normal bounds and

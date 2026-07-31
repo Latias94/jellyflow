@@ -11,7 +11,7 @@ import signal
 import subprocess
 import sys
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from os import PathLike
 
 
@@ -142,6 +142,8 @@ def run_process(
     timeout_seconds: float,
     kill_grace_seconds: float = DEFAULT_KILL_GRACE_SECONDS,
     cwd: str | PathLike[str] | None = None,
+    env: Mapping[str, str] | None = None,
+    input: str | bytes | None = None,
     check: bool = False,
     capture_output: bool = False,
     text: bool = False,
@@ -156,14 +158,22 @@ def run_process(
     process = subprocess.Popen(
         list(command),
         cwd=cwd,
+        env=env,
+        stdin=subprocess.PIPE if input is not None else None,
         stdout=subprocess.PIPE if capture_output else None,
         stderr=subprocess.PIPE if capture_output else None,
         text=text,
         start_new_session=os.name == "posix",
     )
     try:
-        if capture_output:
-            stdout, stderr = process.communicate(timeout=timeout_seconds)
+        if capture_output or input is not None:
+            if input is None:
+                stdout, stderr = process.communicate(timeout=timeout_seconds)
+            else:
+                stdout, stderr = process.communicate(
+                    input=input,
+                    timeout=timeout_seconds,
+                )
         else:
             process.wait(timeout=timeout_seconds)
             stdout = None

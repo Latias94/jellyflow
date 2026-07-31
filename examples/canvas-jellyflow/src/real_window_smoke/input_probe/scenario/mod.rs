@@ -30,7 +30,9 @@ pub(super) fn advance(
         | ProbePhase::NodeWaitActive
         | ProbePhase::NodeAutoPanMove
         | ProbePhase::NodeAutoPanWait
+        | ProbePhase::NodeReleaseFrameWait
         | ProbePhase::NodeRelease
+        | ProbePhase::NodeAuthoritativeFrameWait
         | ProbePhase::NodeWaitSettled
         | ProbePhase::TabForward
         | ProbePhase::TabForwardWait
@@ -89,9 +91,8 @@ pub(super) fn advance(
         | ProbePhase::SearchRelease
         | ProbePhase::SearchWaitOpen
         | ProbePhase::SearchEscape
-        | ProbePhase::SearchWaitClosed => {
-            probe.advance_search(window, cx, surface, view, surface_size)
-        }
+        | ProbePhase::SearchWaitClosed
+        | ProbePhase::FinalWait => probe.advance_search(window, cx, surface, view, surface_size),
         ProbePhase::LodSet | ProbePhase::LodWait | ProbePhase::LodCapture => {
             probe.advance_lod(window, cx, surface, view, expectations, surface_size)
         }

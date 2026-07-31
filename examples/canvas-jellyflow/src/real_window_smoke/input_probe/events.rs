@@ -34,7 +34,9 @@ pub(super) fn mouse_up(button: MouseButton, position: ViewPoint) -> PlatformInpu
 
 pub(super) fn key_down(key: &str) -> Result<PlatformInput, &'static str> {
     Ok(PlatformInput::KeyDown(KeyDownEvent {
-        keystroke: Keystroke::parse(key).map_err(|_| "input_keystroke_invalid")?,
+        keystroke: Keystroke::parse(key)
+            .map_err(|_| "input_keystroke_invalid")?
+            .with_simulated_ime(),
         is_held: false,
         prefer_character_input: false,
     }))
@@ -42,6 +44,8 @@ pub(super) fn key_down(key: &str) -> Result<PlatformInput, &'static str> {
 
 pub(super) fn key_up(key: &str) -> Result<PlatformInput, &'static str> {
     Ok(PlatformInput::KeyUp(KeyUpEvent {
-        keystroke: Keystroke::parse(key).map_err(|_| "input_keystroke_invalid")?,
+        keystroke: Keystroke::parse(key)
+            .map_err(|_| "input_keystroke_invalid")?
+            .with_simulated_ime(),
     }))
 }

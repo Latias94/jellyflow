@@ -13,7 +13,8 @@ use jellyflow_runtime::graph::EdgeEndpoint;
 use jellyflow_runtime::interaction::CanvasInteractionPresentation;
 use jellyflow_runtime::view::{GeometrySnapshot, WeakViewSession};
 use jellyflow_runtime::viewport::ViewportTransform;
-use open_gpui::{App, Task, Window};
+use open_gpui::{App, Entity, Task, Window};
+use open_gpui_canvas_jellyflow::connection_search::NativeGraphSurface;
 
 use super::super::{
     MIN_CANVAS_DISTINCT_COLORS, MIN_CANVAS_NON_BACKGROUND_PIXELS, MIN_WIRE_VISIBLE_SAMPLES,
@@ -141,6 +142,8 @@ pub(super) fn capture_visual_frame(
 
 pub(super) fn inspect_current_frame(
     window: &mut Window,
+    surface: &Entity<NativeGraphSurface>,
+    cx: &App,
     view: &WeakViewSession,
     expectations: &SmokeExpectations,
     surface_size: ViewSize,
@@ -157,22 +160,34 @@ pub(super) fn inspect_current_frame(
     ),
     &'static str,
 > {
+    let image = window
+        .render_to_image()
+        .map_err(|_| "paint_capture_failed")?;
+    // Frame feedback publishes geometry while the native frame is rendered.
+    // Read it after capture so pixel and semantic evidence describe that frame.
     let snapshot = view
         .geometry_snapshot()
         .map_err(|_| "geometry_snapshot_read_failed")?;
     let transform = view
         .viewport_transform()
         .map_err(|_| "input_viewport_read_failed")?;
-    let image = window
-        .render_to_image()
-        .map_err(|_| "paint_capture_failed")?;
+    let graph = view
+        .graph_snapshot()
+        .map_err(|_| "input_graph_snapshot_failed")?;
     if let Some(path) = screenshot_path {
         image
             .save(path)
             .map_err(|_| "paint_screenshot_write_failed")?;
     }
     let canvas_width = canvas_pixel_width(image.width(), surface_size)?;
-    let geometry_input = SmokeGeometryInput::from_snapshot(expectations, &snapshot);
+    let footprints = surface.read(cx).host().read(cx).smoke_node_footprints();
+    let geometry_input = SmokeGeometryInput::from_snapshot(
+        expectations,
+        &snapshot,
+        graph.graph(),
+        transform,
+        &footprints,
+    );
     let geometry = inspect_visible_geometry(
         expectations,
         &geometry_input,

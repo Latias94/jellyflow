@@ -1001,7 +1001,7 @@ The sole formal matrix entry is:
 ```text
 cargo build --manifest-path examples/canvas-jellyflow/Cargo.toml -p open-gpui-canvas-jellyflow --bins --locked --features real-window-smoke
 python3 tools/run_real_window_smoke_matrix.py --binary examples/canvas-jellyflow/target/debug/open-gpui-canvas-jellyflow --receipt-validator examples/canvas-jellyflow/target/debug/smoke_receipt_contract --capture-root target/real-window-smoke-final --timeout-seconds 60 --capture-dir-output target/real-window-smoke-final.output
-python3 tools/check_real_window_smoke_evidence.py --capture-dir-from-output target/real-window-smoke-final.output
+python3 tools/check_real_window_smoke_evidence.py --capture-dir-from-output target/real-window-smoke-final.output --receipt-validator examples/canvas-jellyflow/target/debug/smoke_receipt_contract
 ```
 
 The gate fails on any nonzero command, any missing/duplicate/malformed/contract-invalid or exit-status-contradictory run receipt, any run set other than the exact nine-run matrix, or any PNG, pixel, hash, manifest, capture-name, cross-frame geometry, or semantic mismatch. All artifacts remain under `target/real-window-smoke-final`; the output pointer is `target/real-window-smoke-final.output`.

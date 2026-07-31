@@ -141,8 +141,8 @@ jobs:
       - name: Clippy
         run: cargo clippy --manifest-path examples/canvas-jellyflow/Cargo.toml --workspace --all-targets --locked -- -D warnings
 
-      - name: Build real-window smoke binary
-        run: cargo build --manifest-path examples/canvas-jellyflow/Cargo.toml -p open-gpui-canvas-jellyflow --locked --features real-window-smoke
+      - name: Build real-window smoke binaries
+        run: cargo build --manifest-path examples/canvas-jellyflow/Cargo.toml -p open-gpui-canvas-jellyflow --bins --locked --features real-window-smoke
 
       - name: Open GPUI real-window smoke matrix
         id: real_window_smoke_matrix
@@ -151,6 +151,7 @@ jobs:
         run: |
           python3 tools/run_real_window_smoke_matrix.py \
             --binary examples/canvas-jellyflow/target/debug/open-gpui-canvas-jellyflow \
+            --receipt-validator examples/canvas-jellyflow/target/debug/smoke_receipt_contract \
             --capture-root target/real-window-smoke \
             --timeout-seconds 60 \
             --capture-dir-output "$GITHUB_OUTPUT"
@@ -161,7 +162,8 @@ jobs:
           JELLYFLOW_SMOKE_CAPTURE_DIR: ${{ steps.real_window_smoke_matrix.outputs.capture_dir }}
         run: |
           python3 tools/check_real_window_smoke_evidence.py \
-            --capture-dir "$JELLYFLOW_SMOKE_CAPTURE_DIR"
+            --capture-dir "$JELLYFLOW_SMOKE_CAPTURE_DIR" \
+            --receipt-validator examples/canvas-jellyflow/target/debug/smoke_receipt_contract
 
       - name: Upload Open GPUI real-window evidence
         if: always()

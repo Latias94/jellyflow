@@ -64,19 +64,6 @@ pub(super) struct ReconnectPlan {
     pub(super) target_anchor: CanvasPoint,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct AutoPanPointerStrategy {
-    x: AutoPanAxisStrategy,
-    y: AutoPanAxisStrategy,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum AutoPanAxisStrategy {
-    LeadingEdge,
-    Neutral,
-    TrailingEdge,
-}
-
 pub(super) fn refresh_edge_plan(
     view: &WeakViewSession,
     plan: EdgePlan,
@@ -414,7 +401,7 @@ fn edge_owner_canvas_centers(
     ])
 }
 
-fn edge_owner_reveal_anchor(
+pub(super) fn edge_owner_reveal_anchor(
     view: &WeakViewSession,
     edge: EdgeId,
     surface_size: ViewSize,
@@ -818,56 +805,6 @@ pub(super) fn auto_pan_pointer_toward(
             target.x,
             auto_pan_edge_for_direction(target.y, surface_size.height),
         ))
-    }
-}
-
-/// Steers an active synthetic drag one axis at a time as its target enters the
-/// settled area. Keeping an already-settled axis at the target coordinate prevents
-/// a diagonal drag with unequal axis distances from overshooting that axis while
-/// the other axis continues to auto-pan.
-pub(super) fn steer_auto_pan_pointer_toward(
-    target: ViewPoint,
-    surface_size: ViewSize,
-) -> Option<ViewPoint> {
-    if !surface_size.is_positive_finite() || !target.x.is_finite() || !target.y.is_finite() {
-        return None;
-    }
-    Some(ViewPoint::new(
-        steer_auto_pan_axis(target.x, surface_size.width),
-        steer_auto_pan_axis(target.y, surface_size.height),
-    ))
-}
-
-pub(super) fn auto_pan_pointer_strategy(
-    pointer: ViewPoint,
-    surface_size: ViewSize,
-) -> Option<AutoPanPointerStrategy> {
-    if !surface_size.is_positive_finite() || !pointer.x.is_finite() || !pointer.y.is_finite() {
-        return None;
-    }
-    Some(AutoPanPointerStrategy {
-        x: auto_pan_axis_strategy(pointer.x, surface_size.width),
-        y: auto_pan_axis_strategy(pointer.y, surface_size.height),
-    })
-}
-
-fn auto_pan_axis_strategy(pointer: f32, extent: f32) -> AutoPanAxisStrategy {
-    if pointer < CONNECTION_AUTOPAN_SETTLE_MARGIN_IN_VIEW {
-        AutoPanAxisStrategy::LeadingEdge
-    } else if pointer > extent - CONNECTION_AUTOPAN_SETTLE_MARGIN_IN_VIEW {
-        AutoPanAxisStrategy::TrailingEdge
-    } else {
-        AutoPanAxisStrategy::Neutral
-    }
-}
-
-fn steer_auto_pan_axis(target: f32, extent: f32) -> f32 {
-    if target < CONNECTION_AUTOPAN_SETTLE_MARGIN_IN_VIEW {
-        AUTOPAN_EDGE_INSET_IN_VIEW
-    } else if target > extent - CONNECTION_AUTOPAN_SETTLE_MARGIN_IN_VIEW {
-        extent - AUTOPAN_EDGE_INSET_IN_VIEW
-    } else {
-        target
     }
 }
 

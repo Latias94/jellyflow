@@ -80,11 +80,13 @@ impl RealWindowSmokeProbe {
             }
             ProbePhase::PlanInput => {
                 self.verify_target_zoom(view)?;
-                self.plan_input(window, view, expectations, surface_size)?;
+                self.plan_input(window, surface, cx, view, expectations, surface_size)?;
                 self.transition(ProbePhase::NodePress);
                 Ok(None)
             }
             ProbePhase::NodePress => {
+                let host = surface.read(cx).host().clone();
+                self.presented_frames.start(window, host)?;
                 let point = self
                     .interaction()?
                     .node
@@ -158,15 +160,18 @@ impl RealWindowSmokeProbe {
                 let current = view
                     .viewport_transform()
                     .map_err(|_| "input_viewport_read_failed")?;
-                let interaction = self.interaction_mut()?;
-                if interaction
+                let frame_advanced = self
+                    .interaction()?
                     .auto_pan_last
-                    .is_some_and(|previous| previous.pan != current.pan)
-                {
-                    interaction.auto_pan_frames = interaction.auto_pan_frames.saturating_add(1);
-                    interaction.auto_pan_last = Some(current);
-                }
-                let auto_pan_frames = interaction.auto_pan_frames;
+                    .is_some_and(|previous| previous.pan != current.pan);
+                let auto_pan_frames = {
+                    let interaction = self.interaction_mut()?;
+                    if frame_advanced {
+                        interaction.auto_pan_frames = interaction.auto_pan_frames.saturating_add(1);
+                        interaction.auto_pan_last = Some(current);
+                    }
+                    interaction.auto_pan_frames
+                };
                 if auto_pan_frames >= SMOKE_AUTOPAN_MIN_FRAMES {
                     self.transition(ProbePhase::NodeRelease);
                     Ok(None)
@@ -219,7 +224,39 @@ impl RealWindowSmokeProbe {
                     .node
                     .ok_or("input_node_plan_missing")?
                     .release;
-                self.dispatch_at_target_zoom(window, cx, view, mouse_up(MouseButton::Left, point))?;
+                self.verify_target_zoom(view)?;
+                let event = mouse_up(MouseButton::Left, point);
+                self.presented_frames.after_next_stage(
+                    SmokeFrameStageV1::NodeDragPending,
+                    move |window, cx| {
+                        window.dispatch_event(event, cx);
+                        window.refresh();
+                    },
+                )?;
+                jellyflow_open_gpui::host::request_native_test_frame(window);
+                self.transition(ProbePhase::NodeReleaseFrameWait);
+                Ok(None)
+            }
+            ProbePhase::NodeReleaseFrameWait => {
+                if !self.presented_frames.action_completed() {
+                    jellyflow_open_gpui::host::request_native_test_frame(window);
+                    return self.wait_or_timeout();
+                }
+                let dispatched_events = self.interaction()?.dispatched_events.saturating_add(1);
+                self.interaction_mut()?.dispatched_events = dispatched_events;
+                self.transition(ProbePhase::NodeAuthoritativeFrameWait);
+                Ok(None)
+            }
+            ProbePhase::NodeAuthoritativeFrameWait => {
+                if !self.wait_for_rendered_interaction_frame(window, cx, surface)? {
+                    return self.wait_or_timeout();
+                }
+                if !self
+                    .presented_frames
+                    .observed_stage(SmokeFrameStageV1::NodeDragAuthoritative)
+                {
+                    return self.wait_with_reason("input_node_authoritative_frame_not_presented");
+                }
                 self.transition(ProbePhase::NodeWaitSettled);
                 Ok(None)
             }
@@ -248,8 +285,13 @@ impl RealWindowSmokeProbe {
                         window.refresh();
                         return Ok(None);
                     }
+                    if !self.wait_for_rendered_interaction_frame(window, cx, surface)? {
+                        return self.wait_or_timeout();
+                    }
                     self.capture_checkpoint(
                         window,
+                        surface,
+                        cx,
                         view,
                         surface_size,
                         SmokeCaptureState::Selected,
@@ -347,7 +389,12 @@ impl RealWindowSmokeProbe {
                 Ok(None)
             }
             ProbePhase::TabBackwardWait => {
-                if window.focused(cx) == self.interaction()?.tab_focus_origin {
+                let current = window.focused(cx);
+                let forward = self.interaction()?.tab_focus_forward.clone();
+                if current.is_some()
+                    && current != forward
+                    && surface.read(cx).graph_has_focus(window, cx)
+                {
                     self.interaction_mut()?.tab_focus_restored = true;
                     self.transition(ProbePhase::PanPress);
                     Ok(None)

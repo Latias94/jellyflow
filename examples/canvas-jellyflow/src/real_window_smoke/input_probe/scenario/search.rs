@@ -91,8 +91,17 @@ impl RealWindowSmokeProbe {
                 }
                 let search_has_focus = surface.read(cx).connection_search_has_focus(window, cx);
                 if search_active && request_present && search_has_focus {
+                    if !self
+                        .presented_frames
+                        .observed_stage(SmokeFrameStageV1::Search)
+                    {
+                        jellyflow_open_gpui::host::request_native_test_frame(window);
+                        return self.wait_or_timeout();
+                    }
                     self.capture_checkpoint(
                         window,
+                        surface,
+                        cx,
                         view,
                         surface_size,
                         SmokeCaptureState::SearchOpen,
@@ -132,9 +141,10 @@ impl RealWindowSmokeProbe {
                     let interaction = self.interaction_mut()?;
                     interaction.search_cancelled = true;
                     interaction.search_focus_restored = true;
-                    self.capture_checkpoint(window, view, surface_size, SmokeCaptureState::Final)?;
-                    self.transition(ProbePhase::Complete);
-                    self.complete()
+                    self.presented_frames.request_final()?;
+                    window.refresh();
+                    self.transition(ProbePhase::FinalWait);
+                    Ok(None)
                 } else {
                     let reason = if !request_closed {
                         "input_search_request_not_closed"
@@ -145,6 +155,25 @@ impl RealWindowSmokeProbe {
                     };
                     self.wait_with_reason(reason)
                 }
+            }
+            ProbePhase::FinalWait => {
+                if let Some(reason) = self.presented_frames.failure() {
+                    return Err(reason);
+                }
+                if !self.presented_frames.final_presented() {
+                    jellyflow_open_gpui::host::request_native_test_frame(window);
+                    return self.wait_or_timeout();
+                }
+                self.capture_checkpoint(
+                    window,
+                    surface,
+                    cx,
+                    view,
+                    surface_size,
+                    SmokeCaptureState::Final,
+                )?;
+                self.transition(ProbePhase::Complete);
+                self.complete()
             }
             _ => unreachable!("search scenario received an unrelated phase"),
         }

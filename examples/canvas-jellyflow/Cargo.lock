@@ -3543,8 +3543,11 @@ dependencies = [
  "open-gpui",
  "open-gpui-platform",
  "open-gpui-ui-components",
+ "schemars",
+ "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "uuid",
 ]
 
 [[package]]

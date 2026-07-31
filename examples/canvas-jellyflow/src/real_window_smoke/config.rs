@@ -34,6 +34,7 @@ impl SmokeBounds {
         }
     }
 
+    #[cfg(any(test, feature = "real-window-smoke"))]
     pub(super) const fn label(self) -> &'static str {
         match self {
             Self::Compact => "compact",
@@ -58,6 +59,7 @@ pub(super) enum SmokeScenario {
 }
 
 impl SmokeScenario {
+    #[cfg(any(test, feature = "real-window-smoke"))]
     pub(super) const fn label(self) -> &'static str {
         match self {
             Self::Interaction => "interaction",
@@ -92,6 +94,7 @@ impl SmokeZoom {
         }
     }
 
+    #[cfg(any(test, feature = "real-window-smoke"))]
     pub(super) const fn file_label(self) -> &'static str {
         match self {
             Self::Half => "0.5",
@@ -126,9 +129,8 @@ pub(crate) enum SmokeCaptureState {
     Lod084,
 }
 
-#[cfg(any(test, feature = "real-window-smoke"))]
 impl SmokeCaptureState {
-    const fn file_label(self) -> &'static str {
+    pub(super) const fn file_label(self) -> &'static str {
         match self {
             Self::Initial => "initial",
             Self::Selected => "selected",

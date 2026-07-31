@@ -34,8 +34,8 @@ impl RealWindowSmokeProbe {
     pub(super) fn advance_lod(
         &mut self,
         window: &mut Window,
-        _cx: &mut App,
-        _surface: &Entity<NativeGraphSurface>,
+        cx: &mut App,
+        surface: &Entity<NativeGraphSurface>,
         view: &WeakViewSession,
         expectations: &SmokeExpectations,
         surface_size: ViewSize,
@@ -84,6 +84,8 @@ impl RealWindowSmokeProbe {
                 let screenshot_path = self.config.capture_path(self.demo, capture_state);
                 let (snapshot, transform, geometry, paint, _) = inspect_current_frame(
                     window,
+                    surface,
+                    cx,
                     view,
                     expectations,
                     surface_size,
@@ -122,6 +124,7 @@ impl RealWindowSmokeProbe {
                 lod.record_capture(capture_state)?;
                 self.geometry = Some(geometry);
                 self.paint = Some(paint);
+                self.record_lod_presented_frame(surface, cx)?;
 
                 match sample.next() {
                     Some(next) => {

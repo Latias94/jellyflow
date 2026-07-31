@@ -14,6 +14,7 @@ import sys
 import tempfile
 import zlib
 from collections import Counter
+from collections.abc import Mapping
 from pathlib import Path
 from typing import NamedTuple
 
@@ -22,18 +23,20 @@ try:
         RESULTS_NAME,
         RESULTS_SCHEMA_VERSION,
         RUN_SPECS,
-        extract_final_marker_lines,
-        marker_contract_errors,
-        parse_marker_line,
+        ReceiptTransportError,
+        extract_receipt_payloads,
+        reject_duplicate_json_object_keys,
+        validate_receipt,
     )
 except ModuleNotFoundError:
     from tools.run_real_window_smoke_matrix import (
         RESULTS_NAME,
         RESULTS_SCHEMA_VERSION,
         RUN_SPECS,
-        extract_final_marker_lines,
-        marker_contract_errors,
-        parse_marker_line,
+        ReceiptTransportError,
+        extract_receipt_payloads,
+        reject_duplicate_json_object_keys,
+        validate_receipt,
     )
 
 
@@ -43,8 +46,8 @@ RESULTS_RECEIPT_KEYS = {
     "config",
     "exit_code",
     "timed_out",
-    "marker_count",
-    "marker",
+    "receipt_count",
+    "receipt",
     "stdout",
     "stderr",
     "status",
@@ -132,7 +135,7 @@ class CaptureEvidence(NamedTuple):
 class ResultsEvidence(NamedTuple):
     name: str
     sha256: str
-    marker_fields: dict[str, dict[str, str]]
+    receipts: dict[str, dict[str, object]]
 
     def manifest_line(self) -> str:
         return f"{self.name}\tsha256={self.sha256}"
@@ -546,27 +549,21 @@ def validate_capture(path: Path) -> CaptureEvidence:
     )
 
 
-def _json_object_without_duplicate_keys(
-    pairs: list[tuple[str, object]],
-) -> dict[str, object]:
-    result: dict[str, object] = {}
-    for key, value in pairs:
-        if key in result:
-            raise ResultsValidationError(f"JSON object contains duplicate key {key!r}")
-        result[key] = value
-    return result
-
-
-def validate_results_receipt(path: Path) -> ResultsEvidence:
+def validate_results_receipt(
+    path: Path,
+    *,
+    receipt_validator: Path,
+    environment: Mapping[str, str],
+) -> ResultsEvidence:
     contents = path.read_bytes()
     try:
         document = json.loads(
             contents.decode("utf-8"),
-            object_pairs_hook=_json_object_without_duplicate_keys,
+            object_pairs_hook=reject_duplicate_json_object_keys,
         )
     except UnicodeDecodeError as error:
         raise ResultsValidationError(f"results are not UTF-8: {error}") from error
-    except json.JSONDecodeError as error:
+    except (json.JSONDecodeError, ValueError) as error:
         raise ResultsValidationError(f"results are not valid JSON: {error}") from error
 
     if not isinstance(document, dict):
@@ -619,7 +616,7 @@ def validate_results_receipt(path: Path) -> ResultsEvidence:
             f"run id mismatch; missing={missing_ids}; unexpected={unexpected_ids}"
         )
 
-    marker_fields_by_run_id: dict[str, dict[str, str]] = {}
+    receipts_by_run_id: dict[str, dict[str, object]] = {}
     for spec in RUN_SPECS:
         entries = entries_by_id.get(spec.run_id, [])
         if len(entries) != 1:
@@ -640,13 +637,11 @@ def validate_results_receipt(path: Path) -> ResultsEvidence:
             )
 
         exit_code_value = entry.get("exit_code")
-        exit_code = exit_code_value if type(exit_code_value) is int else None
         if exit_code_value != 0 or type(exit_code_value) is not int:
             problems.append(
                 f"{spec.run_id}: exit_code is {exit_code_value!r}, expected 0"
             )
         timed_out_value = entry.get("timed_out")
-        timed_out = timed_out_value if isinstance(timed_out_value, bool) else False
         if timed_out_value is not False:
             problems.append(
                 f"{spec.run_id}: timed_out is {timed_out_value!r}, expected false"
@@ -664,28 +659,48 @@ def validate_results_receipt(path: Path) -> ResultsEvidence:
         else:
             stderr = stderr_value
 
-        marker_lines = extract_final_marker_lines(stdout, stderr)
-        marker_count = entry.get("marker_count")
-        if type(marker_count) is not int or marker_count != len(marker_lines):
+        receipt_payloads = extract_receipt_payloads(stdout, stderr)
+        if len(receipt_payloads) != 1:
             problems.append(
-                f"{spec.run_id}: marker_count is {marker_count!r}, "
-                f"captured output proves {len(marker_lines)}"
+                f"{spec.run_id}: captured output contains {len(receipt_payloads)} receipts, "
+                "expected exactly 1"
             )
-        expected_marker = marker_lines[0] if len(marker_lines) == 1 else None
-        if entry.get("marker") != expected_marker:
+        receipt_count = entry.get("receipt_count")
+        if type(receipt_count) is not int or receipt_count != len(receipt_payloads):
             problems.append(
-                f"{spec.run_id}: stored marker does not match captured output"
+                f"{spec.run_id}: receipt_count is {receipt_count!r}, "
+                f"captured output proves {len(receipt_payloads)}"
             )
-        marker_errors = marker_contract_errors(
-            spec,
-            exit_code=exit_code,
-            timed_out=timed_out,
-            marker_lines=marker_lines,
-        )
-        for error in marker_errors:
-            problems.append(f"{spec.run_id}: {error}")
-        if not marker_errors and len(marker_lines) == 1:
-            marker_fields_by_run_id[spec.run_id] = parse_marker_line(marker_lines[0])
+        receipt = entry.get("receipt")
+        if not isinstance(receipt, dict):
+            problems.append(f"{spec.run_id}: receipt is not a canonical JSON object")
+        elif len(receipt_payloads) == 1:
+            try:
+                canonical = validate_receipt(
+                    receipt_payloads[0],
+                    receipt_validator=receipt_validator,
+                    environment=environment,
+                )
+            except ReceiptTransportError as error:
+                problems.append(
+                    f"{spec.run_id}: Rust receipt validation failed: {error}"
+                )
+            else:
+                if canonical != receipt:
+                    problems.append(
+                        f"{spec.run_id}: stored receipt does not match Rust-canonical output"
+                    )
+                if canonical.get("run") != spec.receipt_run():
+                    problems.append(
+                        f"{spec.run_id}: canonical receipt run is {canonical.get('run')!r}, "
+                        f"expected {spec.receipt_run()!r}"
+                    )
+                if canonical.get("status") != "pass":
+                    problems.append(
+                        f"{spec.run_id}: canonical receipt status is "
+                        f"{canonical.get('status')!r}, expected 'pass'"
+                    )
+                receipts_by_run_id[spec.run_id] = canonical
         if entry.get("status") != "pass":
             problems.append(
                 f"{spec.run_id}: receipt status is {entry.get('status')!r}, expected 'pass'"
@@ -700,7 +715,7 @@ def validate_results_receipt(path: Path) -> ResultsEvidence:
     return ResultsEvidence(
         path.name,
         hashlib.sha256(contents).hexdigest(),
-        marker_fields_by_run_id,
+        receipts_by_run_id,
     )
 
 
@@ -742,19 +757,30 @@ def _capture_semantic_errors(
                 )
 
         final_capture = by_name[_capture_name(spec, final_state)]
-        marker = results.marker_fields[spec.run_id]
+        receipt = results.receipts[spec.run_id]
+        evidence = receipt.get("evidence")
+        paint = evidence.get("paint") if isinstance(evidence, dict) else None
+        if not isinstance(paint, dict):
+            errors.append(
+                f"{spec.run_id}: canonical receipt omits evidence.paint"
+            )
+            continue
         comparisons = {
-            "paint_image_width": final_capture.width,
-            "paint_image_height": final_capture.height,
-            "paint_canvas_width": final_capture.canvas_width,
-            "paint_non_background_pixels": final_capture.non_background_pixels,
-            "paint_distinct_colors": final_capture.distinct_colors,
+            "image_width": final_capture.width,
+            "image_height": final_capture.height,
+            "canvas_width": final_capture.canvas_width,
+            "non_background_pixels": final_capture.non_background_pixels,
+            "distinct_colors": final_capture.distinct_colors,
         }
         for field, independently_observed in comparisons.items():
-            marker_value = int(marker[field])
-            if marker_value != independently_observed:
+            receipt_value = paint.get(field)
+            if (
+                type(receipt_value) is not int
+                or receipt_value != independently_observed
+            ):
                 errors.append(
-                    f"{spec.run_id}: marker {field}={marker_value} but final PNG proves "
+                    f"{spec.run_id}: receipt evidence.paint.{field}={receipt_value!r} "
+                    "but final PNG proves "
                     f"{independently_observed}"
                 )
     return errors
@@ -776,7 +802,12 @@ def _atomic_write_text(path: Path, contents: str) -> None:
         raise
 
 
-def write_evidence_manifest(capture_dir: Path) -> Path:
+def write_evidence_manifest(
+    capture_dir: Path,
+    *,
+    receipt_validator: Path,
+    environment: Mapping[str, str] | None = None,
+) -> Path:
     if not capture_dir.is_dir():
         raise RuntimeError(f"real-window smoke capture directory is missing: {capture_dir}")
 
@@ -800,7 +831,11 @@ def write_evidence_manifest(capture_dir: Path) -> Path:
     results_problem: str | None = None
     results_path = capture_dir / RESULTS_NAME
     try:
-        results_evidence = validate_results_receipt(results_path)
+        results_evidence = validate_results_receipt(
+            results_path,
+            receipt_validator=receipt_validator,
+            environment=dict(os.environ) if environment is None else environment,
+        )
     except (OSError, ResultsValidationError) as error:
         results_problem = f"{RESULTS_NAME}: {error}"
 
@@ -871,6 +906,7 @@ def main() -> int:
         type=Path,
         help="Read the last capture_dir entry written by the matrix orchestrator.",
     )
+    parser.add_argument("--receipt-validator", type=Path, required=True)
     args = parser.parse_args()
 
     try:
@@ -879,7 +915,11 @@ def main() -> int:
             if args.capture_dir is not None
             else capture_dir_from_output(args.capture_dir_from_output)
         )
-        manifest = write_evidence_manifest(capture_dir)
+        manifest = write_evidence_manifest(
+            capture_dir,
+            receipt_validator=args.receipt_validator,
+            environment=dict(os.environ),
+        )
     except (OSError, RuntimeError) as error:
         print(f"real-window smoke evidence validation failed: {error}", file=sys.stderr)
         return 1
