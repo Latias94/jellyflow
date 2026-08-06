@@ -317,16 +317,15 @@ fn declare_operation_impact(
     traversal: &mut ImpactTraversal<'_>,
 ) {
     match operation {
-        GraphOp::SetNodeSize { id, .. } => {
+        GraphOp::SetNodeSize { id, .. }
             if !seed
                 .session
                 .complete_layout_retention_disqualifications
-                .contains(id)
-            {
-                seed.session
-                    .complete_layout_retention_candidates
-                    .insert(*id);
-            }
+                .contains(id) =>
+        {
+            seed.session
+                .complete_layout_retention_candidates
+                .insert(*id);
         }
         GraphOp::AddNode { id, .. }
         | GraphOp::RemoveNode { id, .. }

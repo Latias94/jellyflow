@@ -100,7 +100,7 @@ malformed, mismatched, or exit-status-inconsistent receipts and verifies listed 
 does not reinterpret UI semantics or launch a second validator process.
 CI keeps five representative processes instead of a product × bounds × zoom Cartesian product:
 Workflow at compact `960x640` bounds and zoom `1`; Shader at compact bounds and zooms `0.5` and `2`;
-Shader at normal `1440x900` bounds and zoom `1`; plus the directed Shader LOD-threshold probe.
+Shader at normal `1360x800` bounds and zoom `1`; plus the directed Shader LOD-threshold probe.
 Release preflight trusts the exact successful CI source SHA and does not run a second matrix. The
 configured zoom remains active for every dispatched interaction and all nine interaction
 checkpoints; the

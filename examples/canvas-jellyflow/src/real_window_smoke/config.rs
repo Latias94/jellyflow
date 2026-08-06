@@ -11,8 +11,8 @@ use open_gpui_canvas_jellyflow::blackboard::NATIVE_BLACKBOARD_WIDTH;
 
 const COMPACT_WINDOW_WIDTH: u32 = 960;
 const COMPACT_WINDOW_HEIGHT: u32 = 640;
-const NORMAL_WINDOW_WIDTH: u32 = 1440;
-const NORMAL_WINDOW_HEIGHT: u32 = 900;
+const NORMAL_WINDOW_WIDTH: u32 = 1360;
+const NORMAL_WINDOW_HEIGHT: u32 = 800;
 #[cfg(any(test, feature = "real-window-smoke"))]
 const SURFACE_SIZE_TOLERANCE: f32 = 2.0;
 
@@ -332,7 +332,7 @@ mod tests {
         ])
         .expect("custom config");
 
-        assert_eq!(parsed.window_size(), (1440.0, 900.0));
+        assert_eq!(parsed.window_size(), (1360.0, 800.0));
         assert_eq!(parsed.bounds(), SmokeBounds::Normal);
         assert_eq!(parsed.scenario(), SmokeScenario::LodThreshold);
         assert_eq!(parsed.zoom(), SmokeZoom::Half);
@@ -340,7 +340,7 @@ mod tests {
             parsed.capture_dir(),
             Some(Path::new("target/smoke captures"))
         );
-        assert!(parsed.surface_matches(ViewSize::new(1160.0, 900.0)));
+        assert!(parsed.surface_matches(ViewSize::new(1080.0, 800.0)));
 
         assert!(matches!(
             config(&[(BOUNDS_ENV, "wide")]),

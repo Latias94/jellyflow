@@ -3535,9 +3535,9 @@ impl CanvasInteractionSession {
         }
 
         let mut update = CanvasInteractionUpdate::default();
-        if !self
+        if self
             .pending_edge_pick
-            .is_some_and(|pending| pending.id == id)
+            .is_none_or(|pending| pending.id != id)
         {
             return Ok(self.finalize_update(update));
         }
