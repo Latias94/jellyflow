@@ -31,6 +31,9 @@ pub enum GraphValidationError {
     #[error("node origin must be finite: node={node:?}")]
     NodeOriginNotFinite { node: NodeId },
 
+    #[error("node explicit bounds exceed the finite canvas domain: node={node:?}")]
+    NodeBoundsNotFinite { node: NodeId },
+
     #[error("node extent rect must be finite: node={node:?}")]
     NodeExtentNotFinite { node: NodeId },
 

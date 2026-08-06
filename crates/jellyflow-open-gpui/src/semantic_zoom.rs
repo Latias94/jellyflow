@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 
 use jellyflow_core::{
-    CanvasPoint, CanvasRect, CanvasSize, NodeId, PortDirection, PortId, PortKind,
+    CanvasPoint, CanvasRect, CanvasSize, NodeId, PortDirection, PortId, PortKind, TypeDesc,
 };
-use jellyflow_runtime::geometry::HandlePosition;
+use jellyflow_runtime::geometry::{HandlePosition, ViewSize};
 #[cfg(test)]
 use jellyflow_runtime::schema::NodeCatalog;
 use jellyflow_runtime::{
@@ -15,10 +15,12 @@ use open_gpui::{
 };
 
 use crate::binding::OpenGpuiNodeBinding;
+use crate::chrome::{OpenGpuiEdgePainterRegistry, OpenGpuiPortTone, render_port_marker_element};
 use crate::port_handle::{OpenGpuiPortAnchor, OpenGpuiPortSide};
+#[cfg(test)]
 use crate::presentation::OpenGpuiPortInteractionState;
 use crate::scale_policy::{OpenGpuiNodeScaleBand, OpenGpuiNodeScalePolicy, OpenGpuiNodeScaleState};
-use crate::theme::{OpenGpuiGraphPalette, OpenGpuiGraphTheme};
+use crate::theme::OpenGpuiGraphTheme;
 
 pub(crate) const OPEN_GPUI_OVERVIEW_NODE_SELECTOR: &str = "jellyflow-overview-node";
 const MAX_OVERVIEW_MARKER_DIAMETER: f32 = 6.0;
@@ -48,133 +50,13 @@ struct OpenGpuiOverviewPort {
     instance: PortInstanceKey,
     direction: PortDirection,
     kind: PortKind,
+    ty: Option<TypeDesc>,
     detail_anchor: Option<NormalizedDetailPortAnchor>,
 }
 
 impl OpenGpuiOverviewPort {
     fn id(&self) -> PortId {
         self.instance.port()
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum OpenGpuiOverviewPortMarkerState {
-    Disabled,
-    InvalidTarget,
-    ValidTarget,
-    Source,
-    Hovered,
-    Connected,
-    Idle,
-}
-
-impl From<&OpenGpuiPortInteractionState> for OpenGpuiOverviewPortMarkerState {
-    fn from(state: &OpenGpuiPortInteractionState) -> Self {
-        if state.disabled() {
-            Self::Disabled
-        } else if state.candidate().is_invalid_target() {
-            Self::InvalidTarget
-        } else if state.candidate().is_valid_target() {
-            Self::ValidTarget
-        } else if state.candidate().is_source() {
-            Self::Source
-        } else if state.hovered() {
-            Self::Hovered
-        } else if state.connected() {
-            Self::Connected
-        } else {
-            Self::Idle
-        }
-    }
-}
-
-impl OpenGpuiOverviewPortMarkerState {
-    const fn color(self, palette: OpenGpuiGraphPalette) -> Hsla {
-        match self {
-            Self::Disabled => palette.port_disabled,
-            Self::InvalidTarget => palette.port_invalid,
-            Self::ValidTarget => palette.port_valid,
-            Self::Source => palette.port_source,
-            Self::Hovered => palette.port_hovered,
-            Self::Connected => palette.port_connected,
-            Self::Idle => palette.port_idle,
-        }
-    }
-}
-
-/// Small overview-only visual recipe that preserves the semantic port handle's geometry.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct OpenGpuiOverviewPortMarkerRecipe {
-    kind: PortKind,
-    direction: PortDirection,
-    state: OpenGpuiOverviewPortMarkerState,
-    focused: bool,
-}
-
-impl OpenGpuiOverviewPortMarkerRecipe {
-    fn from_port(port: &OpenGpuiOverviewPort, presentation: &OpenGpuiPortInteractionState) -> Self {
-        Self {
-            kind: port.kind,
-            direction: port.direction,
-            state: presentation.into(),
-            focused: presentation.focused(),
-        }
-    }
-
-    const fn layout_diameter(self, placement_diameter: f32) -> f32 {
-        placement_diameter
-    }
-
-    const fn corner_radius(self, diameter: f32) -> f32 {
-        match self.kind {
-            PortKind::Data => diameter * 0.5,
-            PortKind::Exec => {
-                let radius = diameter * 0.2;
-                if radius > 1.0 { radius } else { 1.0 }
-            }
-        }
-    }
-
-    const fn uses_filled_surface(self) -> bool {
-        matches!(self.direction, PortDirection::Out)
-    }
-
-    fn element(self, placement_diameter: f32, theme: OpenGpuiGraphTheme) -> AnyElement {
-        let diameter = self.layout_diameter(placement_diameter);
-        let corner_radius = px(self.corner_radius(diameter));
-        let color = self.state.color(theme.palette);
-        let mut visual = div()
-            .absolute()
-            .inset_0()
-            .rounded(corner_radius)
-            .border_1()
-            .border_color(color);
-        visual = if self.uses_filled_surface() {
-            visual.bg(color)
-        } else {
-            visual.bg(theme.palette.node_surface)
-        };
-        if self.state == OpenGpuiOverviewPortMarkerState::InvalidTarget {
-            visual = visual.border_dashed();
-        }
-
-        let mut marker = div()
-            .relative()
-            .w(px(diameter))
-            .h(px(diameter))
-            .flex_none()
-            .child(visual);
-        if self.focused {
-            marker = marker.child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .rounded(corner_radius)
-                    .border_1()
-                    .border_color(theme.palette.focus),
-            );
-        }
-        marker.into_any_element()
     }
 }
 
@@ -193,10 +75,6 @@ pub(crate) struct OpenGpuiSemanticZoomState {
     structural_signature: Option<OpenGpuiSemanticStructureSignature>,
     expected_layout_generation: u64,
     detail_geometry_freshness: Option<OpenGpuiDetailGeometryFreshness>,
-    #[cfg(test)]
-    structural_rebuilds: u64,
-    #[cfg(test)]
-    detail_geometry_updates: u64,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -247,10 +125,6 @@ impl OpenGpuiSemanticZoomState {
             )),
             expected_layout_generation: frame.layout_generation(),
             detail_geometry_freshness: None,
-            #[cfg(test)]
-            structural_rebuilds: 1,
-            #[cfg(test)]
-            detail_geometry_updates: 0,
         }
     }
 
@@ -287,10 +161,6 @@ impl OpenGpuiSemanticZoomState {
             self.canonical_size,
         ));
         self.detail_geometry_freshness = None;
-        #[cfg(test)]
-        {
-            self.structural_rebuilds = self.structural_rebuilds.saturating_add(1);
-        }
     }
 
     pub(crate) fn remember_detail_geometry(&mut self, node: NodeId, geometry: &GeometrySnapshot) {
@@ -317,8 +187,6 @@ impl OpenGpuiSemanticZoomState {
         if !node_bounds.is_positive_finite() {
             return;
         }
-        #[cfg(test)]
-        let mut changed = false;
         for port in &mut self.ports {
             let Some(port_geometry) = geometry
                 .port(port.id())
@@ -335,17 +203,9 @@ impl OpenGpuiSemanticZoomState {
             };
             if port.detail_anchor != Some(anchor) {
                 port.detail_anchor = Some(anchor);
-                #[cfg(test)]
-                {
-                    changed = true;
-                }
             }
         }
         self.detail_geometry_freshness = Some(freshness);
-        #[cfg(test)]
-        if changed {
-            self.detail_geometry_updates = self.detail_geometry_updates.saturating_add(1);
-        }
     }
 
     #[cfg(test)]
@@ -387,17 +247,12 @@ impl OpenGpuiSemanticZoomState {
         self.application_overview = Some(overview);
     }
 
-    #[cfg(test)]
-    pub(crate) fn reconcile_usage(&self) -> (u64, u64) {
-        (self.structural_rebuilds, self.detail_geometry_updates)
-    }
-
-    pub(crate) fn screen_size(
+    pub(crate) fn view_size(
         &self,
         zoom: f32,
         presentation: OpenGpuiNodePresentation,
         scale_policy: OpenGpuiNodeScalePolicy,
-    ) -> CanvasSize {
+    ) -> ViewSize {
         let scale = match (presentation, scale_policy) {
             (OpenGpuiNodePresentation::Overview, OpenGpuiNodeScalePolicy::SemanticLod(policy)) => {
                 (zoom / policy.overview_enter_zoom()).min(1.0)
@@ -406,18 +261,20 @@ impl OpenGpuiSemanticZoomState {
             | (OpenGpuiNodePresentation::Detail, OpenGpuiNodeScalePolicy::ComponentManaged) => zoom,
             (OpenGpuiNodePresentation::Detail, OpenGpuiNodeScalePolicy::SemanticLod(_)) => 1.0,
         };
-        CanvasSize {
-            width: self.canonical_size.width * scale,
-            height: self.canonical_size.height * scale,
-        }
+        ViewSize::new(
+            self.canonical_size.width * scale,
+            self.canonical_size.height * scale,
+        )
     }
 
     pub(crate) fn overview_element(
         &self,
         binding: Option<&OpenGpuiNodeBinding>,
         accessible_name: &str,
-        screen_size: CanvasSize,
+        view_size: ViewSize,
         theme: OpenGpuiGraphTheme,
+        edge_painters: &OpenGpuiEdgePainterRegistry,
+        interaction_enabled: bool,
     ) -> AnyElement {
         if let Some(overview) = &self.application_overview {
             return div()
@@ -432,7 +289,7 @@ impl OpenGpuiSemanticZoomState {
             .absolute()
             .size_full()
             .overflow_hidden()
-            .rounded(px(overview_node_corner_radius(screen_size, theme)))
+            .rounded(px(overview_node_corner_radius(view_size, theme)))
             .border_1()
             .border_color(overview_node_border(theme))
             .bg(theme.palette.node_surface);
@@ -466,11 +323,11 @@ impl OpenGpuiSemanticZoomState {
                         (index, output_count)
                     }
                 };
-                overview_port_placement(port, index, count, screen_size)
+                overview_port_placement(port, index, count, view_size)
             })
             .collect::<Vec<_>>();
 
-        if let Some(title) = overview_title_layout(&placements, screen_size) {
+        if let Some(title) = overview_title_layout(&placements, view_size) {
             overview = overview.child(
                 div()
                     .absolute()
@@ -493,11 +350,20 @@ impl OpenGpuiSemanticZoomState {
             };
             let handle = handle
                 .for_host_overview()
+                .with_interaction_enabled(interaction_enabled)
                 .with_side(port_side(placement.outward))
                 .with_anchor(OpenGpuiPortAnchor::Center)
                 .with_minimum_hit_diameter(theme.metrics.port_hit_diameter);
-            let marker = OpenGpuiOverviewPortMarkerRecipe::from_port(port, handle.presentation())
-                .element(placement.diameter, theme);
+            let style_slot = port
+                .ty
+                .as_ref()
+                .and_then(|ty| edge_painters.style_slot_for_type(ty));
+            let style = theme.resolve_port_marker_style_slot(
+                handle.presentation(),
+                OpenGpuiPortTone::from(port.kind),
+                style_slot,
+            );
+            let marker = render_port_marker_element(style, placement.diameter, placement.diameter);
             let interactive = handle.interactive(marker);
             overview = overview.child(
                 div()
@@ -517,11 +383,8 @@ const fn overview_node_border(theme: OpenGpuiGraphTheme) -> Hsla {
     theme.palette.node_border
 }
 
-pub(crate) fn overview_node_corner_radius(
-    screen_size: CanvasSize,
-    theme: OpenGpuiGraphTheme,
-) -> f32 {
-    let shortest_side = screen_size.width.min(screen_size.height).max(0.0);
+pub(crate) fn overview_node_corner_radius(view_size: ViewSize, theme: OpenGpuiGraphTheme) -> f32 {
+    let shortest_side = view_size.width.min(view_size.height).max(0.0);
     (shortest_side * 0.08)
         .min(theme.metrics.node_corner_radius)
         .min(shortest_side * 0.5)
@@ -544,9 +407,9 @@ struct OverviewTitleLayout {
 
 fn overview_title_layout(
     placements: &[OverviewPortPlacement],
-    screen_size: CanvasSize,
+    view_size: ViewSize,
 ) -> Option<OverviewTitleLayout> {
-    if screen_size.width < 48.0 || screen_size.height < 18.0 {
+    if view_size.width < 48.0 || view_size.height < 18.0 {
         return None;
     }
     let top = placements
@@ -555,7 +418,7 @@ fn overview_title_layout(
         .map(|placement| placement.top + placement.diameter + OVERVIEW_TITLE_PORT_GAP)
         .fold(OVERVIEW_TITLE_BASE_TOP, f32::max);
     let title_bottom = top + OVERVIEW_TITLE_LINE_HEIGHT;
-    if title_bottom > screen_size.height {
+    if title_bottom > view_size.height {
         return None;
     }
 
@@ -571,12 +434,12 @@ fn overview_title_layout(
                 left = left.max(placement.left + placement.diameter + OVERVIEW_TITLE_PORT_GAP);
             }
             HandlePosition::Right => {
-                right = right.max(screen_size.width - placement.left + OVERVIEW_TITLE_PORT_GAP);
+                right = right.max(view_size.width - placement.left + OVERVIEW_TITLE_PORT_GAP);
             }
             HandlePosition::Top | HandlePosition::Bottom => {}
         }
     }
-    (screen_size.width - left - right >= OVERVIEW_TITLE_MIN_WIDTH).then_some(OverviewTitleLayout {
+    (view_size.width - left - right >= OVERVIEW_TITLE_MIN_WIDTH).then_some(OverviewTitleLayout {
         top,
         left,
         right,
@@ -587,12 +450,12 @@ fn overview_port_placement(
     port: &OpenGpuiOverviewPort,
     index: usize,
     count: usize,
-    screen_size: CanvasSize,
+    view_size: ViewSize,
 ) -> OverviewPortPlacement {
     let count = count.max(1) as f32;
-    let slot_height = screen_size.height / (count + 1.0);
+    let slot_height = view_size.height / (count + 1.0);
     let diameter = MAX_OVERVIEW_MARKER_DIAMETER
-        .min(screen_size.width / 4.0)
+        .min(view_size.width / 4.0)
         .min(slot_height / 2.0);
     let fallback = NormalizedDetailPortAnchor {
         point: CanvasPoint {
@@ -608,8 +471,8 @@ fn overview_port_placement(
         },
     };
     let anchor = port.detail_anchor.unwrap_or(fallback);
-    let center_x = anchor.point.x * screen_size.width;
-    let center_y = anchor.point.y * screen_size.height;
+    let center_x = anchor.point.x * view_size.width;
+    let center_y = anchor.point.y * view_size.height;
     OverviewPortPlacement {
         left: center_x - diameter / 2.0,
         top: center_y - diameter / 2.0,
@@ -668,12 +531,17 @@ fn ports_match_frame(ports: &[OpenGpuiOverviewPort], frame: &FrameNode) -> bool 
     let mut current = frame.ports().iter().filter_map(|frame_port| {
         frame_port
             .port()
-            .map(|port| (frame_port.instance(), port.dir, port.kind))
+            .map(|port| (frame_port.instance(), port.dir, port.kind, port.ty.as_ref()))
     });
     ports.iter().all(|cached| {
-        current.next().is_some_and(|(instance, direction, kind)| {
-            cached.instance == instance && cached.direction == direction && cached.kind == kind
-        })
+        current
+            .next()
+            .is_some_and(|(instance, direction, kind, ty)| {
+                cached.instance == instance
+                    && cached.direction == direction
+                    && cached.kind == kind
+                    && cached.ty.as_ref() == ty
+            })
     }) && current.next().is_none()
 }
 
@@ -700,6 +568,7 @@ fn overview_ports(
                 instance,
                 direction: port.dir,
                 kind: port.kind,
+                ty: port.ty.clone(),
                 detail_anchor: cached.get(&instance).copied(),
             })
         })
@@ -808,6 +677,7 @@ mod tests {
                     .expect("current port identity"),
                 direction: *direction,
                 kind: *kind,
+                ty: None,
                 detail_anchor: None,
             })
             .collect()
@@ -826,8 +696,6 @@ mod tests {
             structural_signature: None,
             expected_layout_generation: 0,
             detail_geometry_freshness: None,
-            structural_rebuilds: 0,
-            detail_geometry_updates: 0,
         }
     }
 
@@ -843,48 +711,36 @@ mod tests {
         );
 
         assert_eq!(
-            state.screen_size(
+            state.view_size(
                 0.5,
                 OpenGpuiNodePresentation::Overview,
                 OpenGpuiNodeScalePolicy::default(),
             ),
-            CanvasSize {
-                width: 129.41176,
-                height: 70.588234,
-            },
+            ViewSize::new(129.41176, 70.588234),
         );
 
         assert_eq!(
-            state.screen_size(
+            state.view_size(
                 0.5,
                 OpenGpuiNodePresentation::Detail,
                 OpenGpuiNodeScalePolicy::default(),
             ),
-            CanvasSize {
-                width: 220.0,
-                height: 120.0,
-            },
+            ViewSize::new(220.0, 120.0),
         );
 
         assert_eq!(
-            state.screen_size(
+            state.view_size(
                 0.5,
                 OpenGpuiNodePresentation::Detail,
                 OpenGpuiNodeScalePolicy::ComponentManaged,
             ),
-            CanvasSize {
-                width: 110.0,
-                height: 60.0,
-            },
+            ViewSize::new(110.0, 60.0),
         );
     }
 
     #[test]
     fn overview_ports_are_ordered_inside_the_node_edges() {
-        let size = CanvasSize {
-            width: 11.0,
-            height: 6.0,
-        };
+        let size = ViewSize::new(11.0, 6.0);
         let ports = exact_overview_ports(&[
             (PortId::from_u128(1), PortDirection::In, PortKind::Data),
             (PortId::from_u128(2), PortDirection::Out, PortKind::Data),
@@ -903,10 +759,7 @@ mod tests {
 
     #[test]
     fn overview_title_reserves_top_and_header_side_port_gutters() {
-        let size = CanvasSize {
-            width: 100.0,
-            height: 50.0,
-        };
+        let size = ViewSize::new(100.0, 50.0);
         let top = OverviewPortPlacement {
             left: 20.0,
             top: -3.0,
@@ -948,10 +801,7 @@ mod tests {
 
     #[test]
     fn overview_title_is_omitted_when_port_gutters_exhaust_it() {
-        let size = CanvasSize {
-            width: 48.0,
-            height: 24.0,
-        };
+        let size = ViewSize::new(48.0, 24.0);
         let left = OverviewPortPlacement {
             left: -12.0,
             top: 3.0,
@@ -973,23 +823,11 @@ mod tests {
         theme.metrics.node_corner_radius = 6.0;
 
         assert_eq!(
-            overview_node_corner_radius(
-                CanvasSize {
-                    width: 100.0,
-                    height: 50.0,
-                },
-                theme,
-            ),
+            overview_node_corner_radius(ViewSize::new(100.0, 50.0), theme,),
             4.0
         );
         assert_eq!(
-            overview_node_corner_radius(
-                CanvasSize {
-                    width: 10.0,
-                    height: 4.0,
-                },
-                theme,
-            ),
+            overview_node_corner_radius(ViewSize::new(10.0, 4.0), theme,),
             0.32
         );
     }
@@ -1005,40 +843,13 @@ mod tests {
             Vec::new(),
         );
         let policy = OpenGpuiNodeScalePolicy::default();
-        let detail = state.screen_size(0.86, OpenGpuiNodePresentation::Detail, policy);
-        let threshold = state.screen_size(0.85, OpenGpuiNodePresentation::Overview, policy);
-        let below = state.screen_size(0.84, OpenGpuiNodePresentation::Overview, policy);
+        let detail = state.view_size(0.86, OpenGpuiNodePresentation::Detail, policy);
+        let threshold = state.view_size(0.85, OpenGpuiNodePresentation::Overview, policy);
+        let below = state.view_size(0.84, OpenGpuiNodePresentation::Overview, policy);
 
         assert_eq!(detail, threshold);
         assert!((below.width / threshold.width - 0.84 / 0.85).abs() < 0.000_01);
         assert!((below.height / threshold.height - 0.84 / 0.85).abs() < 0.000_01);
-    }
-
-    #[test]
-    fn overview_surface_leaves_selection_chrome_to_the_host_across_zoom_boundaries() {
-        let state = semantic_state(
-            CanvasPoint::default(),
-            CanvasSize {
-                width: 220.0,
-                height: 120.0,
-            },
-            Vec::new(),
-        );
-        let theme = OpenGpuiGraphTheme::default();
-        let policy = OpenGpuiNodeScalePolicy::default();
-
-        for (zoom, presentation) in [
-            (0.84, OpenGpuiNodePresentation::Overview),
-            (0.85, OpenGpuiNodePresentation::Overview),
-            (1.0, OpenGpuiNodePresentation::Detail),
-        ] {
-            assert!(
-                state
-                    .screen_size(zoom, presentation, policy)
-                    .is_positive_finite()
-            );
-            assert_eq!(overview_node_border(theme), theme.palette.node_border);
-        }
     }
 
     #[test]
@@ -1066,8 +877,8 @@ mod tests {
             )],
         );
         let policy = OpenGpuiNodeScalePolicy::default();
-        let at_threshold = state.screen_size(0.85, OpenGpuiNodePresentation::Overview, policy);
-        let below_threshold = state.screen_size(0.84, OpenGpuiNodePresentation::Overview, policy);
+        let at_threshold = state.view_size(0.85, OpenGpuiNodePresentation::Overview, policy);
+        let below_threshold = state.view_size(0.84, OpenGpuiNodePresentation::Overview, policy);
         let first = overview_port_placement(&state.ports[0], 0, 1, at_threshold);
         let below = overview_port_placement(&state.ports[0], 0, 1, below_threshold);
         let round_trip = overview_port_placement(&state.ports[0], 0, 1, at_threshold);
@@ -1125,13 +936,13 @@ mod tests {
             &state.ports[0],
             0,
             1,
-            state.screen_size(0.85, OpenGpuiNodePresentation::Overview, policy),
+            state.view_size(0.85, OpenGpuiNodePresentation::Overview, policy),
         );
         let overview = overview_port_placement(
             &state.ports[0],
             0,
             1,
-            state.screen_size(0.5, OpenGpuiNodePresentation::Overview, policy),
+            state.view_size(0.5, OpenGpuiNodePresentation::Overview, policy),
         );
         assert_eq!(detail.outward, HandlePosition::Right);
         assert_eq!(overview.outward, HandlePosition::Right);
@@ -1190,112 +1001,80 @@ mod tests {
     }
 
     #[test]
-    fn overview_marker_recipe_encodes_port_kind_and_direction() {
-        let ports = exact_overview_ports(&[
-            (PortId::from_u128(11), PortDirection::Out, PortKind::Data),
-            (PortId::from_u128(12), PortDirection::In, PortKind::Exec),
-        ]);
-        let data_output = &ports[0];
-        let exec_input = &ports[1];
-
-        let data_recipe = OpenGpuiOverviewPortMarkerRecipe::from_port(
-            data_output,
-            &OpenGpuiPortInteractionState::idle(),
-        );
-        let exec_recipe = OpenGpuiOverviewPortMarkerRecipe::from_port(
-            exec_input,
-            &OpenGpuiPortInteractionState::idle(),
-        );
-
-        assert!(data_recipe.uses_filled_surface());
-        assert!(!exec_recipe.uses_filled_surface());
-        assert_eq!(data_recipe.corner_radius(6.0), 3.0);
-        assert_eq!(exec_recipe.corner_radius(6.0), 1.2);
-    }
-
-    #[test]
-    fn overview_marker_recipe_keeps_port_state_priority_and_placement_stable() {
+    fn overview_ports_reuse_detail_marker_state_resolution_without_moving_placement() {
         use crate::presentation::OpenGpuiPortCandidateState;
+        use crate::theme::{
+            OpenGpuiGraphStyleCue, OpenGpuiGraphStyleRecipe, OpenGpuiGraphStyleSlot,
+        };
 
-        let theme = OpenGpuiGraphTheme::default();
-        let port =
+        let slot = OpenGpuiGraphStyleSlot::new(3).expect("bounded test style slot");
+        let typed_color: Hsla = open_gpui::rgb(0xe5b95c).into();
+        let theme = OpenGpuiGraphTheme::default().with_style_slot(
+            slot,
+            OpenGpuiGraphStyleRecipe::new(typed_color).with_cue(OpenGpuiGraphStyleCue::Dashed),
+        );
+        let mut painters = OpenGpuiEdgePainterRegistry::builder();
+        painters
+            .register_type_style(TypeDesc::Float, slot)
+            .expect("exact overview type style");
+        let painters = painters.build();
+        let mut port =
             exact_overview_ports(&[(PortId::from_u128(13), PortDirection::Out, PortKind::Exec)])
                 .remove(0);
-        let placement = overview_port_placement(
-            &port,
-            0,
-            1,
-            CanvasSize {
-                width: 96.0,
-                height: 48.0,
-            },
+        port.ty = Some(TypeDesc::Float);
+        let style_slot = port
+            .ty
+            .as_ref()
+            .and_then(|ty| painters.style_slot_for_type(ty));
+        let placement = overview_port_placement(&port, 0, 1, ViewSize::new(96.0, 48.0));
+        let idle = theme.resolve_port_marker_style_slot(
+            &OpenGpuiPortInteractionState::idle(),
+            OpenGpuiPortTone::from(port.kind),
+            style_slot,
         );
-        let cases = [
-            (
-                OpenGpuiPortInteractionState::idle(),
-                OpenGpuiOverviewPortMarkerState::Idle,
-                theme.palette.port_idle,
-            ),
-            (
-                OpenGpuiPortInteractionState::idle().with_connected(true),
-                OpenGpuiOverviewPortMarkerState::Connected,
-                theme.palette.port_connected,
-            ),
-            (
-                OpenGpuiPortInteractionState::idle()
-                    .with_connected(true)
-                    .with_hovered(true),
-                OpenGpuiOverviewPortMarkerState::Hovered,
-                theme.palette.port_hovered,
-            ),
-            (
-                OpenGpuiPortInteractionState::idle()
-                    .with_hovered(true)
-                    .with_candidate(OpenGpuiPortCandidateState::Source),
-                OpenGpuiOverviewPortMarkerState::Source,
-                theme.palette.port_source,
-            ),
-            (
-                OpenGpuiPortInteractionState::idle()
-                    .with_candidate(OpenGpuiPortCandidateState::ValidTarget),
-                OpenGpuiOverviewPortMarkerState::ValidTarget,
-                theme.palette.port_valid,
-            ),
-            (
-                OpenGpuiPortInteractionState::idle()
-                    .with_candidate(OpenGpuiPortCandidateState::invalid(Vec::new())),
-                OpenGpuiOverviewPortMarkerState::InvalidTarget,
-                theme.palette.port_invalid,
-            ),
-            (
-                OpenGpuiPortInteractionState::idle()
-                    .with_candidate(OpenGpuiPortCandidateState::invalid(Vec::new()))
-                    .with_disabled(true),
-                OpenGpuiOverviewPortMarkerState::Disabled,
-                theme.palette.port_disabled,
-            ),
-        ];
+        let connected = theme.resolve_port_marker_style_slot(
+            &OpenGpuiPortInteractionState::idle().with_connected(true),
+            OpenGpuiPortTone::from(port.kind),
+            style_slot,
+        );
+        let invalid = theme.resolve_port_marker_style_slot(
+            &OpenGpuiPortInteractionState::idle()
+                .with_candidate(OpenGpuiPortCandidateState::invalid(Vec::new())),
+            OpenGpuiPortTone::from(port.kind),
+            style_slot,
+        );
+        let disabled = theme.resolve_port_marker_style_slot(
+            &OpenGpuiPortInteractionState::idle()
+                .with_candidate(OpenGpuiPortCandidateState::invalid(Vec::new()))
+                .with_disabled(true),
+            OpenGpuiPortTone::from(port.kind),
+            style_slot,
+        );
 
-        for (presentation, state, color) in cases {
-            let recipe = OpenGpuiOverviewPortMarkerRecipe::from_port(&port, &presentation);
-            assert_eq!(recipe.kind, PortKind::Exec);
-            assert_eq!(recipe.direction, PortDirection::Out);
-            assert_eq!(recipe.state, state);
-            assert_eq!(recipe.state.color(theme.palette), color);
-            assert_eq!(
-                recipe.layout_diameter(placement.diameter),
-                placement.diameter
-            );
-        }
-        assert!(
-            (OpenGpuiOverviewPortMarkerRecipe::from_port(
-                &port,
-                &OpenGpuiPortInteractionState::idle(),
-            )
-            .corner_radius(placement.diameter)
-                - placement.diameter * 0.2)
-                .abs()
-                < f32::EPSILON
+        assert_eq!(placement.diameter, 6.0);
+        assert_eq!(idle.shape(), theme.port_marker_shapes.control);
+        assert_eq!(idle.border_color(), typed_color);
+        assert_eq!(idle.cue(), crate::chrome::OpenGpuiPortMarkerCue::StyleBar);
+        assert_ne!(idle.fill_color(), connected.fill_color());
+        assert!(invalid.has_dashed_border());
+        assert!(disabled.has_dashed_border());
+        assert_eq!(disabled.border_color(), theme.palette.port_invalid);
+
+        let mut input =
+            exact_overview_ports(&[(PortId::from_u128(14), PortDirection::In, PortKind::Exec)])
+                .remove(0);
+        input.ty = Some(TypeDesc::Float);
+        let input_style = theme.resolve_port_marker_style_slot(
+            &OpenGpuiPortInteractionState::idle(),
+            OpenGpuiPortTone::from(input.kind),
+            input
+                .ty
+                .as_ref()
+                .and_then(|ty| painters.style_slot_for_type(ty)),
+        );
+        assert_eq!(
+            input_style, idle,
+            "direction must not change connection appearance"
         );
     }
 }

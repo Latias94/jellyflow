@@ -117,12 +117,10 @@ pub struct NativeSelectionTokens {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NativePortTokens {
-    pub idle: Hsla,
     pub hovered: Hsla,
     pub source: Hsla,
     pub valid: Hsla,
     pub invalid: Hsla,
-    pub connected: Hsla,
     pub disabled: Hsla,
     /// Stable data-type identity shared by Float ports and their wires.
     pub float: Hsla,
@@ -253,12 +251,10 @@ impl NativeProductTheme {
                 focus: rgb(0xa7d7ee).into(),
             },
             port: NativePortTokens {
-                idle: rgb(0x8fa0ad).into(),
                 hovered: rgb(0xe1e8ed).into(),
                 source: rgb(0x79c6e6).into(),
                 valid: rgb(0x7dd6ad).into(),
                 invalid: rgb(0xff8f96).into(),
-                connected: rgb(0xd1dbe2).into(),
                 disabled: rgba(0x6879878f).into(),
                 float: rgb(0xe1bd67).into(),
                 shapes: OpenGpuiPortMarkerShapes {
@@ -353,12 +349,10 @@ impl NativeProductTheme {
                 focus: rgb(0xb8d1f1).into(),
             },
             port: NativePortTokens {
-                idle: rgb(0x8b96a5).into(),
                 hovered: rgb(0xd7dde8).into(),
                 source: rgb(0x78a9ff).into(),
                 valid: rgb(0x7fd5ac).into(),
                 invalid: rgb(0xff8b84).into(),
-                connected: rgb(0xc9d3df).into(),
                 disabled: rgba(0x64748b8f).into(),
                 float: rgb(0xe0bd63).into(),
                 shapes: OpenGpuiPortMarkerShapes {
@@ -396,12 +390,10 @@ impl NativeProductTheme {
             node_border: self.node.border,
             selection: self.selection.border,
             focus: self.selection.focus,
-            port_idle: self.port.idle,
             port_hovered: self.port.hovered,
             port_source: self.port.source,
             port_valid: self.port.valid,
             port_invalid: self.port.invalid,
-            port_connected: self.port.connected,
             port_disabled: self.port.disabled,
             edge_default: self.edge.default,
             edge_data: self.edge.data,
@@ -423,6 +415,9 @@ impl NativeProductTheme {
             ..OpenGpuiGraphMetrics::default()
         };
         if self.profile == NativeProductProfile::ShaderBlueprint {
+            metrics.port_marker_diameter = 7.0;
+            metrics.port_hover_marker_diameter = 9.0;
+            metrics.port_layout_diameter = 11.0;
             metrics.edge_ordinary_width = 2.0;
             metrics.edge_hovered_width = 2.5;
             metrics.edge_selected_width = 3.0;
@@ -504,6 +499,12 @@ mod tests {
 
         assert!(shader.graph_theme().metrics.is_valid());
         assert!(workflow.graph_theme().metrics.is_valid());
+        assert_eq!(shader.graph_theme().metrics.port_marker_diameter, 7.0);
+        assert_eq!(shader.graph_theme().metrics.port_hover_marker_diameter, 9.0);
+        assert_eq!(shader.graph_theme().metrics.port_layout_diameter, 11.0);
+        assert_eq!(shader.graph_theme().metrics.port_hit_diameter, 22.0);
+        assert_eq!(workflow.graph_theme().metrics.port_marker_diameter, 8.0);
+        assert_eq!(workflow.graph_theme().metrics.port_layout_diameter, 12.0);
         assert_ne!(shader.canvas.surface, workflow.canvas.surface);
         assert_ne!(shader.graph_theme().metrics, workflow.graph_theme().metrics);
         assert!(

@@ -26,14 +26,17 @@ pub use presentation::{
 };
 pub(crate) use session::SelectionMutation;
 pub use session::{
-    AlignmentSnapConfig, CanvasInteractionConfig, CanvasInteractionDispatch,
-    CanvasInteractionEffect, CanvasInteractionError, CanvasInteractionQueryAdvance,
-    CanvasInteractionQueryAdvanceReceipt, CanvasInteractionQueryPageReceipt,
-    CanvasInteractionSession, CanvasInteractionUpdate, CanvasPressFallback, CanvasPressTarget,
-    ConnectionInteractionStart, ConnectionSearchRequest, ConnectionSearchSelection,
-    ConnectionSettlementCapability, InteractionDamage, InteractionGeneration,
-    InteractionGraphSubmission, InteractionGraphSubmissionBindError, InteractionOwner,
-    InteractionQueryId, InteractionSessionId, InteractionTickDemand, InteractionTicketId,
-    KeyboardConnectionFeedback, KeyboardConnectionPort, NodeDragStart, NodeNudgeDirection,
-    SelectionMode,
+    AlignmentSnapConfig, BoundInteractionSubmission, CanvasInteractionConfig,
+    CanvasInteractionDispatch, CanvasInteractionEffect, CanvasInteractionError,
+    CanvasInteractionQueryAdvance, CanvasInteractionQueryAdvanceReceipt,
+    CanvasInteractionQueryPageReceipt, CanvasInteractionSession, CanvasInteractionUpdate,
+    CanvasPressFallback, CanvasPressTarget, ConnectionInteractionStart, ConnectionSearchRequest,
+    ConnectionSearchSelection, ConnectionSettlementCapability, InteractionDamage,
+    InteractionGeneration, InteractionGraphSubmission, InteractionGraphSubmissionAbandonFailure,
+    InteractionGraphSubmissionBindError, InteractionGraphSubmissionBindFailure,
+    InteractionGraphSubmissionResumeFailure, InteractionOwner, InteractionQueryId,
+    InteractionSessionId, InteractionSubmissionSettlementEvidence,
+    InteractionSubmissionSettlementFailure, InteractionSubmissionSettlementResult,
+    InteractionTickDemand, InteractionTicketId, KeyboardConnectionFeedback, KeyboardConnectionPort,
+    NodeDragStart, NodeNudgeDirection, SelectionMode,
 };

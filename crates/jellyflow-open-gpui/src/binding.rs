@@ -614,12 +614,12 @@ impl OpenGpuiPortPresentationInput {
     }
 
     fn materialize(&self) -> OpenGpuiPortInteractionState {
+        let disabled =
+            !self.connection.can_start_connection() && !self.connection.can_accept_connection();
         OpenGpuiPortInteractionState::idle()
-            .with_hovered(self.hovered)
+            .with_hovered(self.hovered && !disabled)
             .with_connected(self.connection.is_connected())
-            .with_disabled(
-                !self.connection.can_start_connection() && !self.connection.can_accept_connection(),
-            )
+            .with_disabled(disabled)
             .with_focused(self.focused)
             .with_candidate(self.candidate.materialize())
             .with_settlement(if self.pending {

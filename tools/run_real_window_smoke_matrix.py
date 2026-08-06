@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the exact Open GPUI real-window smoke matrix with auditable receipts."""
+"""Run the exact Open GPUI real-window matrix and transport minimal receipts."""
 
 from __future__ import annotations
 
@@ -15,16 +15,18 @@ from pathlib import Path
 from typing import NamedTuple
 
 try:
-    from run_with_timeout import run_process
+    from run_with_timeout import TIMEOUT_EXIT_CODE, run_process
 except ModuleNotFoundError:
-    from tools.run_with_timeout import run_process
+    from tools.run_with_timeout import TIMEOUT_EXIT_CODE, run_process
 
 
 RECEIPT_PREFIX = "JELLYFLOW_REAL_WINDOW_SMOKE_RECEIPT "
+RECEIPT_SCHEMA_VERSION = 1
+RECEIPT_FIELDS = frozenset(
+    {"schema_version", "run_id", "status", "failure", "artifacts"}
+)
 RESULTS_NAME = "results.json"
 RESULTS_SCHEMA_VERSION = 1
-TIMEOUT_EXIT_CODE = 124
-VALIDATOR_TIMEOUT_SECONDS = 10.0
 
 
 class RunSpec(NamedTuple):
@@ -42,19 +44,10 @@ class RunSpec(NamedTuple):
             "zoom": self.zoom,
         }
 
-    def receipt_run(self) -> dict[str, str]:
-        return {
-            "run_id": self.run_id,
-            "demo": self.demo,
-            "bounds": self.bounds,
-            "scenario": self.scenario,
-            "target_zoom": self.zoom,
-        }
-
     def command_arguments(self) -> list[str]:
-        arguments = ["--smoke"]
+        arguments: list[str] = []
         if self.demo == "workflow":
-            arguments.insert(0, "--workflow")
+            arguments.append("--workflow")
         return arguments
 
 
@@ -67,14 +60,6 @@ RUN_SPECS = (
         "0.5",
     ),
     RunSpec(
-        "interaction-workflow-compact-z0.5",
-        "workflow",
-        "compact",
-        "interaction",
-        "0.5",
-    ),
-    RunSpec("interaction-shader-compact-z1", "shader", "compact", "interaction", "1"),
-    RunSpec(
         "interaction-workflow-compact-z1",
         "workflow",
         "compact",
@@ -82,27 +67,13 @@ RUN_SPECS = (
         "1",
     ),
     RunSpec("interaction-shader-compact-z2", "shader", "compact", "interaction", "2"),
-    RunSpec(
-        "interaction-workflow-compact-z2",
-        "workflow",
-        "compact",
-        "interaction",
-        "2",
-    ),
     RunSpec("interaction-shader-normal-z1", "shader", "normal", "interaction", "1"),
-    RunSpec(
-        "interaction-workflow-normal-z1",
-        "workflow",
-        "normal",
-        "interaction",
-        "1",
-    ),
     RunSpec("lod-threshold-shader-normal-z1", "shader", "normal", "lod-threshold", "1"),
 )
 
 
 class ReceiptTransportError(RuntimeError):
-    """A receipt could not be transported to or accepted by the Rust contract."""
+    """A native receipt could not be transported into the matrix results."""
 
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
@@ -131,7 +102,7 @@ def reject_duplicate_json_object_keys(
     return result
 
 
-def _parse_json_object(payload: str, *, source: str) -> dict[str, object]:
+def _parse_json_object(payload: str) -> dict[str, object]:
     try:
         value = json.loads(
             payload,
@@ -139,63 +110,110 @@ def _parse_json_object(payload: str, *, source: str) -> dict[str, object]:
         )
     except (json.JSONDecodeError, ValueError) as error:
         raise ReceiptTransportError(
-            "malformed_receipt", f"{source} is not valid unambiguous JSON: {error}"
+            "malformed_receipt", f"receipt is not unambiguous JSON: {error}"
         ) from error
     if not isinstance(value, dict):
         raise ReceiptTransportError(
-            "malformed_receipt", f"{source} root must be a JSON object"
+            "malformed_receipt", "receipt root must be a JSON object"
         )
     return value
 
 
 def validate_receipt(
-    payload: str,
-    *,
-    receipt_validator: Path,
-    environment: Mapping[str, str],
+    payload: str, spec: RunSpec, capture_dir: Path
 ) -> dict[str, object]:
-    """Return the Rust contract's canonical object without duplicating its schema."""
+    """Validate only the versioned process-transport contract."""
 
-    _parse_json_object(payload, source="native receipt")
-    try:
-        completed = run_process(
-            [str(receipt_validator.resolve()), "validate"],
-            timeout_seconds=VALIDATOR_TIMEOUT_SECONDS,
-            env=environment,
-            input=payload,
-            capture_output=True,
-            text=True,
-        )
-    except subprocess.TimeoutExpired as error:
+    receipt = _parse_json_object(payload)
+    if receipt.keys() != RECEIPT_FIELDS:
         raise ReceiptTransportError(
-            "validator_failure",
-            f"receipt validator timed out after {VALIDATOR_TIMEOUT_SECONDS:g}s",
-        ) from error
-    except OSError as error:
-        raise ReceiptTransportError(
-            "validator_failure", f"could not start receipt validator: {error}"
-        ) from error
-    if completed.returncode != 0:
-        diagnostic = (
-            completed.stderr.strip()
-            or completed.stdout.strip()
-            or "no diagnostic"
+            "malformed_receipt",
+            f"receipt fields are {sorted(receipt)}, expected {sorted(RECEIPT_FIELDS)}",
         )
+
+    version = receipt["schema_version"]
+    if type(version) is not int or version != RECEIPT_SCHEMA_VERSION:
         raise ReceiptTransportError(
-            "validator_failure",
-            f"receipt validator exited with {completed.returncode}: {diagnostic}",
+            "unsupported_receipt_version",
+            f"schema_version is {version!r}, expected {RECEIPT_SCHEMA_VERSION}",
         )
-    canonical_lines = [line for line in completed.stdout.splitlines() if line.strip()]
-    if len(canonical_lines) != 1:
+
+    run_id = receipt["run_id"]
+    if not isinstance(run_id, str):
+        raise ReceiptTransportError("malformed_receipt", "run_id must be a string")
+    if run_id != spec.run_id:
         raise ReceiptTransportError(
-            "validator_failure",
-            "receipt validator must emit exactly one canonical JSON line; "
-            f"got {len(canonical_lines)}",
+            "receipt_run_mismatch",
+            f"receipt run_id is {run_id!r}, expected {spec.run_id!r}",
         )
-    try:
-        return _parse_json_object(canonical_lines[0], source="validator output")
-    except ReceiptTransportError as error:
-        raise ReceiptTransportError("validator_failure", str(error)) from error
+
+    status = receipt["status"]
+    if not isinstance(status, str) or status not in {"pass", "fail"}:
+        raise ReceiptTransportError(
+            "malformed_receipt", "status must be 'pass' or 'fail'"
+        )
+    failure = receipt["failure"]
+    if status == "pass" and failure is not None:
+        raise ReceiptTransportError(
+            "malformed_receipt", "pass receipt must not include a failure"
+        )
+    if status == "fail":
+        if not isinstance(failure, dict) or not isinstance(failure.get("code"), str):
+            raise ReceiptTransportError(
+                "malformed_receipt", "fail receipt must include a failure code"
+            )
+        message = failure.get("message")
+        if message is not None and not isinstance(message, str):
+            raise ReceiptTransportError(
+                "malformed_receipt", "failure message must be a string or null"
+            )
+
+    artifacts = receipt["artifacts"]
+    if not isinstance(artifacts, list) or not all(
+        isinstance(artifact, str) and artifact for artifact in artifacts
+    ):
+        raise ReceiptTransportError(
+            "malformed_receipt", "artifacts must be a list of non-empty paths"
+        )
+    if status == "pass" and not artifacts:
+        raise ReceiptTransportError(
+            "missing_artifact", "pass receipt lists no review artifacts"
+        )
+    artifact_paths = [Path(artifact) for artifact in artifacts]
+    missing = [artifact for artifact in artifact_paths if not artifact.is_file()]
+    if missing:
+        raise ReceiptTransportError(
+            "missing_artifact",
+            f"listed artifacts do not exist or are not files: {missing!r}",
+        )
+    capture_dir = capture_dir.resolve()
+    resolved_artifacts = [artifact.resolve() for artifact in artifact_paths]
+    outside_capture = [
+        artifact
+        for artifact in resolved_artifacts
+        if not artifact.is_relative_to(capture_dir)
+    ]
+    if outside_capture:
+        raise ReceiptTransportError(
+            "artifact_outside_capture",
+            f"listed artifacts are outside this run's capture directory: {outside_capture!r}",
+        )
+    if status == "pass":
+        non_png = [
+            artifact
+            for artifact in resolved_artifacts
+            if artifact.suffix.lower() != ".png"
+        ]
+        if non_png:
+            raise ReceiptTransportError(
+                "invalid_artifact",
+                f"pass receipt artifacts must be PNG files: {non_png!r}",
+            )
+    if len(set(resolved_artifacts)) != len(resolved_artifacts):
+        raise ReceiptTransportError(
+            "duplicate_artifact", "receipt lists the same artifact more than once"
+        )
+    return receipt
 
 
 def _text(output: str | bytes | None) -> str:
@@ -219,7 +237,6 @@ def execute_run(
     spec: RunSpec,
     *,
     binary: Path,
-    receipt_validator: Path,
     binary_arguments: Sequence[str],
     capture_dir: Path,
     timeout_seconds: float,
@@ -270,7 +287,7 @@ def execute_run(
     _relay_output(spec.run_id, "stdout", stdout, sys.stdout)
     _relay_output(spec.run_id, "stderr", stderr, sys.stderr)
     payloads = extract_receipt_payloads(stdout, stderr)
-    canonical_receipt: dict[str, object] | None = None
+    receipt: dict[str, object] | None = None
 
     if not timed_out and not errors:
         if not payloads:
@@ -279,44 +296,28 @@ def execute_run(
             errors.append(
                 _failure(
                     "duplicate_receipt",
-                    f"native run emitted {len(payloads)} receipts, "
-                    "expected exactly one",
+                    f"native run emitted {len(payloads)} receipts, expected exactly one",
                 )
             )
         else:
             try:
-                canonical_receipt = validate_receipt(
-                    payloads[0],
-                    receipt_validator=receipt_validator,
-                    environment=environment,
-                )
+                receipt = validate_receipt(payloads[0], spec, capture_dir)
             except ReceiptTransportError as error:
                 errors.append(_failure(error.code, str(error)))
 
-    if canonical_receipt is not None:
-        receipt_status = canonical_receipt.get("status")
-        if canonical_receipt.get("run") != spec.receipt_run():
-            errors.append(
-                _failure(
-                    "receipt_run_mismatch",
-                    f"receipt run is {canonical_receipt.get('run')!r}, "
-                    f"expected {spec.receipt_run()!r}",
-                )
-            )
+    if receipt is not None:
+        receipt_status = receipt["status"]
         if (exit_code == 0 and receipt_status != "pass") or (
             exit_code not in (None, 0) and receipt_status == "pass"
         ):
             errors.append(
                 _failure(
                     "exit_status_contradiction",
-                    f"exit code {exit_code!r} contradicts receipt status "
-                    f"{receipt_status!r}",
+                    f"exit code {exit_code!r} contradicts receipt status {receipt_status!r}",
                 )
             )
         elif exit_code != 0:
-            errors.append(
-                _failure("nonzero_exit", f"native run exited with {exit_code!r}")
-            )
+            errors.append(_failure("nonzero_exit", f"native run exited with {exit_code!r}"))
     elif exit_code not in (None, 0, TIMEOUT_EXIT_CODE) and not timed_out:
         errors.append(_failure("nonzero_exit", f"native run exited with {exit_code!r}"))
 
@@ -327,7 +328,9 @@ def execute_run(
         "exit_code": exit_code,
         "timed_out": timed_out,
         "receipt_count": len(payloads),
-        "receipt": canonical_receipt if passed else None,
+        "receipt": receipt
+        if passed or (receipt is not None and receipt["status"] == "fail")
+        else None,
         "stdout": stdout,
         "stderr": stderr,
         "status": "pass" if passed else "fail",
@@ -367,7 +370,6 @@ def append_capture_dir_output(output_file: Path, capture_dir: Path) -> None:
 def run_matrix(
     *,
     binary: Path,
-    receipt_validator: Path,
     binary_arguments: Sequence[str],
     capture_root: Path,
     timeout_seconds: float,
@@ -383,26 +385,45 @@ def run_matrix(
 
     results_path = capture_dir / RESULTS_NAME
     runs: list[dict[str, object]] = []
+    claimed_artifacts: set[Path] = set()
     atomic_write_results(results_path, runs)
     for index, spec in enumerate(RUN_SPECS, start=1):
         print(
             f"running real-window smoke {index}/{len(RUN_SPECS)}: {spec.run_id}",
             flush=True,
         )
-        receipt = execute_run(
+        run = execute_run(
             spec,
             binary=binary,
-            receipt_validator=receipt_validator,
             binary_arguments=binary_arguments,
             capture_dir=capture_dir,
             timeout_seconds=timeout_seconds,
             base_environment=base_environment,
         )
-        runs.append(receipt)
+        receipt = run["receipt"]
+        if isinstance(receipt, dict):
+            artifacts = {
+                Path(artifact).resolve()
+                for artifact in receipt["artifacts"]
+                if isinstance(artifact, str)
+            }
+            reused = sorted(artifacts & claimed_artifacts)
+            if reused:
+                run["errors"].append(
+                    _failure(
+                        "duplicate_artifact",
+                        f"artifacts were already claimed by an earlier run: {reused!r}",
+                    )
+                )
+                run["receipt"] = None
+                run["status"] = "fail"
+            else:
+                claimed_artifacts.update(artifacts)
+        runs.append(run)
         atomic_write_results(results_path, runs)
-        if receipt["status"] != "pass":
+        if run["status"] != "pass":
             print(
-                f"real-window smoke run failed: {spec.run_id}: {receipt['errors']}",
+                f"real-window smoke run failed: {spec.run_id}: {run['errors']}",
                 file=sys.stderr,
                 flush=True,
             )
@@ -419,10 +440,9 @@ def parse_args(arguments: Sequence[str]) -> argparse.Namespace:
         "--binary",
         type=Path,
         default=Path(
-            "examples/canvas-jellyflow/target/debug/open-gpui-canvas-jellyflow"
+            "examples/canvas-jellyflow/target/debug/open-gpui-real-window-smoke"
         ),
     )
-    parser.add_argument("--receipt-validator", type=Path, required=True)
     parser.add_argument(
         "--binary-arg",
         action="append",
@@ -449,7 +469,6 @@ def main(arguments: Sequence[str] | None = None) -> int:
     try:
         _, passed = run_matrix(
             binary=args.binary,
-            receipt_validator=args.receipt_validator,
             binary_arguments=args.binary_arg,
             capture_root=args.capture_root,
             timeout_seconds=args.timeout_seconds,

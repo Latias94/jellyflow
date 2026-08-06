@@ -1,65 +1,39 @@
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 
-use jellyflow_core::{CanvasPoint, CanvasSize, Graph, NodeId};
+use jellyflow_core::{CanvasPoint, CanvasSize, NodeId};
 
 use crate::engine::{
-    LayoutContext, LayoutDirection, LayoutEngine, LayoutEngineId, LayoutError, LayoutNodePosition,
-    LayoutOptions, LayoutRequest, LayoutResult, TIDY_TREE_LAYOUT_ENGINE_ID, normalized_node_origin,
-    position_from_center, resolve_node_size, validate_request,
+    LayoutCoordinateFrame, LayoutDirection, LayoutEngine, LayoutError, LayoutOptions,
+    LayoutPlacements, PreparedLayoutEdge, PreparedLayoutInput,
 };
-use crate::projection::{VisibleLayoutEdge, build_visible_edge_projection, result_from_placements};
+use crate::projection::{SpanningForestComponent, build_spanning_forest, placements_from_centers};
 
 /// Built-in tidy tree layout engine.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct TidyTreeLayoutEngine;
 
 impl LayoutEngine for TidyTreeLayoutEngine {
-    fn id(&self) -> LayoutEngineId {
-        LayoutEngineId::new(TIDY_TREE_LAYOUT_ENGINE_ID)
-    }
-
-    fn layout(
-        &self,
-        graph: &Graph,
-        request: &LayoutRequest,
-        context: &LayoutContext,
-    ) -> Result<LayoutResult, LayoutError> {
-        run_tidy_tree_layout(graph, request, context)
+    fn place(&self, input: &PreparedLayoutInput<'_>) -> Result<LayoutPlacements, LayoutError> {
+        run_tidy_tree_layout(input)
     }
 }
 
-fn run_tidy_tree_layout(
-    graph: &Graph,
-    request: &LayoutRequest,
-    context: &LayoutContext,
-) -> Result<LayoutResult, LayoutError> {
-    validate_request(graph, request)?;
-
-    let mut projection = TidyTreeProjection::new(graph, request, context)?;
-    projection.layout(request.options);
+fn run_tidy_tree_layout(input: &PreparedLayoutInput<'_>) -> Result<LayoutPlacements, LayoutError> {
+    let mut projection = TidyTreeProjection::new(input);
+    projection.layout(input.options())?;
     projection.into_result()
 }
 
-struct TidyTreeProjection<'a> {
-    graph: &'a Graph,
-    request: &'a LayoutRequest,
+struct TidyTreeProjection {
     node_infos: BTreeMap<NodeId, TidyTreeNodeInfo>,
-    visible_edges: Vec<VisibleLayoutEdge>,
-    components: Vec<TidyTreeComponent>,
-    placements: BTreeMap<NodeId, LayoutNodePosition>,
+    visible_edges: Vec<PreparedLayoutEdge>,
+    components: Vec<SpanningForestComponent>,
+    placements: BTreeMap<NodeId, CanvasPoint>,
 }
 
 #[derive(Debug, Clone, Copy)]
 struct TidyTreeNodeInfo {
     size: CanvasSize,
-    origin: (f32, f32),
-}
-
-#[derive(Debug, Clone)]
-struct TidyTreeComponent {
-    root: NodeId,
-    children: BTreeMap<NodeId, Vec<NodeId>>,
-    depth: BTreeMap<NodeId, usize>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -68,43 +42,33 @@ struct TreeCoordinates {
     depth: usize,
 }
 
-impl<'a> TidyTreeProjection<'a> {
-    fn new(
-        graph: &'a Graph,
-        request: &'a LayoutRequest,
-        context: &'a LayoutContext,
-    ) -> Result<Self, LayoutError> {
+impl TidyTreeProjection {
+    fn new(input: &PreparedLayoutInput<'_>) -> Self {
         let mut node_infos = BTreeMap::new();
         let mut visible_nodes = BTreeSet::new();
+        let mut outgoing = BTreeMap::new();
 
-        for (id, node) in graph.nodes() {
-            if node.hidden || !request.scope.contains(*id) {
-                continue;
+        for node in input.nodes() {
+            node_infos.insert(node.id(), TidyTreeNodeInfo { size: node.size() });
+            visible_nodes.insert(node.id());
+            if !input.outgoing(node.id()).is_empty() {
+                outgoing.insert(node.id(), input.outgoing(node.id()).to_vec());
             }
-
-            let size = resolve_node_size(graph, request, context, *id)?;
-            let origin = normalized_node_origin(node.origin);
-
-            node_infos.insert(*id, TidyTreeNodeInfo { size, origin });
-            visible_nodes.insert(*id);
         }
 
-        let (outgoing, visible_edges) = build_visible_edge_projection(graph, &visible_nodes)?;
-        let components = build_components(&visible_nodes, &outgoing);
+        let components = build_spanning_forest(&visible_nodes, &outgoing);
 
-        Ok(Self {
-            graph,
-            request,
+        Self {
             node_infos,
-            visible_edges,
+            visible_edges: input.edges().to_vec(),
             components,
             placements: BTreeMap::new(),
-        })
+        }
     }
 
-    fn layout(&mut self, options: LayoutOptions) {
+    fn layout(&mut self, options: LayoutOptions) -> Result<(), LayoutError> {
         if self.node_infos.is_empty() {
-            return;
+            return Ok(());
         }
 
         let profile = TidyTreeProfile::new(options, &self.node_infos);
@@ -116,39 +80,30 @@ impl<'a> TidyTreeProjection<'a> {
             let component_size = component_main_span(&coordinates, &profile);
 
             for (node, coords) in coordinates {
-                let Some(info) = self.node_infos.get(&node).copied() else {
+                if !self.node_infos.contains_key(&node) {
                     continue;
-                };
+                }
                 let center = center_from_tree_coordinates(
                     coords,
                     component_offset,
                     &profile,
                     options.direction,
                 );
-                let pos = position_from_center(center, info.size, info.origin);
-
-                self.placements.insert(
-                    node,
-                    LayoutNodePosition {
-                        node,
-                        pos,
-                        center,
-                        size: info.size,
-                    },
-                );
+                self.placements.insert(node, center);
             }
 
             component_offset += component_size + profile.component_gap;
         }
+
+        Ok(())
     }
 
-    fn into_result(mut self) -> Result<LayoutResult, LayoutError> {
-        Ok(result_from_placements(
-            self.graph,
-            self.request.options,
-            &mut self.placements,
+    fn into_result(self) -> Result<LayoutPlacements, LayoutError> {
+        placements_from_centers(
+            self.placements,
             &self.visible_edges,
-        ))
+            LayoutCoordinateFrame::NormalizeToMargin,
+        )
     }
 }
 
@@ -192,76 +147,48 @@ impl TidyTreeProfile {
     }
 }
 
-fn build_components(
-    visible_nodes: &BTreeSet<NodeId>,
-    outgoing: &BTreeMap<NodeId, Vec<NodeId>>,
-) -> Vec<TidyTreeComponent> {
-    let mut roots = visible_nodes
-        .iter()
-        .copied()
-        .filter(|node| incoming_count(*node, outgoing) == 0)
-        .collect::<Vec<_>>();
-    let root_set = roots.iter().copied().collect::<BTreeSet<_>>();
-    roots.extend(
-        visible_nodes
-            .iter()
-            .copied()
-            .filter(|node| !root_set.contains(node)),
-    );
+fn compute_component_coordinates(
+    component: &SpanningForestComponent,
+    profile: &TidyTreeProfile,
+) -> BTreeMap<NodeId, TreeCoordinates> {
+    let mut coordinates: BTreeMap<NodeId, TreeCoordinates> = BTreeMap::new();
+    let mut next_leaf = 0.0;
 
-    let mut visited = BTreeSet::new();
-    let mut components = Vec::new();
-
-    for root in roots {
-        if !visited.insert(root) {
+    let mut stack = vec![(component.root, false)];
+    while let Some((node, expanded)) = stack.pop() {
+        if !expanded {
+            stack.push((node, true));
+            if let Some(children) = component.children.get(&node) {
+                for child in children.iter().rev() {
+                    stack.push((*child, false));
+                }
+            }
             continue;
         }
 
-        let mut children: BTreeMap<NodeId, Vec<NodeId>> = BTreeMap::new();
-        let mut depth: BTreeMap<NodeId, usize> = BTreeMap::new();
-        let mut queue = VecDeque::new();
-
-        queue.push_back(root);
-        depth.insert(root, 0);
-
-        while let Some(node) = queue.pop_front() {
-            let child_depth = depth.get(&node).copied().unwrap_or(0) + 1;
-            let next_nodes = outgoing.get(&node).cloned().unwrap_or_default();
-
-            for child in next_nodes {
-                if !visible_nodes.contains(&child) || !visited.insert(child) {
-                    continue;
-                }
-                children.entry(node).or_default().push(child);
-                depth.insert(child, child_depth);
-                queue.push_back(child);
+        let depth = component.depth.get(&node).copied().unwrap_or(0);
+        let main = match component.children.get(&node) {
+            Some(children) if !children.is_empty() => {
+                let first = children
+                    .first()
+                    .and_then(|child| coordinates.get(child))
+                    .map(|coords| coords.main)
+                    .unwrap_or(next_leaf);
+                let last = children
+                    .last()
+                    .and_then(|child| coordinates.get(child))
+                    .map(|coords| coords.main)
+                    .unwrap_or(first);
+                (first + last) * 0.5
             }
-        }
-
-        components.push(TidyTreeComponent {
-            root,
-            children,
-            depth,
-        });
+            _ => {
+                let main = next_leaf;
+                next_leaf += profile.sibling_stride();
+                main
+            }
+        };
+        coordinates.insert(node, TreeCoordinates { main, depth });
     }
-
-    components
-}
-
-fn compute_component_coordinates(
-    component: &TidyTreeComponent,
-    profile: &TidyTreeProfile,
-) -> BTreeMap<NodeId, TreeCoordinates> {
-    let mut coordinates = BTreeMap::new();
-    let mut next_leaf = 0.0;
-
-    assign_subtree_main(
-        component.root,
-        component,
-        profile,
-        &mut next_leaf,
-        &mut coordinates,
-    );
 
     let min_main = coordinates
         .values()
@@ -274,46 +201,6 @@ fn compute_component_coordinates(
     }
 
     coordinates
-}
-
-fn assign_subtree_main(
-    node: NodeId,
-    component: &TidyTreeComponent,
-    profile: &TidyTreeProfile,
-    next_leaf: &mut f32,
-    coordinates: &mut BTreeMap<NodeId, TreeCoordinates>,
-) -> f32 {
-    let depth = component.depth.get(&node).copied().unwrap_or(0);
-    let Some(children) = component.children.get(&node) else {
-        let main = *next_leaf;
-        *next_leaf += profile.sibling_stride();
-        coordinates.insert(node, TreeCoordinates { main, depth });
-        return main;
-    };
-
-    if children.is_empty() {
-        let main = *next_leaf;
-        *next_leaf += profile.sibling_stride();
-        coordinates.insert(node, TreeCoordinates { main, depth });
-        return main;
-    }
-
-    let mut child_mains = Vec::with_capacity(children.len());
-    for child in children {
-        child_mains.push(assign_subtree_main(
-            *child,
-            component,
-            profile,
-            next_leaf,
-            coordinates,
-        ));
-    }
-
-    let first = child_mains.first().copied().unwrap_or(*next_leaf);
-    let last = child_mains.last().copied().unwrap_or(first);
-    let main = (first + last) * 0.5;
-    coordinates.insert(node, TreeCoordinates { main, depth });
-    main
 }
 
 fn component_main_span(
@@ -350,12 +237,4 @@ fn center_from_tree_coordinates(
         LayoutDirection::LeftToRight => CanvasPoint { x: cross, y: main },
         LayoutDirection::RightToLeft => CanvasPoint { x: -cross, y: main },
     }
-}
-
-fn incoming_count(node: NodeId, outgoing: &BTreeMap<NodeId, Vec<NodeId>>) -> usize {
-    outgoing
-        .values()
-        .flat_map(|children| children.iter())
-        .filter(|child| **child == node)
-        .count()
 }

@@ -72,7 +72,6 @@ impl RealWindowSmokeProbe {
                     .viewport_transform()
                     .map_err(|_| "input_viewport_read_failed")?;
                 if after.pan != before.pan && interaction_is_settled(surface, cx) {
-                    self.interaction_mut()?.viewport_panned = true;
                     self.transition(ProbePhase::Zoom);
                     Ok(None)
                 } else {
@@ -109,7 +108,6 @@ impl RealWindowSmokeProbe {
                     .viewport_transform()
                     .map_err(|_| "input_viewport_read_failed")?;
                 if after.zoom != before.zoom {
-                    self.interaction_mut()?.viewport_zoomed = true;
                     self.transition(ProbePhase::ZoomRestore);
                     Ok(None)
                 } else {

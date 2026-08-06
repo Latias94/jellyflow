@@ -754,6 +754,7 @@ impl NativeGraphSurface {
         let host_focus = surface_focus.clone();
         let host = cx.new(move |_| {
             OpenGpuiSceneHost::new_measured_surface(view, registry)
+                .expect("valid Open GPUI scene host")
                 .with_graph_focus_handle(host_focus)
                 .with_navigation_config(navigation)
                 .with_initial_viewport_policy(initial_viewport_policy)

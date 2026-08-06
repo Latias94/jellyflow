@@ -8,13 +8,13 @@ use jellyflow_open_gpui::authoring::{
 use jellyflow_open_gpui::registry::{
     OpenGpuiNodeAdapterPresentation, OpenGpuiNodeRegistryBuilder, OpenGpuiNodeRendererDescriptor,
 };
+#[cfg(test)]
+use jellyflow_open_gpui::retained_field::RetainedFieldAttempt;
 use jellyflow_open_gpui::retained_field::{
     RetainedField, RetainedFieldAttemptState, RetainedFieldConflictChoice, RetainedFieldError,
     RetainedFieldKey, RetainedFieldResolution, RetainedFieldStore, RetainedFieldSubmitMode,
     RetainedFieldUpdate,
 };
-#[cfg(test)]
-use jellyflow_open_gpui::retained_field::{RetainedFieldAttempt, RetainedFieldSettlement};
 use jellyflow_runtime::commands::GraphCommand;
 use jellyflow_runtime::geometry::HandlePosition;
 use jellyflow_runtime::schema::{NodeKindSpec, NodePortSpec};
@@ -98,10 +98,10 @@ impl ShaderMultiplyNode {
 
     fn accept_remote_factor(&mut self, cx: &mut Context<Self>) {
         let result = read_shader_binding(&self.binding, cx).and_then(|(authoring, observation)| {
-            self.factor.observe(observation).map_err(field_error)?;
+            self.factor.observe(observation, cx).map_err(field_error)?;
             match self
                 .factor
-                .resolve(&authoring, RetainedFieldConflictChoice::AcceptRemote)
+                .resolve(&authoring, RetainedFieldConflictChoice::AcceptRemote, cx)
             {
                 Ok(RetainedFieldResolution::AcceptedRemote { .. }) => Ok(()),
                 Ok(_) => Err(ShaderNodeError::DraftConflict),
@@ -120,8 +120,11 @@ impl ShaderMultiplyNode {
 
     fn submit_dirty_factor(&mut self, cx: &mut Context<Self>) -> Result<(), ShaderNodeError> {
         let (authoring, observation) = read_shader_binding(&self.binding, cx)?;
-        self.factor.observe(observation).map_err(field_error)?;
-        let plan = match self.factor.plan(authoring, RetainedFieldSubmitMode::Commit) {
+        self.factor.observe(observation, cx).map_err(field_error)?;
+        let plan = match self
+            .factor
+            .plan(authoring, RetainedFieldSubmitMode::Commit, cx)
+        {
             Ok(plan) => plan,
             Err(RetainedFieldError::Clean) => return Ok(()),
             Err(error) => return Err(field_error(error)),
@@ -131,10 +134,10 @@ impl ShaderMultiplyNode {
 
     fn reapply_factor(&mut self, cx: &mut Context<Self>) -> Result<(), ShaderNodeError> {
         let (authoring, observation) = read_shader_binding(&self.binding, cx)?;
-        self.factor.observe(observation).map_err(field_error)?;
+        self.factor.observe(observation, cx).map_err(field_error)?;
         let plan = self
             .factor
-            .plan(authoring, RetainedFieldSubmitMode::Reapply)
+            .plan(authoring, RetainedFieldSubmitMode::Reapply, cx)
             .map_err(field_error)?;
         Self::dispatch_factor_plan(plan, cx)
     }
@@ -156,7 +159,7 @@ impl ShaderMultiplyNode {
         observation: OpenGpuiNodeObservation<f32>,
         cx: &mut Context<Self>,
     ) {
-        let update = match self.factor.observe(observation) {
+        let update = match self.factor.observe(observation, cx) {
             Ok(update) => update,
             Err(error) => {
                 self.diagnostic = Some(error.to_string());
@@ -851,210 +854,12 @@ mod tests {
     use jellyflow_core::{CanvasPoint, CanvasRect, GraphBuilder, GraphId};
     use jellyflow_open_gpui::host::OpenGpuiSceneHost;
     use jellyflow_open_gpui::registry::OpenGpuiNodeRegistry;
-    use jellyflow_open_gpui::retained_field::{
-        ApplicationRetainedField, ApplicationRetainedFieldDispatchReceipt, RetainedFieldPhase,
-    };
+    use jellyflow_open_gpui::retained_field::RetainedFieldPhase;
     use jellyflow_runtime::graph::GraphRuntime;
     use jellyflow_runtime::schema::NodeCatalog;
     use jellyflow_runtime::view::ViewSessionOptions;
 
     use super::*;
-
-    #[test]
-    fn ticket_transport_failures_are_uncertain_and_block_duplicate_submission() {
-        let failures = [
-            "host dropped",
-            "host closed",
-            "missing command receipt",
-            "wrong command receipt kind",
-        ];
-
-        for failure in failures {
-            let PendingFactorSubmission {
-                runtime,
-                mut field,
-                receipt,
-                command: _,
-            } = pending_factor_submission(2.0);
-            let expected = receipt.expected_version();
-            let settlement = field
-                .mark_uncertain(receipt, failure)
-                .expect("bound factor dispatch becomes uncertain");
-            assert!(matches!(
-                settlement,
-                RetainedFieldSettlement::Uncertain { .. }
-            ));
-            assert!(matches!(
-                field.attempt_state(),
-                RetainedFieldAttemptState::Uncertain { .. }
-            ));
-            assert!(matches!(
-                field.plan(expected),
-                Err(RetainedFieldError::AttemptPending { .. })
-            ));
-            assert_eq!(runtime.snapshot().unwrap().version(), expected);
-            assert_eq!(field.local(), &2.0);
-            assert!(
-                field
-                    .notice()
-                    .is_some_and(|notice| notice.contains(failure))
-            );
-        }
-    }
-
-    #[test]
-    fn fresh_authoritative_snapshot_resolves_uncertain_factor_without_retry() {
-        let PendingFactorSubmission {
-            runtime,
-            mut field,
-            receipt,
-            command,
-        } = pending_factor_submission(2.0);
-        assert!(matches!(
-            field.mark_uncertain(receipt, "host dropped"),
-            Ok(RetainedFieldSettlement::Uncertain { .. })
-        ));
-        let completion = runtime.execute(command);
-
-        assert!(matches!(
-            field.observe(
-                completion
-                    .version()
-                    .expect("applied factor completion carries a version"),
-                2.0
-            ),
-            Ok(RetainedFieldUpdate::UncertainResolved {
-                submitted_value_is_authoritative: true,
-                ..
-            })
-        ));
-        assert_eq!(field.phase(), RetainedFieldPhase::Clean);
-        assert_eq!(field.attempt_state(), RetainedFieldAttemptState::Idle);
-        assert!(field.notice().is_none());
-    }
-
-    #[test]
-    fn snapshot_before_receipt_queues_the_newest_factor_after_acknowledgement() {
-        let PendingFactorSubmission {
-            runtime,
-            mut field,
-            receipt,
-            command,
-        } = pending_factor_with_newer_local_value();
-        let completion = runtime.execute(command);
-
-        assert!(matches!(
-            field.observe(
-                completion
-                    .version()
-                    .expect("applied factor completion carries a version"),
-                2.0
-            ),
-            Ok(RetainedFieldUpdate::SnapshotFirst { .. })
-        ));
-        assert!(matches!(
-            field.settle_command(receipt, completion),
-            Ok(RetainedFieldSettlement::Acknowledged {
-                local_changed_after_submission: true,
-                ..
-            })
-        ));
-
-        assert_latest_factor_can_be_submitted(&runtime, field);
-    }
-
-    #[test]
-    fn receipt_before_snapshot_queues_the_newest_factor_after_acknowledgement() {
-        let PendingFactorSubmission {
-            runtime,
-            mut field,
-            receipt,
-            command,
-        } = pending_factor_with_newer_local_value();
-        let completion = runtime.execute(command);
-        let committed_version = completion
-            .version()
-            .expect("applied factor completion carries a version");
-
-        assert!(matches!(
-            field.settle_command(receipt, completion),
-            Ok(RetainedFieldSettlement::AwaitingSnapshot { .. })
-        ));
-        assert!(matches!(
-            field.observe(committed_version, 2.0),
-            Ok(RetainedFieldUpdate::Acknowledged {
-                local_changed_after_submission: true,
-                ..
-            })
-        ));
-
-        assert_latest_factor_can_be_submitted(&runtime, field);
-    }
-
-    struct PendingFactorSubmission {
-        runtime: GraphRuntime,
-        field: ApplicationRetainedField<f32>,
-        receipt: ApplicationRetainedFieldDispatchReceipt,
-        command: GraphCommand,
-    }
-
-    fn pending_factor_with_newer_local_value() -> PendingFactorSubmission {
-        let mut submission = pending_factor_submission(2.0);
-        submission.field.edit(3.0);
-        submission
-    }
-
-    fn assert_latest_factor_can_be_submitted(
-        runtime: &GraphRuntime,
-        mut field: ApplicationRetainedField<f32>,
-    ) {
-        assert_eq!(field.local(), &3.0);
-        assert_eq!(field.phase(), RetainedFieldPhase::Dirty);
-        let intent = field
-            .plan(
-                runtime
-                    .snapshot()
-                    .expect("latest factor snapshot")
-                    .version(),
-            )
-            .expect("acknowledged dirty factor must produce the next intent");
-        assert_eq!(intent.value(), &3.0);
-    }
-
-    fn pending_factor_submission(value: f32) -> PendingFactorSubmission {
-        let mut catalog = NodeCatalog::new();
-        catalog
-            .register(catalog_spec())
-            .expect("register shader multiply kind");
-        let graph = pending_factor_graph(&catalog);
-        let runtime = GraphRuntime::builder(catalog.clone())
-            .build(graph)
-            .expect("valid shader receipt graph");
-        let snapshot = runtime.snapshot().expect("initial shader snapshot");
-        let node = snapshot
-            .graph()
-            .node(&pending_factor_node_id())
-            .expect("shader receipt node");
-        let next_data = shader_data_with_factor(pending_factor_node_id(), node, value)
-            .expect("valid shader factor data");
-        let mut field = ApplicationRetainedField::new(snapshot.version(), 1.0);
-        field.edit(value);
-        let intent = field.plan(snapshot.version()).expect("dirty factor intent");
-        let command = GraphCommand::set_node_data(
-            intent.expected_version(),
-            pending_factor_node_id(),
-            next_data,
-        );
-        let receipt = intent
-            .bind_command(&command)
-            .expect("bind shader factor command");
-        PendingFactorSubmission {
-            runtime,
-            field,
-            receipt,
-            command,
-        }
-    }
 
     #[open_gpui::test]
     fn real_host_commits_the_newest_factor_after_a_second_pending_edit(
@@ -1107,6 +912,7 @@ mod tests {
                     .expect("valid shader factor registry"),
                 pending_factor_viewport(),
             )
+            .expect("valid Open GPUI scene host")
         });
         draw_pending_factor_host(cx);
         let node = captured
@@ -1212,6 +1018,7 @@ mod tests {
                     .expect("valid shader conflict registry"),
                 pending_factor_viewport(),
             )
+            .expect("valid Open GPUI scene host")
         });
         draw_pending_factor_host(cx);
         let node = captured

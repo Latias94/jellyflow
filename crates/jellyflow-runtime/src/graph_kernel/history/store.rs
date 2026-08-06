@@ -1,17 +1,9 @@
 use std::collections::VecDeque;
 
-#[cfg(test)]
-use std::cell::Cell;
-
 use crate::graph_kernel::{GraphTransaction, normalize_transaction};
 
 /// Maximum number of transactions retained by default.
 pub const DEFAULT_HISTORY_LIMIT: usize = 256;
-
-#[cfg(test)]
-thread_local! {
-    static PREPARED_TRANSACTION_COUNT: Cell<u64> = const { Cell::new(0) };
-}
 
 /// An undo/redo history for committed graph transactions.
 #[derive(Debug)]
@@ -43,16 +35,6 @@ impl GraphHistory {
         self.undo_len = 0;
     }
 
-    #[cfg(test)]
-    pub fn can_undo(&self) -> bool {
-        self.undo_len > 0
-    }
-
-    #[cfg(test)]
-    pub fn can_redo(&self) -> bool {
-        self.undo_len < self.transactions.len()
-    }
-
     pub fn undo_len(&self) -> usize {
         self.undo_len
     }
@@ -79,14 +61,12 @@ impl GraphHistory {
     /// Prepares the inverse of the latest applied transaction without changing history state.
     pub fn prepare_undo(&self) -> Option<GraphTransaction> {
         let transaction = self.transactions.get(self.undo_len.checked_sub(1)?)?;
-        Self::record_prepared_transaction();
         Some(transaction.inverse())
     }
 
     /// Prepares the next unapplied transaction without changing history state.
     pub fn prepare_redo(&self) -> Option<GraphTransaction> {
         let transaction = self.transactions.get(self.undo_len)?;
-        Self::record_prepared_transaction();
         Some(transaction.clone())
     }
 
@@ -102,20 +82,5 @@ impl GraphHistory {
         if self.undo_len < self.transactions.len() {
             self.undo_len += 1;
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn reset_prepared_transaction_count_for_test() {
-        PREPARED_TRANSACTION_COUNT.with(|count| count.set(0));
-    }
-
-    #[cfg(test)]
-    pub(crate) fn prepared_transaction_count_for_test() -> u64 {
-        PREPARED_TRANSACTION_COUNT.with(Cell::get)
-    }
-
-    fn record_prepared_transaction() {
-        #[cfg(test)]
-        PREPARED_TRANSACTION_COUNT.with(|count| count.set(count.get().saturating_add(1)));
     }
 }

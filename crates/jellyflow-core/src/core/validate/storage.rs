@@ -105,6 +105,15 @@ impl<'a> StorageValidator<'a> {
             self.report
                 .push(GraphValidationError::NodeOriginNotFinite { node: node_id });
         }
+        if node.pos.is_finite()
+            && node.origin.is_none_or(|origin| origin.is_finite())
+            && let Some(size) = node.size
+            && size.is_positive_finite()
+            && node.bounds_for_size(size).is_none()
+        {
+            self.report
+                .push(GraphValidationError::NodeBoundsNotFinite { node: node_id });
+        }
         if matches!(
             node.extent,
             Some(NodeExtent::Rect { rect }) if !rect.is_finite()

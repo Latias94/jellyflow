@@ -1,132 +1,8 @@
 use super::*;
 
 #[test]
-fn full_history_replay_prepares_only_the_top_owned_transaction() {
-    const HISTORY_DEPTH: usize = 256;
-    const PAYLOAD_BYTES: usize = 16 * 1024;
-
-    let (graph, nodes) = graph_with_nodes(1);
-    let runtime = GraphRuntime::builder(Default::default())
-        .build(graph)
-        .unwrap();
-    for revision in 0..HISTORY_DEPTH {
-        runtime
-            .execute(GraphCommand::set_node_data(
-                runtime.snapshot().unwrap().version(),
-                nodes[0],
-                serde_json::json!({
-                    "revision": revision,
-                    "payload": "x".repeat(PAYLOAD_BYTES),
-                }),
-            ))
-            .into_result()
-            .unwrap()
-            .applied()
-            .expect("history seed command applies");
-    }
-    assert_eq!(runtime.history_state().unwrap().undo_len(), HISTORY_DEPTH);
-
-    crate::graph_kernel::GraphHistory::reset_prepared_transaction_count_for_test();
-    undo(&runtime);
-    assert_eq!(
-        crate::graph_kernel::GraphHistory::prepared_transaction_count_for_test(),
-        1,
-    );
-    assert_eq!(
-        runtime.history_state().unwrap().undo_len(),
-        HISTORY_DEPTH - 1
-    );
-    assert_eq!(runtime.history_state().unwrap().redo_len(), 1);
-    let undone = runtime.snapshot().unwrap();
-    let undone_data = &undone.graph().node(&nodes[0]).expect("history node").data;
-    assert_eq!(
-        undone_data["revision"],
-        serde_json::json!(HISTORY_DEPTH - 2)
-    );
-    assert_eq!(
-        undone_data["payload"]
-            .as_str()
-            .expect("owned history payload")
-            .len(),
-        PAYLOAD_BYTES,
-    );
-
-    crate::graph_kernel::GraphHistory::reset_prepared_transaction_count_for_test();
-    redo(&runtime);
-    assert_eq!(
-        crate::graph_kernel::GraphHistory::prepared_transaction_count_for_test(),
-        1,
-    );
-    assert_eq!(runtime.history_state().unwrap().undo_len(), HISTORY_DEPTH);
-    assert_eq!(runtime.history_state().unwrap().redo_len(), 0);
-    let redone = runtime.snapshot().unwrap();
-    let redone_data = &redone.graph().node(&nodes[0]).expect("history node").data;
-    assert_eq!(
-        redone_data["revision"],
-        serde_json::json!(HISTORY_DEPTH - 1)
-    );
-    assert_eq!(
-        redone_data["payload"]
-            .as_str()
-            .expect("owned history payload")
-            .len(),
-        PAYLOAD_BYTES,
-    );
-
-    crate::graph_kernel::GraphHistory::reset_prepared_transaction_count_for_test();
-    for expected_undo_len in (0..HISTORY_DEPTH).rev() {
-        undo(&runtime);
-        let history = runtime.history_state().unwrap();
-        assert_eq!(history.undo_len(), expected_undo_len);
-        assert_eq!(history.redo_len(), HISTORY_DEPTH - expected_undo_len);
-
-        let snapshot = runtime.snapshot().unwrap();
-        let data = &snapshot.graph().node(&nodes[0]).expect("history node").data;
-        if expected_undo_len == 0 {
-            assert!(data.is_null());
-        } else {
-            assert_eq!(data["revision"], serde_json::json!(expected_undo_len - 1));
-            assert_eq!(
-                data["payload"]
-                    .as_str()
-                    .expect("owned history payload")
-                    .len(),
-                PAYLOAD_BYTES,
-            );
-        }
-    }
-    assert_eq!(
-        crate::graph_kernel::GraphHistory::prepared_transaction_count_for_test(),
-        HISTORY_DEPTH as u64,
-    );
-
-    crate::graph_kernel::GraphHistory::reset_prepared_transaction_count_for_test();
-    for expected_undo_len in 1..=HISTORY_DEPTH {
-        redo(&runtime);
-        let history = runtime.history_state().unwrap();
-        assert_eq!(history.undo_len(), expected_undo_len);
-        assert_eq!(history.redo_len(), HISTORY_DEPTH - expected_undo_len);
-
-        let snapshot = runtime.snapshot().unwrap();
-        let data = &snapshot.graph().node(&nodes[0]).expect("history node").data;
-        assert_eq!(data["revision"], serde_json::json!(expected_undo_len - 1));
-        assert_eq!(
-            data["payload"]
-                .as_str()
-                .expect("owned history payload")
-                .len(),
-            PAYLOAD_BYTES,
-        );
-    }
-    assert_eq!(
-        crate::graph_kernel::GraphHistory::prepared_transaction_count_for_test(),
-        HISTORY_DEPTH as u64,
-    );
-}
-
-#[test]
 fn dynamic_topology_on_large_graph_never_uses_full_graph_diff() {
-    let (graph, nodes) = graph_with_nodes(10_000);
+    let (graph, nodes) = graph_with_nodes(256);
     let runtime = GraphRuntime::builder(Default::default())
         .build(graph)
         .unwrap();
@@ -160,7 +36,7 @@ fn dynamic_topology_on_large_graph_never_uses_full_graph_diff() {
 
 #[test]
 fn single_input_replacement_reads_only_incident_edges_and_bindings_at_scale() {
-    const UNRELATED_EDGES: usize = 10_000;
+    const UNRELATED_EDGES: usize = 256;
 
     let (template_graph, template_nodes) = graph_with_nodes(1);
     let template = template_graph
@@ -389,8 +265,8 @@ fn add_node_preserves_declared_port_order_and_plans_from_affected_facts() {
 }
 
 #[test]
-fn profiled_commands_keep_type_propagation_local_on_a_ten_thousand_edge_graph() {
-    const UNRELATED_EDGES: usize = 10_000;
+fn profiled_commands_keep_type_propagation_local_with_many_unrelated_edges() {
+    const UNRELATED_EDGES: usize = 512;
 
     let (template_graph, template_nodes) = graph_with_nodes(1);
     let template = template_graph

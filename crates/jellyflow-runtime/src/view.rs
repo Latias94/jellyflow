@@ -15,7 +15,7 @@ pub use crate::runtime::adapter_protocol::{
     LayoutPublicationReceipt, NodeInstanceKey, NodeLayout, NodeLayoutBuilder,
     NodeLayoutBuilderError, NodeLayoutTarget, PortLayoutOutcome, PortLayoutTarget,
     PublishedEdgeRoute, PublishedNodeGeometry, PublishedPortGeometry, PublishedPortOutcome,
-    RenderedPortLayout, RendererStamp, StaleFrameReason,
+    RenderedPortLayout, RendererStamp, RouteGeometryRevision, StaleFrameReason,
 };
 pub use crate::runtime::view_session::{
     AttachViewError, ConnectionProbeQueryReceipt, ConnectionProbeWork, EdgePick, EdgePickCursor,
@@ -23,12 +23,11 @@ pub use crate::runtime::view_session::{
     EdgePickQueryOutcome, EdgePickQueryReceipt, EdgePickWork, NodeBindingEvent, NodeBindingKey,
     NodeIntersectionCursor, NodeIntersectionCursorStaleReason, NodeIntersectionQuery,
     NodeIntersectionQueryError, NodeIntersectionQueryOutcome, NodeIntersectionQueryReceipt,
-    NodeIntersectionWork, RouteGeometryRevision, RuntimePatchFactReceipt,
-    RuntimePatchGeometryReceipt, RuntimePatchReconciliationReceipt, RuntimePatchSelectionReceipt,
-    ViewCloseOutcome, ViewCloseReason, ViewCloseRequest, ViewCreateFromWireQueryError,
-    ViewGeneration, ViewId, ViewProvenance, ViewSession, ViewSessionError, ViewSessionEvent,
-    ViewSessionOptions, ViewSubscriptionToken, VisibleRoute, VisibleRouteCursor,
-    VisibleRouteCursorStaleReason, VisibleRouteGeometryOverflow, VisibleRouteQuery,
-    VisibleRouteQueryError, VisibleRouteQueryOutcome, VisibleRouteQueryRevision,
-    VisibleRouteQueryWork, VisibleRoutes, WeakViewSession,
+    NodeIntersectionWork, RuntimePatchFactReceipt, RuntimePatchGeometryReceipt,
+    RuntimePatchReconciliationReceipt, RuntimePatchSelectionReceipt, ViewCloseOutcome,
+    ViewCloseReason, ViewCloseRequest, ViewCreateFromWireQueryError, ViewGeneration, ViewId,
+    ViewProvenance, ViewSession, ViewSessionError, ViewSessionEvent, ViewSessionOptions,
+    ViewSubscriptionToken, VisibleRoute, VisibleRouteGeometryOverflow, VisibleRouteQueryRevision,
+    VisibleRouteQueryWork, VisibleRouteWorkError, VisibleRouteWorkRequest, VisibleRouteWorkSession,
+    VisibleRouteWorkStatus, VisibleRouteWorkUpdate, VisibleRoutes, WeakViewSession,
 };

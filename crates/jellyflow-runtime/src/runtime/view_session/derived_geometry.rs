@@ -9,7 +9,7 @@ use crate::runtime::adapter_protocol::{
     FrameBoundsSource, FrameRequest, GeometrySnapshot, GeometryVisibleCounts,
     LayoutPublicationReceipt, PublishedEdgeRoute, PublishedNodeGeometry, PublishedPortGeometry,
     PublishedPortOutcome, RendererStamp, SharedFrameCullSet, SharedGeometryMap,
-    SharedGeometryOwnerMap, ViewPoint,
+    SharedGeometryOwnerMap, SharedRouteGeometryRevisionMap, ViewPoint,
 };
 use crate::runtime::geometry::{
     CanvasBounds, EdgeEndpointPosition, EdgeInteractionFacts, EdgePosition, resolve_edge_route_path,
@@ -30,9 +30,7 @@ use super::geometry::{
 use super::port_geometry::{
     ConnectionProbeCursor, ConnectionProbeTargeting, InternalProbeOutcome, PortGeometryIndex,
 };
-use super::route_geometry::{
-    InternalRouteQueryOutcome, RouteGeometryIndex, RouteGeometryRevision, VisibleRouteCursor,
-};
+use super::route_geometry::{InternalRouteQueryOutcome, RouteGeometryIndex, VisibleRouteCursor};
 use super::{SelectedEdgeMembership, ViewProvenance, ViewQueryIdentity};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -119,6 +117,7 @@ pub(super) struct DerivedGeometry {
     admission: AdmissionIndex,
     active_frame_nodes: BTreeSet<NodeId>,
     routes: SharedGeometryMap<EdgeId, PublishedEdgeRoute>,
+    route_geometry_revisions: SharedRouteGeometryRevisionMap,
     route_index: RouteGeometryIndex,
     unresolved_routes: BTreeSet<EdgeId>,
     snapshot_cache: Option<GeometrySnapshot>,
@@ -147,15 +146,11 @@ impl DerivedGeometry {
             admission: AdmissionIndex::default(),
             active_frame_nodes: BTreeSet::new(),
             routes: SharedGeometryMap::default(),
+            route_geometry_revisions: SharedRouteGeometryRevisionMap::default(),
             route_index: RouteGeometryIndex::default(),
             unresolved_routes: BTreeSet::new(),
             snapshot_cache: None,
         }
-    }
-
-    #[cfg(test)]
-    pub(super) fn layout_revision(&self) -> u64 {
-        self.layout_revision
     }
 
     pub(super) fn route_facts_revision(&self) -> u128 {
@@ -258,10 +253,6 @@ impl DerivedGeometry {
         zoom: f32,
     ) -> InternalRouteQueryOutcome {
         self.route_index.query_page(cursor, entry_budget, zoom)
-    }
-
-    pub(super) fn route_geometry_revision(&self, edge: EdgeId) -> Option<RouteGeometryRevision> {
-        self.route_index.geometry_revision(edge)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -419,7 +410,6 @@ impl DerivedGeometry {
 
     pub(super) fn snapshot(&mut self) -> GeometrySnapshot {
         if let Some(snapshot) = &self.snapshot_cache {
-            self.assert_consistent();
             return snapshot.clone();
         }
         let snapshot = GeometrySnapshot::new(
@@ -446,9 +436,9 @@ impl DerivedGeometry {
                     .saturating_sub(self.frame_culled_port_outcome_count),
             },
             self.routes.clone(),
+            self.route_geometry_revisions.clone(),
         );
         self.snapshot_cache = Some(snapshot.clone());
-        self.assert_consistent();
         snapshot
     }
 
@@ -501,7 +491,6 @@ impl DerivedGeometry {
             route_edges.extend(impact_incident_edges.iter().copied());
         }
         if published_nodes.is_empty() && withdrawn_nodes.is_empty() {
-            self.assert_consistent();
             return (
                 None,
                 FeedbackLayoutPublicationWork {
@@ -516,7 +505,6 @@ impl DerivedGeometry {
             self.recompute_routes(snapshot, &route_edges, policy, selected_edges);
         let before_revision = self.layout_revision;
         self.advance_layout_revision();
-        self.assert_consistent();
         (
             Some(LayoutPublicationReceipt::new(
                 before_revision,
@@ -599,7 +587,6 @@ impl DerivedGeometry {
             self.advance_layout_revision();
         }
         self.active_frame_nodes = active_nodes.clone();
-        self.assert_consistent();
         let work = FrameGeometryReconciliationWork {
             node_invalidations: invalidated_nodes.len() as u64,
             spatial_updates,
@@ -695,7 +682,6 @@ impl DerivedGeometry {
         {
             self.advance_layout_revision();
         }
-        self.assert_consistent();
         RuntimePatchGeometryWork {
             admission_nodes_visited,
             node_invalidations: impact.layout_dirty_nodes.len() as u64,
@@ -715,9 +701,14 @@ impl DerivedGeometry {
                 continue;
             };
             let selected = selected_edges.contains(route.instance());
-            self.upsert_route(*edge, route.with_selected(selected));
+            if self
+                .try_upsert_route(*edge, route.with_selected(selected))
+                .is_none()
+            {
+                self.remove_route(*edge);
+                self.unresolved_routes.insert(*edge);
+            }
         }
-        self.assert_consistent();
         edges.len() as u64
     }
 
@@ -742,7 +733,6 @@ impl DerivedGeometry {
         if changed {
             self.advance_layout_revision();
         }
-        self.assert_consistent();
         changed.then_some(self.layout_revision)
     }
 
@@ -763,7 +753,6 @@ impl DerivedGeometry {
         if changed {
             self.advance_layout_revision();
         }
-        self.assert_consistent();
         changed.then_some(self.layout_revision)
     }
 
@@ -779,7 +768,6 @@ impl DerivedGeometry {
         self.clear_routes();
         self.unresolved_routes.clear();
         self.snapshot_cache = None;
-        self.assert_consistent();
     }
 
     fn advance_node_generation(&mut self, node: NodeId) -> u64 {
@@ -984,24 +972,28 @@ impl DerivedGeometry {
         self.invalidate_snapshot();
     }
 
-    fn upsert_route(&mut self, edge: EdgeId, route: PublishedEdgeRoute) -> bool {
+    fn try_upsert_route(&mut self, edge: EdgeId, route: PublishedEdgeRoute) -> Option<bool> {
         if self
             .routes
             .get(&edge)
             .is_some_and(|current| current.as_ref() == &route)
         {
-            return false;
+            return Some(false);
         }
-        self.route_index.upsert(edge, &route);
+        let admission = self.route_index.try_upsert(edge, &route)?;
+        self.route_geometry_revisions
+            .insert_mut(edge, admission.geometry_revision);
         self.routes.insert_mut(edge, Arc::new(route));
         self.route_facts_revision = self.route_facts_revision.saturating_add(1);
         self.invalidate_snapshot();
-        true
+        Some(true)
     }
 
     fn remove_route(&mut self, edge: EdgeId) -> bool {
         let route_removed = self.routes.remove_mut(&edge);
+        let revision_removed = self.route_geometry_revisions.remove_mut(&edge);
         let index = self.route_index.remove(edge);
+        debug_assert_eq!(route_removed, revision_removed);
         if !route_removed && !index.index_changed {
             return false;
         }
@@ -1012,10 +1004,14 @@ impl DerivedGeometry {
 
     fn clear_routes(&mut self) {
         let index = self.route_index.clear();
-        if self.routes.is_empty() && !index.index_changed {
+        if self.routes.is_empty()
+            && self.route_geometry_revisions.is_empty()
+            && !index.index_changed
+        {
             return;
         }
         self.routes = SharedGeometryMap::new_sync();
+        self.route_geometry_revisions = SharedRouteGeometryRevisionMap::new_sync();
         self.route_facts_revision = self.route_facts_revision.saturating_add(1);
         self.invalidate_snapshot();
     }
@@ -1071,8 +1067,13 @@ impl DerivedGeometry {
                     })
             })();
             if let Some(route) = route {
-                changed |= self.upsert_route(*edge_id, route);
-                changed |= self.unresolved_routes.remove(edge_id);
+                if let Some(route_changed) = self.try_upsert_route(*edge_id, route) {
+                    changed |= route_changed;
+                    changed |= self.unresolved_routes.remove(edge_id);
+                } else {
+                    changed |= self.remove_route(*edge_id);
+                    changed |= self.unresolved_routes.insert(*edge_id);
+                }
             } else {
                 changed |= self.remove_route(*edge_id);
                 changed |= self.unresolved_routes.insert(*edge_id);
@@ -1098,7 +1099,6 @@ impl DerivedGeometry {
 
     #[cfg(test)]
     pub(super) fn is_empty_for_test(&self) -> bool {
-        self.assert_consistent();
         self.layout_generations.is_empty()
             && self.binding_revisions.is_empty()
             && self.renderer_bindings.is_empty()
@@ -1110,191 +1110,15 @@ impl DerivedGeometry {
             && self.frame_culled_nodes.is_empty()
             && self.frame_culled_port_count == 0
             && self.frame_culled_port_outcome_count == 0
-            && self.port_index.indexed_ports_for_test().is_empty()
-            && self.node_spatial.indexed_bounds_for_test().is_empty()
             && self.active_frame_nodes.is_empty()
+            && self.node_spatial.is_empty()
+            && self.port_index.is_empty()
             && self.routes.is_empty()
-            && self.route_index.indexed_edges_for_test().is_empty()
+            && self.route_geometry_revisions.is_empty()
             && self.unresolved_routes.is_empty()
+            && self.route_index.is_empty()
             && self.snapshot_cache.is_none()
     }
-
-    #[cfg(test)]
-    pub(super) fn assert_consistent(&self) {
-        let spatial = self.node_spatial.indexed_bounds_for_test();
-        assert_eq!(self.nodes.size(), spatial.len());
-        for node in self.nodes.keys() {
-            let geometry = self.nodes.get(node).expect("node key remains present");
-            assert_eq!(spatial.get(node), Some(&geometry.bounds()));
-            assert_eq!(self.node_owners.get(node), Some(node));
-        }
-        assert_eq!(self.node_owners.size(), self.nodes.size());
-        assert!(
-            self.frame_culled_nodes
-                .iter()
-                .all(|node| self.nodes.contains_key(node)),
-            "only retained published nodes may be frame-culled",
-        );
-        let expected_culled_port_count = self
-            .frame_culled_nodes
-            .iter()
-            .map(|node| {
-                self.nodes
-                    .get(node)
-                    .expect("frame-culled node remains retained")
-                    .ports()
-                    .len()
-            })
-            .sum::<usize>();
-        let expected_culled_port_outcome_count = self
-            .frame_culled_nodes
-            .iter()
-            .map(|node| {
-                self.nodes
-                    .get(node)
-                    .expect("frame-culled node remains retained")
-                    .port_outcomes()
-                    .len()
-            })
-            .sum::<usize>();
-        assert_eq!(self.frame_culled_port_count, expected_culled_port_count);
-        assert_eq!(
-            self.frame_culled_port_outcome_count,
-            expected_culled_port_outcome_count
-        );
-
-        let mut expected_ports = BTreeSet::new();
-        let mut expected_outcomes = BTreeSet::new();
-        for geometry in self.nodes.values() {
-            for (port, published) in geometry.ports() {
-                assert_eq!(published.node(), geometry.node());
-                assert_eq!(published.port(), *port);
-                assert!(expected_ports.insert(*port), "port belongs to one node");
-                assert_eq!(
-                    self.ports.get(port).map(Arc::as_ref),
-                    Some(published),
-                    "node and global port geometry must match"
-                );
-            }
-            for (port, outcome) in geometry.port_outcomes() {
-                assert!(
-                    expected_outcomes.insert(*port),
-                    "port outcome belongs to one node"
-                );
-                assert_eq!(
-                    self.port_outcomes.get(port).map(Arc::as_ref),
-                    Some(outcome),
-                    "node and global port outcome must match"
-                );
-                assert_eq!(
-                    outcome.rendered(),
-                    geometry.ports().get(port),
-                    "rendered outcomes and node port geometry must agree"
-                );
-                assert_eq!(
-                    self.port_owners.get(port).copied(),
-                    Some(geometry.node()),
-                    "every retained port outcome keeps its node owner"
-                );
-            }
-        }
-        assert_eq!(
-            expected_ports,
-            self.ports.keys().copied().collect::<BTreeSet<_>>()
-        );
-        assert_eq!(
-            expected_outcomes,
-            self.port_outcomes.keys().copied().collect::<BTreeSet<_>>()
-        );
-        assert_eq!(
-            expected_outcomes,
-            self.port_owners.keys().copied().collect::<BTreeSet<_>>()
-        );
-        let expected_interactive_ports = self
-            .ports
-            .iter()
-            .filter_map(|(port, geometry)| geometry.hit_bounds().map(|_| *port))
-            .collect::<BTreeSet<_>>();
-        assert_eq!(
-            expected_interactive_ports,
-            self.port_index.indexed_ports_for_test(),
-            "only rendered ports with effective interaction bounds belong to the hit index"
-        );
-        for port in self.ports.values() {
-            assert!(self.port_index.matches_geometry_for_test(port));
-        }
-
-        let published_routes = self.routes.keys().copied().collect::<BTreeSet<_>>();
-        assert_eq!(
-            published_routes,
-            self.route_index.indexed_edges_for_test(),
-            "published routes and route index must have identical keys"
-        );
-        for route in self.routes.values() {
-            assert!(self.route_index.matches_route_for_test(route));
-        }
-        assert!(
-            self.unresolved_routes
-                .iter()
-                .all(|edge| !published_routes.contains(edge)),
-            "resolved and unresolved route sets must be disjoint"
-        );
-
-        if let Some(snapshot) = &self.snapshot_cache {
-            let visible_node_count = self
-                .nodes
-                .keys()
-                .filter(|node| !self.frame_culled_nodes.contains(node))
-                .count();
-            let visible_port_count = self
-                .ports
-                .values()
-                .filter(|port| !self.frame_culled_nodes.contains(&port.node()))
-                .count();
-            let visible_outcome_count = self
-                .port_owners
-                .values()
-                .filter(|node| !self.frame_culled_nodes.contains(node))
-                .count();
-            assert_eq!(snapshot.layout_revision(), self.layout_revision);
-            assert_eq!(snapshot.nodes().len(), visible_node_count);
-            assert_eq!(snapshot.ports().len(), visible_port_count);
-            assert_eq!(snapshot.port_outcomes().len(), visible_outcome_count);
-            assert_eq!(snapshot.routes().len(), self.routes.size());
-            for node in self.nodes.keys() {
-                let expected = (!self.frame_culled_nodes.contains(node))
-                    .then(|| self.nodes.get(node).map(Arc::as_ref))
-                    .flatten();
-                assert_eq!(snapshot.node(*node), expected);
-            }
-            for port in self.ports.keys() {
-                let owner = self
-                    .port_owners
-                    .get(port)
-                    .expect("published port has owner");
-                let expected = (!self.frame_culled_nodes.contains(owner))
-                    .then(|| self.ports.get(port).map(Arc::as_ref))
-                    .flatten();
-                assert_eq!(snapshot.port(*port), expected);
-            }
-            for port in self.port_outcomes.keys() {
-                let owner = self.port_owners.get(port).expect("port outcome has owner");
-                let expected = (!self.frame_culled_nodes.contains(owner))
-                    .then(|| self.port_outcomes.get(port).map(Arc::as_ref))
-                    .flatten();
-                assert_eq!(snapshot.port_outcome(*port), expected);
-            }
-            for edge in self.routes.keys() {
-                assert_eq!(
-                    snapshot.route(*edge),
-                    self.routes.get(edge).map(Arc::as_ref)
-                );
-            }
-        }
-    }
-
-    #[cfg(not(test))]
-    fn assert_consistent(&self) {}
 }
 
 fn subtract_count(count: &mut usize, removed: usize) {

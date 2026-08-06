@@ -1,9 +1,9 @@
 use super::SmokeExpectations;
 use jellyflow_core::{CanvasPoint, CanvasRect, EdgeId, NodeGraphConnectionMode, NodeId, PortId};
+use jellyflow_open_gpui::host::resolve_smoke_reconnect_hit_center;
 use jellyflow_runtime::commands::ConnectionEdit;
 use jellyflow_runtime::geometry::{
-    EdgeHitTestOptions, EdgePath, EdgePathAnchor, EdgePathFlattenError, HandlePosition,
-    edge_path_distance,
+    EdgeHitTestOptions, EdgePath, EdgePathAnchor, EdgePathFlattenError, edge_path_distance,
 };
 use jellyflow_runtime::geometry::{ViewPoint, ViewRect, ViewSize};
 use jellyflow_runtime::graph::EdgeEndpoint;
@@ -16,7 +16,6 @@ const INPUT_SAFE_AREA_IN_VIEW: f32 = 48.0;
 const CONNECTION_AUTOPAN_SETTLE_MARGIN_IN_VIEW: f32 = 40.0;
 const CONNECTION_AUTOPAN_MAX_TARGET_OFFSET_IN_VIEW: f32 = 8.0;
 const AUTOPAN_EDGE_INSET_IN_VIEW: f32 = 12.0;
-const RECONNECT_GRIP_OFFSET_IN_VIEW: f32 = 12.0;
 const EDGE_PICK_SAMPLE_COUNT: u16 = 64;
 const EDGE_PICK_ENDPOINT_INSET: f32 = 0.02;
 const EDGE_PICK_CONTROL_CLEARANCE_IN_VIEW: f32 = 12.0;
@@ -641,49 +640,69 @@ pub(super) fn visible_reconnect_grip(
     edge: EdgeId,
     endpoint: EdgeEndpoint,
     surface_size: ViewSize,
+    hit_diameter: f32,
 ) -> Result<Option<ViewPoint>, &'static str> {
-    let Some(edge_canvas) = reconnect_grip_canvas_point(view, edge, endpoint)? else {
+    let geometry = view
+        .geometry_snapshot()
+        .map_err(|_| "geometry_snapshot_read_failed")?;
+    let snapshot = view
+        .graph_snapshot()
+        .map_err(|_| "input_graph_snapshot_failed")?;
+    let Some(route) = geometry.route(edge) else {
         return Ok(None);
     };
-    if !reveal_canvas_points(view, surface_size, &[edge_canvas])? {
+    let Some(graph_edge) = snapshot.graph().edge(&edge) else {
+        return Ok(None);
+    };
+    let (position, path_anchor, port) = match endpoint {
+        EdgeEndpoint::From => (
+            route.facts().endpoints.source,
+            EdgePathAnchor::Source,
+            graph_edge.from,
+        ),
+        EdgeEndpoint::To => (
+            route.facts().endpoints.target,
+            EdgePathAnchor::Target,
+            graph_edge.to,
+        ),
+    };
+    let anchor_canvas = route
+        .facts()
+        .path
+        .sample(path_anchor)
+        .map_or(position.point, |sample| sample.point);
+    if !reveal_canvas_points(view, surface_size, &[anchor_canvas])? {
         return Ok(None);
     }
     let transform = view
         .viewport_transform()
         .map_err(|_| "input_viewport_read_failed")?;
-    Ok(transform.screen_point_for_canvas(edge_canvas))
-}
-
-fn reconnect_grip_canvas_point(
-    view: &WeakViewSession,
-    edge: EdgeId,
-    endpoint: EdgeEndpoint,
-) -> Result<Option<CanvasPoint>, &'static str> {
-    let geometry = view
-        .geometry_snapshot()
-        .map_err(|_| "geometry_snapshot_read_failed")?;
-    let Some(route) = geometry.route(edge) else {
+    let Some(anchor) = transform.screen_point_for_canvas(anchor_canvas) else {
         return Ok(None);
     };
-    let position = match endpoint {
-        EdgeEndpoint::From => route.facts().endpoints.source,
-        EdgeEndpoint::To => route.facts().endpoints.target,
-    };
-    let zoom = view
-        .viewport_transform()
-        .map_err(|_| "input_viewport_read_failed")?
-        .zoom;
-    let offset = RECONNECT_GRIP_OFFSET_IN_VIEW / zoom;
-    let direction = match position.position {
-        HandlePosition::Top => CanvasPoint { x: 0.0, y: -1.0 },
-        HandlePosition::Right => CanvasPoint { x: 1.0, y: 0.0 },
-        HandlePosition::Bottom => CanvasPoint { x: 0.0, y: 1.0 },
-        HandlePosition::Left => CanvasPoint { x: -1.0, y: 0.0 },
-    };
-    Ok(Some(CanvasPoint {
-        x: position.point.x + direction.x * offset,
-        y: position.point.y + direction.y * offset,
-    }))
+    let port_hit_bounds = geometry
+        .port_outcome(port)
+        .and_then(PublishedPortOutcome::rendered)
+        .and_then(|port| port.hit_bounds())
+        .and_then(|bounds| project_canvas_rect(bounds, transform));
+    Ok(Some(resolve_smoke_reconnect_hit_center(
+        anchor,
+        position.position,
+        port_hit_bounds,
+        hit_diameter,
+    )))
+}
+
+fn project_canvas_rect(bounds: CanvasRect, transform: ViewportTransform) -> Option<ViewRect> {
+    let origin = transform.screen_point_for_canvas(bounds.origin)?;
+    let opposite = transform.screen_point_for_canvas(CanvasPoint {
+        x: bounds.origin.x + bounds.size.width,
+        y: bounds.origin.y + bounds.size.height,
+    })?;
+    Some(ViewRect::new(
+        origin,
+        ViewSize::new(opposite.x - origin.x, opposite.y - origin.y),
+    ))
 }
 
 fn port_canvas_point(
@@ -997,7 +1016,6 @@ fn point_delta(current: CanvasPoint, original: CanvasPoint) -> CanvasPoint {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jellyflow_core::{CanvasRect, CanvasSize};
     use jellyflow_runtime::geometry::{EdgePathLabel, PathCommand};
 
     fn horizontal_path(y: f32) -> EdgePath {
@@ -1015,7 +1033,7 @@ mod tests {
     }
 
     #[test]
-    fn edge_pick_planning_rejects_nearly_overlapping_routes() {
+    fn edge_pick_planning_requires_a_current_unique_route_hit() {
         let target = horizontal_path(0.0);
         let overlapping = horizontal_path(0.5);
 
@@ -1030,13 +1048,8 @@ mod tests {
             .expect("valid routes"),
             None,
         );
-    }
 
-    #[test]
-    fn edge_pick_planning_accepts_a_route_with_stable_separation() {
-        let target = horizontal_path(0.0);
         let separated = horizontal_path(4.0);
-
         let margin = unique_edge_candidate_margin(
             &target,
             [&separated],
@@ -1047,10 +1060,7 @@ mod tests {
         .expect("valid routes")
         .expect("stable unique candidate");
         assert!((margin - 4.0).abs() <= f32::EPSILON);
-    }
 
-    #[test]
-    fn edge_pick_planning_invalidates_a_cached_point_after_the_route_moves() {
         let moved_target = horizontal_path(20.0);
         let route_at_cached_point = horizontal_path(0.0);
 
@@ -1064,27 +1074,6 @@ mod tests {
             )
             .expect("valid routes"),
             None,
-        );
-    }
-
-    #[test]
-    fn node_bounds_project_into_view_space_for_blank_surface_planning() {
-        let transform = ViewportTransform::new(CanvasPoint { x: -20.0, y: 10.0 }, 2.0)
-            .expect("valid transform");
-        let bounds = CanvasRect {
-            origin: CanvasPoint { x: 100.0, y: 50.0 },
-            size: CanvasSize {
-                width: 200.0,
-                height: 100.0,
-            },
-        };
-
-        assert_eq!(
-            projected_node_bounds(bounds, transform),
-            Some(ViewRect::new(
-                ViewPoint::new(160.0, 120.0),
-                ViewSize::new(400.0, 200.0),
-            ))
         );
     }
 

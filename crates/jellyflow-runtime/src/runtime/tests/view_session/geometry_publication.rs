@@ -11,9 +11,8 @@ use crate::rules::EdgeEndpoint;
 use crate::runtime::adapter_protocol::{
     AdapterEnvironment, AdapterFrame, FeedbackSubmissionError, FrameMaterializationError,
     FrameRequest, LayoutNodeStatus, NodeLayout, NodeLayoutBuilder, NodeLayoutBuilderError,
-    NodeLayoutTarget, PortLayoutOutcome, PortLayoutTarget, PublishedPortOutcome,
-    RenderedPortLayout, RendererStamp, StaleFrameReason, ViewPoint, ViewRect, ViewSize,
-    side_anchor,
+    NodeLayoutTarget, PortLayoutTarget, PublishedPortOutcome, RendererStamp, StaleFrameReason,
+    ViewPoint, ViewRect, ViewSize, side_anchor,
 };
 use crate::runtime::commands::{GraphCommand, IncidentEdgePolicy, TopologyEdit};
 use crate::runtime::geometry::{EdgePathAnchor, HandlePosition};
@@ -30,8 +29,8 @@ use crate::runtime::view_session::{
     ConnectionProbeQueryOutcome, ConnectionProbeTargeting, EdgePickCursorStaleReason,
     EdgePickQuery, EdgePickQueryError, EdgePickQueryOutcome, NodeIntersectionCursorStaleReason,
     NodeIntersectionQuery, NodeIntersectionQueryError, NodeIntersectionQueryOutcome, ViewSession,
-    ViewSessionError, ViewSessionEvent, ViewSessionOptions, VisibleRouteCursorStaleReason,
-    VisibleRouteQuery, VisibleRouteQueryError, VisibleRouteQueryOutcome,
+    ViewSessionError, ViewSessionEvent, ViewSessionOptions, VisibleRouteWorkError,
+    VisibleRouteWorkRequest, VisibleRouteWorkStatus,
 };
 use crate::runtime::viewport::{ViewportPointerSample, ViewportTransform};
 
@@ -70,6 +69,35 @@ fn connection_binding(view: &ViewSession, port: PortId, edge: EdgeId) -> Connect
 fn pointer_sample(view: &ViewSession, point: ViewPoint) -> ViewportPointerSample {
     view.viewport_pointer_sample(point)
         .expect("fixture pointer is valid")
+}
+
+#[test]
+fn visible_route_work_owner_rejects_another_view_generation() {
+    let (graph, _) = graph_with_nodes(1);
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .unwrap();
+    let owner = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    let foreign = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    let request = VisibleRouteWorkRequest::new(ViewRect::new(
+        ViewPoint::new(0.0, 0.0),
+        ViewSize::new(800.0, 600.0),
+    ));
+    let mut work = owner.visible_route_work_session().unwrap();
+
+    let published = work.advance(&owner, request, 64).unwrap();
+    assert_eq!(published.status(), VisibleRouteWorkStatus::Complete);
+    assert!(published.routes().is_some());
+
+    let error = work.advance(&foreign, request, 0).unwrap_err();
+    assert!(matches!(
+        error,
+        VisibleRouteWorkError::ForeignView {
+            owner: expected,
+            provided,
+        } if expected == owner.provenance().unwrap()
+            && provided == foreign.provenance().unwrap()
+    ));
 }
 
 fn advance_terminal_query_page(
@@ -140,7 +168,7 @@ fn node_layout(
 ) -> NodeLayout {
     let ports = ports.into_iter().collect::<Vec<_>>();
     let mut layout =
-        NodeLayoutBuilder::new(target, bounds, ports.iter().map(|port| port.target.clone()));
+        NodeLayoutBuilder::new(target, bounds, ports.iter().map(|port| port.target.port()));
     for port in ports {
         layout
             .port_rendered(
@@ -153,26 +181,6 @@ fn node_layout(
             .unwrap();
     }
     layout.finish().unwrap()
-}
-
-fn raw_node_layout(
-    target: &NodeLayoutTarget,
-    bounds: ViewRect,
-    ports: impl IntoIterator<Item = RenderedPortSpec>,
-) -> NodeLayout {
-    NodeLayout::raw_for_test(
-        target,
-        bounds,
-        ports.into_iter().map(|port| {
-            PortLayoutOutcome::Rendered(RenderedPortLayout::raw_for_test(
-                &port.target,
-                port.visual_bounds,
-                port.hit_bounds,
-                port.route_anchor,
-                port.outward,
-            ))
-        }),
-    )
 }
 
 #[derive(Clone, Copy)]
@@ -391,6 +399,49 @@ fn routed_view_with_geometry() -> (GraphRuntime, ViewSession, RoutedGraphIds) {
 }
 
 #[test]
+fn route_geometry_revision_changes_only_when_the_resolved_path_changes() {
+    let (runtime, view, ids) = routed_view_with_geometry();
+    let initial = view
+        .geometry_snapshot()
+        .unwrap()
+        .route_geometry_revision(ids.edge)
+        .expect("published route revision");
+
+    set_selection_by_id(&view, [], [ids.edge], Vec::new()).unwrap();
+    assert_eq!(
+        view.geometry_snapshot()
+            .unwrap()
+            .route_geometry_revision(ids.edge),
+        Some(initial),
+        "selection changes paint facts, not resolved path geometry",
+    );
+    set_selection_by_id(&view, [], [], Vec::new()).unwrap();
+    assert_eq!(
+        view.geometry_snapshot()
+            .unwrap()
+            .route_geometry_revision(ids.edge),
+        Some(initial),
+    );
+
+    runtime
+        .execute(GraphCommand::set_node_position(
+            runtime.snapshot().unwrap().version(),
+            ids.source,
+            CanvasPoint { x: 40.0, y: 20.0 },
+        ))
+        .into_result()
+        .unwrap()
+        .applied()
+        .expect("source translation applies");
+    let translated = view
+        .geometry_snapshot()
+        .unwrap()
+        .route_geometry_revision(ids.edge)
+        .expect("translated route revision");
+    assert_ne!(translated, initial);
+}
+
+#[test]
 fn frame_node_layout_builder_requires_exact_real_port_coverage() {
     let (graph, ids) = graph_with_routed_edge();
     let runtime = GraphRuntime::builder(Default::default())
@@ -454,17 +505,6 @@ fn frame_node_layout_builder_requires_exact_real_port_coverage() {
             expected_node: ids.source,
             actual_node: ids.target,
             port: ids.target_port,
-        }
-    );
-
-    let unknown_port = PortId::from_u128(0xdead);
-    let unknown_target = source_port.layout_target().with_port_for_test(unknown_port);
-    let mut unknown = source.begin_layout(root_rect(0.0));
-    assert_eq!(
-        unknown.port_hidden(&unknown_target).unwrap_err(),
-        NodeLayoutBuilderError::UnknownPort {
-            node: ids.source,
-            port: unknown_port,
         }
     );
 }
@@ -1406,28 +1446,17 @@ fn view_space_layout_uses_the_issued_transform_for_all_canvas_geometry() {
     );
 
     let crossing_bounds = ViewRect::new(ViewPoint::new(440.0, 100.0), ViewSize::new(20.0, 40.0));
-    let cursor = match session
-        .visible_routes(VisibleRouteQuery::new(crossing_bounds, 0))
-        .unwrap()
-    {
-        VisibleRouteQueryOutcome::Incomplete { cursor, work } => {
-            assert_eq!(work.entries_examined, 0);
-            cursor
-        }
-        other => panic!("zero-budget route query must be resumable: {other:?}"),
-    };
+    let request = VisibleRouteWorkRequest::new(crossing_bounds);
+    let mut route_work = session.visible_route_work_session().unwrap();
+    let pending = route_work.advance(&session, request, 0).unwrap();
+    assert_eq!(pending.status(), VisibleRouteWorkStatus::Pending);
+    assert_eq!(pending.work().entries_examined, 0);
     set_selection_by_id(&session, [], [ids.edge], Vec::new()).unwrap();
-    let routes = match session
-        .visible_routes(VisibleRouteQuery::resume(cursor, 64))
-        .unwrap()
-    {
-        VisibleRouteQueryOutcome::Complete { routes, work } => {
-            assert!(work.entries_examined > 0);
-            assert_eq!(work.flatten_cache_misses, 1);
-            routes
-        }
-        other => panic!("resumed route query must complete: {other:?}"),
-    };
+    let completed = route_work.advance(&session, request, 64).unwrap();
+    assert_eq!(completed.status(), VisibleRouteWorkStatus::Complete);
+    assert!(completed.work().entries_examined > 0);
+    assert_eq!(completed.work().flatten_cache_misses, 1);
+    let routes = completed.routes().expect("completed visible routes");
     assert_eq!(routes.edge_ids(), &[ids.edge]);
     assert!(
         routes
@@ -1439,17 +1468,17 @@ fn view_space_layout_uses_the_issued_transform_for_all_canvas_geometry() {
             .selected
     );
     set_selection_by_id(&session, [], [], Vec::new()).unwrap();
-    match session
-        .visible_routes(VisibleRouteQuery::new(crossing_bounds, 64))
-        .unwrap()
-    {
-        VisibleRouteQueryOutcome::Complete { routes, work } => {
-            assert_eq!(routes.edge_ids(), &[ids.edge]);
-            assert_eq!(work.flatten_cache_hits, 1);
-            assert_eq!(work.flatten_cache_misses, 0);
-        }
-        other => panic!("cached route query must complete: {other:?}"),
-    }
+    let completed = route_work.advance(&session, request, 64).unwrap();
+    assert_eq!(completed.status(), VisibleRouteWorkStatus::Complete);
+    assert_eq!(
+        completed
+            .routes()
+            .expect("cached visible routes")
+            .edge_ids(),
+        &[ids.edge]
+    );
+    assert_eq!(completed.work().flatten_cache_hits, 1);
+    assert_eq!(completed.work().flatten_cache_misses, 0);
 
     let pick_cursor = match session
         .edge_pick(EdgePickQuery::new(ViewPoint::new(440.0, 118.0), 0.0, 0))
@@ -1513,36 +1542,14 @@ fn view_space_layout_uses_the_issued_transform_for_all_canvas_geometry() {
 }
 
 #[test]
-fn valid_subset_is_published_atomically_with_complete_port_coverage() {
+fn route_publication_withdraws_the_complete_route_when_finite_anchors_overflow_path_math() {
     let (graph, ids) = graph_with_routed_edge();
     let runtime = GraphRuntime::builder(Default::default())
         .build(graph)
         .unwrap();
     let session = runtime.attach_view(ViewSessionOptions::default()).unwrap();
-    let observations = Rc::new(RefCell::new(Vec::new()));
-    let callback_observations = observations.clone();
-    let weak = session.downgrade();
-    session
-        .subscribe(move |event| {
-            let ViewSessionEvent::LayoutPublished {
-                layout_revision,
-                nodes,
-            } = event
-            else {
-                return;
-            };
-            let geometry = weak.geometry_snapshot().unwrap();
-            callback_observations.borrow_mut().push((
-                layout_revision,
-                nodes,
-                geometry.layout_revision(),
-                geometry.port(ids.source_port).is_some(),
-                geometry.route(ids.edge).is_some(),
-            ));
-        })
-        .unwrap();
-    let frame = session
-        .frame(FrameRequest::new(
+    let request = || {
+        FrameRequest::new(
             CanvasRect {
                 origin: CanvasPoint {
                     x: -100.0,
@@ -1554,11 +1561,14 @@ fn valid_subset_is_published_atomically_with_complete_port_coverage() {
                 },
             },
             RendererStamp::new("test.node", 1),
-        ))
-        .unwrap();
+        )
+    };
+
+    let frame = session.frame(request()).unwrap();
     let source_target = node_target(&frame, ids.source);
     let source_port_target = port_target(&frame, ids.source_port);
     let target_target = node_target(&frame, ids.target);
+    let target_port_target = port_target(&frame, ids.target_port);
     let collector = frame.collector();
     collector
         .layout(node_layout(
@@ -1572,59 +1582,6 @@ fn valid_subset_is_published_atomically_with_complete_port_coverage() {
         ))
         .unwrap();
     collector
-        .layout(raw_node_layout(&target_target, root_rect(240.0), []))
-        .unwrap();
-
-    let receipt = session
-        .submit_feedback(collector.finish().unwrap())
-        .unwrap();
-    let statuses = receipt
-        .layout_receipts()
-        .map(|operation| operation.status().unwrap())
-        .collect::<Vec<_>>();
-    assert_eq!(
-        statuses,
-        vec![
-            LayoutNodeStatus::Published,
-            LayoutNodeStatus::IncompletePorts
-        ]
-    );
-    assert_eq!(receipt.publication().unwrap().layout_revision(), 1);
-    assert_eq!(receipt.work().layout().spatial_updates(), 1);
-    assert_eq!(receipt.work().layout().route_invalidations(), 1);
-    assert_eq!(receipt.work().layout().route_recomputations(), 1);
-    assert!(receipt.request_next_frame());
-    assert_eq!(
-        receipt.publication().unwrap().published_nodes(),
-        &[ids.source]
-    );
-
-    let geometry = session.geometry_snapshot().unwrap();
-    assert!(geometry.node(ids.source).is_some());
-    assert!(geometry.port(ids.source_port).is_some());
-    assert!(geometry.node(ids.target).is_none());
-    assert!(geometry.port(ids.target_port).is_none());
-    assert!(geometry.route(ids.edge).is_none());
-
-    let frame = session
-        .frame(FrameRequest::new(
-            CanvasRect {
-                origin: CanvasPoint {
-                    x: -100.0,
-                    y: -100.0,
-                },
-                size: CanvasSize {
-                    width: 1_000.0,
-                    height: 600.0,
-                },
-            },
-            RendererStamp::new("test.node", 1),
-        ))
-        .unwrap();
-    let target_target = node_target(&frame, ids.target);
-    let target_port_target = port_target(&frame, ids.target_port);
-    let collector = frame.collector();
-    collector
         .layout(node_layout(
             &target_target,
             root_rect(240.0),
@@ -1635,81 +1592,64 @@ fn valid_subset_is_published_atomically_with_complete_port_coverage() {
             )],
         ))
         .unwrap();
-    let receipt = session
+    session
         .submit_feedback(collector.finish().unwrap())
         .unwrap();
-    assert_eq!(receipt.publication().unwrap().layout_revision(), 2);
-    assert_eq!(receipt.work().layout().spatial_updates(), 1);
-    assert_eq!(receipt.work().layout().route_invalidations(), 1);
-    assert_eq!(receipt.work().layout().route_recomputations(), 1);
-    assert!(receipt.request_next_frame());
-    assert!(
-        session
-            .geometry_snapshot()
-            .unwrap()
-            .route(ids.edge)
-            .is_some()
-    );
+    let before = session.geometry_snapshot().unwrap();
+    assert!(before.route(ids.edge).is_some());
+    assert!(before.route_geometry_revision(ids.edge).is_some());
 
-    let frame = session
-        .frame(FrameRequest::new(
-            CanvasRect {
-                origin: CanvasPoint {
-                    x: -100.0,
-                    y: -100.0,
-                },
-                size: CanvasSize {
-                    width: 1_000.0,
-                    height: 600.0,
-                },
-            },
-            RendererStamp::new("test.node", 1),
-        ))
-        .unwrap();
+    let frame = session.frame(request()).unwrap();
+    let source_target = node_target(&frame, ids.source);
+    let source_port_target = port_target(&frame, ids.source_port);
     let target_target = node_target(&frame, ids.target);
+    let target_port_target = port_target(&frame, ids.target_port);
     let collector = frame.collector();
     collector
-        .layout(raw_node_layout(&target_target, root_rect(240.0), []))
+        .layout(node_layout(
+            &source_target,
+            root_rect(0.0),
+            [port_layout_with_geometry(
+                &source_port_target,
+                port_rect(174.0),
+                port_rect(174.0),
+                ViewPoint::new(f32::MAX, 78.0),
+                HandlePosition::Right,
+            )],
+        ))
         .unwrap();
-    let receipt = session
+    collector
+        .layout(node_layout(
+            &target_target,
+            root_rect(240.0),
+            [port_layout_with_geometry(
+                &target_port_target,
+                port_rect(240.0),
+                port_rect(240.0),
+                ViewPoint::new(-f32::MAX, 78.0),
+                HandlePosition::Left,
+            )],
+        ))
+        .unwrap();
+
+    session
         .submit_feedback(collector.finish().unwrap())
         .unwrap();
-    assert_eq!(receipt.publication().unwrap().layout_revision(), 3);
-    assert_eq!(receipt.work().layout().spatial_updates(), 0);
-    assert_eq!(receipt.work().layout().route_invalidations(), 1);
-    assert_eq!(receipt.work().layout().route_recomputations(), 1);
-    assert!(receipt.request_next_frame());
-    let geometry = session.geometry_snapshot().unwrap();
-    assert!(!geometry.node(ids.target).unwrap().is_fresh());
-    assert!(geometry.port(ids.target_port).is_none());
-    assert!(matches!(
-        geometry.port_outcome(ids.target_port),
-        Some(PublishedPortOutcome::Unavailable)
-    ));
-    assert!(geometry.route(ids.edge).is_none());
-    assert_eq!(
-        observations.borrow().as_slice(),
-        &[
-            (1, vec![ids.source], 1, true, false),
-            (2, vec![ids.target], 2, true, true),
-            (3, vec![ids.target], 3, true, false),
-        ]
-    );
+
+    let after = session.geometry_snapshot().unwrap();
+    assert!(after.route(ids.edge).is_none());
+    assert!(after.route_geometry_revision(ids.edge).is_none());
 }
 
 #[test]
-fn invalid_port_candidates_do_not_block_the_valid_subset() {
+fn invalid_geometry_candidates_do_not_block_the_valid_subset() {
     #[derive(Clone, Copy)]
     enum InvalidPortCase {
-        Duplicate,
-        Foreign,
         NonFinite,
         InteractionOutsideDeclaredHit,
     }
 
     for (case, expected_status) in [
-        (InvalidPortCase::Duplicate, LayoutNodeStatus::DuplicatePorts),
-        (InvalidPortCase::Foreign, LayoutNodeStatus::ForeignPort),
         (InvalidPortCase::NonFinite, LayoutNodeStatus::InvalidBounds),
         (
             InvalidPortCase::InteractionOutsideDeclaredHit,
@@ -1750,23 +1690,6 @@ fn invalid_port_candidates_do_not_block_the_valid_subset() {
         let target_target = node_target(&frame, ids.target);
         let target_port_target = port_target(&frame, ids.target_port);
         let invalid_source = match case {
-            InvalidPortCase::Duplicate => raw_node_layout(
-                &source_target,
-                root_rect(0.0),
-                [
-                    port_layout(&source_port_target, port_rect(174.0), HandlePosition::Right),
-                    port_layout(&source_port_target, port_rect(174.0), HandlePosition::Right),
-                ],
-            ),
-            InvalidPortCase::Foreign => raw_node_layout(
-                &source_target,
-                root_rect(0.0),
-                [port_layout(
-                    &target_port_target,
-                    port_rect(174.0),
-                    HandlePosition::Right,
-                )],
-            ),
             InvalidPortCase::NonFinite => {
                 let invalid_bounds = ViewRect {
                     origin: ViewPoint {
@@ -1778,7 +1701,7 @@ fn invalid_port_candidates_do_not_block_the_valid_subset() {
                         height: 12.0,
                     },
                 };
-                raw_node_layout(
+                node_layout(
                     &source_target,
                     root_rect(0.0),
                     [port_layout_with_geometry(
@@ -1799,7 +1722,7 @@ fn invalid_port_candidates_do_not_block_the_valid_subset() {
                 let mut layout = NodeLayoutBuilder::new(
                     &source_target,
                     root_rect(0.0),
-                    [source_port_target.clone()],
+                    [source_port_target.port()],
                 );
                 layout
                     .port_rendered_with_interaction_bounds(
@@ -2417,18 +2340,25 @@ fn frame_culling_hides_nodes_but_retains_a_route_crossing_the_viewport() {
     assert!(before.port(ids.source_port).is_some());
     assert!(before.port(ids.target_port).is_some());
     assert!(before.route(ids.edge).is_some());
-    match session
-        .visible_routes(VisibleRouteQuery::new(
-            ViewRect::new(ViewPoint::new(181.0, 60.0), ViewSize::new(58.0, 40.0)),
+    let mut route_work = session.visible_route_work_session().unwrap();
+    let visible = route_work
+        .advance(
+            &session,
+            VisibleRouteWorkRequest::new(ViewRect::new(
+                ViewPoint::new(181.0, 60.0),
+                ViewSize::new(58.0, 40.0),
+            )),
             64,
-        ))
-        .unwrap()
-    {
-        VisibleRouteQueryOutcome::Complete { routes, .. } => {
-            assert_eq!(routes.edge_ids(), &[ids.edge]);
-        }
-        other => panic!("crossing route query must complete after frame culling: {other:?}"),
-    }
+        )
+        .unwrap();
+    assert_eq!(visible.status(), VisibleRouteWorkStatus::Complete);
+    assert_eq!(
+        visible
+            .routes()
+            .expect("crossing route publication")
+            .edge_ids(),
+        &[ids.edge]
+    );
     assert!(matches!(
         session.connection_probe(ConnectionProbeQuery::resume(probe_cursor, 64)),
         Err(ConnectionProbeQueryError::StaleCursor(
@@ -2800,13 +2730,15 @@ fn same_coordinate_reconnect_disconnect_and_restore_each_advance_geometry_revisi
     assert_eq!(initial.layout_revision(), 1);
     let initial_route = initial.route(ids.edge).unwrap().clone();
     let route_view = ViewRect::new(ViewPoint::new(0.0, 0.0), ViewSize::new(800.0, 200.0));
-    let reconnect_cursor = match session
-        .visible_routes(VisibleRouteQuery::new(route_view, 0))
-        .unwrap()
-    {
-        VisibleRouteQueryOutcome::Incomplete { cursor, .. } => cursor,
-        other => panic!("live route query should pause at zero budget: {other:?}"),
-    };
+    let route_request = VisibleRouteWorkRequest::new(route_view);
+    let mut route_work = session.visible_route_work_session().unwrap();
+    assert_eq!(
+        route_work
+            .advance(&session, route_request, 0)
+            .unwrap()
+            .status(),
+        VisibleRouteWorkStatus::Pending,
+    );
 
     session
         .execute(GraphCommand::reconnect(
@@ -2830,22 +2762,28 @@ fn same_coordinate_reconnect_disconnect_and_restore_each_advance_geometry_revisi
         initial_route.source_instance(),
     );
     assert_ne!(reconnected_route, &initial_route);
-    match session
-        .visible_routes(VisibleRouteQuery::resume(reconnect_cursor, 64))
-        .expect("same-coordinate route keeps the spatial cursor valid")
-    {
-        VisibleRouteQueryOutcome::Complete { routes, .. } => {
-            assert_eq!(routes.edge_ids(), &[ids.edge]);
-        }
-        other => panic!("same-coordinate route query must complete, got {other:?}"),
-    }
-    let disconnect_cursor = match session
-        .visible_routes(VisibleRouteQuery::new(route_view, 0))
-        .unwrap()
-    {
-        VisibleRouteQueryOutcome::Incomplete { cursor, .. } => cursor,
-        other => panic!("reconnected route query should pause at zero budget: {other:?}"),
-    };
+    let reconnected_routes = route_work
+        .advance(&session, route_request, 64)
+        .expect("runtime restarts route work after reconnect");
+    assert_eq!(
+        reconnected_routes.status(),
+        VisibleRouteWorkStatus::Complete
+    );
+    assert_eq!(
+        reconnected_routes
+            .routes()
+            .expect("reconnected route publication")
+            .edge_ids(),
+        &[ids.edge]
+    );
+    route_work.clear();
+    assert_eq!(
+        route_work
+            .advance(&session, route_request, 0)
+            .unwrap()
+            .status(),
+        VisibleRouteWorkStatus::Pending,
+    );
 
     session
         .execute(GraphCommand::disconnect(
@@ -2857,24 +2795,20 @@ fn same_coordinate_reconnect_disconnect_and_restore_each_advance_geometry_revisi
         .unwrap()
         .applied()
         .expect("disconnect applies");
-    assert!(matches!(
-        session.visible_routes(VisibleRouteQuery::resume(disconnect_cursor, 64)),
-        Err(VisibleRouteQueryError::StaleCursor(
-            VisibleRouteCursorStaleReason::RouteGeometry
-        ))
-    ));
     let disconnected = session.geometry_snapshot().unwrap();
     assert_eq!(disconnected.layout_revision(), 3);
     assert!(disconnected.route(ids.edge).is_none());
-    match session
-        .visible_routes(VisibleRouteQuery::new(route_view, 64))
-        .unwrap()
-    {
-        VisibleRouteQueryOutcome::Complete { routes, .. } => {
-            assert!(routes.edge_ids().is_empty());
-        }
-        other => panic!("removed route must leave no indexed entry: {other:?}"),
-    }
+    let removed_routes = route_work
+        .advance(&session, route_request, 64)
+        .expect("runtime restarts stale work after disconnect");
+    assert_eq!(removed_routes.status(), VisibleRouteWorkStatus::Complete);
+    assert!(
+        removed_routes
+            .routes()
+            .expect("disconnected route publication")
+            .edge_ids()
+            .is_empty()
+    );
 
     session
         .execute(GraphCommand::undo(
@@ -2886,15 +2820,17 @@ fn same_coordinate_reconnect_disconnect_and_restore_each_advance_geometry_revisi
     let restored = session.geometry_snapshot().unwrap();
     assert_eq!(restored.layout_revision(), 4);
     assert!(restored.route(ids.edge).is_some());
-    match session
-        .visible_routes(VisibleRouteQuery::new(route_view, 64))
-        .unwrap()
-    {
-        VisibleRouteQueryOutcome::Complete { routes, .. } => {
-            assert_eq!(routes.edge_ids(), &[ids.edge]);
-        }
-        other => panic!("restored route must be indexed again: {other:?}"),
-    }
+    let restored_routes = route_work
+        .advance(&session, route_request, 64)
+        .expect("runtime restarts route work after undo");
+    assert_eq!(restored_routes.status(), VisibleRouteWorkStatus::Complete);
+    assert_eq!(
+        restored_routes
+            .routes()
+            .expect("restored route publication")
+            .edge_ids(),
+        &[ids.edge]
+    );
 }
 
 #[test]

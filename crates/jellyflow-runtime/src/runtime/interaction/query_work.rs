@@ -74,14 +74,6 @@ impl QueryWork {
     pub(super) fn require_cleanup(&mut self, terminal: InteractionTerminalReason) {
         self.state = QueryWorkState::CleanupPending(terminal);
     }
-
-    #[cfg(test)]
-    pub(super) fn pending_for_test(&self) -> Option<&PendingInteractionQuery> {
-        match &self.state {
-            QueryWorkState::Pending(query) => Some(query),
-            QueryWorkState::Empty | QueryWorkState::CleanupPending(_) => None,
-        }
-    }
 }
 
 /// One runtime-private query continuation.

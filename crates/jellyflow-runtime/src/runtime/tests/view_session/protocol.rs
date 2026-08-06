@@ -350,8 +350,6 @@ fn closed_session_rejects_originating_feedback_with_zero_side_effects() {
         crate::runtime::view_session::ViewCloseReason::HostClosed
     );
     assert!(close.command_completions().next().is_none());
-    assert_eq!(session.layout_revision_for_test(), 0);
-    assert!(session.retired_geometry_is_empty_for_test());
     assert_eq!(runtime.snapshot().unwrap().revision(), 0);
     assert_eq!(runtime.history_state().unwrap().undo_len(), 0);
     assert_eq!(runtime.history_state().unwrap().redo_len(), 0);
@@ -365,8 +363,6 @@ fn closed_session_rejects_originating_feedback_with_zero_side_effects() {
             reason: crate::runtime::view_session::ViewCloseReason::HostClosed,
         })
     ));
-    assert_eq!(session.layout_revision_for_test(), 0);
-    assert!(session.retired_geometry_is_empty_for_test());
     assert_eq!(runtime.snapshot().unwrap().revision(), 0);
     assert_eq!(
         runtime

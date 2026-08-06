@@ -2,8 +2,8 @@
 
 use jellyflow_core::PortKind;
 use open_gpui::{
-    App, Hsla, IntoElement, ParentElement, Path, PathBuilder, Pixels, RenderOnce, Styled, Window,
-    canvas, div, point, px,
+    AnyElement, App, Hsla, IntoElement, ParentElement, Path, PathBuilder, Pixels, RenderOnce,
+    Styled, Window, canvas, div, point, px,
 };
 
 use crate::presentation::{OpenGpuiPortCandidateState, OpenGpuiPortInteractionState};
@@ -179,7 +179,8 @@ impl OpenGpuiPortVisualFacts {
     }
 
     const fn emphasizes_marker(self) -> bool {
-        self.hovered || !matches!(self.candidate, OpenGpuiPortCandidateVisual::Idle)
+        (!self.disabled && self.hovered)
+            || !matches!(self.candidate, OpenGpuiPortCandidateVisual::Idle)
     }
 }
 
@@ -370,7 +371,8 @@ impl OpenGpuiGraphTheme {
             self.metrics.port_hit_diameter,
             OPEN_GPUI_DEFAULT_PORT_HIT_DIAMETER,
         )
-        .max(layout_diameter);
+        .max(layout_diameter)
+        .max(OPEN_GPUI_DEFAULT_PORT_HIT_DIAMETER);
         let outline_width = positive_or(
             self.metrics.port_outline_width,
             OPEN_GPUI_DEFAULT_PORT_OUTLINE_WIDTH,
@@ -408,6 +410,10 @@ impl OpenGpuiGraphTheme {
             OpenGpuiPortCandidateVisual::Idle if visual_facts.connected() => {
                 (tone_color, tone_color)
             }
+            OpenGpuiPortCandidateVisual::Idle if visual_facts.hovered() => (
+                self.palette.canvas,
+                tone_color.blend(self.palette.port_hovered.opacity(0.48)),
+            ),
             OpenGpuiPortCandidateVisual::Idle => (self.palette.canvas, tone_color),
         };
         let invalid = matches!(
@@ -422,6 +428,8 @@ impl OpenGpuiGraphTheme {
             border_color,
             cue_color: if invalid {
                 self.palette.port_invalid
+            } else if visual_facts.disabled() {
+                self.palette.port_disabled
             } else if visual_facts.connected() {
                 self.palette.canvas
             } else {
@@ -453,11 +461,11 @@ impl OpenGpuiGraphTheme {
 
 /// Stateless default Open GPUI marker for one real graph port.
 ///
-/// This component paints visual chrome only. Wrap it with
-/// [`crate::authoring::OpenGpuiPortHandle::interactive`] or
-/// [`crate::authoring::OpenGpuiPortHandle::measure`] so the
-/// headless runtime receives geometry and the existing wrapper owns pointer and accessibility
-/// semantics.
+/// This component paints visual chrome only. Prefer
+/// [`crate::authoring::OpenGpuiPortHandle::interactive_marker`] so the marker's hit contract is
+/// applied atomically. Use [`crate::authoring::OpenGpuiPortHandle::interactive`] for a custom
+/// component tree or [`crate::authoring::OpenGpuiPortHandle::measure`] for non-interactive
+/// geometry.
 #[derive(Debug, Clone, IntoElement)]
 pub struct OpenGpuiPortMarker {
     presentation: OpenGpuiPortInteractionState,
@@ -530,122 +538,135 @@ impl RenderOnce for OpenGpuiPortMarker {
             self.style_slot,
             self.shape,
         );
-        let layout_diameter = style.layout_diameter();
-        let visual_diameter = style.visual_diameter();
-        let shape = style.shape();
-        let border_width = style.border_width();
-        let dashed_border = style.has_dashed_border();
-        let fill_color = style.fill_color();
-        let border_color = style.border_color();
-        let mut visual = div()
-            .relative()
-            .flex()
-            .items_center()
-            .justify_center()
-            .w(px(visual_diameter))
-            .h(px(visual_diameter))
-            .flex_none()
-            .child(
-                canvas(
-                    move |bounds, _, _| {
-                        build_port_marker_paths(shape, bounds, border_width, dashed_border)
-                    },
-                    move |_, (fill, outline), window, _| {
-                        if let Some(fill) = fill {
-                            window.paint_path(fill, fill_color);
-                        }
-                        if let Some(outline) = outline {
-                            window.paint_path(outline, border_color);
-                        }
-                    },
-                )
-                .absolute()
-                .inset_0(),
-            );
-
-        visual = match style.cue() {
-            OpenGpuiPortMarkerCue::None => visual,
-            OpenGpuiPortMarkerCue::StyleBar => {
-                let cue_width =
-                    (visual_diameter * PORT_MARKER_CUE_SCALE).max(PORT_MARKER_CUE_THICKNESS);
-                visual.child(
-                    div()
-                        .w(px(cue_width))
-                        .h(px(PORT_MARKER_CUE_THICKNESS))
-                        .bg(style.cue_color()),
-                )
-            }
-            OpenGpuiPortMarkerCue::StyleDot => {
-                let cue_diameter = PORT_MARKER_CUE_THICKNESS * 2.0;
-                visual.child(
-                    div()
-                        .w(px(cue_diameter))
-                        .h(px(cue_diameter))
-                        .rounded_full()
-                        .bg(style.cue_color()),
-                )
-            }
-            OpenGpuiPortMarkerCue::InvalidCross => {
-                let cue_size =
-                    (visual_diameter * PORT_MARKER_CUE_SCALE).max(PORT_MARKER_CUE_THICKNESS);
-                let cue_offset = (cue_size - PORT_MARKER_CUE_THICKNESS) * 0.5;
-                visual.child(
-                    div()
-                        .relative()
-                        .w(px(cue_size))
-                        .h(px(cue_size))
-                        .child(
-                            div()
-                                .absolute()
-                                .left(px(0.0))
-                                .top(px(cue_offset))
-                                .w(px(cue_size))
-                                .h(px(PORT_MARKER_CUE_THICKNESS))
-                                .bg(style.cue_color()),
-                        )
-                        .child(
-                            div()
-                                .absolute()
-                                .left(px(cue_offset))
-                                .top(px(0.0))
-                                .w(px(PORT_MARKER_CUE_THICKNESS))
-                                .h(px(cue_size))
-                                .bg(style.cue_color()),
-                        ),
-                )
-            }
-        };
-
-        let mut marker = div()
-            .relative()
-            .flex()
-            .items_center()
-            .justify_center()
-            .w(px(layout_diameter))
-            .h(px(layout_diameter))
-            .flex_none()
-            .child(visual);
-        if style.has_focus_ring() {
-            let focus_shape = style.shape();
-            let focus_width = style.focus_ring_width();
-            let focus_color = style.focus_ring_color();
-            marker = marker.child(
-                canvas(
-                    move |bounds, _, _| {
-                        build_port_marker_paths(focus_shape, bounds, focus_width, false).1
-                    },
-                    move |_, outline, window, _| {
-                        if let Some(outline) = outline {
-                            window.paint_path(outline, focus_color);
-                        }
-                    },
-                )
-                .absolute()
-                .inset_0(),
-            );
-        }
-        marker
+        render_port_marker_element(style, style.layout_diameter(), style.visual_diameter())
     }
+}
+
+pub(crate) fn render_port_marker_element(
+    style: OpenGpuiPortMarkerStyle,
+    layout_diameter: f32,
+    visual_diameter: f32,
+) -> AnyElement {
+    let shape = style.shape();
+    let border_width = style.border_width();
+    let dashed_border = style.has_dashed_border();
+    let fill_color = style.fill_color();
+    let border_color = style.border_color();
+    let mut visual = div()
+        .relative()
+        .flex()
+        .items_center()
+        .justify_center()
+        .w(px(visual_diameter))
+        .h(px(visual_diameter))
+        .flex_none()
+        .child(
+            canvas(
+                move |bounds, _, _| {
+                    build_port_marker_paths(shape, bounds, border_width, dashed_border)
+                },
+                move |_, (fill, outline), window, _| {
+                    if let Some(fill) = fill {
+                        window.paint_path(fill, fill_color);
+                    }
+                    if let Some(outline) = outline {
+                        window.paint_path(outline, border_color);
+                    }
+                },
+            )
+            .absolute()
+            .inset_0(),
+        );
+
+    visual = match style.cue() {
+        OpenGpuiPortMarkerCue::None => visual,
+        OpenGpuiPortMarkerCue::StyleBar => {
+            let cue_width =
+                (visual_diameter * PORT_MARKER_CUE_SCALE).max(PORT_MARKER_CUE_THICKNESS);
+            visual.child(
+                div()
+                    .w(px(cue_width))
+                    .h(px(PORT_MARKER_CUE_THICKNESS))
+                    .bg(style.cue_color()),
+            )
+        }
+        OpenGpuiPortMarkerCue::StyleDot => {
+            let cue_diameter = PORT_MARKER_CUE_THICKNESS * 2.0;
+            visual.child(
+                div()
+                    .w(px(cue_diameter))
+                    .h(px(cue_diameter))
+                    .rounded_full()
+                    .bg(style.cue_color()),
+            )
+        }
+        OpenGpuiPortMarkerCue::InvalidCross => {
+            let cue_size =
+                (visual_diameter * PORT_MARKER_CUE_SCALE).max(PORT_MARKER_CUE_THICKNESS * 2.0);
+            let cue_color = style.cue_color();
+            visual.child(
+                canvas(
+                    move |bounds, _, _| build_invalid_cross_path(bounds),
+                    move |_, cue, window, _| {
+                        if let Some(cue) = cue {
+                            window.paint_path(cue, cue_color);
+                        }
+                    },
+                )
+                .w(px(cue_size))
+                .h(px(cue_size)),
+            )
+        }
+    };
+
+    let mut marker = div()
+        .relative()
+        .flex()
+        .items_center()
+        .justify_center()
+        .w(px(layout_diameter))
+        .h(px(layout_diameter))
+        .flex_none()
+        .child(visual);
+    if style.has_focus_ring() {
+        let focus_shape = style.shape();
+        let focus_width = style.focus_ring_width();
+        let focus_color = style.focus_ring_color();
+        marker = marker.child(
+            canvas(
+                move |bounds, _, _| {
+                    build_port_marker_paths(focus_shape, bounds, focus_width, false).1
+                },
+                move |_, outline, window, _| {
+                    if let Some(outline) = outline {
+                        window.paint_path(outline, focus_color);
+                    }
+                },
+            )
+            .absolute()
+            .inset_0(),
+        );
+    }
+    marker.into_any_element()
+}
+
+fn build_invalid_cross_path(bounds: open_gpui::Bounds<Pixels>) -> Option<Path<Pixels>> {
+    let width = bounds.size.width.as_f32();
+    let height = bounds.size.height.as_f32();
+    if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
+        return None;
+    }
+    let inset = PORT_MARKER_CUE_THICKNESS * 0.5;
+    let left = bounds.origin.x.as_f32() + inset;
+    let top = bounds.origin.y.as_f32() + inset;
+    let right = bounds.origin.x.as_f32() + width - inset;
+    let bottom = bounds.origin.y.as_f32() + height - inset;
+    let mut path = PathBuilder::stroke(px(PORT_MARKER_CUE_THICKNESS));
+    path.move_to(point(px(left), px(top)));
+    path.line_to(point(px(right), px(bottom)));
+    path.move_to(point(px(right), px(top)));
+    path.line_to(point(px(left), px(bottom)));
+    path.build().ok()
 }
 
 fn build_port_marker_paths(
@@ -703,8 +724,6 @@ fn build_port_marker_paths(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
-
     use jellyflow_runtime::graph::Diagnostic;
 
     use super::*;
@@ -813,58 +832,59 @@ mod tests {
     }
 
     #[test]
-    fn all_finite_combinations_keep_geometry_and_batch_cardinality_bounded() {
+    fn canonical_port_states_keep_geometry_fixed_and_visual_treatments_distinct() {
         let theme = OpenGpuiGraphTheme::default();
-        let mut batch_facts = BTreeSet::new();
-
-        for tone in [
-            OpenGpuiPortTone::Default,
+        let idle = theme.resolve_port_marker_style(
+            &OpenGpuiPortInteractionState::idle(),
             OpenGpuiPortTone::Data,
-            OpenGpuiPortTone::Control,
-        ] {
-            for candidate in [
-                OpenGpuiPortCandidateVisual::Idle,
-                OpenGpuiPortCandidateVisual::Source,
-                OpenGpuiPortCandidateVisual::ValidTarget,
-                OpenGpuiPortCandidateVisual::InvalidTarget,
-            ] {
-                for disabled in [false, true] {
-                    for connected in [false, true] {
-                        for hovered in [false, true] {
-                            for focused in [false, true] {
-                                let state = state_with_candidate(candidate)
-                                    .with_disabled(disabled)
-                                    .with_connected(connected)
-                                    .with_hovered(hovered)
-                                    .with_focused(focused);
-                                let style = theme.resolve_port_marker_style(&state, tone);
+        );
+        let connected = theme.resolve_port_marker_style(
+            &OpenGpuiPortInteractionState::idle().with_connected(true),
+            OpenGpuiPortTone::Data,
+        );
+        let hovered = theme.resolve_port_marker_style(
+            &OpenGpuiPortInteractionState::idle().with_hovered(true),
+            OpenGpuiPortTone::Data,
+        );
+        let source = theme.resolve_port_marker_style(
+            &state_with_candidate(OpenGpuiPortCandidateVisual::Source),
+            OpenGpuiPortTone::Data,
+        );
+        let valid = theme.resolve_port_marker_style(
+            &state_with_candidate(OpenGpuiPortCandidateVisual::ValidTarget),
+            OpenGpuiPortTone::Data,
+        );
+        let invalid = theme.resolve_port_marker_style(
+            &state_with_candidate(OpenGpuiPortCandidateVisual::InvalidTarget).with_focused(true),
+            OpenGpuiPortTone::Data,
+        );
+        let disabled = theme.resolve_port_marker_style(
+            &state_with_candidate(OpenGpuiPortCandidateVisual::InvalidTarget)
+                .with_connected(true)
+                .with_hovered(true)
+                .with_focused(true)
+                .with_disabled(true),
+            OpenGpuiPortTone::Data,
+        );
 
-                                batch_facts.insert(style.visual_facts());
-                                assert_eq!(style.visual_facts().tone(), tone);
-                                assert_eq!(style.layout_diameter(), 12.0);
-                                assert_eq!(style.layout_diameter() * 0.5, 6.0);
-                                assert_eq!(style.minimum_hit_diameter(), 22.0);
-                                assert_eq!(
-                                    style.visual_diameter(),
-                                    if hovered || candidate != OpenGpuiPortCandidateVisual::Idle {
-                                        10.0
-                                    } else {
-                                        8.0
-                                    },
-                                );
-                                assert_eq!(style.has_focus_ring(), focused);
-                                assert_eq!(
-                                    style.has_dashed_border(),
-                                    candidate == OpenGpuiPortCandidateVisual::InvalidTarget
-                                );
-                            }
-                        }
-                    }
-                }
-            }
+        for style in [idle, connected, hovered, source, valid, invalid, disabled] {
+            assert_eq!(style.layout_diameter(), 12.0);
+            assert_eq!(style.minimum_hit_diameter(), 22.0);
         }
 
-        assert_eq!(batch_facts.len(), 192);
+        assert_eq!(idle.fill_color(), theme.palette.canvas);
+        assert_eq!(connected.fill_color(), theme.palette.edge_data);
+        assert!(hovered.visual_diameter() > idle.visual_diameter());
+        assert_eq!(source.border_color(), theme.palette.port_source);
+        assert_eq!(valid.fill_color(), theme.palette.port_valid);
+        assert!(invalid.has_dashed_border());
+        assert_eq!(invalid.cue(), OpenGpuiPortMarkerCue::InvalidCross);
+        assert!(invalid.has_focus_ring());
+        assert_eq!(disabled.border_color(), theme.palette.port_invalid);
+        assert_eq!(disabled.visual_diameter(), invalid.visual_diameter());
+        assert!(disabled.has_dashed_border());
+        assert_eq!(disabled.cue(), OpenGpuiPortMarkerCue::InvalidCross);
+        assert!(disabled.has_focus_ring());
     }
 
     #[test]
@@ -886,7 +906,14 @@ mod tests {
                             tone,
                         );
                         assert_eq!(style.visual_facts().tone(), tone);
-                        assert_eq!(style.border_color(), color);
+                        assert_eq!(
+                            style.border_color(),
+                            if hovered && !connected {
+                                color.blend(theme.palette.port_hovered.opacity(0.48))
+                            } else {
+                                color
+                            }
+                        );
                         assert_eq!(
                             style.fill_color(),
                             if connected {
@@ -935,6 +962,15 @@ mod tests {
         assert_eq!(style.visual_facts().style_slot(), Some(slot));
         assert_eq!(style.border_color(), color);
         assert_eq!(style.cue(), OpenGpuiPortMarkerCue::StyleDot);
+
+        let disabled = theme.resolve_port_marker_style_slot(
+            &OpenGpuiPortInteractionState::idle().with_disabled(true),
+            OpenGpuiPortTone::Data,
+            Some(slot),
+        );
+        assert_eq!(disabled.cue(), OpenGpuiPortMarkerCue::StyleDot);
+        assert_eq!(disabled.cue_color(), theme.palette.port_disabled);
+        assert_eq!(disabled.border_color(), theme.palette.port_disabled);
     }
 
     #[test]

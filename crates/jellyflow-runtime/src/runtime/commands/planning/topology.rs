@@ -113,6 +113,13 @@ fn plan_replace_node_ports(
         context.read_facts(1);
         if let Some(current) = context.graph().port(&port.id).cloned() {
             validate_port_owner(port.id, node_id, &port.port)?;
+            if current.node != node_id {
+                return Err(GraphCommandPlanningError::PortOwnerMismatch {
+                    port: port.id,
+                    expected: node_id,
+                    actual: current.node,
+                });
+            }
             if port_semantic_identity_changed(&current, &port.port) {
                 if context.was_port_added(port.id) || context.was_port_removed(port.id) {
                     return Err(GraphCommandPlanningError::PortLifecycleConflict(port.id));

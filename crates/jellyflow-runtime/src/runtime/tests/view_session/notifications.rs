@@ -121,58 +121,6 @@ fn view_subscription_token_cannot_unsubscribe_another_view() {
 }
 
 #[test]
-fn history_clear_is_rejected_inside_a_patch_batch_and_published_when_run_afterward() {
-    let (graph, ids) = graph_with_nodes(1);
-    let graph_id = graph.graph_id();
-    let runtime = Rc::new(
-        GraphRuntime::builder(Default::default())
-            .build(graph)
-            .expect("runtime"),
-    );
-    let view = runtime
-        .attach_view(view_options(ViewSessionSeed::new(graph_id)))
-        .expect("view");
-    let callback_runtime = runtime.clone();
-    let rejection = Rc::new(RefCell::new(None));
-    let callback_rejection = rejection.clone();
-    view.subscribe(move |_| {
-        *callback_rejection.borrow_mut() = callback_runtime.clear_history().err();
-    })
-    .unwrap();
-    let history_events = Rc::new(Cell::new(0));
-    let callback_events = history_events.clone();
-    runtime
-        .subscribe(move |event| {
-            if matches!(
-                event,
-                crate::runtime::graph_runtime::GraphRuntimeEvent::HistoryChanged { .. }
-            ) {
-                callback_events.set(callback_events.get() + 1);
-            }
-        })
-        .unwrap();
-
-    let version = runtime.snapshot().unwrap().version();
-    runtime
-        .execute(GraphCommand::set_node_data(
-            version,
-            ids[0],
-            serde_json::json!({ "value": 1 }),
-        ))
-        .into_result()
-        .unwrap();
-
-    assert!(matches!(
-        rejection.borrow().as_ref(),
-        Some(GraphRuntimeError::ReentrantMutation)
-    ));
-    assert_eq!(runtime.history_state().unwrap().undo_len(), 1);
-    runtime.clear_history().unwrap();
-    assert_eq!(runtime.history_state().unwrap().undo_len(), 0);
-    assert_eq!(history_events.get(), 1);
-}
-
-#[test]
 fn callbacks_can_query_and_self_unsubscribe_without_borrow_panics() {
     let (graph, ids) = graph_with_nodes(1);
     let graph_id = graph.graph_id();

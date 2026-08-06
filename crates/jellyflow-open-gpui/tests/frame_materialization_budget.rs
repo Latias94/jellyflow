@@ -13,13 +13,13 @@ use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec};
 use jellyflow_runtime::{
     graph::GraphRuntime,
     view::{
-        DEFAULT_FRAME_ROUTING_DEPENDENCY_BUDGET, FrameMaterializationOverflow, RendererStamp,
-        ViewSessionOptions,
+        DEFAULT_FRAME_ROUTING_DEPENDENCY_BUDGET, DEFAULT_FRAME_ROUTING_DEPENDENCY_SCAN_LIMIT,
+        FrameMaterializationOverflow, RendererStamp, ViewSessionOptions,
     },
 };
 use open_gpui::{AppContext, Context, Entity, ParentElement, Render, Window, div};
 
-const NODE_COUNT: usize = 10_000;
+const NODE_COUNT: usize = DEFAULT_FRAME_ROUTING_DEPENDENCY_SCAN_LIMIT + 2;
 const KIND: &str = "test.frame-budget-node";
 const RENDERER: &str = "test.native.frame-budget-node";
 
@@ -58,6 +58,7 @@ fn high_fanout_host_bounds_active_instances_and_exposes_overflow(
             .attach_view(ViewSessionOptions::default())
             .unwrap();
         OpenGpuiSceneHost::new(view, registry(), hub_viewport())
+            .expect("valid Open GPUI scene host")
     });
     draw(cx);
 

@@ -102,6 +102,7 @@ fn native_model_select_exposes_resource_states_without_clearing_persisted_value(
     let resources = NativeNodeResources::new(model_options.clone());
     let (host, cx) = cx.add_window_view(move |_, _| {
         OpenGpuiSceneHost::new(view, native_node_registry(resources, &catalog), viewport())
+            .expect("valid Open GPUI scene host")
     });
     draw(cx);
 

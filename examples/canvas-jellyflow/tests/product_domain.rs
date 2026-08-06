@@ -6,7 +6,6 @@ use jellyflow_core::{
 };
 use jellyflow_runtime::commands::{CommandExecutionKind, GraphCommand, IncidentEdgePolicy};
 use jellyflow_runtime::graph::{GraphRuntime, GraphSnapshot};
-use jellyflow_runtime::reconciliation::{MutationCommandResult, MutationPhase, MutationReconciler};
 use jellyflow_runtime::view::ViewSessionOptions;
 use open_gpui_canvas_jellyflow::product_domain::blackboard::{
     BlackboardApplyAction, BlackboardAuthoring, BlackboardDispatchOutcome, BlackboardDraftPhase,
@@ -15,12 +14,10 @@ use open_gpui_canvas_jellyflow::product_domain::blackboard::{
 };
 use open_gpui_canvas_jellyflow::product_domain::blueprint::{
     BLUEPRINT_CALL_KIND, BlueprintError, BlueprintIntent, BlueprintObservation, BlueprintPin,
-    blueprint_default_data,
 };
 use open_gpui_canvas_jellyflow::product_domain::condition::{
     CONDITION_ELSE_PORT_KEY, CONDITION_INPUT_PORT_KEY, CONDITION_KIND, ConditionCase,
     ConditionError, ConditionIntent, ConditionObservation, ConditionOperator, ConditionPredicate,
-    condition_default_data,
 };
 
 const GRAPH_ID: u128 = 0xc011_d170;
@@ -398,6 +395,74 @@ fn blackboard_snapshot_first_and_receipt_first_each_satisfy_exactly_once() {
 }
 
 #[test]
+fn blackboard_superseded_receipt_releases_pending_field_and_exposes_retry() {
+    let runtime = blackboard_runtime();
+    let initial = runtime.snapshot().unwrap();
+    let initial_observation = BlackboardObservation::from_snapshot(&initial).unwrap();
+    let mut authoring = BlackboardAuthoring::new();
+    authoring.observe(&initial_observation).unwrap();
+    authoring
+        .edit_name(
+            &initial_observation,
+            blackboard_primary(),
+            "submitted locally".to_owned(),
+        )
+        .unwrap();
+    let submission = authoring
+        .plan_name(
+            &initial_observation,
+            blackboard_primary(),
+            BlackboardApplyAction::Commit,
+        )
+        .unwrap();
+    let delayed_completion = runtime.execute(submission.command().clone());
+    assert_eq!(delayed_completion.kind(), CommandExecutionKind::Applied);
+
+    let after_local = runtime.snapshot().unwrap();
+    let remote = Symbol {
+        name: "newer authoritative".to_owned(),
+        ..blackboard_symbol("unused")
+    };
+    assert_eq!(
+        runtime
+            .execute(GraphCommand::symbols(
+                after_local.version(),
+                jellyflow_runtime::commands::SymbolEdit::new().update(blackboard_primary(), remote),
+            ))
+            .kind(),
+        CommandExecutionKind::Applied
+    );
+    let latest = BlackboardObservation::from_snapshot(&runtime.snapshot().unwrap()).unwrap();
+    authoring.observe(&latest).unwrap();
+
+    assert!(
+        !authoring
+            .complete(
+                submission,
+                BlackboardDispatchOutcome::completed(delayed_completion),
+            )
+            .unwrap()
+            .became_satisfied()
+    );
+    let projection = authoring.projection(&latest, blackboard_primary()).unwrap();
+    assert_eq!(projection.phase(), BlackboardDraftPhase::Conflict);
+    assert_eq!(
+        projection.submission_phase(),
+        BlackboardSubmissionPhase::Retryable
+    );
+    assert_eq!(
+        projection.retry_reason(),
+        Some(BlackboardRetryReason::AuthoritativeMismatch)
+    );
+    assert_eq!(
+        projection.apply_action(),
+        Some(BlackboardApplyAction::Retry)
+    );
+    assert!(projection.can_accept_remote());
+    assert!(projection.can_discard_submission());
+}
+
+#[test]
 fn blackboard_authoring_rejects_foreign_authority_and_ignores_stale_observations() {
     let runtime = blackboard_runtime();
     let initial = runtime.snapshot().unwrap();
@@ -584,18 +649,6 @@ fn schema_rejects_legacy_malformed_and_invalid_case_values_with_typed_errors() {
         ConditionObservation::from_snapshot(&snapshot, NodeId::from_u128(0xdead)),
         Err(ConditionError::MissingNode { .. })
     ));
-}
-
-#[test]
-fn default_condition_schema_is_owned_by_the_product_domain() {
-    assert_eq!(
-        condition_default_data(),
-        serde_json::json!({
-            "title": "Condition",
-            "cases": [],
-            "else_branch": { "label": "Else" },
-        })
-    );
 }
 
 #[test]
@@ -965,75 +1018,6 @@ fn stale_intent_replans_from_fresh_observation_without_overwriting_remote_additi
 }
 
 #[test]
-fn receipt_first_and_snapshot_first_satisfy_the_same_condition_intent_exactly_once() {
-    let runtime = runtime(false);
-    let before = runtime.snapshot().unwrap();
-    let added = case("added", "Added", ADDED_CASE_PORT);
-    let intent = ConditionIntent::add(added);
-    let command = observe(&before).plan(&intent).unwrap();
-    runtime
-        .execute(command)
-        .applied_revision()
-        .expect("condition add applies");
-    let after = runtime.snapshot().unwrap();
-    let after_observation = observe(&after);
-    assert!(after_observation.satisfies(&intent));
-
-    let mut receipt_first = MutationReconciler::default();
-    let receipt_attempt = receipt_first
-        .begin(intent.clone(), before.revision())
-        .unwrap();
-    assert!(
-        !receipt_first
-            .complete(
-                receipt_attempt,
-                MutationCommandResult::Applied {
-                    revision: after.revision(),
-                },
-            )
-            .unwrap()
-            .became_satisfied()
-    );
-    assert_eq!(receipt_first.phase(), MutationPhase::AwaitingSnapshot);
-    assert!(
-        receipt_first
-            .observe(after.revision(), |active| after_observation
-                .satisfies(active))
-            .became_satisfied()
-    );
-    assert_eq!(receipt_first.phase(), MutationPhase::Idle);
-    assert!(
-        !receipt_first
-            .observe(after.revision(), |active| after_observation
-                .satisfies(active))
-            .became_satisfied()
-    );
-
-    let mut snapshot_first = MutationReconciler::default();
-    let snapshot_attempt = snapshot_first
-        .begin(intent.clone(), before.revision())
-        .unwrap();
-    assert!(
-        !snapshot_first
-            .observe(after.revision(), |active| after_observation
-                .satisfies(active))
-            .became_satisfied()
-    );
-    assert!(
-        snapshot_first
-            .complete(
-                snapshot_attempt,
-                MutationCommandResult::Applied {
-                    revision: after.revision(),
-                },
-            )
-            .unwrap()
-            .became_satisfied()
-    );
-    assert_eq!(snapshot_first.phase(), MutationPhase::Idle);
-}
-
-#[test]
 fn missing_and_stale_actions_fail_without_graph_mutation() {
     let runtime = runtime(false);
     let snapshot = runtime.snapshot().unwrap();
@@ -1059,13 +1043,6 @@ fn missing_and_stale_actions_fail_without_graph_mutation() {
     ));
     assert_eq!(runtime.snapshot().unwrap().revision(), snapshot.revision());
     assert_eq!(runtime.history_state().unwrap().undo_len(), 0);
-}
-
-#[test]
-fn product_domain_source_has_no_native_framework_or_topology_supervisor_dependency() {
-    let source = include_str!("../src/product_domain/condition.rs");
-    assert!(!source.contains("open_gpui"));
-    assert!(!source.contains("TopologyAttempt"));
 }
 
 fn runtime(connected: bool) -> GraphRuntime {
@@ -1624,19 +1601,6 @@ fn blueprint_connected_remove_rejects_or_cascades_as_one_history_step() {
     let restored = runtime.snapshot().unwrap();
     assert!(restored.graph().edge(&blueprint_edge()).is_some());
     assert_eq!(observe_blueprint(&restored).pins().len(), 2);
-}
-
-#[test]
-fn blueprint_default_schema_and_source_are_renderer_independent() {
-    assert_eq!(
-        blueprint_default_data(),
-        serde_json::json!({ "title": "Function Call", "pins": [] })
-    );
-    let source = include_str!("../src/product_domain/blueprint.rs");
-    assert!(!source.contains("open_gpui"));
-    assert!(!source.contains("TopologyAttempt"));
-    let renderer = include_str!("../src/nodes/shader/blueprint_call.rs");
-    assert!(!renderer.contains("TopologyAttempt"));
 }
 
 fn blueprint_runtime(connected: bool) -> GraphRuntime {

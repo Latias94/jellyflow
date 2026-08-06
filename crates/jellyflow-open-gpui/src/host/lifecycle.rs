@@ -426,45 +426,63 @@ impl OpenGpuiSceneHost {
         window: &mut Window,
         cx: &mut open_gpui::App,
     ) -> Result<ViewCloseOutcome, OpenGpuiSceneHostCloseError> {
-        let drain = self.commands.begin_close().map_err(command_close_error)?;
-        let journal_identities = drain.command_identities();
-        let request = drain.combined_request(&request);
+        let mut close_transaction = self.commands.begin_close().map_err(command_close_error)?;
+        let journal_identities = close_transaction.command_identities();
+        let request = close_transaction.combined_request(&request);
         let close = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.view.close_with_request(request)
         }));
         match close {
             Err(payload) => {
-                let result = if let Some(reason) = self.view.close_reason() {
-                    self.commands
-                        .finish_close_after_panic(drain, reason)
-                        .map(|completed| {
-                            self.finish_window_close_cleanup(completed, reason, window, cx);
-                        })
+                let terminal_reason = self.view.close_reason();
+                let result = if let Some(reason) = terminal_reason {
+                    close_transaction.finish_after_panic(reason)
                 } else {
-                    self.commands.abort_close(drain)
+                    close_transaction.abort().map(|()| Vec::new())
                 };
                 suppress_host_panic(Some(payload));
-                result.map_err(command_close_error)?;
+                match result {
+                    Ok(completed) => {
+                        if let Some(reason) = terminal_reason {
+                            self.finish_window_close_cleanup(completed, reason, window, cx);
+                        }
+                    }
+                    Err(error) => {
+                        if let Some(reason) = terminal_reason {
+                            self.finish_window_close_cleanup(Vec::new(), reason, window, cx);
+                        }
+                        return Err(command_close_error(error));
+                    }
+                }
                 Err(OpenGpuiSceneHostCloseError::PanicDuringClose)
             }
             Ok(Ok(mut outcome)) => {
                 let reason = outcome.reason();
-                let journal_completions =
-                    match outcome.take_command_completions(&journal_identities) {
-                        Ok(completions) => completions,
-                        Err(error) => {
-                            let completed = self
-                                .commands
-                                .finish_close_after_panic(drain, reason)
-                                .map_err(command_close_error)?;
-                            self.finish_window_close_cleanup(completed, reason, window, cx);
-                            return Err(command_close_error(error.into()));
+                close_transaction.confirm_view_terminated(reason);
+                let journal_completions = match outcome
+                    .take_command_completions(&journal_identities)
+                {
+                    Ok(completions) => completions,
+                    Err(error) => {
+                        match close_transaction.finish_outcome_unknown(reason) {
+                            Ok(completed) => {
+                                self.finish_window_close_cleanup(completed, reason, window, cx);
+                            }
+                            Err(close_error) => {
+                                self.finish_window_close_cleanup(Vec::new(), reason, window, cx);
+                                return Err(command_close_error(close_error));
+                            }
                         }
-                    };
-                let completed = self
-                    .commands
-                    .finish_close(drain, reason, journal_completions)
-                    .map_err(command_close_error)?;
+                        return Err(command_close_error(error.into()));
+                    }
+                };
+                let completed = match close_transaction.finish(reason, journal_completions) {
+                    Ok(completed) => completed,
+                    Err(error) => {
+                        self.finish_window_close_cleanup(Vec::new(), reason, window, cx);
+                        return Err(command_close_error(error));
+                    }
+                };
                 let cleanup_panicked =
                     self.finish_window_close_cleanup(completed, reason, window, cx);
                 if cleanup_panicked {
@@ -474,10 +492,13 @@ impl OpenGpuiSceneHost {
                 }
             }
             Ok(Err(ViewSessionError::Closed { reason })) => {
-                let completed = self
-                    .commands
-                    .finish_close_without_execution(drain, reason)
-                    .map_err(command_close_error)?;
+                let completed = match close_transaction.finish_without_execution(reason) {
+                    Ok(completed) => completed,
+                    Err(error) => {
+                        self.finish_window_close_cleanup(Vec::new(), reason, window, cx);
+                        return Err(command_close_error(error));
+                    }
+                };
                 let cleanup_panicked =
                     self.finish_window_close_cleanup(completed, reason, window, cx);
                 if cleanup_panicked {
@@ -487,9 +508,7 @@ impl OpenGpuiSceneHost {
                 }
             }
             Ok(Err(error)) => {
-                self.commands
-                    .abort_close(drain)
-                    .map_err(command_close_error)?;
+                close_transaction.abort().map_err(command_close_error)?;
                 Err(error.into())
             }
         }

@@ -86,8 +86,6 @@ struct CurrentFocusIndex<'a> {
     current: &'a [OpenGpuiGraphFocusEntry],
     by_target: HashMap<OpenGpuiGraphFocusTarget, usize>,
     first_node_by_lifetime: HashMap<NodeLifetimeKey, usize>,
-    #[cfg(test)]
-    lookups: FocusIndexLookupCounts,
 }
 
 impl<'a> CurrentFocusIndex<'a> {
@@ -104,11 +102,6 @@ impl<'a> CurrentFocusIndex<'a> {
             current,
             by_target,
             first_node_by_lifetime,
-            #[cfg(test)]
-            lookups: FocusIndexLookupCounts {
-                indexed_entries: current.len(),
-                ..FocusIndexLookupCounts::default()
-            },
         }
     }
 
@@ -116,31 +109,19 @@ impl<'a> CurrentFocusIndex<'a> {
         &self,
         target: OpenGpuiGraphFocusTarget,
     ) -> Option<&'a OpenGpuiGraphFocusEntry> {
-        #[cfg(test)]
-        self.lookups.exact.set(self.lookups.exact.get() + 1);
         self.by_target
             .get(&target)
             .map(|index| &self.current[*index])
     }
 
     fn first_node_entry(&self, node: NodeLifetimeKey) -> Option<&'a OpenGpuiGraphFocusEntry> {
-        #[cfg(test)]
-        self.lookups
-            .logical_node
-            .set(self.lookups.logical_node.get() + 1);
         self.first_node_by_lifetime
             .get(&node)
             .map(|index| &self.current[*index])
     }
 
     fn contains_handle(&self, handle: &FocusHandle) -> bool {
-        self.current.iter().any(|entry| {
-            #[cfg(test)]
-            self.lookups
-                .handle_entries_examined
-                .set(self.lookups.handle_entries_examined.get() + 1);
-            &entry.handle == handle
-        })
+        self.current.iter().any(|entry| &entry.handle == handle)
     }
 
     fn replacement_for(
@@ -152,34 +133,6 @@ impl<'a> CurrentFocusIndex<'a> {
             None => self.entry_for_target(target),
         }
     }
-
-    #[cfg(test)]
-    fn lookup_counts(&self) -> FocusIndexLookupCountSnapshot {
-        FocusIndexLookupCountSnapshot {
-            indexed_entries: self.lookups.indexed_entries,
-            exact: self.lookups.exact.get(),
-            logical_node: self.lookups.logical_node.get(),
-            handle_entries_examined: self.lookups.handle_entries_examined.get(),
-        }
-    }
-}
-
-#[cfg(test)]
-#[derive(Default)]
-struct FocusIndexLookupCounts {
-    indexed_entries: usize,
-    exact: std::cell::Cell<usize>,
-    logical_node: std::cell::Cell<usize>,
-    handle_entries_examined: std::cell::Cell<usize>,
-}
-
-#[cfg(test)]
-#[derive(Debug, PartialEq, Eq)]
-struct FocusIndexLookupCountSnapshot {
-    indexed_entries: usize,
-    exact: usize,
-    logical_node: usize,
-    handle_entries_examined: usize,
 }
 
 #[derive(Default)]
@@ -325,8 +278,6 @@ impl OpenGpuiGraphFocusCoordinator {
 
 #[cfg(test)]
 mod tests {
-    use std::cell::Cell;
-
     use jellyflow_core::{
         CanvasPoint, CanvasSize, Edge, EdgeId, EdgeKind, GraphBuilder, GraphId, Node, NodeId,
         NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKey, PortKind,
@@ -416,35 +367,6 @@ mod tests {
         }
     }
 
-    fn focus_node_lifetimes(count: usize) -> Vec<NodeLifetimeKey> {
-        const KIND: &str = "test.focus-portless-node";
-        let mut catalog = NodeCatalog::new();
-        catalog
-            .register(NodeKindSpec::builder(KIND).build())
-            .expect("unique focus portless node kind");
-        let mut graph = GraphBuilder::new(GraphId::from_u128(2));
-        let nodes = (0..count)
-            .map(|index| NodeId::from_u128(index as u128 + 1))
-            .collect::<Vec<_>>();
-        for (index, node) in nodes.iter().copied().enumerate() {
-            let mut record = focus_node(KIND, PortId::from_u128(u128::MAX), index as f32);
-            record.ports.clear();
-            graph.insert_node(node, record);
-        }
-        let runtime = GraphRuntime::builder(catalog)
-            .build(graph.build().expect("valid focus portless graph"))
-            .expect("valid focus portless runtime");
-        let snapshot = runtime.snapshot().expect("focus portless snapshot");
-        nodes
-            .into_iter()
-            .map(|node| {
-                snapshot
-                    .node_lifetime_key(node)
-                    .expect("current node lifetime")
-            })
-            .collect()
-    }
-
     fn focus_node(kind: &str, port: PortId, x: f32) -> Node {
         Node {
             kind: NodeKindKey::new(kind),
@@ -486,59 +408,6 @@ mod tests {
 
     fn entry(target: OpenGpuiGraphFocusTarget, handle: &FocusHandle) -> OpenGpuiGraphFocusEntry {
         OpenGpuiGraphFocusEntry::new(target, handle.clone())
-    }
-
-    #[open_gpui::test]
-    fn large_stable_unfocused_reconcile_uses_linear_structural_lookups(
-        cx: &mut open_gpui::TestAppContext,
-    ) {
-        const ENTRY_COUNT: usize = 4_096;
-
-        let (_, cx) = cx.add_window_view(|_, _| FocusTestView);
-        cx.update(|_, cx| {
-            let identities = focus_node_lifetimes(ENTRY_COUNT);
-            let current = (0..ENTRY_COUNT)
-                .map(|index| {
-                    OpenGpuiGraphFocusEntry::new(
-                        node_target(identities[index], OpenGpuiNodePresentation::Detail),
-                        cx.focus_handle(),
-                    )
-                })
-                .collect::<Vec<_>>();
-            let coordinator = OpenGpuiGraphFocusCoordinator {
-                previous: current.clone(),
-                ..OpenGpuiGraphFocusCoordinator::default()
-            };
-            let current_index = CurrentFocusIndex::new(&current);
-            let direct_focus_checks = Cell::new(0_usize);
-            let contained_focus_checks = Cell::new(0_usize);
-
-            assert_eq!(
-                coordinator.disappeared_focus_index_by(
-                    &current_index,
-                    |_| {
-                        direct_focus_checks.set(direct_focus_checks.get() + 1);
-                        false
-                    },
-                    |_| {
-                        contained_focus_checks.set(contained_focus_checks.get() + 1);
-                        false
-                    },
-                ),
-                None
-            );
-            assert_eq!(direct_focus_checks.get(), ENTRY_COUNT);
-            assert_eq!(contained_focus_checks.get(), 0);
-            assert_eq!(
-                current_index.lookup_counts(),
-                FocusIndexLookupCountSnapshot {
-                    indexed_entries: ENTRY_COUNT,
-                    exact: ENTRY_COUNT,
-                    logical_node: 0,
-                    handle_entries_examined: 0,
-                }
-            );
-        });
     }
 
     #[open_gpui::test]
@@ -615,7 +484,7 @@ mod tests {
                     .fallback_for(removed, &current_index)
                     .map(|entry| entry.handle.clone()),
                 Some(overview_handle),
-                "overview, including an interaction island, follows graph order"
+                "overview, including PinnedDetail, follows graph order"
             );
 
             let detail_only = vec![entry(detail, &later_detail_handle)];

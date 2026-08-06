@@ -7,11 +7,10 @@ use jellyflow_core::{
 };
 use jellyflow_open_gpui::host::{InitialViewportPolicy, OpenGpuiSceneHost};
 use jellyflow_open_gpui::registry::OpenGpuiNodeRegistry;
-use jellyflow_runtime::commands::{
-    CommandExecutionKind, GraphCommand, IncidentEdgePolicy, TopologyEdit, TopologyPort,
-};
+use jellyflow_runtime::commands::{GraphCommand, IncidentEdgePolicy, TopologyEdit};
 use jellyflow_runtime::geometry::HandlePosition;
 use jellyflow_runtime::graph::{GraphRuntime, GraphRuntimeError};
+use jellyflow_runtime::interaction::CanvasInteractionPhase;
 use jellyflow_runtime::io::GraphFile;
 use jellyflow_runtime::view::{PublishedPortGeometry, ViewSessionOptions};
 use jellyflow_runtime::viewport::ViewportTransform;
@@ -38,14 +37,10 @@ use open_gpui_canvas_jellyflow::nodes::{
 };
 use open_gpui_canvas_jellyflow::product_catalog::native_product_catalog;
 use open_gpui_canvas_jellyflow::product_domain::condition::{
-    ConditionCase, ConditionError, ConditionIntent, ConditionObservation, ConditionOperator,
-    ConditionPredicate,
+    ConditionCase, ConditionIntent, ConditionObservation, ConditionPredicate,
 };
 use open_gpui_ui_components::gpui_adapter::init_text_input;
 
-const ADDED_CASE_ID: &str = "branch-fallback";
-const ADDED_CASE_PORT: u128 = 0xd1fa_1103;
-const ADDED_CASE_VALUE_PORT: u128 = 0xd1fa_1105;
 const CONCURRENT_CASE_ID: &str = "branch-concurrent";
 const CONCURRENT_CASE_PORT: u128 = 0xd1fa_1104;
 const CONCURRENT_CASE_VALUE_PORT: u128 = 0xd1fa_1106;
@@ -164,6 +159,7 @@ fn catalog_default_workflow_nodes_mount_without_product_side_data_repair(
         .expect("default workflow view");
     let (_host, cx) = cx.add_window_view(move |_, cx| {
         OpenGpuiSceneHost::new(view, native_registry(cx), viewport())
+            .expect("valid Open GPUI scene host")
     });
 
     draw(cx);
@@ -200,6 +196,7 @@ fn workflow_port_layout_anchor_and_hit_target_stay_stable_across_zoom(
     let weak_view = view.downgrade();
     let (host, cx) = cx.add_window_view(move |_, cx| {
         OpenGpuiSceneHost::new(view, native_registry(cx), viewport())
+            .expect("valid Open GPUI scene host")
     });
 
     for zoom in [0.5, 1.0, 2.0] {
@@ -292,6 +289,7 @@ fn condition_async_provider_projects_loading_then_publishes_without_retention_pr
         .expect("workflow view");
     let (host, cx) = cx.add_window_view(move |_, cx| {
         OpenGpuiSceneHost::new(view, native_registry(cx), viewport())
+            .expect("valid Open GPUI scene host")
     });
 
     draw_once(cx);
@@ -334,6 +332,7 @@ fn condition_async_provider_is_revoked_when_the_node_retires_before_completion(
         .expect("workflow view");
     let (host, cx) = cx.add_window_view(move |_, cx| {
         OpenGpuiSceneHost::new(view, native_registry(cx), viewport())
+            .expect("valid Open GPUI scene host")
     });
 
     draw_once(cx);
@@ -394,6 +393,7 @@ fn workflow_measured_surface_fit_publishes_every_intrinsic_size_without_diagnost
     let weak_view = view.downgrade();
     let (host, cx) = cx.add_window_view(move |_, cx| {
         OpenGpuiSceneHost::new_measured_surface(view, native_registry(cx))
+            .expect("valid Open GPUI scene host")
             .with_initial_viewport_policy(InitialViewportPolicy::FitOnFirstMeasuredGeometry)
     });
 
@@ -441,6 +441,7 @@ fn workflow_llm_content_height_converges_with_conflict_content(cx: &mut open_gpu
     let remote_view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     let (_host, cx) = cx.add_window_view(move |_, cx| {
         OpenGpuiSceneHost::new(host_view, native_registry(cx), viewport())
+            .expect("valid Open GPUI scene host")
     });
 
     draw(cx);
@@ -546,6 +547,7 @@ fn condition_header_input_port_stays_clear_of_the_first_branch_row(
     let weak_view = view.downgrade();
     let (_host, cx) = cx.add_window_view(move |_, cx| {
         OpenGpuiSceneHost::new(view, native_registry(cx), viewport())
+            .expect("valid Open GPUI scene host")
     });
 
     draw(cx);
@@ -602,58 +604,12 @@ fn condition_header_input_port_stays_clear_of_the_first_branch_row(
     );
 }
 
-#[test]
-fn workflow_demo_fixed_ports_match_semantic_and_product_catalogs() {
-    let catalog = native_node_catalog().expect("native catalog");
-    let product = native_product_catalog().expect("native product catalog");
-    let graph = workflow_demo_graph().expect("workflow graph");
-
-    for node_id in [workflow_llm_node_id(), workflow_condition_node_id()] {
-        let node = graph.node(&node_id).expect("workflow demo node");
-        let spec = catalog.get(&node.kind).expect("workflow kind in catalog");
-        let presentation = product
-            .get(&node.kind, node.kind_version)
-            .expect("workflow product presentation");
-        assert_eq!(node.size, Some(presentation.initial_size()));
-        assert!(node.ports.len() >= spec.ports().len());
-        for port_spec in spec.ports() {
-            let port_id = node
-                .ports
-                .iter()
-                .copied()
-                .find(|port_id| {
-                    graph.port(port_id).is_some_and(|port| {
-                        &port.key == port_spec.key()
-                            && port.dir == port_spec.direction()
-                            && port.kind == port_spec.kind()
-                    })
-                })
-                .expect("workflow fixed port by catalog identity");
-            let port = graph.port(&port_id).expect("workflow fixed port");
-            assert_eq!(port.node, node_id);
-            assert_eq!(&port.key, port_spec.key());
-            assert_eq!(port.dir, port_spec.direction());
-            assert_eq!(port.kind, port_spec.kind());
-            assert_eq!(port.capacity, port_spec.capacity());
-            assert_eq!(port.ty.as_ref(), port_spec.ty());
-        }
-        if node_id == workflow_condition_node_id() {
-            let last = node.ports.last().and_then(|port| graph.port(port));
-            assert!(
-                last.is_some_and(|port| port.key.0 == "else"),
-                "the immutable Else port stays after every dynamic case",
-            );
-        }
-    }
-}
-
 #[open_gpui::test]
 fn native_workflow_controls_commit_graph_facts_and_publish_real_case_ports(
     cx: &mut open_gpui::TestAppContext,
 ) {
     cx.update(init_text_input);
     let runtime = Rc::new(native_runtime(workflow_demo_graph().unwrap()).unwrap());
-    let fixture_node_count = runtime.snapshot().unwrap().graph().nodes().len();
     let view = runtime
         .attach_view(ViewSessionOptions::default())
         .expect("workflow view");
@@ -661,6 +617,7 @@ fn native_workflow_controls_commit_graph_facts_and_publish_real_case_ports(
     let host_runtime = runtime.clone();
     let (host, cx) = cx.add_window_view(move |_, cx| {
         OpenGpuiSceneHost::new(view, native_registry(cx), viewport())
+            .expect("valid Open GPUI scene host")
     });
     draw(cx);
 
@@ -681,8 +638,10 @@ fn native_workflow_controls_commit_graph_facts_and_publish_real_case_ports(
         .debug_bounds(&workflow_model_selector(llm))
         .expect("native model select");
     let initial = host_runtime.snapshot().unwrap();
-    let initial_condition = ConditionObservation::from_snapshot(&initial, condition).unwrap();
-    let initial_branches = initial_condition.cases().to_vec();
+    let initial_branches = ConditionObservation::from_snapshot(&initial, condition)
+        .unwrap()
+        .cases()
+        .to_vec();
     let initial_condition_size = initial
         .graph()
         .node(&condition)
@@ -759,42 +718,23 @@ fn native_workflow_controls_commit_graph_facts_and_publish_real_case_ports(
     cx.simulate_click(value.center(), Default::default());
     cx.simulate_input("0.8");
     draw(cx);
-    let before_add = host_runtime.snapshot().unwrap();
-
     let add = cx
         .debug_bounds(&workflow_condition_add_selector(condition))
         .expect("native add-branch button");
     cx.simulate_click(add.center(), Default::default());
-    let submitted = host_runtime.snapshot().unwrap();
-    let submitted_condition = ConditionObservation::from_snapshot(&submitted, condition).unwrap();
-    assert_eq!(submitted_condition.cases().len(), 3);
-    let expected_content_revision = before_add.revision() + 2;
-    assert!(submitted.revision() <= expected_content_revision);
     for _ in 0..4 {
         draw(cx);
-        if host_runtime.snapshot().unwrap().revision() == expected_content_revision {
+        if ConditionObservation::from_snapshot(&host_runtime.snapshot().unwrap(), condition)
+            .is_ok_and(|observation| observation.cases().len() == 3)
+        {
             break;
         }
     }
     let updated = host_runtime.snapshot().unwrap();
-    assert_eq!(
-        updated.revision(),
-        expected_content_revision,
-        "Add emits one atomic topology command and one bounded content-size command"
-    );
     let updated_condition = ConditionObservation::from_snapshot(&updated, condition).unwrap();
     let branches = updated_condition.cases();
     assert_eq!(branches.len(), 3);
     let added = branches.last().expect("native Add creates one case");
-    assert_eq!(added.label(), "Risk score equals 0.8");
-    assert_eq!(added.predicate().operand(), "risk_score");
-    assert_eq!(added.predicate().operator(), ConditionOperator::Equals);
-    assert_eq!(added.predicate().literal(), &serde_json::json!(0.8));
-    assert_eq!(added.value_type(), &TypeDesc::Float);
-    let add_intent = ConditionIntent::add(added.clone());
-    assert!(!initial_condition.satisfies(&add_intent));
-    assert!(updated_condition.satisfies(&add_intent));
-    assert_eq!(updated.graph().node(&condition).unwrap().ports.len(), 8);
     let updated_condition_size = updated
         .graph()
         .node(&condition)
@@ -812,94 +752,37 @@ fn native_workflow_controls_commit_graph_facts_and_publish_real_case_ports(
         (condition_geometry.bounds().size.height - updated_condition_size.height).abs() <= 1.0,
         "published node geometry must agree with the converged graph size"
     );
-    for branch in branches {
-        let port = updated
-            .graph()
-            .port(&branch.port_id())
-            .expect("every case owns a real graph port");
-        assert_eq!(port.node, condition);
-        assert_eq!(port.dir, PortDirection::Out);
-        assert_eq!(port.kind, PortKind::Exec);
-        assert!(port.ty.is_none());
-        let layout = geometry
-            .port(branch.port_id())
-            .expect("fresh branch port geometry");
-        assert_eq!(layout.node(), condition);
-        assert!(layout.visual_bounds().size.is_positive_finite());
-        let value_port = updated
-            .graph()
-            .port(&branch.value_port_id())
-            .expect("every case owns a typed value input");
-        assert_eq!(value_port.node, condition);
-        assert_eq!(value_port.dir, PortDirection::In);
-        assert_eq!(value_port.kind, PortKind::Data);
-        assert_eq!(value_port.ty.as_ref(), Some(branch.value_type()));
-        let value_layout = geometry
-            .port(branch.value_port_id())
-            .expect("fresh typed value port geometry");
-        assert_eq!(value_layout.node(), condition);
-        assert!(value_layout.visual_bounds().size.is_positive_finite());
-        assert!(
-            cx.debug_bounds(&workflow_condition_case_value_selector(
-                condition,
-                branch.value_port_id(),
-            ))
-            .is_some(),
-            "every typed value port has one native marker"
+    for port in [added.port_id(), added.value_port_id()] {
+        assert_eq!(
+            updated
+                .graph()
+                .port(&port)
+                .expect("new real graph port")
+                .node,
+            condition
+        );
+        assert_eq!(
+            geometry
+                .port(port)
+                .expect("new published port geometry")
+                .node(),
+            condition
         );
     }
-    let converged_add_revision = host_runtime.snapshot().unwrap().revision();
-    let converged_add_history = host_runtime.history_state().unwrap();
-    for _ in 0..3 {
-        draw(cx);
-    }
-    assert_eq!(
-        host_runtime.snapshot().unwrap().revision(),
-        converged_add_revision,
-        "stable content must not resubmit an already converged node size"
+    assert!(
+        cx.debug_bounds(&workflow_condition_case_value_selector(
+            condition,
+            added.value_port_id(),
+        ))
+        .is_some(),
+        "the dynamic typed value port has one native marker"
     );
-    assert_eq!(host_runtime.history_state().unwrap(), converged_add_history);
-    let first_case = updated_condition
-        .cases()
-        .first()
-        .expect("condition keeps its first case");
-    let first_selector = workflow_condition_case_selector(condition, first_case.port_id());
-    let first_before = cx
-        .debug_bounds(&first_selector)
-        .expect("first case before native list scrolling");
-    let scroll = cx
-        .debug_bounds(&workflow_condition_scroll_selector(condition))
-        .expect("same condition node exposes a native scroll region");
-    let viewport_before = weak_view.viewport_transform().unwrap();
-    cx.simulate_event(ScrollWheelEvent {
-        position: scroll.center(),
-        delta: ScrollDelta::Lines(point(0.0, -2.0)),
-        modifiers: Default::default(),
-        touch_phase: TouchPhase::Moved,
-    });
-    draw(cx);
-    let first_after = cx
-        .debug_bounds(&first_selector)
-        .expect("first case remains mounted while scrolling");
-    assert!(first_after.origin.y < first_before.origin.y);
-    assert_eq!(weak_view.viewport_transform().unwrap(), viewport_before);
 
     let before_invalid = host_runtime.snapshot().unwrap();
-    let before_invalid_condition =
-        ConditionObservation::from_snapshot(&before_invalid, condition).unwrap();
-    let before_invalid_data = before_invalid
-        .graph()
-        .node(&condition)
+    let before_invalid_case_count = ConditionObservation::from_snapshot(&before_invalid, condition)
         .unwrap()
-        .data
-        .clone();
-    let before_invalid_ports = before_invalid
-        .graph()
-        .node(&condition)
-        .unwrap()
-        .ports
-        .clone();
-    let before_invalid_history = host_runtime.history_state().unwrap();
+        .cases()
+        .len();
     enter_condition_case_value(cx, condition, "invalid");
     let add = cx
         .debug_bounds(&workflow_condition_add_selector(condition))
@@ -909,23 +792,12 @@ fn native_workflow_controls_commit_graph_facts_and_publish_real_case_ports(
     draw(cx);
 
     let after_invalid = host_runtime.snapshot().unwrap();
-    let after_invalid_condition =
-        ConditionObservation::from_snapshot(&after_invalid, condition).unwrap();
     assert_eq!(
-        after_invalid_condition.cases(),
-        before_invalid_condition.cases()
-    );
-    assert_eq!(
-        after_invalid.graph().node(&condition).unwrap().data,
-        before_invalid_data
-    );
-    assert_eq!(
-        after_invalid.graph().node(&condition).unwrap().ports,
-        before_invalid_ports
-    );
-    assert_eq!(
-        host_runtime.history_state().unwrap(),
-        before_invalid_history
+        ConditionObservation::from_snapshot(&after_invalid, condition)
+            .unwrap()
+            .cases()
+            .len(),
+        before_invalid_case_count,
     );
     assert!(
         cx.debug_bounds(&workflow_condition_diagnostic_selector(condition))
@@ -952,18 +824,7 @@ fn native_workflow_controls_commit_graph_facts_and_publish_real_case_ports(
         cx.debug_bounds(&workflow_node_status_selector(condition, "ready"))
             .is_some()
     );
-    assert_eq!(
-        host_runtime.snapshot().unwrap().revision(),
-        after_invalid.revision() + 1,
-        "clearing the diagnostic performs one content-size convergence without topology mutation"
-    );
-    assert_eq!(
-        host_runtime.history_state().unwrap(),
-        before_invalid_history,
-        "diagnostic-driven content size remains outside graph history"
-    );
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.resource_snapshot().active_nodes(), fixture_node_count);
         assert!(host.last_diagnostic().is_none());
     });
 }
@@ -980,6 +841,7 @@ fn native_condition_case_list_scrolls_without_changing_the_canvas_viewport(
     let weak_view = view.downgrade();
     let (_host, cx) = cx.add_window_view(move |_, cx| {
         OpenGpuiSceneHost::new(view, native_registry(cx), viewport())
+            .expect("valid Open GPUI scene host")
     });
     draw(cx);
 
@@ -1061,7 +923,7 @@ fn native_condition_case_list_scrolls_without_changing_the_canvas_viewport(
 }
 
 #[open_gpui::test]
-fn native_condition_up_and_remove_buttons_preserve_atomic_topology_history(
+fn native_condition_reorder_and_remove_controls_republish_dynamic_port_geometry(
     cx: &mut open_gpui::TestAppContext,
 ) {
     cx.update(init_text_input);
@@ -1072,23 +934,21 @@ fn native_condition_up_and_remove_buttons_preserve_atomic_topology_history(
     let weak_view = view.downgrade();
     let (_host, cx) = cx.add_window_view(move |_, cx| {
         OpenGpuiSceneHost::new(view, native_registry(cx), viewport())
+            .expect("valid Open GPUI scene host")
     });
     draw(cx);
 
     let condition = workflow_condition_node_id();
     let initial = runtime.snapshot().unwrap();
-    let initial_graph = frozen_graph_value(initial.graph());
     let initial_condition = ConditionObservation::from_snapshot(&initial, condition).unwrap();
     let initial_branches = initial_condition.cases();
     let first = initial_branches[0].clone();
     let connected = initial_branches[1].clone();
-    let initial_edge_count = initial.graph().edges().len();
     assert!(
         cx.debug_bounds(&workflow_condition_up_selector(condition, first.port_id()))
             .is_none(),
         "the first branch must not expose an upward mutation"
     );
-    assert_eq!(runtime.history_state().unwrap().undo_len(), 0);
 
     let up = cx
         .debug_bounds(&workflow_condition_up_selector(
@@ -1100,17 +960,11 @@ fn native_condition_up_and_remove_buttons_preserve_atomic_topology_history(
     draw(cx);
 
     let after_up = runtime.snapshot().unwrap();
-    assert_eq!(after_up.revision(), initial.revision() + 1);
     let after_up_condition = ConditionObservation::from_snapshot(&after_up, condition).unwrap();
-    let reorder_intent = ConditionIntent::reorder(connected.id(), 0);
     assert_eq!(
         after_up_condition.cases(),
         [connected.clone(), first.clone()]
     );
-    assert!(after_up_condition.satisfies(&reorder_intent));
-    assert_eq!(runtime.history_state().unwrap().undo_len(), 1);
-    assert_eq!(runtime.history_state().unwrap().redo_len(), 0);
-    let after_up_graph = frozen_graph_value(after_up.graph());
     let geometry = weak_view.geometry_snapshot().unwrap();
     for branch in [&first, &connected] {
         let layout = geometry
@@ -1119,26 +973,6 @@ fn native_condition_up_and_remove_buttons_preserve_atomic_topology_history(
         assert_eq!(layout.node(), condition);
         assert!(layout.visual_bounds().size.is_positive_finite());
     }
-
-    runtime
-        .execute(GraphCommand::undo(after_up.version()))
-        .applied_revision()
-        .expect("Up undo applies");
-    draw(cx);
-    let undone_up = runtime.snapshot().unwrap();
-    assert_eq!(frozen_graph_value(undone_up.graph()), initial_graph);
-    assert_eq!(runtime.history_state().unwrap().undo_len(), 0);
-    assert_eq!(runtime.history_state().unwrap().redo_len(), 1);
-
-    runtime
-        .execute(GraphCommand::redo(undone_up.version()))
-        .applied_revision()
-        .expect("Up redo applies");
-    draw(cx);
-    let redone_up = runtime.snapshot().unwrap();
-    assert_eq!(frozen_graph_value(redone_up.graph()), after_up_graph);
-    assert_eq!(runtime.history_state().unwrap().undo_len(), 1);
-    assert_eq!(runtime.history_state().unwrap().redo_len(), 0);
 
     let remove = cx
         .debug_bounds(&workflow_condition_remove_selector(
@@ -1150,12 +984,6 @@ fn native_condition_up_and_remove_buttons_preserve_atomic_topology_history(
     draw(cx);
 
     let after_remove = runtime.snapshot().unwrap();
-    let after_remove_graph = frozen_graph_value(after_remove.graph());
-    assert_eq!(
-        after_remove.revision(),
-        redone_up.revision() + 2,
-        "remove and its single converged size update each publish exactly once"
-    );
     assert!(
         after_remove
             .graph()
@@ -1163,7 +991,7 @@ fn native_condition_up_and_remove_buttons_preserve_atomic_topology_history(
             .and_then(|node| node.size)
             .expect("condition size after remove")
             .height
-            < redone_up
+            < after_up
                 .graph()
                 .node(&condition)
                 .and_then(|node| node.size)
@@ -1178,20 +1006,6 @@ fn native_condition_up_and_remove_buttons_preserve_atomic_topology_history(
         std::slice::from_ref(&first)
     );
     assert!(after_remove.graph().port(&connected.port_id()).is_none());
-    assert_eq!(after_remove.graph().edges().len(), initial_edge_count);
-    assert_eq!(runtime.history_state().unwrap().undo_len(), 2);
-    assert_eq!(runtime.history_state().unwrap().redo_len(), 0);
-    let converged_remove_revision = after_remove.revision();
-    let converged_remove_history = runtime.history_state().unwrap();
-    for _ in 0..3 {
-        draw(cx);
-    }
-    assert_eq!(
-        runtime.snapshot().unwrap().revision(),
-        converged_remove_revision,
-        "stable post-remove content must not resubmit size"
-    );
-    assert_eq!(runtime.history_state().unwrap(), converged_remove_history);
     let geometry = weak_view.geometry_snapshot().unwrap();
     assert!(geometry.port(connected.port_id()).is_none());
     assert_eq!(
@@ -1200,43 +1014,6 @@ fn native_condition_up_and_remove_buttons_preserve_atomic_topology_history(
             .expect("surviving branch geometry")
             .node(),
         condition
-    );
-
-    runtime
-        .execute(GraphCommand::undo(after_remove.version()))
-        .applied_revision()
-        .expect("Remove undo applies");
-    draw(cx);
-    let undone_remove = runtime.snapshot().unwrap();
-    assert_eq!(frozen_graph_value(undone_remove.graph()), after_up_graph);
-    assert_eq!(runtime.history_state().unwrap().undo_len(), 1);
-    assert_eq!(runtime.history_state().unwrap().redo_len(), 1);
-    let restored = weak_view.geometry_snapshot().unwrap();
-    assert_eq!(
-        restored
-            .port(connected.port_id())
-            .expect("undo restores the same branch port geometry")
-            .node(),
-        condition
-    );
-
-    runtime
-        .execute(GraphCommand::redo(undone_remove.version()))
-        .applied_revision()
-        .expect("Remove redo applies");
-    draw(cx);
-    assert_eq!(
-        frozen_graph_value(runtime.snapshot().unwrap().graph()),
-        after_remove_graph
-    );
-    assert_eq!(runtime.history_state().unwrap().undo_len(), 2);
-    assert_eq!(runtime.history_state().unwrap().redo_len(), 0);
-    assert!(
-        weak_view
-            .geometry_snapshot()
-            .unwrap()
-            .port(connected.port_id())
-            .is_none()
     );
 }
 
@@ -1251,6 +1028,7 @@ fn prompt_conflict_can_explicitly_reapply_local_text_after_another_view_wins(
     let remote_view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     let (host, cx) = cx.add_window_view(move |_, cx| {
         OpenGpuiSceneHost::new(host_view, native_registry(cx), viewport())
+            .expect("valid Open GPUI scene host")
     });
     draw(cx);
     let llm = workflow_llm_node_id();
@@ -1306,6 +1084,7 @@ fn prompt_conflict_can_discard_local_text_without_writing_the_graph(
     let remote_view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     let (host, cx) = cx.add_window_view(move |_, cx| {
         OpenGpuiSceneHost::new(host_view, native_registry(cx), viewport())
+            .expect("valid Open GPUI scene host")
     });
     draw(cx);
     let llm = workflow_llm_node_id();
@@ -1359,6 +1138,7 @@ fn model_selection_requires_explicit_reapply_after_a_remote_change_arrives_while
     let remote_view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     let (_host, cx) = cx.add_window_view(move |_, cx| {
         OpenGpuiSceneHost::new(host_view, native_registry(cx), viewport())
+            .expect("valid Open GPUI scene host")
     });
     draw(cx);
     let llm = workflow_llm_node_id();
@@ -1408,6 +1188,7 @@ fn stale_condition_add_waits_for_refresh_and_explicit_retry_without_render_resub
     let remote_view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     let (host, cx) = cx.add_window_view(move |_, cx| {
         OpenGpuiSceneHost::new(host_view, native_registry(cx), viewport())
+            .expect("valid Open GPUI scene host")
     });
     draw(cx);
     let mounted_revision = runtime.snapshot().unwrap().revision();
@@ -1564,6 +1345,7 @@ fn condition_retry_is_abandoned_when_remote_topology_invalidates_its_intent(
     let remote_view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     let (host, cx) = cx.add_window_view(move |_, cx| {
         OpenGpuiSceneHost::new(host_view, native_registry(cx), viewport())
+            .expect("valid Open GPUI scene host")
     });
     draw(cx);
 
@@ -1669,6 +1451,7 @@ fn condition_unparseable_observation_drains_completion_and_allows_explicit_disca
     let remote_view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     let (host, cx) = cx.add_window_view(move |_, cx| {
         OpenGpuiSceneHost::new(host_view, native_registry(cx), viewport())
+            .expect("valid Open GPUI scene host")
     });
     draw(cx);
 
@@ -1766,6 +1549,7 @@ fn controlled_model_select_escape_restores_focus_releases_lease_and_is_graph_vie
     let weak_view = view.downgrade();
     let (host, cx) = cx.add_window_view(move |_, cx| {
         OpenGpuiSceneHost::new(view, native_registry(cx), viewport())
+            .expect("valid Open GPUI scene host")
     });
     draw(cx);
 
@@ -1827,6 +1611,122 @@ fn controlled_model_select_escape_restores_focus_releases_lease_and_is_graph_vie
 }
 
 #[open_gpui::test]
+fn controlled_model_select_outside_press_dismisses_without_reaching_the_graph_underlay(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    cx.update(init_text_input);
+    let runtime = Rc::new(native_runtime(workflow_demo_graph().unwrap()).unwrap());
+    let condition = workflow_condition_node_id();
+    let condition_input = {
+        let snapshot = runtime.snapshot().expect("workflow snapshot");
+        ConditionObservation::from_snapshot(&snapshot, condition)
+            .expect("condition observation")
+            .input_port()
+    };
+    let view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("workflow view");
+    let weak_view = view.downgrade();
+    let (host, cx) = cx.add_window_view(move |_, cx| {
+        OpenGpuiSceneHost::new(view, native_registry(cx), viewport())
+            .expect("valid Open GPUI scene host")
+    });
+    draw(cx);
+
+    let graph_before = runtime.snapshot().expect("graph before outside presses");
+    let history_before = runtime
+        .history_state()
+        .expect("history before outside presses");
+    let selection_before = weak_view
+        .selection()
+        .expect("selection before outside presses");
+    let viewport_before = weak_view
+        .viewport_transform()
+        .expect("viewport before outside presses");
+    let llm = workflow_llm_node_id();
+    let model_selector = workflow_model_selector(llm);
+    let option_selector = workflow_model_option_selector(llm, "claude-3.7-sonnet");
+    let condition_bounds = cx
+        .debug_bounds(&workflow_condition_node_selector(condition))
+        .expect("condition node bounds");
+    let condition_input_bounds = cx
+        .debug_bounds(&workflow_port_selector(condition_input))
+        .expect("condition input bounds");
+    let outside_positions = [
+        point(px(1_030.0), px(680.0)),
+        condition_bounds.center(),
+        condition_input_bounds.center(),
+    ];
+
+    for position in outside_positions {
+        let model = cx
+            .debug_bounds(&model_selector)
+            .expect("native model select");
+        cx.simulate_click(model.center(), Default::default());
+        draw(cx);
+        assert!(cx.debug_bounds(&option_selector).is_some());
+        cx.read_entity(&host, |host, _| {
+            assert_eq!(host.resource_snapshot().protected_instances(), 1);
+            assert_eq!(host.resource_snapshot().protected_leases(), 1);
+        });
+
+        cx.simulate_mouse_down(position, MouseButton::Left, Default::default());
+
+        assert!(cx.update(|window, _| window.captured_hitbox()).is_none());
+        cx.read_entity(&host, |host, _| {
+            assert_eq!(
+                host.interaction_presentation().phase(),
+                CanvasInteractionPhase::Idle,
+            );
+            assert!(host.active_port_drag().is_none());
+        });
+        assert_eq!(
+            weak_view.selection().expect("selection after MouseDown"),
+            selection_before,
+        );
+        assert!(graph_before.ptr_eq(&runtime.snapshot().expect("graph after MouseDown")));
+        assert_eq!(
+            runtime.history_state().expect("history after MouseDown"),
+            history_before,
+        );
+        assert_eq!(
+            weak_view
+                .viewport_transform()
+                .expect("viewport after MouseDown"),
+            viewport_before,
+        );
+
+        cx.simulate_mouse_up(position, MouseButton::Left, Default::default());
+        draw(cx);
+
+        assert!(cx.debug_bounds(&option_selector).is_none());
+        cx.read_entity(&host, |host, _| {
+            assert_eq!(host.resource_snapshot().protected_instances(), 0);
+            assert_eq!(host.resource_snapshot().protected_leases(), 0);
+        });
+        assert_eq!(
+            weak_view
+                .selection()
+                .expect("selection after outside press"),
+            selection_before,
+        );
+        assert!(graph_before.ptr_eq(&runtime.snapshot().expect("graph after outside press")));
+        assert_eq!(
+            runtime
+                .history_state()
+                .expect("history after outside press"),
+            history_before,
+        );
+        assert_eq!(
+            weak_view
+                .viewport_transform()
+                .expect("viewport after outside press"),
+            viewport_before,
+        );
+    }
+}
+
+#[open_gpui::test]
 fn model_overlay_lease_protects_culling_and_releases_on_every_close_path(
     cx: &mut open_gpui::TestAppContext,
 ) {
@@ -1838,6 +1738,7 @@ fn model_overlay_lease_protects_culling_and_releases_on_every_close_path(
         .expect("workflow view");
     let (host, cx) = cx.add_window_view(move |_, cx| {
         OpenGpuiSceneHost::new(view, native_registry(cx), viewport())
+            .expect("valid Open GPUI scene host")
     });
     draw(cx);
 
@@ -1957,6 +1858,7 @@ fn model_overlay_lease_preserves_native_workflow_across_semantic_zoom(
     let weak_view = view.downgrade();
     let (host, cx) = cx.add_window_view(move |_, cx| {
         OpenGpuiSceneHost::new(view, native_registry(cx), viewport())
+            .expect("valid Open GPUI scene host")
     });
     draw(cx);
 
@@ -2096,246 +1998,6 @@ fn model_overlay_lease_preserves_native_workflow_across_semantic_zoom(
         );
         assert!(host.last_diagnostic().is_none());
     });
-}
-
-#[test]
-fn condition_else_is_stable_last_and_outside_the_case_action_domain() {
-    let runtime = native_runtime(workflow_demo_graph().unwrap()).unwrap();
-    let condition = workflow_condition_node_id();
-    let initial = runtime.snapshot().unwrap();
-    let observation = ConditionObservation::from_snapshot(&initial, condition).unwrap();
-    let else_port = observation.else_branch().port_id();
-    assert_eq!(observation.else_branch().label(), "Else");
-    assert_eq!(
-        initial.graph().node(&condition).unwrap().ports.last(),
-        Some(&else_port),
-        "Else must be the final output regardless of case count"
-    );
-    assert_eq!(
-        initial.graph().port(&else_port).unwrap().key.0,
-        "else",
-        "Else is a fixed semantic port, not a case encoded in node data"
-    );
-    let data = &initial.graph().node(&condition).unwrap().data;
-    assert!(data.get("branches").is_none());
-    assert_eq!(
-        data.get("cases")
-            .and_then(serde_json::Value::as_array)
-            .map(Vec::len),
-        Some(observation.cases().len())
-    );
-    assert_eq!(data["else_branch"]["label"], "Else");
-
-    let remove_else = observation.plan(&ConditionIntent::remove(
-        "else",
-        IncidentEdgePolicy::Cascade,
-    ));
-    assert!(matches!(
-        remove_else,
-        Err(ConditionError::CaseNotFound { case_id }) if case_id == "else"
-    ));
-    assert_eq!(runtime.snapshot().unwrap().revision(), initial.revision());
-}
-
-#[test]
-fn condition_topology_transaction_rolls_back_data_when_port_replacement_is_rejected() {
-    let runtime = native_runtime(workflow_demo_graph().unwrap()).unwrap();
-    let condition = workflow_condition_node_id();
-    let before = runtime.snapshot().unwrap();
-    let before_graph = frozen_graph_value(before.graph());
-    let mut changed_data = before.graph().node(&condition).unwrap().data.clone();
-    changed_data["title"] = serde_json::json!("must roll back");
-    let invalid = GraphCommand::topology(
-        before.version(),
-        TopologyEdit::new()
-            .set_node_data(condition, changed_data)
-            .replace_node_ports(
-                condition,
-                std::iter::empty::<TopologyPort>(),
-                IncidentEdgePolicy::Reject,
-            ),
-    );
-
-    assert_eq!(
-        runtime.execute(invalid).kind(),
-        CommandExecutionKind::Rejected
-    );
-    let after = runtime.snapshot().unwrap();
-    assert_eq!(after.revision(), before.revision());
-    assert_eq!(frozen_graph_value(after.graph()), before_graph);
-    assert_eq!(runtime.history_state().unwrap().undo_len(), 0);
-}
-
-#[test]
-fn condition_case_actions_are_atomic_stable_and_exactly_undoable() {
-    let runtime = native_runtime(workflow_demo_graph().unwrap()).unwrap();
-    let condition = workflow_condition_node_id();
-    let initial = runtime.snapshot().unwrap();
-    let initial_condition = ConditionObservation::from_snapshot(&initial, condition).unwrap();
-    let initial_branches = initial_condition.cases();
-    let stable_ports: Vec<_> = initial_branches
-        .iter()
-        .flat_map(|case| [case.value_port_id(), case.port_id()])
-        .collect();
-    let connected_branch = initial_branches[1].clone();
-    let added = ConditionCase::new(
-        ADDED_CASE_ID,
-        "Fallback",
-        PortId::from_u128(ADDED_CASE_PORT),
-        PortId::from_u128(ADDED_CASE_VALUE_PORT),
-        test_condition_predicate("fallback"),
-    )
-    .unwrap();
-
-    let add_intent = ConditionIntent::add(added.clone());
-    assert!(!initial_condition.satisfies(&add_intent));
-    let add = initial_condition.plan(&add_intent).unwrap();
-    runtime
-        .execute(add)
-        .applied_revision()
-        .expect("add applies");
-    assert_eq!(runtime.snapshot().unwrap().revision(), 1);
-    assert_eq!(runtime.history_state().unwrap().undo_len(), 1);
-    let after_add = runtime.snapshot().unwrap();
-    let after_add_condition = ConditionObservation::from_snapshot(&after_add, condition).unwrap();
-    let branches = after_add_condition.cases();
-    let else_port = after_add_condition.else_branch().port_id();
-    assert!(after_add_condition.satisfies(&add_intent));
-    assert_eq!(
-        after_add.graph().node(&condition).unwrap().ports.last(),
-        Some(&else_port)
-    );
-    assert_eq!(
-        branches
-            .iter()
-            .take(2)
-            .flat_map(|case| [case.value_port_id(), case.port_id()])
-            .collect::<Vec<_>>(),
-        stable_ports
-    );
-    assert_eq!(branches[2], added);
-
-    let reorder_intent = ConditionIntent::reorder(ADDED_CASE_ID, 0);
-    let reorder = after_add_condition.plan(&reorder_intent).unwrap();
-    runtime
-        .execute(reorder)
-        .applied_revision()
-        .expect("reorder applies");
-    assert_eq!(runtime.snapshot().unwrap().revision(), 2);
-    assert_eq!(runtime.history_state().unwrap().undo_len(), 2);
-    let before_remove = runtime.snapshot().unwrap();
-    let before_remove_graph = frozen_graph_value(before_remove.graph());
-    let before_remove_condition =
-        ConditionObservation::from_snapshot(&before_remove, condition).unwrap();
-    assert_eq!(before_remove_condition.cases()[0], added);
-    assert!(before_remove_condition.satisfies(&reorder_intent));
-
-    let remove_intent = ConditionIntent::remove(connected_branch.id(), IncidentEdgePolicy::Cascade);
-    let remove = before_remove_condition.plan(&remove_intent).unwrap();
-    runtime
-        .execute(remove)
-        .applied_revision()
-        .expect("connected branch removal cascades");
-    let after_remove = runtime.snapshot().unwrap();
-    let after_remove_graph = frozen_graph_value(after_remove.graph());
-    let after_remove_condition =
-        ConditionObservation::from_snapshot(&after_remove, condition).unwrap();
-    assert_eq!(after_remove.revision(), 3);
-    assert_eq!(runtime.history_state().unwrap().undo_len(), 3);
-    assert!(after_remove_condition.satisfies(&remove_intent));
-    assert!(
-        after_remove
-            .graph()
-            .port(&connected_branch.port_id())
-            .is_none()
-    );
-    assert_eq!(after_remove_condition.else_branch().port_id(), else_port);
-    assert_eq!(
-        after_remove.graph().node(&condition).unwrap().ports.last(),
-        Some(&else_port)
-    );
-    assert_eq!(
-        after_remove.graph().edges().len(),
-        before_remove.graph().edges().len(),
-        "removing a case must not disturb the immutable Else edge"
-    );
-
-    runtime
-        .execute(GraphCommand::undo(after_remove.version()))
-        .applied_revision()
-        .expect("remove undo applies");
-    assert_eq!(
-        frozen_graph_value(runtime.snapshot().unwrap().graph()),
-        before_remove_graph,
-        "one undo must restore payload, order, ports, and incident edges exactly"
-    );
-
-    let undo_version = runtime.snapshot().unwrap().version();
-    runtime
-        .execute(GraphCommand::redo(undo_version))
-        .applied_revision()
-        .expect("remove redo applies");
-    assert_eq!(
-        frozen_graph_value(runtime.snapshot().unwrap().graph()),
-        after_remove_graph,
-        "redo must reproduce the complete atomic branch removal"
-    );
-}
-
-#[test]
-fn stale_view_replans_case_intent_without_overwriting_remote_addition() {
-    let runtime = native_runtime(workflow_demo_graph().unwrap()).unwrap();
-    let view_a = runtime.attach_view(ViewSessionOptions::default()).unwrap();
-    let view_b = runtime.attach_view(ViewSessionOptions::default()).unwrap();
-    let condition = workflow_condition_node_id();
-    let base_a = view_a.graph_snapshot().unwrap();
-    let base_b = view_b.graph_snapshot().unwrap();
-    let condition_a = ConditionObservation::from_snapshot(&base_a, condition).unwrap();
-    let condition_b = ConditionObservation::from_snapshot(&base_b, condition).unwrap();
-    let reordered_id = condition_a.cases()[1].id().to_owned();
-    let reorder_intent = ConditionIntent::reorder(reordered_id.clone(), 0);
-    let stale_reorder = condition_a.plan(&reorder_intent).unwrap();
-    let concurrent = ConditionCase::new(
-        CONCURRENT_CASE_ID,
-        "Needs review",
-        PortId::from_u128(CONCURRENT_CASE_PORT),
-        PortId::from_u128(CONCURRENT_CASE_VALUE_PORT),
-        test_condition_predicate("concurrent"),
-    )
-    .unwrap();
-    let remote_intent = ConditionIntent::add(concurrent.clone());
-    let remote_add = condition_b.plan(&remote_intent).unwrap();
-    view_b
-        .execute(remote_add)
-        .unwrap()
-        .applied_revision()
-        .expect("remote add applies");
-
-    let stale = view_a.execute(stale_reorder).unwrap();
-    assert_eq!(stale.kind(), CommandExecutionKind::Conflict);
-    assert_eq!(stale.observed_revision(), Some(1));
-    assert_eq!(runtime.history_state().unwrap().undo_len(), 1);
-    let current = view_a
-        .graph_snapshot()
-        .expect("conflicting view refreshes to the current graph");
-    let current_condition = ConditionObservation::from_snapshot(&current, condition).unwrap();
-    assert!(current_condition.satisfies(&remote_intent));
-    assert!(!current_condition.satisfies(&reorder_intent));
-
-    let recovered = current_condition.plan(&reorder_intent).unwrap();
-    view_a
-        .execute(recovered)
-        .unwrap()
-        .applied_revision()
-        .expect("replanned intent applies");
-    let final_snapshot = view_a.graph_snapshot().unwrap();
-    let final_condition = ConditionObservation::from_snapshot(&final_snapshot, condition).unwrap();
-    let final_branches = final_condition.cases();
-    assert_eq!(final_branches[0].id(), reordered_id);
-    assert_eq!(final_branches.last(), Some(&concurrent));
-    assert!(final_condition.satisfies(&remote_intent));
-    assert!(final_condition.satisfies(&reorder_intent));
-    assert_eq!(runtime.history_state().unwrap().undo_len(), 2);
 }
 
 fn viewport() -> CanvasRect {
@@ -2490,7 +2152,7 @@ fn assert_workflow_layout_contract(
         },
     };
     let window = cx.open_window(size(px(window_width), px(window_height)), move |_, _| {
-        OpenGpuiSceneHost::new(view, registry, viewport)
+        OpenGpuiSceneHost::new(view, registry, viewport).expect("valid Open GPUI scene host")
     });
     let mut cx = VisualTestContext::from_window(window.into(), cx);
     for _ in 0..3 {

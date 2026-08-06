@@ -12,7 +12,10 @@ mod interaction;
 mod native_host;
 mod native_input;
 
-pub use interaction::{EguiCanvasInteraction, EguiInteractionError, EguiInteractionOutput};
+pub use interaction::{
+    EguiCanvasInteraction, EguiInteractionError, EguiInteractionOutput,
+    EguiInteractionSettlementResult,
+};
 pub use native_host::{
     EguiNativeFrameError, EguiNativeFrameHost, EguiNativeFrameOutcome, EguiNativeNode,
     EguiNativeNodeDiagnostic, EguiNativePortError,

@@ -76,6 +76,7 @@ fn retained_binding_exposes_a_semantic_port_name_with_an_application_override(
             registry.seal(&catalog()).expect("valid test registry"),
             viewport(),
         )
+        .expect("valid Open GPUI scene host")
     });
     draw(cx);
 

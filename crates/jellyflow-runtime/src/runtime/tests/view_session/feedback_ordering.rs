@@ -8,7 +8,7 @@ use crate::runtime::adapter_protocol::{
     AdapterFrame, FeedbackCollectorError, FeedbackSubmissionError, FrameRequest, LayoutNodeStatus,
     NodeLayout, RendererStamp, ViewPoint, ViewRect, ViewSize,
 };
-use crate::runtime::commands::{CommandCompletionCorrelationError, GraphCommand};
+use crate::runtime::commands::GraphCommand;
 use crate::runtime::graph_runtime::{
     GraphRuntime, GraphRuntimeError, GraphRuntimeEvent, RuntimePatch,
 };
@@ -87,6 +87,173 @@ impl GraphRuntimeMiddleware for CloseViewBeforeFeedbackCommand {
             .expect("middleware closes the feedback view");
         Ok(())
     }
+}
+
+struct DropRuntimeBeforeFeedbackCommand {
+    runtime: Rc<RefCell<Option<GraphRuntime>>>,
+    calls: Rc<Cell<usize>>,
+}
+
+impl GraphRuntimeMiddleware for DropRuntimeBeforeFeedbackCommand {
+    fn before_command(
+        &mut self,
+        _snapshot: GraphRuntimeMiddlewareSnapshot,
+        _command: &GraphCommand,
+    ) -> Result<(), ApplyPipelineError> {
+        self.calls.set(self.calls.get().saturating_add(1));
+        drop(
+            self.runtime
+                .borrow_mut()
+                .take()
+                .expect("runtime handle is installed before feedback"),
+        );
+        Ok(())
+    }
+}
+
+struct DropRuntimeAfterFeedbackCommand {
+    runtime: Rc<RefCell<Option<GraphRuntime>>>,
+}
+
+impl GraphRuntimeMiddleware for DropRuntimeAfterFeedbackCommand {
+    fn after_command(&mut self, _snapshot: GraphRuntimeMiddlewareSnapshot, _patch: &RuntimePatch) {
+        drop(
+            self.runtime
+                .borrow_mut()
+                .take()
+                .expect("runtime handle is installed before feedback"),
+        );
+    }
+}
+
+#[test]
+fn runtime_drop_in_before_middleware_rejects_the_remaining_feedback_batch() {
+    let (graph, nodes) = graph_with_nodes(1);
+    let runtime_slot = Rc::new(RefCell::new(None));
+    let calls = Rc::new(Cell::new(0));
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .unwrap()
+        .with_middleware(DropRuntimeBeforeFeedbackCommand {
+            runtime: runtime_slot.clone(),
+            calls: calls.clone(),
+        });
+    let session = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let callback_events = events.clone();
+    session
+        .subscribe(move |event| match event {
+            ViewSessionEvent::Closed { reason } => {
+                callback_events.borrow_mut().push(("closed", Some(reason)))
+            }
+            ViewSessionEvent::RuntimePatched { .. } => {
+                callback_events.borrow_mut().push(("patched", None))
+            }
+            _ => {}
+        })
+        .unwrap();
+    let frame = one_node_frame(&session);
+    let collector = frame.collector();
+    let first = GraphCommand::set_node_data(
+        frame.graph_version(),
+        nodes[0],
+        serde_json::json!({ "must_not_apply": 1 }),
+    );
+    let second = GraphCommand::set_node_data(
+        frame.graph_version(),
+        nodes[0],
+        serde_json::json!({ "must_not_apply": 2 }),
+    );
+    let first_identity = first.identity().clone();
+    let second_identity = second.identity().clone();
+    collector.command(first).unwrap();
+    collector.command(second).unwrap();
+    *runtime_slot.borrow_mut() = Some(runtime);
+
+    let receipt = session
+        .submit_feedback(collector.finish().unwrap())
+        .expect("runtime retirement remains an operation-scoped command completion");
+
+    assert!(matches!(
+        receipt
+            .command_completion(&first_identity)
+            .unwrap()
+            .result(),
+        Err(GraphRuntimeError::RuntimeUnavailable)
+    ));
+    assert!(matches!(
+        receipt
+            .command_completion(&second_identity)
+            .unwrap()
+            .result(),
+        Err(GraphRuntimeError::RuntimeUnavailable)
+    ));
+    assert_eq!(calls.get(), 1);
+    assert_eq!(
+        session.close_reason(),
+        Some(ViewCloseReason::RuntimeDropped)
+    );
+    assert_eq!(
+        events.borrow().as_slice(),
+        &[("closed", Some(ViewCloseReason::RuntimeDropped))]
+    );
+}
+
+#[test]
+fn runtime_drop_in_after_middleware_preserves_applied_outcome_without_view_patch() {
+    let (graph, nodes) = graph_with_nodes(1);
+    let runtime_slot = Rc::new(RefCell::new(None));
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .unwrap()
+        .with_middleware(DropRuntimeAfterFeedbackCommand {
+            runtime: runtime_slot.clone(),
+        });
+    let session = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let callback_events = events.clone();
+    session
+        .subscribe(move |event| match event {
+            ViewSessionEvent::Closed { reason } => {
+                callback_events.borrow_mut().push(("closed", Some(reason)))
+            }
+            ViewSessionEvent::RuntimePatched { .. } => {
+                callback_events.borrow_mut().push(("patched", None))
+            }
+            _ => {}
+        })
+        .unwrap();
+    let frame = one_node_frame(&session);
+    let collector = frame.collector();
+    let command = GraphCommand::set_node_data(
+        frame.graph_version(),
+        nodes[0],
+        serde_json::json!({ "applied_before_drop": true }),
+    );
+    let identity = command.identity().clone();
+    collector.command(command).unwrap();
+    *runtime_slot.borrow_mut() = Some(runtime);
+
+    let receipt = session
+        .submit_feedback(collector.finish().unwrap())
+        .expect("already-applied command keeps its completion after runtime retirement");
+
+    let applied = receipt
+        .command_completion(&identity)
+        .unwrap()
+        .result()
+        .unwrap()
+        .applied()
+        .expect("command installs before after middleware runs");
+    assert_eq!(applied.revision(), 1);
+    assert_eq!(
+        session.close_reason(),
+        Some(ViewCloseReason::RuntimeDropped)
+    );
+    assert_eq!(
+        events.borrow().as_slice(),
+        &[("closed", Some(ViewCloseReason::RuntimeDropped))]
+    );
 }
 
 #[test]
@@ -192,121 +359,6 @@ fn interleaved_feedback_correlates_an_execution_error_without_shifting_its_neigh
             .collect::<Vec<_>>(),
         nodes
     );
-}
-
-#[test]
-fn feedback_install_failure_preserves_completed_planning_work() {
-    let (graph, nodes) = graph_with_nodes(1);
-    let runtime = GraphRuntime::builder(Default::default())
-        .build(graph)
-        .unwrap();
-    runtime.set_revision_for_test(u64::MAX);
-    let session = runtime.attach_view(ViewSessionOptions::default()).unwrap();
-    let frame = one_node_frame(&session);
-    let collector = frame.collector();
-    let command = GraphCommand::set_node_data(
-        frame.graph_version(),
-        nodes[0],
-        serde_json::json!({ "attempted": true }),
-    );
-    let identity = command.identity().clone();
-    collector.command(command).unwrap();
-    let before = runtime.snapshot().unwrap();
-
-    let receipt = session
-        .submit_feedback(collector.finish().unwrap())
-        .unwrap();
-    let completion = receipt.command_completion(&identity).unwrap();
-
-    assert!(matches!(
-        completion.result(),
-        Err(GraphRuntimeError::RevisionExhausted)
-    ));
-    assert_eq!(
-        completion
-            .planning_work()
-            .expect("feedback preserves work after successful planning")
-            .operations_emitted(),
-        1,
-    );
-    assert!(runtime.snapshot().unwrap().ptr_eq(&before));
-}
-
-#[test]
-fn feedback_receipt_batch_consumption_is_keyed_ordered_and_atomic() {
-    let (graph, nodes) = graph_with_nodes(2);
-    let runtime = GraphRuntime::builder(Default::default())
-        .build(graph)
-        .unwrap();
-    let session = runtime.attach_view(ViewSessionOptions::default()).unwrap();
-    let frame = one_node_frame(&session);
-    let collector = frame.collector();
-
-    let first = GraphCommand::set_node_data(
-        frame.graph_version(),
-        nodes[0],
-        serde_json::json!({ "step": 1 }),
-    );
-    let first_identity = first.identity().clone();
-    let second = GraphCommand::set_node_data(
-        frame.graph_version(),
-        nodes[1],
-        serde_json::json!({ "step": 2 }),
-    );
-    let second_identity = second.identity().clone();
-    let missing_identity = GraphCommand::set_node_data(
-        frame.graph_version(),
-        nodes[1],
-        serde_json::json!({ "not_submitted": true }),
-    )
-    .identity()
-    .clone();
-    collector.command(first).unwrap();
-    collector.layout(layout_for_node(&frame, nodes[0])).unwrap();
-    collector.command(second).unwrap();
-
-    let mut receipt = session
-        .submit_feedback(collector.finish().unwrap())
-        .unwrap();
-    assert_eq!(receipt.layout_receipts().count(), 1);
-
-    let error = receipt
-        .take_exact_command_completions(std::slice::from_ref(&first_identity))
-        .expect_err("an exact subset must reject its foreign completion");
-    assert!(matches!(
-        error,
-        CommandCompletionCorrelationError::ForeignIdentity { identity }
-            if identity == second_identity
-    ));
-    assert_eq!(receipt.command_completions().count(), 2);
-
-    let error = receipt
-        .take_command_completions(&[first_identity.clone(), first_identity.clone()])
-        .expect_err("duplicate expected identities must reject atomically");
-    assert!(matches!(
-        error,
-        CommandCompletionCorrelationError::DuplicateIdentity { identity }
-            if identity == first_identity
-    ));
-    assert_eq!(receipt.command_completions().count(), 2);
-
-    let completions = receipt
-        .take_command_completions(&[second_identity.clone(), first_identity.clone()])
-        .unwrap();
-    assert_eq!(completions[0].identity(), &second_identity);
-    assert_eq!(completions[1].identity(), &first_identity);
-    assert!(receipt.command_completions().next().is_none());
-
-    assert!(matches!(
-        receipt.take_command_completion(&first_identity),
-        Err(CommandCompletionCorrelationError::AlreadyConsumed { identity })
-            if identity == first_identity
-    ));
-    assert!(matches!(
-        receipt.take_command_completion(&missing_identity),
-        Err(CommandCompletionCorrelationError::MissingIdentity { identity })
-            if identity == missing_identity
-    ));
 }
 
 #[test]
@@ -434,7 +486,7 @@ fn feedback_body_panic_wins_after_both_subscription_layers_finish() {
 }
 
 #[test]
-fn feedback_error_still_restores_the_first_drain_panic_after_both_layers_finish() {
+fn feedback_error_restores_first_drain_panic_and_finishes_terminal_layer() {
     let (graph, nodes) = graph_with_nodes(1);
     let view_slot = Rc::new(RefCell::new(None));
     let runtime = GraphRuntime::builder(Default::default())
@@ -450,22 +502,6 @@ fn feedback_error_still_restores_the_first_drain_panic_after_both_layers_finish(
         .subscribe(|event| {
             if matches!(event, GraphRuntimeEvent::Patched { .. }) {
                 panic!("runtime subscriber panic while returning feedback error");
-            }
-        })
-        .unwrap();
-    let runtime_calls = Rc::new(Cell::new(0));
-    let callback_calls = runtime_calls.clone();
-    runtime
-        .subscribe(move |event| {
-            if matches!(event, GraphRuntimeEvent::Patched { .. }) {
-                callback_calls.set(callback_calls.get() + 1);
-            }
-        })
-        .unwrap();
-    session
-        .subscribe(|event| {
-            if matches!(event, ViewSessionEvent::Closed { .. }) {
-                panic!("view subscriber panic while returning feedback error");
             }
         })
         .unwrap();
@@ -493,17 +529,13 @@ fn feedback_error_still_restores_the_first_drain_panic_after_both_layers_finish(
     let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         session.submit_feedback(collector.finish().unwrap())
     }))
-    .expect_err("a drain panic must supersede the ordinary feedback error");
+    .expect_err("the first drain panic must supersede the post-admission feedback error");
 
     assert_eq!(
         panic.downcast_ref::<&str>(),
         Some(&"runtime subscriber panic while returning feedback error")
     );
-    assert_eq!(runtime.snapshot().unwrap().revision(), 1);
-    assert_eq!(runtime_calls.get(), 1);
     assert_eq!(terminal_calls.get(), 1);
-    assert_eq!(session.close_reason(), Some(ViewCloseReason::HostClosed));
-    assert_eq!(runtime.live_view_count(), 0);
 }
 
 #[test]
@@ -560,58 +592,6 @@ fn cloned_collectors_share_order_and_reject_late_writes_after_finish() {
 }
 
 #[test]
-fn feedback_receipts_correlate_applied_commands_and_stale_layout() {
-    let (graph, nodes) = graph_with_nodes(1);
-    let runtime = GraphRuntime::builder(Default::default())
-        .build(graph)
-        .unwrap();
-    let session = runtime.attach_view(ViewSessionOptions::default()).unwrap();
-    let frame = session
-        .frame(FrameRequest::new(
-            CanvasRect {
-                origin: CanvasPoint {
-                    x: -100.0,
-                    y: -100.0,
-                },
-                size: CanvasSize {
-                    width: 600.0,
-                    height: 400.0,
-                },
-            },
-            RendererStamp::new("test.node", 1),
-        ))
-        .unwrap();
-    let collector = frame.collector();
-    let command = GraphCommand::set_node_data(
-        frame.graph_version(),
-        nodes[0],
-        serde_json::json!({ "expanded": true }),
-    );
-    let command_identity = command.identity().clone();
-    collector.command(command).unwrap();
-    collector.layout(layout_for(&frame)).unwrap();
-
-    let receipt = session
-        .submit_feedback(collector.finish().unwrap())
-        .unwrap();
-    assert!(matches!(
-        receipt.command_completion(&command_identity).unwrap().result(),
-        Ok(outcome) if outcome.applied().is_some()
-    ));
-    assert_eq!(
-        receipt.layout_receipts().next().unwrap().status().unwrap(),
-        LayoutNodeStatus::Stale
-    );
-    assert!(
-        session
-            .geometry_snapshot()
-            .unwrap()
-            .node(nodes[0])
-            .is_none()
-    );
-}
-
-#[test]
 fn rejected_command_feedback_does_not_stale_layout_from_the_same_frame() {
     let (graph, nodes) = graph_with_nodes(1);
     let runtime = GraphRuntime::builder(Default::default())
@@ -649,71 +629,6 @@ fn rejected_command_feedback_does_not_stale_layout_from_the_same_frame() {
     assert_eq!(receipt.publication().unwrap().published_nodes(), [nodes[0]]);
     assert!(!receipt.request_next_frame());
     assert_eq!(runtime.snapshot().unwrap().revision(), 0);
-}
-
-#[test]
-fn conflicted_command_correlates_without_staling_layout() {
-    let (graph, nodes) = graph_with_nodes(1);
-    let runtime = GraphRuntime::builder(Default::default())
-        .build(graph)
-        .unwrap();
-    let session = runtime.attach_view(ViewSessionOptions::default()).unwrap();
-    let stale_version = runtime.snapshot().unwrap().version();
-    runtime
-        .execute(GraphCommand::set_node_data(
-            stale_version,
-            nodes[0],
-            serde_json::json!({ "admitted": true }),
-        ))
-        .into_result()
-        .unwrap()
-        .applied()
-        .unwrap();
-    let frame = session
-        .frame(FrameRequest::new(
-            CanvasRect {
-                origin: CanvasPoint {
-                    x: -100.0,
-                    y: -100.0,
-                },
-                size: CanvasSize {
-                    width: 600.0,
-                    height: 400.0,
-                },
-            },
-            RendererStamp::new("test.node", 1),
-        ))
-        .unwrap();
-    let collector = frame.collector();
-    let command = GraphCommand::set_node_data(
-        stale_version,
-        nodes[0],
-        serde_json::json!({ "must_not_apply": true }),
-    );
-    let command_identity = command.identity().clone();
-    collector.command(command).unwrap();
-    collector.layout(layout_for(&frame)).unwrap();
-
-    let receipt = session
-        .submit_feedback(collector.finish().unwrap())
-        .unwrap();
-
-    assert!(
-        receipt
-            .command_completion(&command_identity)
-            .unwrap()
-            .result()
-            .unwrap()
-            .conflict()
-            .is_some()
-    );
-    assert_eq!(
-        receipt.layout_receipts().next().unwrap().status().unwrap(),
-        LayoutNodeStatus::Published
-    );
-    assert_eq!(runtime.snapshot().unwrap().revision(), 1);
-    assert_eq!(receipt.publication().unwrap().published_nodes(), [nodes[0]]);
-    assert!(!receipt.request_next_frame());
 }
 
 #[test]

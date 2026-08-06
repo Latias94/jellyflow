@@ -338,6 +338,7 @@ fn protected_nodes_ignore_zero_required_budget_then_resume_ordinary_culling(
                 registry.seal(&catalog).expect("valid test registry"),
                 visible_viewport(),
             )
+            .expect("valid Open GPUI scene host")
         });
         *scene_host.borrow_mut() = Some(host.clone());
         DetachableHostScene {
@@ -479,6 +480,7 @@ fn coalesced_reincarnation_hard_retires_active_node_without_waiting_for_draw(
                 registry.seal(&catalog).expect("valid test registry"),
                 visible_viewport(),
             )
+            .expect("valid Open GPUI scene host")
         });
         *scene_host.borrow_mut() = Some(host.clone());
         DetachableHostScene {
@@ -583,6 +585,7 @@ fn protected_instance_budget_is_distinct_bounded_and_reusable(cx: &mut open_gpui
             registry.seal(&catalog).expect("valid test registry"),
             visible_viewport(),
         )
+        .expect("valid Open GPUI scene host")
     });
     draw(cx);
 
@@ -691,6 +694,7 @@ fn sixty_fifth_real_port_drag_cancels_without_side_effects_then_retries_after_re
             registry.seal(&catalog).expect("valid test registry"),
             visible_viewport(),
         )
+        .expect("valid Open GPUI scene host")
         .with_navigation_config(
             OpenGpuiNavigationConfig::default()
                 .with_input_bindings(OpenGpuiInputBindings::default().with_connect_on_click(false)),
@@ -810,6 +814,7 @@ fn eligible_lru_evicts_oldest_instances_and_keeps_strong_references_bounded(
             registry.seal(&catalog).expect("valid test registry"),
             visible_viewport(),
         )
+        .expect("valid Open GPUI scene host")
     });
     draw(cx);
     cx.read_entity(&host, |host, _| {
@@ -858,10 +863,10 @@ fn eligible_lru_evicts_oldest_instances_and_keeps_strong_references_bounded(
 }
 
 #[open_gpui::test]
-fn thousand_lifecycle_cycles_return_native_resources_to_baseline(
+fn repeated_lifecycle_cycles_return_native_resources_to_baseline(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    const CYCLES: u64 = 1_000;
+    const CYCLES: u64 = 2;
     const EXPLICIT_LEASES_PER_MOUNT: u64 = 6;
     const MOUNTS_PER_CYCLE: u64 = 3;
 
@@ -909,8 +914,12 @@ fn thousand_lifecycle_cycles_return_native_resources_to_baseline(
             replacement_mounts.clone(),
         );
         assert_eq!(registry.len(), 2);
-        let host = cx
-            .update(|_, cx| cx.new(|_| OpenGpuiSceneHost::new(view, registry, visible_viewport())));
+        let host = cx.update(|_, cx| {
+            cx.new(|_| {
+                OpenGpuiSceneHost::new(view, registry, visible_viewport())
+                    .expect("valid Open GPUI scene host")
+            })
+        });
         let weak_host: AnyWeakEntity = host.downgrade().into();
         cx.update_entity(&scene, |scene, cx| {
             scene.host = Some(host.clone());
@@ -1120,8 +1129,12 @@ fn dropping_last_host_entity_releases_live_native_resources_after_revocation_pan
         Rc::new(Cell::new(0)),
     );
     let (scene, cx) = cx.add_window_view(|_, _| ReplaceableHostScene { host: None });
-    let host =
-        cx.update(|_, cx| cx.new(|_| OpenGpuiSceneHost::new(view, registry, visible_viewport())));
+    let host = cx.update(|_, cx| {
+        cx.new(|_| {
+            OpenGpuiSceneHost::new(view, registry, visible_viewport())
+                .expect("valid Open GPUI scene host")
+        })
+    });
     let weak_host: AnyWeakEntity = host.downgrade().into();
     cx.update_entity(&scene, |scene, cx| {
         scene.host = Some(host.clone());

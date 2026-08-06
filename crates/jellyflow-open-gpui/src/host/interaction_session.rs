@@ -1,18 +1,17 @@
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::rc::{Rc, Weak};
 #[cfg(target_os = "macos")]
 use std::time::Duration;
 use std::time::Instant;
 
 use jellyflow_core::{CanvasPoint, EdgeId, NodeGraphConnectionMode, NodeId};
-#[cfg(test)]
-use jellyflow_runtime::view::ViewSession;
 use jellyflow_runtime::viewport::ViewportTransform;
 use jellyflow_runtime::{
-    commands::CommandExecutionCompletion, commands::GraphCommand, geometry::ViewPoint,
-    geometry::ViewRect, geometry::ViewSize, graph::GraphRevision, graph::GraphSnapshot,
-    graph::NodeLifetimeKey, interaction::CanvasInteractionConfig,
+    commands::CommandExecutionCompletion, geometry::ViewPoint, geometry::ViewRect,
+    geometry::ViewSize, graph::GraphRevision, graph::GraphSnapshot, graph::NodeLifetimeKey,
+    interaction::BoundInteractionSubmission, interaction::CanvasInteractionConfig,
     interaction::CanvasInteractionEffect, interaction::CanvasInteractionError,
     interaction::CanvasInteractionPhase, interaction::CanvasInteractionPresentation,
     interaction::CanvasInteractionQueryAdvance, interaction::CanvasInteractionSession,
@@ -20,16 +19,24 @@ use jellyflow_runtime::{
     interaction::ConnectionGestureBinding, interaction::ConnectionInteractionStart,
     interaction::ConnectionSearchRequest, interaction::ConnectionSearchSelection,
     interaction::InteractionGeneration, interaction::InteractionGraphSubmission,
-    interaction::InteractionGraphSubmissionBindError, interaction::InteractionOwner,
-    interaction::InteractionTerminalReason, interaction::InteractionTickDemand,
-    interaction::InteractionTicketId, interaction::KeyboardConnectionFeedback,
-    interaction::KeyboardConnectionPort, interaction::MAX_NODE_MOVE_COHORT_SIZE,
-    interaction::NodeDragStart, interaction::NodeNudgeDirection, interaction::SelectionMode,
-    view::NodeInstanceKey, viewport::ViewportPointerSample,
+    interaction::InteractionGraphSubmissionAbandonFailure,
+    interaction::InteractionGraphSubmissionBindFailure,
+    interaction::InteractionGraphSubmissionResumeFailure, interaction::InteractionOwner,
+    interaction::InteractionSubmissionSettlementEvidence,
+    interaction::InteractionSubmissionSettlementResult, interaction::InteractionTerminalReason,
+    interaction::InteractionTickDemand, interaction::InteractionTicketId,
+    interaction::KeyboardConnectionFeedback, interaction::KeyboardConnectionPort,
+    interaction::MAX_NODE_MOVE_COHORT_SIZE, interaction::NodeDragStart,
+    interaction::NodeNudgeDirection, interaction::SelectionMode, view::NodeInstanceKey,
+    viewport::ViewportPointerSample,
 };
-use open_gpui::{
-    AsyncWindowContext, Context, FocusHandle, Pixels, Point, Task, WeakEntity, Window,
+#[cfg(test)]
+use jellyflow_runtime::{
+    commands::GraphCommand, interaction::InteractionGraphSubmissionBindError, view::ViewSession,
 };
+#[cfg(target_os = "macos")]
+use open_gpui::{AsyncWindowContext, WeakEntity};
+use open_gpui::{Context, FocusHandle, Pixels, Point, Task, Window};
 
 use crate::activity::OpenGpuiActivityLease;
 use crate::binding::OpenGpuiMountCapability;
@@ -64,6 +71,7 @@ pub(super) struct OpenGpuiNativeInteractionOwner {
     graph_focus: OpenGpuiGraphFocusCoordinator,
     tick_scheduled: Option<ScheduledTick>,
     tick_frame_requested: Option<ScheduledTick>,
+    ready_tick: Option<ReadyScheduledTick>,
     query_frame_scheduled: Option<CallbackToken>,
     query_resolution_active: Rc<Cell<bool>>,
     #[cfg(target_os = "macos")]
@@ -74,18 +82,15 @@ pub(super) struct OpenGpuiNativeInteractionOwner {
     last_tick_at: Option<Instant>,
     epoch: Rc<Cell<u64>>,
     lifecycle: NativeInteractionOwnerLifecycle,
-    tick_callback_entries: Rc<Cell<u64>>,
-    tick_callback_registrations: u64,
-    tick_frame_requests: u64,
-    last_registered_tick: Option<u64>,
-    last_entered_tick: Option<u64>,
-    last_requested_tick: Option<u64>,
     #[cfg(test)]
     terminal_window_transitions: u64,
+    #[cfg(test)]
+    settlement_failure_once: Option<CanvasInteractionError>,
 }
 
 /// Leave the normal display link enough time to deliver its requested frame before using AppKit's
-/// invalidation path. This is a redraw wake only; semantic progression remains in `on_next_frame`.
+/// invalidation path. This is a redraw wake only; semantic progression occurs at the render
+/// boundary after the native callback marks a tick ready.
 #[cfg(target_os = "macos")]
 const NATIVE_FRAME_FALLBACK_DELAY: Duration = Duration::from_millis(24);
 
@@ -122,6 +127,12 @@ struct ScheduledTick {
     sequence: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ReadyScheduledTick {
+    token: ScheduledTick,
+    entered_at: Instant,
+}
+
 #[cfg(target_os = "macos")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum NativeFrameFallbackToken {
@@ -131,13 +142,6 @@ enum NativeFrameFallbackToken {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) struct InteractionTickDiagnostics {
-    pub(super) callback_registrations: u64,
-    pub(super) callback_entries: u64,
-    pub(super) frame_requests: u64,
-    pub(super) last_registered_tick: Option<u64>,
-    pub(super) last_entered_tick: Option<u64>,
-    pub(super) last_requested_tick: Option<u64>,
-    pub(super) callback_epoch: u64,
     pub(super) pending_queries: usize,
     pub(super) pending_submission: bool,
     pub(super) ready_prefixes: usize,
@@ -373,6 +377,7 @@ impl OpenGpuiNativeInteractionOwner {
             graph_focus: OpenGpuiGraphFocusCoordinator::default(),
             tick_scheduled: None,
             tick_frame_requested: None,
+            ready_tick: None,
             query_frame_scheduled: None,
             query_resolution_active: Rc::new(Cell::new(false)),
             #[cfg(target_os = "macos")]
@@ -383,14 +388,10 @@ impl OpenGpuiNativeInteractionOwner {
             last_tick_at: None,
             epoch: Rc::new(Cell::new(1)),
             lifecycle: NativeInteractionOwnerLifecycle::Active,
-            tick_callback_entries: Rc::new(Cell::new(0)),
-            tick_callback_registrations: 0,
-            tick_frame_requests: 0,
-            last_registered_tick: None,
-            last_entered_tick: None,
-            last_requested_tick: None,
             #[cfg(test)]
             terminal_window_transitions: 0,
+            #[cfg(test)]
+            settlement_failure_once: None,
         }
     }
 
@@ -496,11 +497,32 @@ impl OpenGpuiNativeInteractionOwner {
         update
     }
 
+    pub(super) fn bind_submission_for_transport(
+        &mut self,
+        submission: InteractionGraphSubmission,
+    ) -> Result<BoundInteractionSubmission, InteractionGraphSubmissionBindFailure> {
+        self.session.bind_submission(submission)
+    }
+
+    #[cfg(test)]
     pub(super) fn bind_submission(
         &mut self,
         submission: InteractionGraphSubmission,
-    ) -> Result<Option<GraphCommand>, InteractionGraphSubmissionBindError> {
-        self.session.bind_submission(submission)
+    ) -> Result<Option<GraphCommand>, InteractionGraphSubmissionBindFailure> {
+        let ticket = submission.ticket();
+        let token = self.callback_token();
+        let mut bound = self.bind_submission_for_transport(submission)?;
+        let command = bound.take_command();
+        self.pending_submission =
+            Some(PendingInteractionSubmission::enqueued(ticket, token, bound));
+        Ok(command)
+    }
+
+    pub(super) fn abandon_submission(
+        &mut self,
+        submission: InteractionGraphSubmission,
+    ) -> Result<CanvasInteractionUpdate, InteractionGraphSubmissionAbandonFailure> {
+        self.session.abandon_submission(submission)
     }
 
     pub(super) fn close_semantic(&mut self) -> CanvasInteractionUpdate {
@@ -735,7 +757,7 @@ impl OpenGpuiNativeInteractionOwner {
         self.session.clear_edge_hover()
     }
 
-    /// Grants runtime a bounded query advancement opportunity from the native frame clock.
+    /// Grants runtime a bounded query advancement opportunity from the native frame scheduler.
     ///
     /// Query identity, payload, cursor, stale policy, and cleanup remain in the semantic session.
     /// Reconcile drag residency after every grant because an alignment result may complete the
@@ -806,18 +828,6 @@ impl OpenGpuiNativeInteractionOwner {
         self.session.select_search_result(selection)
     }
 
-    pub(super) fn complete_submission(
-        &mut self,
-        ticket: InteractionTicketId,
-        completion: CommandExecutionCompletion,
-    ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
-        let applied_revision = completion.applied_revision();
-        let update = self.session.complete_submission(ticket, completion)?;
-        self.settle_node_drag_residency(ticket, applied_revision);
-        self.reconcile_node_drag_residency();
-        Ok(update)
-    }
-
     pub(super) fn reconcile_authoritative_state(
         &mut self,
     ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
@@ -845,40 +855,36 @@ impl OpenGpuiNativeInteractionOwner {
         self.session.cancel_connection_settlement(capability)
     }
 
-    pub(super) fn complete_submission_without_command(
+    fn settle_bound_submission(
         &mut self,
-        ticket: InteractionTicketId,
-    ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
-        let update = self.session.complete_submission_without_command(ticket)?;
-        self.settle_node_drag_residency(ticket, None);
-        self.reconcile_node_drag_residency();
-        Ok(update)
-    }
-
-    pub(super) fn submission_not_dispatched(
-        &mut self,
-        ticket: InteractionTicketId,
-    ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
-        let update = self.session.submission_not_dispatched(ticket)?;
-        self.settle_node_drag_residency(ticket, None);
-        self.reconcile_node_drag_residency();
-        Ok(update)
-    }
-
-    pub(super) fn submission_outcome_unknown(
-        &mut self,
-        ticket: InteractionTicketId,
-    ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
-        let update = self.session.submission_outcome_unknown(ticket)?;
-        self.settle_node_drag_residency(ticket, None);
-        self.reconcile_node_drag_residency();
-        Ok(update)
+        submission: BoundInteractionSubmission,
+        evidence: InteractionSubmissionSettlementEvidence,
+    ) -> InteractionSubmissionSettlementResult {
+        let ticket = submission.ticket();
+        let applied_revision = match &evidence {
+            InteractionSubmissionSettlementEvidence::Command(completion) => {
+                completion.applied_revision()
+            }
+            InteractionSubmissionSettlementEvidence::NoCommand
+            | InteractionSubmissionSettlementEvidence::NotDispatched
+            | InteractionSubmissionSettlementEvidence::OutcomeUnknown => None,
+        };
+        let result = self.session.settle_submission(submission, evidence);
+        if matches!(
+            result,
+            InteractionSubmissionSettlementResult::Settled(_)
+                | InteractionSubmissionSettlementResult::Stale(_)
+        ) {
+            self.settle_node_drag_residency(ticket, applied_revision);
+            self.reconcile_node_drag_residency();
+        }
+        result
     }
 
     pub(super) fn resume_submission_after_prefix(
         &mut self,
         submission: InteractionGraphSubmission,
-    ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
+    ) -> Result<CanvasInteractionUpdate, InteractionGraphSubmissionResumeFailure> {
         self.session.resume_submission_after_prefix(submission)
     }
 
@@ -1288,7 +1294,9 @@ impl OpenGpuiNativeInteractionOwner {
     #[cfg(target_os = "macos")]
     fn native_frame_fallback_is_current(&self, token: NativeFrameFallbackToken) -> bool {
         match token {
-            NativeFrameFallbackToken::Tick(token) => self.current_scheduled_tick() == Some(token),
+            NativeFrameFallbackToken::Tick(token) => {
+                self.current_scheduled_tick() == Some(token) && self.ready_tick.is_none()
+            }
             NativeFrameFallbackToken::Query(token) => {
                 self.query_frame_scheduled == Some(token)
                     && self.callback_is_current(token)
@@ -1311,6 +1319,96 @@ impl OpenGpuiNativeInteractionOwner {
 
     fn restore_pending_submission(&mut self, pending: PendingInteractionSubmission) {
         self.pending_submission = Some(pending);
+    }
+
+    fn retry_pending_settlement(
+        &mut self,
+    ) -> Option<Result<CanvasInteractionUpdate, CanvasInteractionError>> {
+        let pending = self.pending_submission.take()?;
+        let PendingInteractionSubmission { ticket, stage } = pending;
+        let PendingInteractionSubmissionStage::Settling {
+            token,
+            mut submission,
+            mut evidence,
+        } = stage
+        else {
+            self.pending_submission = Some(PendingInteractionSubmission { ticket, stage });
+            return None;
+        };
+        if !self.callback_is_current(token) {
+            self.pending_submission = Some(PendingInteractionSubmission::settling_many(
+                ticket, token, submission, evidence,
+            ));
+            return None;
+        }
+        let attempts = evidence.len();
+        let mut last_error = None;
+        for _ in 0..attempts {
+            let next = evidence
+                .pop_front()
+                .expect("the settlement attempt count matches retained evidence");
+            #[cfg(test)]
+            if let Some(error) = self.settlement_failure_once.take() {
+                evidence.push_back(next);
+                last_error = Some(error);
+                continue;
+            }
+            match self.settle_bound_submission(submission, next) {
+                InteractionSubmissionSettlementResult::Settled(update)
+                | InteractionSubmissionSettlementResult::Stale(update) => {
+                    return Some(Ok(update));
+                }
+                InteractionSubmissionSettlementResult::StillBound(failure) => {
+                    let (retained_submission, retained_evidence, error) = failure.into_parts();
+                    submission = retained_submission;
+                    evidence.push_back(retained_evidence);
+                    last_error = Some(error);
+                }
+            }
+        }
+        self.pending_submission = Some(PendingInteractionSubmission::settling_many(
+            ticket, token, submission, evidence,
+        ));
+        last_error.map(Err)
+    }
+
+    #[cfg(test)]
+    pub(super) fn settle_test_evidence(
+        &mut self,
+        ticket: InteractionTicketId,
+        evidence: InteractionSubmissionSettlementEvidence,
+    ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
+        let pending = self
+            .pending_submission
+            .take()
+            .expect("test settlement requires one bound native submission");
+        assert_eq!(pending.ticket, ticket);
+        let pending = match pending.stage {
+            PendingInteractionSubmissionStage::Enqueued { token, submission } => {
+                PendingInteractionSubmission::settling(ticket, token, submission, evidence)
+            }
+            PendingInteractionSubmissionStage::Settling {
+                token,
+                submission,
+                evidence: mut retained,
+            } => {
+                retained.push_back(evidence);
+                PendingInteractionSubmission::settling_many(ticket, token, submission, retained)
+            }
+            _ => panic!("test settlement requires a post-admission submission"),
+        };
+        self.pending_submission = Some(pending);
+        self.retry_pending_settlement()
+            .expect("test settlement installed retained evidence")
+    }
+
+    pub(super) fn has_pending_settlement(&self) -> bool {
+        self.pending_submission.as_ref().is_some_and(|pending| {
+            matches!(
+                pending.stage,
+                PendingInteractionSubmissionStage::Settling { .. }
+            )
+        })
     }
 
     fn attach_prefix_task(
@@ -1348,21 +1446,35 @@ impl OpenGpuiNativeInteractionOwner {
         self.ready_prefixes.pop_front()
     }
 
-    fn clear_submission_for_ticket(&mut self, ticket: InteractionTicketId) -> bool {
-        if !self
-            .pending_submission
-            .as_ref()
-            .is_some_and(|pending| pending.ticket == ticket)
-        {
-            return false;
-        }
-        self.pending_submission = None;
-        true
-    }
-
     fn clear_pending_submission_work(&mut self) {
         self.pending_submission = None;
         self.ready_prefixes.clear();
+    }
+
+    /// Drops only work that has not crossed command admission.
+    ///
+    /// Once a command is enqueued, or its completion is retained for settlement, the native
+    /// owner must keep the exact evidence until the runtime interaction reaches a terminal state.
+    /// Batch-level cleanup uses this narrower operation so an unrelated journal error cannot erase
+    /// an already admitted interaction.
+    fn clear_revocable_submission_work(&mut self) -> bool {
+        let Some(pending) = self.pending_submission.take() else {
+            self.ready_prefixes.clear();
+            return true;
+        };
+        let revocable = matches!(
+            pending.stage,
+            PendingInteractionSubmissionStage::PreparingPrefixTask { .. }
+                | PendingInteractionSubmissionStage::WaitingForPrefix { .. }
+                | PendingInteractionSubmissionStage::Revalidating { .. }
+        );
+        if revocable {
+            self.ready_prefixes.clear();
+            true
+        } else {
+            self.pending_submission = Some(pending);
+            false
+        }
     }
 
     #[cfg(test)]
@@ -1410,9 +1522,7 @@ impl OpenGpuiNativeInteractionOwner {
         };
         self.next_tick_sequence = self.next_tick_sequence.wrapping_add(1);
         self.tick_scheduled = Some(token);
-        self.last_registered_tick = Some(token.sequence);
         self.last_tick_at.get_or_insert_with(Instant::now);
-        self.tick_callback_registrations = self.tick_callback_registrations.saturating_add(1);
         Some((Rc::downgrade(&self.epoch), token))
     }
 
@@ -1428,9 +1538,29 @@ impl OpenGpuiNativeInteractionOwner {
             return false;
         }
         self.tick_frame_requested = Some(scheduled);
-        self.last_requested_tick = Some(scheduled.sequence);
-        self.tick_frame_requests = self.tick_frame_requests.saturating_add(1);
         true
+    }
+
+    fn mark_scheduled_tick_ready(&mut self, token: ScheduledTick, entered_at: Instant) -> bool {
+        if self.tick_scheduled != Some(token)
+            || !self.callback_is_current(token.callback)
+            || self.ready_tick.is_some()
+        {
+            return false;
+        }
+        self.ready_tick = Some(ReadyScheduledTick { token, entered_at });
+        let _ = self
+            .tick_frame_requested
+            .take_if(|requested| *requested == token);
+        #[cfg(target_os = "macos")]
+        {
+            self.native_tick_frame_wake = None;
+        }
+        true
+    }
+
+    fn ready_scheduled_tick(&self) -> Option<ReadyScheduledTick> {
+        self.ready_tick
     }
 
     fn begin_scheduled_tick(&mut self, token: ScheduledTick, now: Instant) -> Option<f32> {
@@ -1438,15 +1568,12 @@ impl OpenGpuiNativeInteractionOwner {
             return None;
         }
         self.tick_scheduled = None;
+        self.ready_tick = None;
+        self.tick_frame_requested = None;
         if !self.callback_is_current(token.callback) {
             return None;
         }
-        self.last_entered_tick = Some(token.sequence);
         Some(interaction_elapsed_seconds(&mut self.last_tick_at, now))
-    }
-
-    fn tick_callback_entries(&self) -> Rc<Cell<u64>> {
-        Rc::clone(&self.tick_callback_entries)
     }
 
     pub(super) fn tick_diagnostics(&self) -> InteractionTickDiagnostics {
@@ -1459,13 +1586,6 @@ impl OpenGpuiNativeInteractionOwner {
         #[cfg(not(target_os = "macos"))]
         let native_query_wake_active = false;
         InteractionTickDiagnostics {
-            callback_registrations: self.tick_callback_registrations,
-            callback_entries: self.tick_callback_entries.get(),
-            frame_requests: self.tick_frame_requests,
-            last_registered_tick: self.last_registered_tick,
-            last_entered_tick: self.last_entered_tick,
-            last_requested_tick: self.last_requested_tick,
-            callback_epoch: self.epoch(),
             pending_queries: usize::from(self.session.query_work_pending()),
             pending_submission: self.pending_submission.is_some(),
             ready_prefixes: self.ready_prefixes.len(),
@@ -1481,6 +1601,7 @@ impl OpenGpuiNativeInteractionOwner {
     fn stop_ticking(&mut self) {
         self.tick_scheduled = None;
         self.tick_frame_requested = None;
+        self.ready_tick = None;
         #[cfg(target_os = "macos")]
         {
             self.native_tick_frame_wake = None;
@@ -1697,26 +1818,6 @@ impl OpenGpuiNativeInteractionOwner {
     pub(super) fn test_native_requires_window_cleanup(&self) -> bool {
         self.native.requires_window_cleanup()
     }
-
-    #[cfg(test)]
-    pub(super) fn test_tick_scheduled(&self) -> bool {
-        self.tick_scheduled.is_some()
-    }
-
-    #[cfg(test)]
-    pub(super) fn test_tick_callback_attempts(&self) -> u64 {
-        self.tick_diagnostics().callback_entries
-    }
-
-    #[cfg(test)]
-    pub(super) fn test_tick_callback_registrations(&self) -> u64 {
-        self.tick_diagnostics().callback_registrations
-    }
-
-    #[cfg(test)]
-    pub(super) fn test_tick_frame_requests(&self) -> u64 {
-        self.tick_diagnostics().frame_requests
-    }
 }
 
 struct PendingInteractionSubmission {
@@ -1742,6 +1843,12 @@ enum PendingInteractionSubmissionStage {
     },
     Enqueued {
         token: CallbackToken,
+        submission: BoundInteractionSubmission,
+    },
+    Settling {
+        token: CallbackToken,
+        submission: BoundInteractionSubmission,
+        evidence: VecDeque<InteractionSubmissionSettlementEvidence>,
     },
 }
 
@@ -1787,10 +1894,39 @@ impl PendingInteractionSubmission {
         }
     }
 
-    fn enqueued(ticket: InteractionTicketId, token: CallbackToken) -> Self {
+    fn enqueued(
+        ticket: InteractionTicketId,
+        token: CallbackToken,
+        submission: BoundInteractionSubmission,
+    ) -> Self {
         Self {
             ticket,
-            stage: PendingInteractionSubmissionStage::Enqueued { token },
+            stage: PendingInteractionSubmissionStage::Enqueued { token, submission },
+        }
+    }
+
+    fn settling(
+        ticket: InteractionTicketId,
+        token: CallbackToken,
+        submission: BoundInteractionSubmission,
+        evidence: InteractionSubmissionSettlementEvidence,
+    ) -> Self {
+        Self::settling_many(ticket, token, submission, VecDeque::from([evidence]))
+    }
+
+    fn settling_many(
+        ticket: InteractionTicketId,
+        token: CallbackToken,
+        submission: BoundInteractionSubmission,
+        evidence: VecDeque<InteractionSubmissionSettlementEvidence>,
+    ) -> Self {
+        Self {
+            ticket,
+            stage: PendingInteractionSubmissionStage::Settling {
+                token,
+                submission,
+                evidence,
+            },
         }
     }
 
@@ -1837,7 +1973,8 @@ impl PendingInteractionSubmission {
             ),
             stage @ (PendingInteractionSubmissionStage::WaitingForPrefix { .. }
             | PendingInteractionSubmissionStage::Revalidating { .. }
-            | PendingInteractionSubmissionStage::Enqueued { .. }) => (
+            | PendingInteractionSubmissionStage::Enqueued { .. }
+            | PendingInteractionSubmissionStage::Settling { .. }) => (
                 Self { ticket, stage },
                 PrefixTaskAttachOutcome::InvalidStage,
             ),
@@ -1872,17 +2009,8 @@ impl PendingInteractionSubmission {
                 PendingInteractionSubmissionStage::Revalidating { .. }
             );
 
-        let enqueued = Self::enqueued(identity.ticket, identity.token);
-        let (enqueued, enqueued_outcome) = enqueued.attach_prefix_task(identity, Task::ready(()));
-        let enqueued_rejected = enqueued_outcome == PrefixTaskAttachOutcome::InvalidStage
-            && enqueued.identity() == identity
-            && matches!(
-                &enqueued.stage,
-                PendingInteractionSubmissionStage::Enqueued { .. }
-            );
-
-        drop((revalidating, enqueued));
-        waiting_rejected && revalidating_rejected && enqueued_rejected
+        drop(revalidating);
+        waiting_rejected && revalidating_rejected
     }
 }
 
@@ -1892,7 +2020,8 @@ impl PendingInteractionSubmissionStage {
             Self::PreparingPrefixTask { token, .. }
             | Self::WaitingForPrefix { token, .. }
             | Self::Revalidating { token, .. }
-            | Self::Enqueued { token } => *token,
+            | Self::Enqueued { token, .. }
+            | Self::Settling { token, .. } => *token,
         }
     }
 
@@ -1924,12 +2053,6 @@ impl OpenGpuiSceneHost {
             return;
         }
         let dispatch = update.into_dispatch();
-        #[cfg(test)]
-        if let Some(work) = dispatch.port_connection_query_work {
-            self.scene_evidence
-                .last_port_connection_query_work
-                .set(Some(work));
-        }
         let effects = dispatch.effects;
         let damage = dispatch.damage;
         let tick_demand = dispatch.tick_demand;
@@ -2060,10 +2183,26 @@ impl OpenGpuiSceneHost {
         }
 
         let token = self.interaction_owner.callback_token();
-        let barrier = self.commands.capture_prefix_barrier().map_err(|error| {
-            self.interaction_submission_not_dispatched(ticket);
-            format!("failed to capture native command prefix: {error}")
-        })?;
+        let barrier =
+            match catch_unwind(AssertUnwindSafe(|| self.commands.capture_prefix_barrier())) {
+                Ok(Ok(barrier)) => barrier,
+                Ok(Err(error)) => {
+                    let result = self
+                        .interaction_owner
+                        .abandon_submission(submission)
+                        .map_err(|failure| failure.error());
+                    self.finish_interaction_completion(result);
+                    return Err(format!("failed to capture native command prefix: {error}"));
+                }
+                Err(payload) => {
+                    let result = self
+                        .interaction_owner
+                        .abandon_submission(submission)
+                        .map_err(|failure| failure.error());
+                    self.finish_interaction_completion(result);
+                    resume_unwind(payload);
+                }
+            };
         let identity = PendingInteractionSubmissionIdentity { ticket, token };
         let pending = PendingInteractionSubmission::preparing_prefix(
             ticket,
@@ -2074,21 +2213,46 @@ impl OpenGpuiSceneHost {
         self.interaction_owner.install_pending_submission(pending);
         let host = cx.weak_entity();
         let (epoch_gate, gate_token) = self.interaction_owner.callback_gate();
-        let prefix_task = cx.spawn(async move |_, cx| {
-            let result = barrier.await;
-            if !callback_epoch_is_current(&epoch_gate, gate_token) {
-                drop(result);
-                return;
-            }
-            let _ = host.update(cx, |host, cx| {
-                if host
-                    .interaction_owner
-                    .publish_ready_prefix(token, ticket, result)
-                {
-                    cx.notify();
+        let prefix_task = catch_unwind(AssertUnwindSafe(|| {
+            cx.spawn(async move |_, cx| {
+                let result = barrier.await;
+                if !callback_epoch_is_current(&epoch_gate, gate_token) {
+                    drop(result);
+                    return;
                 }
-            });
-        });
+                let _ = host.update(cx, |host, cx| {
+                    if host
+                        .interaction_owner
+                        .publish_ready_prefix(token, ticket, result)
+                    {
+                        cx.notify();
+                    }
+                });
+            })
+        }));
+        let prefix_task = match prefix_task {
+            Ok(task) => task,
+            Err(payload) => {
+                let pending = self
+                    .interaction_owner
+                    .take_pending_submission()
+                    .expect("prefix task creation retains its preparing submission");
+                let PendingInteractionSubmission { ticket, stage } = pending;
+                let PendingInteractionSubmissionStage::PreparingPrefixTask { submission, .. } =
+                    stage
+                else {
+                    self.interaction_owner
+                        .restore_pending_submission(PendingInteractionSubmission { ticket, stage });
+                    resume_unwind(payload);
+                };
+                let result = self
+                    .interaction_owner
+                    .abandon_submission(submission)
+                    .map_err(|failure| failure.error());
+                self.finish_interaction_completion(result);
+                resume_unwind(payload);
+            }
+        };
         let _ = self
             .interaction_owner
             .attach_prefix_task(identity, prefix_task);
@@ -2128,20 +2292,44 @@ impl OpenGpuiSceneHost {
             }
         };
         match self.bind_and_enqueue_interaction(submission, permit) {
-            Ok(true) => {
+            Ok((bound, true)) => {
                 self.interaction_owner.restore_pending_submission(
-                    PendingInteractionSubmission::enqueued(pending_ticket, token),
+                    PendingInteractionSubmission::enqueued(pending_ticket, token, bound),
                 );
                 cx.notify();
                 Ok(())
             }
-            Ok(false) => {
-                self.complete_interaction_without_command(ticket);
+            Ok((bound, false)) => {
+                self.interaction_owner.restore_pending_submission(
+                    PendingInteractionSubmission::enqueued(pending_ticket, token, bound),
+                );
+                self.settle_interaction_evidence(
+                    ticket,
+                    InteractionSubmissionSettlementEvidence::NoCommand,
+                );
                 Ok(())
             }
-            Err(error) => {
-                self.interaction_submission_not_dispatched(ticket);
-                Err(error.message)
+            Err(InteractionEnqueueFailure::Bind(failure)) => {
+                let (submission, error) = failure.into_parts();
+                let result = self
+                    .interaction_owner
+                    .abandon_submission(submission)
+                    .map_err(|failure| failure.error());
+                self.finish_interaction_completion(result);
+                Err(error.to_string())
+            }
+            Err(InteractionEnqueueFailure::Transport {
+                message,
+                submission,
+            }) => {
+                self.interaction_owner.restore_pending_submission(
+                    PendingInteractionSubmission::enqueued(pending_ticket, token, *submission),
+                );
+                self.settle_interaction_evidence(
+                    ticket,
+                    InteractionSubmissionSettlementEvidence::NotDispatched,
+                );
+                Err(message)
             }
         }
     }
@@ -2199,7 +2387,11 @@ impl OpenGpuiSceneHost {
         let permit = match result {
             Ok(permit) => permit,
             Err(error) => {
-                self.interaction_submission_not_dispatched(ticket);
+                let result = self
+                    .interaction_owner
+                    .abandon_submission(submission)
+                    .map_err(|failure| failure.error());
+                self.finish_interaction_completion(result);
                 self.record_prefix_barrier_failure(error);
                 self.sync_native_connection_state(window, cx);
                 return;
@@ -2214,9 +2406,14 @@ impl OpenGpuiSceneHost {
             .resume_submission_after_prefix(submission);
         match update {
             Ok(update) => self.apply_canvas_interaction_update(update, window, cx),
-            Err(error) => {
-                self.discard_pending_interaction_submission();
-                self.interaction_submission_not_dispatched(ticket);
+            Err(failure) => {
+                let (submission, error) = failure.into_parts();
+                drop(self.interaction_owner.take_pending_submission());
+                let result = self
+                    .interaction_owner
+                    .abandon_submission(submission)
+                    .map_err(|failure| failure.error());
+                self.finish_interaction_completion(result);
                 self.record_command_diagnostic(format!(
                     "failed to refresh native interaction command: {error}"
                 ));
@@ -2229,20 +2426,25 @@ impl OpenGpuiSceneHost {
         &mut self,
         submission: InteractionGraphSubmission,
         permit: OpenGpuiCommandPrefixPermit,
-    ) -> Result<bool, InteractionEnqueueFailure> {
+    ) -> Result<(BoundInteractionSubmission, bool), InteractionEnqueueFailure> {
         let ticket = submission.ticket();
-        let command = self
+        let mut submission = self
             .interaction_owner
-            .bind_submission(submission)
-            .map_err(|error| InteractionEnqueueFailure::new(error.to_string()))?;
-        let Some(command) = command else {
+            .bind_submission_for_transport(submission)
+            .map_err(InteractionEnqueueFailure::Bind)?;
+        let Some(command) = submission.take_command() else {
             permit.abandon();
-            return Ok(false);
+            return Ok((submission, false));
         };
-        permit
-            .enqueue_detached(command, OpenGpuiCommandOrigin::Interaction { ticket })
-            .map_err(|error| InteractionEnqueueFailure::new(error.to_string()))?;
-        Ok(true)
+        if let Err(error) =
+            permit.enqueue_detached(command, OpenGpuiCommandOrigin::Interaction { ticket })
+        {
+            return Err(InteractionEnqueueFailure::Transport {
+                message: error.to_string(),
+                submission: Box::new(submission),
+            });
+        }
+        Ok((submission, true))
     }
 
     pub(super) fn settle_interaction_command(
@@ -2250,30 +2452,82 @@ impl OpenGpuiSceneHost {
         ticket: InteractionTicketId,
         completion: CommandExecutionCompletion,
     ) {
-        self.interaction_owner.clear_submission_for_ticket(ticket);
-        let result = self
-            .interaction_owner
-            .complete_submission(ticket, completion);
-        self.finish_interaction_completion(result);
+        self.settle_interaction_evidence(
+            ticket,
+            InteractionSubmissionSettlementEvidence::Command(completion),
+        );
     }
 
     pub(super) fn interaction_submission_not_dispatched(&mut self, ticket: InteractionTicketId) {
-        self.interaction_owner.clear_submission_for_ticket(ticket);
-        let result = self.interaction_owner.submission_not_dispatched(ticket);
-        self.finish_interaction_completion(result);
+        self.settle_interaction_evidence(
+            ticket,
+            InteractionSubmissionSettlementEvidence::NotDispatched,
+        );
     }
 
     pub(super) fn interaction_submission_outcome_unknown(&mut self, ticket: InteractionTicketId) {
-        self.interaction_owner.clear_submission_for_ticket(ticket);
-        let result = self.interaction_owner.submission_outcome_unknown(ticket);
-        self.finish_interaction_completion(result);
+        self.settle_interaction_evidence(
+            ticket,
+            InteractionSubmissionSettlementEvidence::OutcomeUnknown,
+        );
     }
 
-    fn complete_interaction_without_command(&mut self, ticket: InteractionTicketId) {
-        self.interaction_owner.clear_submission_for_ticket(ticket);
-        let result = self
-            .interaction_owner
-            .complete_submission_without_command(ticket);
+    fn settle_interaction_evidence(
+        &mut self,
+        ticket: InteractionTicketId,
+        evidence: InteractionSubmissionSettlementEvidence,
+    ) {
+        let Some(pending) = self.interaction_owner.take_pending_submission() else {
+            self.record_command_diagnostic(format!(
+                "native interaction settlement has no bound submission for {ticket:?}"
+            ));
+            return;
+        };
+        let PendingInteractionSubmission {
+            ticket: pending_ticket,
+            stage,
+        } = pending;
+        if pending_ticket != ticket {
+            self.interaction_owner
+                .restore_pending_submission(PendingInteractionSubmission {
+                    ticket: pending_ticket,
+                    stage,
+                });
+            self.record_command_diagnostic(
+                "native interaction settlement ticket mismatch".to_owned(),
+            );
+            return;
+        }
+        let pending = match stage {
+            PendingInteractionSubmissionStage::Enqueued { token, submission } => {
+                PendingInteractionSubmission::settling(ticket, token, submission, evidence)
+            }
+            PendingInteractionSubmissionStage::Settling {
+                token,
+                submission,
+                evidence: mut retained,
+            } => {
+                retained.push_back(evidence);
+                PendingInteractionSubmission::settling_many(ticket, token, submission, retained)
+            }
+            stage => {
+                self.interaction_owner
+                    .restore_pending_submission(PendingInteractionSubmission { ticket, stage });
+                self.record_command_diagnostic(
+                    "native interaction settlement arrived outside the bound transport stage"
+                        .to_owned(),
+                );
+                return;
+            }
+        };
+        self.interaction_owner.restore_pending_submission(pending);
+        self.retry_pending_interaction_settlement();
+    }
+
+    pub(super) fn retry_pending_interaction_settlement(&mut self) {
+        let Some(result) = self.interaction_owner.retry_pending_settlement() else {
+            return;
+        };
         self.finish_interaction_completion(result);
     }
 
@@ -2289,49 +2543,12 @@ impl OpenGpuiSceneHost {
         }
     }
 
-    #[cfg(test)]
-    pub(super) fn bind_pending_interaction_submission_for_execution(
-        &mut self,
-    ) -> Result<(InteractionTicketId, Option<GraphCommand>), String> {
-        let pending = self
-            .interaction_owner
-            .take_pending_submission()
-            .ok_or_else(|| "native interaction has no pending submission".to_owned())?;
-        let PendingInteractionSubmission { ticket, stage } = pending;
-        let submission = match stage {
-            PendingInteractionSubmissionStage::PreparingPrefixTask {
-                submission,
-                cancellation,
-                ..
-            } => {
-                drop(cancellation);
-                submission
-            }
-            PendingInteractionSubmissionStage::WaitingForPrefix {
-                submission,
-                task,
-                cancellation,
-                ..
-            } => {
-                drop((task, cancellation));
-                submission
-            }
-            stage @ (PendingInteractionSubmissionStage::Revalidating { .. }
-            | PendingInteractionSubmissionStage::Enqueued { .. }) => {
-                self.interaction_owner
-                    .restore_pending_submission(PendingInteractionSubmission { ticket, stage });
-                return Err("native interaction submission is no longer bindable".to_owned());
-            }
-        };
-        let command = self
-            .interaction_owner
-            .bind_submission(submission)
-            .map_err(|error| error.to_string())?;
-        Ok((ticket, command))
-    }
-
     pub(super) fn discard_pending_interaction_submission(&mut self) {
         self.interaction_owner.clear_pending_submission_work();
+    }
+
+    pub(super) fn discard_revocable_interaction_submission(&mut self) -> bool {
+        self.interaction_owner.clear_revocable_submission_work()
     }
 
     #[cfg(test)]
@@ -2397,10 +2614,11 @@ impl OpenGpuiSceneHost {
 
     /// Advances one queued continuous interaction from an externally owned frame clock.
     ///
-    /// The standard Open GPUI host path invokes the same advancement from
-    /// [`Window::on_next_frame`]. Call this only when an integration owns the frame driver and
-    /// must explicitly advance the host, such as an off-screen test harness. It consumes at most
-    /// one already scheduled tick and returns whether a tick was consumed.
+    /// The standard Open GPUI host path marks a tick ready from [`Window::on_next_frame`] and
+    /// consumes it at the start of the following render. Call this only when an integration owns
+    /// the frame driver and advances the host immediately before materializing its next frame,
+    /// such as an off-screen test harness. It consumes at most one already scheduled tick and
+    /// returns whether a tick was consumed.
     #[must_use]
     pub fn advance_interaction_frame(
         &mut self,
@@ -2414,6 +2632,17 @@ impl OpenGpuiSceneHost {
         self.advance_scheduled_interaction_tick(token, now, window, cx)
     }
 
+    pub(super) fn advance_ready_interaction_tick(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(ready) = self.interaction_owner.ready_scheduled_tick() else {
+            return;
+        };
+        let _ = self.advance_scheduled_interaction_tick(ready.token, ready.entered_at, window, cx);
+    }
+
     pub(crate) fn schedule_interaction_tick(
         &mut self,
         window: &mut Window,
@@ -2423,9 +2652,7 @@ impl OpenGpuiSceneHost {
             return;
         };
         let host = cx.weak_entity();
-        let tick_callback_entries = self.interaction_owner.tick_callback_entries();
-        window.on_next_frame(move |window, cx| {
-            tick_callback_entries.set(tick_callback_entries.get().saturating_add(1));
+        window.on_next_frame(move |_, cx| {
             if !callback_epoch_is_current(&epoch_gate, token.callback) {
                 return;
             }
@@ -2433,7 +2660,12 @@ impl OpenGpuiSceneHost {
                 return;
             };
             host.update(cx, |host, cx| {
-                let _ = host.advance_scheduled_interaction_tick(token, Instant::now(), window, cx);
+                if host
+                    .interaction_owner
+                    .mark_scheduled_tick_ready(token, Instant::now())
+                {
+                    cx.notify();
+                }
             });
         });
         #[cfg(target_os = "macos")]
@@ -2532,10 +2764,6 @@ impl OpenGpuiSceneHost {
     }
 
     pub(super) fn interaction_node_drag_offsets(&mut self) -> BTreeMap<NodeId, CanvasPoint> {
-        self.work_ledger.node_drag_offset_map_builds = self
-            .work_ledger
-            .node_drag_offset_map_builds
-            .saturating_add(1);
         self.interaction_owner
             .presentation()
             .node_drag()
@@ -2580,14 +2808,12 @@ fn callback_epoch_is_current(epoch: &Weak<Cell<u64>>, token: CallbackToken) -> b
         .is_some_and(|epoch| epoch.get() == token.epoch)
 }
 
-struct InteractionEnqueueFailure {
-    message: String,
-}
-
-impl InteractionEnqueueFailure {
-    fn new(message: String) -> Self {
-        Self { message }
-    }
+enum InteractionEnqueueFailure {
+    Bind(InteractionGraphSubmissionBindFailure),
+    Transport {
+        message: String,
+        submission: Box<BoundInteractionSubmission>,
+    },
 }
 
 #[cfg(test)]
@@ -2731,6 +2957,74 @@ mod tests {
         assert!(!fixture.owner.consume_query_frame_callback(stale));
     }
 
+    #[test]
+    fn stale_tick_token_cannot_consume_its_scheduled_successor() {
+        let mut fixture = node_drag_fixture(1);
+        arm_node_drag(&mut fixture, 1);
+        fixture
+            .owner
+            .move_to(pointer_sample(&fixture.view, 40.0, 24.0))
+            .expect("activate node drag");
+
+        let (_, first) = fixture
+            .owner
+            .prepare_tick_callback()
+            .expect("active drag schedules its first tick");
+        let first_entered_at = Instant::now();
+        assert!(
+            fixture
+                .owner
+                .mark_scheduled_tick_ready(first, first_entered_at)
+        );
+        assert!(
+            fixture
+                .owner
+                .begin_scheduled_tick(first, first_entered_at)
+                .is_some()
+        );
+        let (_, successor) = fixture
+            .owner
+            .prepare_tick_callback()
+            .expect("active drag schedules a successor tick");
+        assert_ne!(first, successor);
+        let successor_entered_at = Instant::now();
+        assert!(
+            fixture
+                .owner
+                .mark_scheduled_tick_ready(successor, successor_entered_at)
+        );
+
+        assert!(
+            !fixture
+                .owner
+                .mark_scheduled_tick_ready(first, Instant::now()),
+            "the retired token must not mark its successor ready",
+        );
+        assert_eq!(fixture.owner.current_scheduled_tick(), Some(successor));
+        assert_eq!(
+            fixture.owner.ready_scheduled_tick(),
+            Some(ReadyScheduledTick {
+                token: successor,
+                entered_at: successor_entered_at,
+            }),
+        );
+        assert!(
+            fixture
+                .owner
+                .begin_scheduled_tick(first, Instant::now())
+                .is_none(),
+            "the retired token must not consume its successor",
+        );
+        assert_eq!(fixture.owner.current_scheduled_tick(), Some(successor));
+        assert!(
+            fixture
+                .owner
+                .begin_scheduled_tick(successor, successor_entered_at)
+                .is_some()
+        );
+        assert!(fixture.owner.ready_scheduled_tick().is_none());
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn tick_and_query_native_frame_fallbacks_have_independent_owners() {
@@ -2795,11 +3089,184 @@ mod tests {
         );
         assert_required_nodes(&fixture, 2);
 
-        fixture.owner.pending_submission =
-            Some(PendingInteractionSubmission::enqueued(ticket, token));
+        let pending = fixture.owner.take_pending_submission().unwrap();
+        let submission = match pending.stage {
+            PendingInteractionSubmissionStage::WaitingForPrefix {
+                submission,
+                task,
+                cancellation,
+                ..
+            } => {
+                drop((task, cancellation));
+                submission
+            }
+            _ => panic!("attached prefix task must retain the opaque submission"),
+        };
+        let mut bound = fixture
+            .owner
+            .bind_submission_for_transport(submission)
+            .unwrap();
+        let _command = bound.take_command().expect("node drag command");
+        fixture
+            .owner
+            .install_pending_submission(PendingInteractionSubmission::enqueued(
+                ticket, token, bound,
+            ));
         assert_required_nodes(&fixture, 2);
-        fixture.owner.submission_not_dispatched(ticket).unwrap();
+        fixture
+            .owner
+            .settle_test_evidence(
+                ticket,
+                InteractionSubmissionSettlementEvidence::NotDispatched,
+            )
+            .unwrap();
         assert!(!fixture.owner.has_node_drag_residency());
+    }
+
+    #[test]
+    fn transient_settlement_failure_retains_the_exact_completion_until_retry() {
+        let mut fixture = node_drag_fixture(1);
+        arm_node_drag(&mut fixture, 1);
+        let release = pointer_sample(&fixture.view, 40.0, 24.0);
+        fixture.owner.move_to(release).unwrap();
+        let (ticket, submission) = release_node_drag(&mut fixture, release);
+        let command = fixture
+            .owner
+            .bind_submission(submission)
+            .unwrap()
+            .expect("node drag binds a command");
+        let identity = command.identity().clone();
+        let completion = fixture.runtime.execute(command);
+        let token = fixture.owner.callback_token();
+        assert!(
+            !fixture.owner.clear_revocable_submission_work(),
+            "batch cleanup must not discard an admitted interaction"
+        );
+        fixture.owner.settlement_failure_once = Some(CanvasInteractionError::ViewUnavailable);
+
+        assert!(matches!(
+            fixture.owner.settle_test_evidence(
+                ticket,
+                InteractionSubmissionSettlementEvidence::Command(completion),
+            ),
+            Err(CanvasInteractionError::ViewUnavailable)
+        ));
+        assert!(
+            !fixture.owner.clear_revocable_submission_work(),
+            "batch cleanup must not discard retained settlement evidence"
+        );
+        let pending = fixture
+            .owner
+            .pending_submission
+            .as_ref()
+            .expect("transient failure retains native settlement evidence");
+        assert_eq!(pending.ticket, ticket);
+        let PendingInteractionSubmissionStage::Settling {
+            token: retained_token,
+            evidence,
+            ..
+        } = &pending.stage
+        else {
+            panic!("expected one retained command completion");
+        };
+        let Some(InteractionSubmissionSettlementEvidence::Command(retained)) = evidence.front()
+        else {
+            panic!("expected one retained command completion");
+        };
+        assert_eq!(*retained_token, token);
+        assert_eq!(retained.identity(), &identity);
+        assert_eq!(
+            fixture.owner.presentation().phase(),
+            CanvasInteractionPhase::Committing
+        );
+
+        fixture
+            .owner
+            .retry_pending_settlement()
+            .expect("retained settlement is retryable")
+            .expect("the exact completion settles after the transient failure");
+        assert!(!fixture.owner.has_pending_submission());
+        assert!(fixture.owner.retry_pending_settlement().is_none());
+        assert_eq!(
+            fixture.owner.presentation().phase(),
+            CanvasInteractionPhase::Idle
+        );
+        assert_eq!(
+            fixture.owner.presentation().terminal(),
+            Some(InteractionTerminalReason::Applied)
+        );
+    }
+
+    #[test]
+    fn identity_mismatch_retains_native_evidence_until_the_exact_completion_arrives() {
+        let mut fixture = node_drag_fixture(1);
+        arm_node_drag(&mut fixture, 1);
+        let release = pointer_sample(&fixture.view, 40.0, 24.0);
+        fixture.owner.move_to(release).unwrap();
+        let (ticket, submission) = release_node_drag(&mut fixture, release);
+        let command = fixture
+            .owner
+            .bind_submission(submission)
+            .unwrap()
+            .expect("node drag binds a command");
+        let version = fixture
+            .runtime
+            .snapshot()
+            .expect("unrelated command snapshot")
+            .version();
+        let unrelated = fixture.runtime.execute(GraphCommand::set_node_position(
+            version,
+            fixture.nodes[0],
+            CanvasPoint { x: 9.0, y: 0.0 },
+        ));
+        let unrelated_identity = unrelated.identity().clone();
+
+        assert!(matches!(
+            fixture.owner.settle_test_evidence(
+                ticket,
+                InteractionSubmissionSettlementEvidence::Command(unrelated),
+            ),
+            Err(CanvasInteractionError::CommandCompletionIdentityMismatch)
+        ));
+        assert_eq!(
+            fixture.owner.presentation().phase(),
+            CanvasInteractionPhase::Committing
+        );
+        let pending = fixture
+            .owner
+            .pending_submission
+            .as_ref()
+            .expect("identity mismatch must retain settlement evidence");
+        let PendingInteractionSubmissionStage::Settling { evidence, .. } = &pending.stage else {
+            panic!("identity mismatch must enter the retained-settlement stage");
+        };
+        let Some(InteractionSubmissionSettlementEvidence::Command(retained)) = evidence.front()
+        else {
+            panic!("the exact rejected completion must remain retained");
+        };
+        assert_eq!(retained.identity(), &unrelated_identity);
+
+        let completion = fixture.runtime.execute(command);
+        assert_eq!(
+            completion.kind(),
+            jellyflow_runtime::commands::CommandExecutionKind::Conflict
+        );
+        fixture
+            .owner
+            .settle_test_evidence(
+                ticket,
+                InteractionSubmissionSettlementEvidence::Command(completion),
+            )
+            .expect("the exact completion settles the retained interaction");
+        assert!(!fixture.owner.has_pending_submission());
+        assert_eq!(
+            fixture.owner.presentation().phase(),
+            CanvasInteractionPhase::Idle
+        );
+        assert_eq!(
+            fixture.owner.presentation().terminal(),
+            Some(InteractionTerminalReason::Conflict)
+        );
     }
 
     #[test]
@@ -2821,7 +3288,10 @@ mod tests {
         let g1_revision = g1_completion.applied_revision().unwrap();
         fixture
             .owner
-            .complete_submission(g1_ticket, g1_completion)
+            .settle_test_evidence(
+                g1_ticket,
+                InteractionSubmissionSettlementEvidence::Command(g1_completion),
+            )
             .unwrap();
         assert_required_nodes(&fixture, 2);
         assert!(
@@ -2835,15 +3305,11 @@ mod tests {
         assert!(!fixture.owner.observe_materialized_frame(g1_revision, []));
         assert_required_nodes(&fixture, 2);
         let late_snapshot = fixture.runtime.snapshot().unwrap();
-        let late_completion = fixture.runtime.execute(GraphCommand::set_node_data(
+        let _late_completion = fixture.runtime.execute(GraphCommand::set_node_data(
             late_snapshot.version(),
             fixture.nodes[0],
             serde_json::json!({ "late": true }),
         ));
-        fixture
-            .owner
-            .complete_submission(g1_ticket, late_completion)
-            .unwrap();
         assert_required_nodes(&fixture, 2);
 
         fixture.owner.cancel().expect("cancel G1 drag");
@@ -2863,7 +3329,10 @@ mod tests {
         let g2_revision = g2_completion.applied_revision().unwrap();
         fixture
             .owner
-            .complete_submission(g2_ticket, g2_completion)
+            .settle_test_evidence(
+                g2_ticket,
+                InteractionSubmissionSettlementEvidence::Command(g2_completion),
+            )
             .unwrap();
         let complete_cohort = fixture
             .nodes
@@ -3030,14 +3499,16 @@ mod tests {
             .cancel()
             .expect("cancel submission before native transport");
 
+        let failure = fixture
+            .owner
+            .bind_submission(submission)
+            .expect_err("cancelled submission cannot bind");
         assert!(matches!(
-            fixture
-                .owner
-                .bind_submission(submission),
-            Err(InteractionGraphSubmissionBindError::Superseded {
+            failure.error(),
+            InteractionGraphSubmissionBindError::Superseded {
                 ticket: rejected,
                 current: None,
-            }) if rejected == ticket
+            } if rejected == ticket
         ));
         assert_eq!(
             fixture
@@ -3147,7 +3618,10 @@ mod tests {
         let revision = completion.applied_revision().unwrap();
         fixture
             .owner
-            .complete_submission(ticket, completion)
+            .settle_test_evidence(
+                ticket,
+                InteractionSubmissionSettlementEvidence::Command(completion),
+            )
             .unwrap();
         let snapshot = fixture.runtime.snapshot().unwrap();
         let cohort = fixture

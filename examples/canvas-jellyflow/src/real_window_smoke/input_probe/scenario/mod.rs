@@ -93,6 +93,9 @@ pub(super) fn advance(
         | ProbePhase::SearchEscape
         | ProbePhase::SearchWaitClosed
         | ProbePhase::FinalWait => probe.advance_search(window, cx, surface, view, surface_size),
+        ProbePhase::WorkflowAuthoring => {
+            probe.advance_workflow_authoring(window, cx, surface, view, surface_size)
+        }
         ProbePhase::LodSet | ProbePhase::LodWait | ProbePhase::LodCapture => {
             probe.advance_lod(window, cx, surface, view, expectations, surface_size)
         }

@@ -81,11 +81,13 @@ impl RealWindowSmokeProbe {
                 if lod.frames.contains_key(&sample) {
                     return Err("input_duplicate_lod_sample");
                 }
+                if !self.poll_lod_presented_frame(surface, cx, sample.zoom())? {
+                    jellyflow_open_gpui::host::request_native_test_frame(window);
+                    return self.wait_or_timeout();
+                }
                 let screenshot_path = self.config.capture_path(self.demo, capture_state);
                 let (snapshot, transform, geometry, paint, _) = inspect_current_frame(
                     window,
-                    surface,
-                    cx,
                     view,
                     expectations,
                     surface_size,
@@ -124,7 +126,6 @@ impl RealWindowSmokeProbe {
                 lod.record_capture(capture_state)?;
                 self.geometry = Some(geometry);
                 self.paint = Some(paint);
-                self.record_lod_presented_frame(surface, cx)?;
 
                 match sample.next() {
                     Some(next) => {

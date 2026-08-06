@@ -11,8 +11,8 @@ use jellyflow_core::{
 #[cfg(feature = "benchmark-internals")]
 use jellyflow_layout::benchmark_internals::DugongBenchmarkWorkspace;
 use jellyflow_layout::{
-    DugongLayoutEngine, LayoutContext, LayoutEngine, LayoutOptions, LayoutRequest, LayoutSpacing,
-    TidyTreeLayoutEngine,
+    LayoutContext, LayoutEngineRequest, LayoutOptions, LayoutRequest, LayoutSpacing,
+    builtin_layout_engine_registry,
 };
 
 const NODE_SIZE: CanvasSize = CanvasSize {
@@ -30,13 +30,13 @@ fn layout_engine_benchmarks(c: &mut Criterion) {
 
 fn benchmark_tidy_tree_balanced(c: &mut Criterion) {
     let mut group = c.benchmark_group("layout_tidy_tree_balanced");
-    let engine = TidyTreeLayoutEngine;
+    let registry = builtin_layout_engine_registry();
     let context = LayoutContext::new();
 
     for depth in [4_usize, 6, 8] {
         let graph = balanced_tree_fixture(depth, 3);
         let node_count = graph.nodes().len();
-        let request = tree_request();
+        let request = LayoutEngineRequest::tidy_tree(tree_request());
 
         group.throughput(Throughput::Elements(node_count as u64));
         group.bench_with_input(
@@ -45,7 +45,7 @@ fn benchmark_tidy_tree_balanced(c: &mut Criterion) {
             |b, graph| {
                 b.iter(|| {
                     black_box(
-                        engine
+                        registry
                             .layout(black_box(graph), black_box(&request), black_box(&context))
                             .expect("tidy tree layout"),
                     )
@@ -59,13 +59,13 @@ fn benchmark_tidy_tree_balanced(c: &mut Criterion) {
 
 fn benchmark_tidy_tree_wide(c: &mut Criterion) {
     let mut group = c.benchmark_group("layout_tidy_tree_wide");
-    let engine = TidyTreeLayoutEngine;
+    let registry = builtin_layout_engine_registry();
     let context = LayoutContext::new();
 
     for child_count in [100_usize, 1_000, 5_000] {
         let graph = wide_tree_fixture(child_count);
         let node_count = graph.nodes().len();
-        let request = tree_request();
+        let request = LayoutEngineRequest::tidy_tree(tree_request());
 
         group.throughput(Throughput::Elements(node_count as u64));
         group.bench_with_input(
@@ -74,7 +74,7 @@ fn benchmark_tidy_tree_wide(c: &mut Criterion) {
             |b, graph| {
                 b.iter(|| {
                     black_box(
-                        engine
+                        registry
                             .layout(black_box(graph), black_box(&request), black_box(&context))
                             .expect("tidy tree layout"),
                     )
@@ -88,13 +88,13 @@ fn benchmark_tidy_tree_wide(c: &mut Criterion) {
 
 fn benchmark_dugong_layered(c: &mut Criterion) {
     let mut group = c.benchmark_group("layout_dugong_layered");
-    let engine = DugongLayoutEngine;
+    let registry = builtin_layout_engine_registry();
     let context = LayoutContext::new();
 
     for layer_count in [10_usize, 25, 50] {
         let graph = layered_dag_fixture(layer_count, 10);
         let node_count = graph.nodes().len();
-        let request = workflow_request();
+        let request = LayoutEngineRequest::dugong(workflow_request());
 
         group.throughput(Throughput::Elements(node_count as u64));
 
@@ -104,7 +104,7 @@ fn benchmark_dugong_layered(c: &mut Criterion) {
             |b, graph| {
                 b.iter(|| {
                     black_box(
-                        engine
+                        registry
                             .layout(black_box(graph), black_box(&request), black_box(&context))
                             .expect("dugong layout result"),
                     )
@@ -177,13 +177,13 @@ fn benchmark_dugong_layered_stages(c: &mut Criterion) {
                         workspace.solve();
                         workspace
                     },
-                    |workspace| black_box(workspace.into_result().expect("dugong result")),
+                    |workspace| black_box(workspace.into_placements().expect("dugong placements")),
                     BatchSize::LargeInput,
                 )
             },
         );
 
-        black_box(solved.into_result().expect("dugong result"));
+        black_box(solved.into_placements().expect("dugong placements"));
     }
 
     group.finish();

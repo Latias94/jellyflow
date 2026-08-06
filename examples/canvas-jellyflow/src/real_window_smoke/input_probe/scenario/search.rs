@@ -93,22 +93,17 @@ impl RealWindowSmokeProbe {
                 if search_active && request_present && search_has_focus {
                     if !self
                         .presented_frames
-                        .observed_stage(SmokeFrameStageV1::Search)
+                        .observed_stage(SmokeFrameStage::Search)
                     {
                         jellyflow_open_gpui::host::request_native_test_frame(window);
                         return self.wait_or_timeout();
                     }
                     self.capture_checkpoint(
                         window,
-                        surface,
-                        cx,
                         view,
                         surface_size,
                         SmokeCaptureState::SearchOpen,
                     )?;
-                    let interaction = self.interaction_mut()?;
-                    interaction.search_opened = true;
-                    interaction.search_focus_moved = true;
                     self.transition(ProbePhase::SearchEscape);
                     Ok(None)
                 } else {
@@ -138,12 +133,15 @@ impl RealWindowSmokeProbe {
                     && (window.focused(cx) == self.interaction()?.search_focus_baseline
                         || surface.graph_has_focus(window, cx));
                 if request_closed && interaction_closed && focus_restored {
-                    let interaction = self.interaction_mut()?;
-                    interaction.search_cancelled = true;
-                    interaction.search_focus_restored = true;
-                    self.presented_frames.request_final()?;
-                    window.refresh();
-                    self.transition(ProbePhase::FinalWait);
+                    if self.should_run_workflow_authoring() {
+                        self.interaction_mut()?.workflow_authoring =
+                            Some(WorkflowAuthoringState::default());
+                        self.transition(ProbePhase::WorkflowAuthoring);
+                    } else {
+                        self.presented_frames.request_final()?;
+                        window.refresh();
+                        self.transition(ProbePhase::FinalWait);
+                    }
                     Ok(None)
                 } else {
                     let reason = if !request_closed {
@@ -164,14 +162,7 @@ impl RealWindowSmokeProbe {
                     jellyflow_open_gpui::host::request_native_test_frame(window);
                     return self.wait_or_timeout();
                 }
-                self.capture_checkpoint(
-                    window,
-                    surface,
-                    cx,
-                    view,
-                    surface_size,
-                    SmokeCaptureState::Final,
-                )?;
+                self.capture_checkpoint(window, view, surface_size, SmokeCaptureState::Final)?;
                 self.transition(ProbePhase::Complete);
                 self.complete()
             }

@@ -95,9 +95,11 @@ class ReleaseVersionTests(unittest.TestCase):
         )
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("### Breaking Changes", result.stdout)
-        self.assertNotIn(f"## [{CURRENT_VERSION}]", result.stdout)
-        self.assertNotIn("## [0.3.0]", result.stdout)
+        expected = release_version.extract_release_notes(
+            (ROOT / "CHANGELOG.md").read_text(encoding="utf-8"),
+            CURRENT_VERSION,
+        )
+        self.assertEqual(result.stdout.strip(), expected)
 
 
 if __name__ == "__main__":

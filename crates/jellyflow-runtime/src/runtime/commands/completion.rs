@@ -343,6 +343,24 @@ mod tests {
         assert_eq!(taken[0].identity(), &second);
         assert_eq!(taken[1].identity(), &first);
         assert!(completions.is_empty());
+
+        let already_consumed = completions
+            .take(&first)
+            .expect_err("a consumed identity must stay distinguishable from an unknown identity");
+        assert!(matches!(
+            already_consumed,
+            CommandCompletionCorrelationError::AlreadyConsumed { identity }
+                if identity == first
+        ));
+
+        let unknown = completions.take(&missing).expect_err(
+            "an unknown identity must remain missing after other completions are consumed",
+        );
+        assert!(matches!(
+            unknown,
+            CommandCompletionCorrelationError::MissingIdentity { identity }
+                if identity == missing
+        ));
     }
 
     #[test]

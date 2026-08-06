@@ -226,8 +226,6 @@ pub struct OpenGpuiGraphPalette {
     pub selection: Hsla,
     /// Keyboard focus ring.
     pub focus: Hsla,
-    /// Idle port marker.
-    pub port_idle: Hsla,
     /// Hovered port marker.
     pub port_hovered: Hsla,
     /// Port currently acting as the connection source.
@@ -236,8 +234,6 @@ pub struct OpenGpuiGraphPalette {
     pub port_valid: Hsla,
     /// Incompatible connection target.
     pub port_invalid: Hsla,
-    /// Connected port marker.
-    pub port_connected: Hsla,
     /// Disabled port marker.
     pub port_disabled: Hsla,
     /// Fallback edge tone.
@@ -281,12 +277,10 @@ impl Default for OpenGpuiGraphPalette {
             node_border: rgb(0x3b4450).into(),
             selection: rgb(0x78a9ff).into(),
             focus: rgb(0x9fc4ff).into(),
-            port_idle: rgb(0x8b96a5).into(),
             port_hovered: rgb(0xd7dde8).into(),
             port_source: rgb(0x78a9ff).into(),
             port_valid: rgb(0x7fd5ac).into(),
             port_invalid: rgb(0xff8b84).into(),
-            port_connected: rgb(0xc9d3df).into(),
             port_disabled: rgba(0x64748b8f).into(),
             edge_default: rgb(0x8b96a5).into(),
             edge_data: rgb(0x59c2a6).into(),
@@ -436,6 +430,7 @@ impl OpenGpuiGraphMetrics {
             && self.port_hover_marker_diameter >= self.port_marker_diameter
             && self.port_layout_diameter >= self.port_hover_marker_diameter
             && self.port_hit_diameter >= self.port_layout_diameter
+            && self.port_hit_diameter >= OPEN_GPUI_DEFAULT_PORT_HIT_DIAMETER
             && self.port_emphasized_outline_width >= self.port_outline_width
             && self.edge_ordinary_width < self.edge_hovered_width
             && self.edge_hovered_width < self.edge_selected_width
@@ -448,6 +443,7 @@ impl OpenGpuiGraphMetrics {
             && self.edge_strong_selected_width >= self.edge_selected_width
             && self.edge_strong_active_width >= self.edge_active_width
             && self.reconnect_hit_diameter >= self.reconnect_cap_length
+            && self.reconnect_hit_diameter >= OPEN_GPUI_DEFAULT_RECONNECT_HIT_DIAMETER
             && self.node_corner_radius.is_finite()
             && self.node_corner_radius >= 0.0
             && self.edge_label_corner_radius.is_finite()
@@ -578,7 +574,7 @@ mod tests {
     #[test]
     fn invalid_hit_or_hover_relationships_are_rejected() {
         let metrics = OpenGpuiGraphMetrics {
-            port_hit_diameter: 9.0,
+            port_hit_diameter: OPEN_GPUI_DEFAULT_PORT_HIT_DIAMETER - 1.0,
             ..OpenGpuiGraphMetrics::default()
         };
         assert!(!metrics.is_valid());
@@ -590,7 +586,7 @@ mod tests {
         assert!(!metrics.is_valid());
 
         let metrics = OpenGpuiGraphMetrics {
-            reconnect_hit_diameter: 8.0,
+            reconnect_hit_diameter: OPEN_GPUI_DEFAULT_RECONNECT_HIT_DIAMETER - 1.0,
             ..OpenGpuiGraphMetrics::default()
         };
         assert!(!metrics.is_valid());

@@ -28,8 +28,9 @@ name = "open-gpui-canvas-jellyflow"
 path = "src/main.rs"
 
 [[bin]]
-name = "open-gpui-native-frame-clock-witness"
-path = "src/bin/native_frame_clock_witness.rs"
+name = "open-gpui-real-window-smoke"
+path = "src/open_gpui_real_window_smoke.rs"
+required-features = ["real-window-smoke"]
 
 [dependencies]
 futures-util = "0.3"
@@ -39,7 +40,6 @@ jellyflow-runtime = { path = "../../crates/jellyflow-runtime" }
 open_gpui = { package = "open-gpui", version = "0.2.0", default-features = false }
 open_gpui_platform = { package = "open-gpui-platform", version = "0.2.0", default-features = false, features = ["font-kit"] }
 open_gpui_ui_components = { package = "open-gpui-ui-components", version = "0.2.0" }
-schemars = "1"
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"

@@ -14,10 +14,11 @@ portable widget tree or a cross-framework node UI DSL.
   does not expose a mutable or independently refreshable graph view.
 - `OpenGpuiNodeBinding::authoring` opens one owned, immutable
   `authoring::OpenGpuiNodeAuthoring` for the current graph revision. Its ordered ports pair graph
-  facts, constant-work connection summaries, and an `authoring::OpenGpuiPortHandle` from that same revision. Consuming the view
-  with `enqueue(command, cx)` validates the mount, incarnation, and exact command version before
-  the command can enter the host's ordered journal. The ticket resolves from real frame feedback;
-  graph mutation is never synchronous and stale commands are never silently retried.
+  facts, constant-work connection summaries, and an `authoring::OpenGpuiPortHandle` from that same
+  revision. A mount-scoped `authoring::OpenGpuiManagedMutation` consumes the view when it
+  dispatches a command, validates mount and version authority, and owns asynchronous admission,
+  feedback correlation, settlement, and retry eligibility. Graph mutation is never synchronous and
+  stale commands are never silently retried.
 - `authoring::OpenGpuiPortHandle` measures a native element after layout and can add pointer, keyboard, and
   accessibility activation while leaving the child as an ordinary Open GPUI element.
 - Ordinary Open GPUI controls and scroll areas are safe inside nodes without wrappers.
@@ -65,7 +66,7 @@ exists after the corresponding `Port` has entered the graph and a newer authorin
 let binding = self.binding.read(cx);
 let authoring = binding.authoring()?;
 let input = authoring.port(self.input_port).ok_or(NodeUiError::MissingInput)?;
-let marker = input.handle().clone().interactive(my_port_marker());
+let marker = input.handle().clone().interactive(my_custom_port_marker());
 let content = binding.measure_content(
     div()
         .child(binding.drag_handle().wrap(my_header()))
@@ -74,11 +75,29 @@ let content = binding.measure_content(
 );
 ```
 
-Use `measure(child)` for a non-interactive semantic port and `interactive(child)` for host-owned
-pointer, keyboard, and accessibility behavior. Only use `interactive_with_observer` when the
-application actually needs to observe the host-reduced port event; an empty observer is unnecessary.
+Use `measure(child)` for a non-interactive semantic port and `interactive(child)` for a custom
+component with host-owned pointer, keyboard, and accessibility behavior. Use
+`interactive_marker(OpenGpuiPortMarker::new(...))` for Jellyflow's native marker; it applies the
+resolved marker hit target atomically. Every path enforces a minimum 22-logical-pixel hit diameter
+without changing marker layout or route-anchor geometry. Only use `interactive_with_observer` when
+the application actually needs to observe the host-reduced port event; an empty observer is
+unnecessary.
 
-Build an application command from one authoring view and consume that same view to enqueue it:
+Create one managed mutation supervisor when the component is mounted:
+
+```rust,ignore
+use jellyflow_open_gpui::authoring::OpenGpuiManagedMutation;
+
+struct MyNode {
+    binding: Entity<OpenGpuiNodeBinding>,
+    mutation: OpenGpuiManagedMutation<MyTopologyIntent>,
+}
+
+let mutation = binding.read(cx).managed_mutation::<MyTopologyIntent>();
+```
+
+Build an application command from one fresh authoring view and consume that same view when
+dispatching the intent:
 
 ```rust,ignore
 let authoring = self.binding.read(cx).authoring()?;
@@ -95,13 +114,50 @@ let command = GraphCommand::topology(
         IncidentEdgePolicy::Reject,
     ),
 );
-let ticket = authoring.enqueue(command, cx)?;
+self.mutation.dispatch(
+    authoring,
+    command,
+    MutationRequest::new(MyTopologyIntent::ReplaceOutput),
+    MutationLayoutEffect::InvalidateWhenSatisfied,
+    cx,
+)?;
 ```
 
-Opening a later authoring view does not update an older one. Enqueue rejects a retired mount, a
+Drain completion and reconcile satisfaction against every newer authoritative authoring view. This
+belongs in the component's normal render/update path, not in a detached task:
+
+```rust,ignore
+let authoring = self.binding.read(cx).authoring()?;
+let settlement = self.mutation.observe(
+    &authoring,
+    |intent| {
+        matches!(intent, MyTopologyIntent::ReplaceOutput)
+            && authoring.port(self.output_port).is_some()
+    },
+    cx,
+);
+if let Some(diagnostic) = settlement.diagnostic() {
+    self.show_mutation_diagnostic(diagnostic);
+}
+match settlement {
+    MutationSettlement::Ready | MutationSettlement::Pending { .. } => {}
+    MutationSettlement::Satisfied { .. } => self.clear_local_draft(),
+    MutationSettlement::Retryable { .. } => self.show_explicit_retry(),
+    MutationSettlement::Uncertain { .. } => self.show_authoritative_refresh_action(),
+    MutationSettlement::Retired { .. } | MutationSettlement::Closed { .. } => {
+        self.stop_authoring()
+    }
+}
+```
+
+Opening a later authoring view does not update an older one. Dispatch rejects a retired mount, a
 reincarnated node, a terminally closed view, a mismatched command version, or a graph revision that
-changed before journal admission. Queueing two commands from the same committed revision is allowed;
-normal runtime ordering may apply the first and return a conflict for the second.
+changed before journal admission. Product code observes authoritative snapshots through the managed
+mutation and explicitly chooses whether a retryable intent should be retried. Queueing two commands
+from the same committed revision is allowed; normal runtime ordering may apply the first and return a
+conflict for the second. `settlement()` only reads the last cached projection; it does not poll or
+drain asynchronous completion, so a live component must continue calling `observe` (or
+`observe_unavailable` when no authoring view can be opened).
 
 The binding remains the lifecycle boundary. Keep an `activity::OpenGpuiActivityLease` while the
 component owns focus, IME composition, a popup, an async task, or another retained resource. A
@@ -128,9 +184,9 @@ returns to detail at zoom 1.0. Detail stays at native logical-pixel metrics beca
 cannot transform an arbitrary retained subtree coherently across layout, paint, hitboxes, focus,
 IME, and overlays. Overview owns canonical projected node and port geometry outside the detail
 band. A focused, composing, pointer-capturing, or overlay-owning node may also render a fixed-pixel
-interaction island; that island cannot publish graph geometry, arm node or connection gestures, or
-expose semantic graph ports. Graph-interaction and draft leases protect retention without creating
-an interaction island.
+`PinnedDetail` surface; that surface cannot publish graph geometry, arm node or connection gestures,
+or expose semantic graph ports. Graph-interaction and draft leases protect retention without
+pinning native detail.
 
 An application can replace the generic semantic-LOD overview with one ordinary Open GPUI entity for
 a renderer key. The detail and overview entities share the same binding, node instance, mount

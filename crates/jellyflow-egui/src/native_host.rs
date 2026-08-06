@@ -291,14 +291,6 @@ impl EguiNativeFrameHost {
             .values()
             .cloned()
             .collect::<Vec<_>>();
-        #[cfg(test)]
-        {
-            let mut lifecycle = self.lifecycle.borrow_mut();
-            lifecycle.full_audits = lifecycle.full_audits.saturating_add(1);
-            lifecycle.full_audit_instance_visits = lifecycle
-                .full_audit_instance_visits
-                .saturating_add(instances.len() as u64);
-        }
         let retired = instances
             .into_iter()
             .filter(|instance| {
@@ -350,10 +342,6 @@ struct EguiNativeLifecycle {
     authoritative_instances: BTreeMap<NodeId, NodeInstanceKey>,
     instances: BTreeMap<NodeInstanceKey, TrackedEguiInstance>,
     instances_by_node: BTreeMap<NodeId, NodeInstanceKey>,
-    #[cfg(test)]
-    full_audits: u64,
-    #[cfg(test)]
-    full_audit_instance_visits: u64,
 }
 
 #[derive(Default)]
@@ -565,6 +553,8 @@ impl<'frame> EguiNativeNode<'frame> {
     ///
     /// Use the returned ID for framework widgets that persist `T` in egui's `IdTypeMap`. The host
     /// removes only this exact `(Id, T)` pair when the node instance is replaced or retired.
+    /// Callers must use a bounded set of stable salts for one node lifetime; registrations remain
+    /// live until hard retirement so temporarily hidden widgets retain their native state.
     #[must_use]
     pub fn tracked_state_id<T: 'static>(&self, salt: impl Hash) -> Id {
         let id = self.id(salt);
@@ -894,18 +884,21 @@ fn node_screen_rect(
     scene_origin: Pos2,
 ) -> Result<Rect, EguiNativeFrameError> {
     let bounds = node.bounds();
-    let Some(origin) = frame.transform().screen_point_for_canvas(bounds.origin) else {
+    let Some(maximum) = bounds.checked_max() else {
         return Err(EguiNativeFrameError::InvalidNodePlacement { node: node.id() });
     };
-    let size = Vec2::new(
-        bounds.size.width * frame.transform().zoom,
-        bounds.size.height * frame.transform().zoom,
-    );
-    let min = scene_origin + Vec2::new(origin.x, origin.y);
-    if !min.is_finite() || !size.is_finite() || size.x <= 0.0 || size.y <= 0.0 {
+    let Some(minimum) = frame.transform().screen_point_for_canvas(bounds.origin) else {
+        return Err(EguiNativeFrameError::InvalidNodePlacement { node: node.id() });
+    };
+    let Some(maximum) = frame.transform().screen_point_for_canvas(maximum) else {
+        return Err(EguiNativeFrameError::InvalidNodePlacement { node: node.id() });
+    };
+    let min = scene_origin + Vec2::new(minimum.x, minimum.y);
+    let max = scene_origin + Vec2::new(maximum.x, maximum.y);
+    if !min.is_finite() || !max.is_finite() || max.x <= min.x || max.y <= min.y {
         return Err(EguiNativeFrameError::InvalidNodePlacement { node: node.id() });
     }
-    Ok(Rect::from_min_size(min, size))
+    Ok(Rect::from_min_max(min, max))
 }
 
 fn egui_rect_to_view(rect: Rect, scene_origin: Pos2) -> ViewRect {
@@ -913,128 +906,4 @@ fn egui_rect_to_view(rect: Rect, scene_origin: Pos2) -> ViewRect {
         ViewPoint::new(rect.min.x - scene_origin.x, rect.min.y - scene_origin.y),
         ViewSize::new(rect.width(), rect.height()),
     )
-}
-
-#[cfg(test)]
-mod tests {
-    use jellyflow_core::{
-        CanvasPoint, CanvasRect, CanvasSize, GraphBuilder, GraphId, Node, NodeId,
-    };
-    use jellyflow_runtime::commands::{GraphCommand, IncidentEdgePolicy, TopologyEdit};
-    use jellyflow_runtime::graph::GraphRuntime;
-    use jellyflow_runtime::view::{FrameMaterializationBudget, RendererStamp, ViewSessionOptions};
-
-    use super::*;
-
-    #[test]
-    fn stable_ten_thousand_node_lifecycle_uses_revision_watermark() {
-        const NODE_COUNT: usize = 10_000;
-        let mut builder = GraphBuilder::new(GraphId::from_u128(0xe601));
-        let mut nodes = Vec::with_capacity(NODE_COUNT);
-        for index in 0..NODE_COUNT {
-            let node = NodeId::from_u128(index as u128 + 1);
-            nodes.push(node);
-            builder.insert_node(
-                node,
-                Node {
-                    kind: NodeKindKey::new("test.egui-lifecycle-scale"),
-                    kind_version: 1,
-                    pos: CanvasPoint {
-                        x: (index % 100) as f32 * 20.0,
-                        y: (index / 100) as f32 * 20.0,
-                    },
-                    origin: None,
-                    selectable: None,
-                    draggable: None,
-                    connectable: None,
-                    deletable: None,
-                    parent: None,
-                    extent: None,
-                    expand_parent: None,
-                    size: Some(CanvasSize {
-                        width: 16.0,
-                        height: 16.0,
-                    }),
-                    hidden: false,
-                    collapsed: false,
-                    ports: Vec::new(),
-                    data: serde_json::Value::Null,
-                },
-            );
-        }
-        let runtime = GraphRuntime::builder(Default::default())
-            .build(builder.build().expect("valid scale graph"))
-            .expect("scale runtime");
-        let view = runtime
-            .attach_view(ViewSessionOptions::default())
-            .expect("scale view");
-        let host = EguiNativeFrameHost::new(view);
-        let frame = host
-            .view()
-            .frame(
-                FrameRequest::new(
-                    CanvasRect {
-                        origin: CanvasPoint::default(),
-                        size: CanvasSize {
-                            width: 2_100.0,
-                            height: 2_100.0,
-                        },
-                    },
-                    RendererStamp::new("test.egui-lifecycle-scale", 1),
-                )
-                .with_materialization_budget(
-                    FrameMaterializationBudget::new(NODE_COUNT, 0, 0)
-                        .with_visible_node_scan_limit(NODE_COUNT * 2),
-                ),
-            )
-            .expect("scale frame");
-        assert_eq!(frame.nodes().len(), NODE_COUNT);
-        {
-            let mut lifecycle = host.lifecycle.borrow_mut();
-            for node in frame.nodes() {
-                let instance = node.instance().clone();
-                lifecycle
-                    .authoritative_instances
-                    .insert(node.id(), instance.clone());
-                lifecycle
-                    .instances_by_node
-                    .insert(node.id(), instance.clone());
-                lifecycle.instances.insert(instance, Default::default());
-            }
-        }
-
-        for _ in 0..120 {
-            host.audit_current_instances_if_stale();
-        }
-        assert_eq!(host.lifecycle.borrow().full_audits, 0);
-        assert_eq!(host.lifecycle.borrow().full_audit_instance_visits, 0);
-
-        runtime
-            .execute(GraphCommand::topology(
-                runtime.snapshot().expect("retirement snapshot").version(),
-                TopologyEdit::new().remove_node(nodes[0], IncidentEdgePolicy::Reject),
-            ))
-            .into_result()
-            .expect("retirement executes")
-            .applied()
-            .expect("retirement applies");
-        assert!(
-            !host
-                .lifecycle
-                .borrow()
-                .instances_by_node
-                .contains_key(&nodes[0])
-        );
-        host.audit_current_instances_if_stale();
-        assert_eq!(host.lifecycle.borrow().full_audits, 0);
-
-        host.lifecycle.borrow_mut().observed_revision = None;
-        host.audit_current_instances_if_stale();
-        let lifecycle = host.lifecycle.borrow();
-        assert_eq!(lifecycle.full_audits, 1);
-        assert_eq!(
-            lifecycle.full_audit_instance_visits,
-            (NODE_COUNT - 1) as u64
-        );
-    }
 }

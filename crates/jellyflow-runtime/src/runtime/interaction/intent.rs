@@ -68,28 +68,6 @@ impl SelectionBaseline {
     pub fn groups(&self) -> &[GroupId] {
         &self.groups
     }
-
-    #[cfg(test)]
-    pub(crate) fn from_ids_for_test(
-        nodes: impl IntoIterator<Item = NodeId>,
-        edges: impl IntoIterator<Item = EdgeId>,
-        groups: impl IntoIterator<Item = GroupId>,
-    ) -> Self {
-        Self::new(
-            ViewProvenance::unavailable(),
-            0,
-            nodes.into_iter().map(NodeLifetimeKey::unavailable),
-            edges.into_iter().map(EdgeInstanceKey::unavailable),
-            groups,
-        )
-    }
-}
-
-#[cfg(test)]
-impl Default for SelectionBaseline {
-    fn default() -> Self {
-        Self::from_ids_for_test([], [], [])
-    }
 }
 
 /// Closed connection target authority retained through freshness and settlement.
@@ -268,47 +246,12 @@ impl FreshGraphMutation {
         matches!(self.0, FreshGraphMutationAuthority::Connection { .. })
     }
 
-    #[cfg(test)]
-    pub(super) fn connection_facts_for_test(
+    /// Resolves this sealed intent against the supplied authoritative snapshot.
+    pub(super) fn to_command(
         &self,
-    ) -> Option<(ConnectionGestureBinding, PortId, GraphVersion, bool)> {
-        match &self.0 {
-            FreshGraphMutationAuthority::Connection {
-                binding,
-                target,
-                validated_version,
-            } => Some((
-                binding.clone(),
-                target.port(),
-                *validated_version,
-                target.is_create_from_wire(),
-            )),
-            _ => None,
-        }
-    }
-
-    #[cfg(test)]
-    pub(super) fn move_nodes_for_test(&self) -> Option<&RelativeNodeMoveIntent> {
-        match &self.0 {
-            FreshGraphMutationAuthority::MoveNodes(intent) => Some(intent),
-            _ => None,
-        }
-    }
-
-    #[cfg(test)]
-    pub(super) fn delete_edge_for_test(&self) -> Option<EdgeDeletionIntent> {
-        match &self.0 {
-            FreshGraphMutationAuthority::DeleteEdge(intent) => Some(*intent),
-            _ => None,
-        }
-    }
-
-    /// Consumes this intent and binds it once to the supplied authoritative snapshot.
-    pub(super) fn into_command(
-        self,
         snapshot: &GraphSnapshot,
     ) -> Result<Option<GraphCommand>, FreshGraphMutationBindError> {
-        match self.0 {
+        match &self.0 {
             FreshGraphMutationAuthority::Connection {
                 binding,
                 target,
@@ -373,9 +316,9 @@ impl FreshGraphMutation {
                         }
                     }
                 }
-                if snapshot.version() != validated_version {
+                if snapshot.version() != *validated_version {
                     return Err(FreshGraphMutationBindError::RevisionChanged {
-                        validated: validated_version,
+                        validated: *validated_version,
                         current: snapshot.version(),
                     });
                 }
@@ -387,10 +330,20 @@ impl FreshGraphMutation {
                         .connection(binding.edit_for_target(target.port())),
                 )))
             }
-            FreshGraphMutationAuthority::MoveNodes(intent) => intent.into_command(snapshot),
-            FreshGraphMutationAuthority::DeleteEdge(intent) => intent.into_command(snapshot),
-            FreshGraphMutationAuthority::DeleteSelection(intent) => intent.into_command(snapshot),
+            FreshGraphMutationAuthority::MoveNodes(intent) => intent.clone().into_command(snapshot),
+            FreshGraphMutationAuthority::DeleteEdge(intent) => (*intent).into_command(snapshot),
+            FreshGraphMutationAuthority::DeleteSelection(intent) => {
+                intent.clone().into_command(snapshot)
+            }
         }
+    }
+
+    #[cfg(test)]
+    fn into_command(
+        self,
+        snapshot: &GraphSnapshot,
+    ) -> Result<Option<GraphCommand>, FreshGraphMutationBindError> {
+        self.to_command(snapshot)
     }
 }
 
@@ -789,17 +742,6 @@ impl NodeMoveDeltaConstraint {
         Ok(constraint)
     }
 
-    #[cfg(test)]
-    pub(super) fn unbounded_for_test(cohort: &NodeMoveCohort) -> Self {
-        Self {
-            representative: cohort.nodes()[0],
-            min_x: f32::NEG_INFINITY,
-            max_x: f32::INFINITY,
-            min_y: f32::NEG_INFINITY,
-            max_y: f32::INFINITY,
-        }
-    }
-
     pub(super) fn constrain(
         self,
         requested: CanvasPoint,
@@ -827,7 +769,7 @@ impl NodeMoveDeltaConstraint {
 }
 
 /// Relative node movement captured independently from any stale press-time graph snapshot.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(super) struct RelativeNodeMoveIntent {
     cohort: NodeMoveCohort,
     delta: CanvasPoint,
@@ -850,16 +792,6 @@ impl RelativeNodeMoveIntent {
             return None;
         }
         Some(Self { cohort, delta })
-    }
-
-    #[cfg(test)]
-    pub(super) fn nodes(&self) -> &[NodeId] {
-        self.cohort.nodes()
-    }
-
-    #[cfg(test)]
-    pub(super) fn delta(&self) -> CanvasPoint {
-        self.delta
     }
 
     fn into_command(

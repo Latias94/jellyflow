@@ -20,11 +20,6 @@ impl ViewportRevision {
             None => None,
         }
     }
-
-    #[cfg(test)]
-    pub(crate) const fn exhausted_for_test() -> Self {
-        Self(u64::MAX)
-    }
 }
 
 /// Exact viewport state issued by one live view generation.
@@ -103,5 +98,15 @@ impl ViewportIntent {
             Self::Pan(request) => pan_viewport(current, request),
             Self::Zoom(request) => zoom_viewport(current, request),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ViewportRevision;
+
+    #[test]
+    fn viewport_revision_checked_next_stops_at_u64_max() {
+        assert_eq!(ViewportRevision(u64::MAX).checked_next(), None);
     }
 }

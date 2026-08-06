@@ -20,11 +20,12 @@ pub use dugong::DugongLayoutEngine;
 #[cfg(feature = "benchmark-internals")]
 pub use dugong::benchmark_internals;
 pub use engine::{
-    DUGONG_LAYOUT_ENGINE_ID, LayoutContext, LayoutDirection, LayoutEdgeRoute, LayoutEngine,
-    LayoutEngineId, LayoutEngineRegistry, LayoutEngineRequest, LayoutError, LayoutNodePosition,
-    LayoutOptions, LayoutRequest, LayoutResult, LayoutScope, LayoutSpacing,
-    MIND_MAP_FREEFORM_LAYOUT_ENGINE_ID, MIND_MAP_RADIAL_LAYOUT_ENGINE_ID,
-    TIDY_TREE_LAYOUT_ENGINE_ID, layout_graph_with_engine,
+    DUGONG_LAYOUT_ENGINE_ID, LayoutContext, LayoutCoordinateFrame, LayoutDirection,
+    LayoutEdgeRoute, LayoutEngine, LayoutEngineDescriptor, LayoutEngineId, LayoutEngineRegistry,
+    LayoutEngineRequest, LayoutError, LayoutNodePlacement, LayoutNodePosition, LayoutOptions,
+    LayoutPlacements, LayoutRequest, LayoutResult, LayoutScope, LayoutSpacing,
+    MIND_MAP_FREEFORM_LAYOUT_ENGINE_ID, MIND_MAP_RADIAL_LAYOUT_ENGINE_ID, PreparedLayoutEdge,
+    PreparedLayoutInput, PreparedLayoutNode, TIDY_TREE_LAYOUT_ENGINE_ID,
 };
 pub use family::{
     LAYERED_DAG_LAYOUT_FAMILY_ID, LayoutEngineCapability, LayoutEngineMetadata, LayoutFamilyId,

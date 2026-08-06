@@ -173,6 +173,7 @@ fn application_overview_reuses_one_mount_and_publishes_real_ports(
                 .expect("valid native overview registry"),
             visible_viewport(),
         )
+        .expect("valid Open GPUI scene host")
     });
 
     draw(cx);
@@ -287,6 +288,7 @@ fn overview_factory_error_keeps_detail_and_uses_generic_overview(
                 .expect("valid fallible overview registry"),
             visible_viewport(),
         )
+        .expect("valid Open GPUI scene host")
     });
 
     draw(cx);
@@ -373,6 +375,7 @@ fn panicking_overview_factory_isolated_to_generic_overview(cx: &mut open_gpui::T
                 .expect("valid panicking overview registry"),
             visible_viewport(),
         )
+        .expect("valid Open GPUI scene host")
     });
 
     draw(cx);

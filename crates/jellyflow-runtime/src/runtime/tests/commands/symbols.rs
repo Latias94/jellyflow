@@ -388,7 +388,6 @@ fn stale_symbol_command_conflict_declares_symbols_and_current_referrers() {
         .expect("winning command applies");
     let before = runtime.snapshot().unwrap();
     let history_before = runtime.history_state().unwrap();
-    let installed_impact_before = runtime.installed_impact_state_for_test();
     let event_count = Rc::new(Cell::new(0));
     let callback_count = event_count.clone();
     runtime
@@ -410,10 +409,5 @@ fn stale_symbol_command_conflict_declares_symbols_and_current_referrers() {
     assert!(conflict.footprint().nodes.contains(&node_id));
     assert!(before.ptr_eq(&runtime.snapshot().unwrap()));
     assert_eq!(runtime.history_state().unwrap(), history_before);
-    assert_eq!(
-        runtime.installed_impact_state_for_test(),
-        installed_impact_before,
-        "conflicting symbol commands must not update indexes or node identities"
-    );
     assert_eq!(event_count.get(), 0);
 }

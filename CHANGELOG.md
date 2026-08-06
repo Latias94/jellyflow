@@ -6,16 +6,20 @@ The format is based on *Keep a Changelog*, and this project adheres to *Semantic
 
 ## [Unreleased]
 
-## [0.4.0] - 2026-07-27
+## [0.4.0] - 2026-08-01
 
 ### Breaking Changes
 
 - Replaced the single-view `NodeGraphStore` and portable node UI descriptor stack with an
   authoritative `GraphRuntime`, independently revocable `ViewSession`s, owned render frames,
   one-shot ordered feedback, and expected-version graph commands.
-- Reduced node catalogs to semantic kind, creation, migration, real-port, search, and renderer-key
-  facts. Native controls, focus, IME, menus, popovers, scrolling, accessibility, themes, and local
-  component state now belong to each UI framework and application.
+- Reduced node catalogs to semantic kind, creation, migration, and real-port facts. Product search,
+  labels, layout hints, and renderer mapping now belong to their owning product and native adapter.
+  Native controls, focus, IME, menus, popovers, scrolling, accessibility, themes, and local
+  component state belong to each UI framework and application.
+- Removed raw Open GPUI authoring enqueue/ticket access. Node components now dispatch through
+  `OpenGpuiManagedMutation`, which owns native admission and settlement while product code keeps
+  command construction, satisfaction predicates, and explicit retry decisions.
 - Removed the legacy UI DSL, projection and authoring facades, the shaped-data proof crate, the old
   headless adapter template, duplicate product galleries, and superseded runtime and egui examples.
 - Replaced the version-suffixed graph-file API with the unversioned `GraphFile` facade and advanced the
@@ -35,8 +39,7 @@ The format is based on *Keep a Changelog*, and this project adheres to *Semantic
 - Added the Open GPUI `canvas-jellyflow` product example with Dify-style workflow nodes, dynamic
   condition branches, Shader Graph and Blueprint nodes, occupied-input reconnect, create-from-wire
   search, and an application-owned native blackboard.
-- Added a narrow real egui protocol witness backed by the same executable adapter contract as the
-  retained Open GPUI adapter.
+- Added an independent egui native adapter witness over the framework-free runtime protocol.
 - Added deterministic scale, convergence, 256-entry eligible LRU, 64-instance protected overflow, and
   1,000-cycle framework-resource release gates.
 
@@ -95,9 +98,8 @@ The format is based on *Keep a Changelog*, and this project adheres to *Semantic
   such as headers, field rows, action rows, badges, previews, and nested regions.
 - Added graph profile metadata for product-facing node field schemas, variable surfaces,
   validation hints, and connection-rule labels without introducing a workflow domain crate.
-- Added `jellyflow-egui` automation-builder, ERD, and org-chart sample entrypoints, plus runtime
-  adapter-conformance product fixtures for automation, ERD, mind-map, org-chart, and knowledge-board
-  shapes.
+- Added `jellyflow-egui` automation-builder, ERD, and org-chart sample entrypoints, plus focused
+  product fixtures for automation, ERD, mind-map, org-chart, and knowledge-board shapes.
 - Added release, CI package-list, dependency-boundary, and external-consumer smoke coverage for
   `jellyflow-egui`.
 - Added public-surface and external-consumer smoke coverage for read-only graph views, dispatch

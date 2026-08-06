@@ -46,8 +46,10 @@ assert_eq!(snapshot.revision(), 0);
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-Graph writes are checked against an opaque graph version. A stale command returns the current owned
-snapshot and affected footprint; Jellyflow never silently retries or merges application intent.
+Graph writes are checked against an opaque graph version. Execution always returns an
+identity-keyed completion envelope; converting that envelope into its runtime result preserves the
+current owned snapshot and affected footprint for stale commands. Jellyflow never silently retries
+or merges application intent.
 
 ```rust
 # use jellyflow_core::{Graph, GraphId};
@@ -55,10 +57,12 @@ snapshot and affected footprint; Jellyflow never silently retries or merges appl
 # use jellyflow_runtime::graph::GraphRuntime;
 # use jellyflow_runtime::schema::NodeCatalog;
 # let runtime = GraphRuntime::builder(NodeCatalog::new()).build(Graph::new(GraphId::new()))?;
-let outcome = runtime.execute(GraphCommand::topology(
-    runtime.snapshot()?.version(),
-    TopologyEdit::new(),
-))?;
+let outcome = runtime
+    .execute(GraphCommand::topology(
+        runtime.snapshot()?.version(),
+        TopologyEdit::new(),
+    ))
+    .into_result()?;
 
 assert!(matches!(outcome, GraphCommandOutcome::Noop(_)));
 # Ok::<(), Box<dyn std::error::Error>>(())
@@ -110,16 +114,16 @@ the runtime synchronously during render.
 
 Renderer registration also selects explicit scale and size authority. The default semantic LOD
 keeps arbitrary controls at native metrics, switches to canonical overview with hysteresis, and
-uses a graph-inert interaction island for active focus, IME, or overlays. Continuous scaling is an
-explicit component-managed responsibility. Document size remains the default; Dify-style growing
-nodes opt into `ContentHeight`, wrap one 1:1 root with `binding.measure_content`, and converge through
-version-checked geometry commands rather than render-time mutation.
+uses a graph-inert pinned-detail surface for active focus, IME, or overlays. Continuous scaling is
+an explicit component-managed responsibility. Document size remains the default; Dify-style
+growing nodes opt into `ContentHeight`, wrap one 1:1 root with `binding.measure_content`, and
+converge through version-checked geometry commands rather than render-time mutation.
 
 See:
 
 - `examples/canvas-jellyflow`: retained workflow and typed shader nodes.
 - `crates/jellyflow-egui`: immediate-mode adapter witness without product-level widget parity.
-- `docs/guides/native-adapter-authoring.md`: direct-dependency adapter ownership and conformance guide.
+- `docs/guides/native-adapter-authoring.md`: direct-dependency adapter ownership and verification guide.
 
 Dynamic handles must be real graph `Port` records with stable `PortId`s. Adapter-local visual
 handles never enter routing, hit testing, or graph transactions.

@@ -13,10 +13,6 @@ description = "Renderer-neutral graph runtime and native view protocol for Jelly
 keywords = ["graph", "node-graph", "flow", "headless"]
 categories = ["data-structures", "gui"]
 
-[features]
-default = []
-adapter-conformance = []
-
 [dependencies]
 jellyflow-core.workspace = true
 rpds.workspace = true

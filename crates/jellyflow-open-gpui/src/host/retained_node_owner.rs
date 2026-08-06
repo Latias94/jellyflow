@@ -1,9 +1,4 @@
 use jellyflow_core::{CanvasSize, NodeId, PortId};
-#[cfg(feature = "test-support")]
-use jellyflow_runtime::{
-    geometry::{ViewRect, ViewSize},
-    viewport::ViewportTransform,
-};
 use jellyflow_runtime::{
     graph::{DocumentEpoch, GraphRevision, PortInstanceKey},
     view::{FrameNode, GeometrySnapshot, NodeInstanceKey, ViewSession},
@@ -12,8 +7,8 @@ use open_gpui::{Entity, Window};
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::activity::{
-    OpenGpuiActivityCoordinator, OpenGpuiActivityCoordinatorStats, OpenGpuiActivityKind,
-    OpenGpuiNodeActivityRegistry,
+    OpenGpuiActivityCapacityWait, OpenGpuiActivityCoordinator, OpenGpuiActivityCoordinatorStats,
+    OpenGpuiActivityKind, OpenGpuiNodeActivityRegistry,
 };
 use crate::binding::{
     OpenGpuiBindingAdvance, OpenGpuiMountCapability, OpenGpuiNodeBinding, OpenGpuiNodeBindingError,
@@ -27,15 +22,12 @@ use crate::semantic_zoom::OpenGpuiNodePresentation;
 use crate::size_policy::OpenGpuiNodeSizePolicy;
 
 use super::OpenGpuiSceneHost;
-use super::diagnostics::OpenGpuiSceneHostWorkLedger;
 use super::lifecycle::NodeChanges;
 use super::node_lifecycle::MountedNode;
 use super::presentation::{OpenGpuiPresentationPortCache, OpenGpuiPresentationSyncError};
 use super::retained_mount_store::{
     EvictedMount, RetainedMountSnapshot, RetainedMountStore, RetiredMount,
 };
-#[cfg(feature = "test-support")]
-use super::test_support::OpenGpuiSmokeNodeFootprint;
 
 /// Owns every retained-node index and the adapter state whose lifetime follows those mounts.
 ///
@@ -395,11 +387,12 @@ impl RetainedNodeOwner {
                 .filter(|(instance, _)| Self::instance_is_retired(instance, &frame_instances, view))
                 .map(|(instance, _)| instance.clone())
                 .collect::<Vec<_>>();
-            for instance in stale {
-                if let Some(retired) = self.store.retire(&instance) {
-                    releases.push(self.hard_release(retired));
-                }
-            }
+            let retired = self.store.retire_many(stale);
+            releases.extend(
+                retired
+                    .into_iter()
+                    .map(|retired| self.hard_release(retired)),
+            );
         }
         let missing_frame_indices = frame
             .iter()
@@ -420,13 +413,13 @@ impl RetainedNodeOwner {
         &mut self,
         mut preparation: RetainedFramePreparation,
         input: RetainedFrameReconcileInput<'_>,
-        work_ledger: &mut OpenGpuiSceneHostWorkLedger,
         cx: &mut open_gpui::Context<OpenGpuiSceneHost>,
     ) -> RetainedFrameReconcileReceipt {
         debug_assert!(preparation.releases.is_empty());
         debug_assert!(preparation.missing_frame_indices.is_empty());
         let mut releases = Vec::new();
         let mut binding_failures = Vec::new();
+        let mut binding_retirements = Vec::new();
 
         let reconcile = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.store.begin_reconcile();
@@ -454,7 +447,7 @@ impl RetainedNodeOwner {
                     input.previous_geometry,
                 );
                 if let Some(binding) = binding {
-                    match Self::advance_binding_from_frame(&binding, frame_node, work_ledger, cx) {
+                    match Self::advance_binding_from_frame(&binding, frame_node, cx) {
                         Ok(OpenGpuiBindingAdvance::Applied) => {
                             if let Some(mounted) = self.store.get_mut(instance) {
                                 mounted.binding_revision = frame_node.binding_revision();
@@ -463,14 +456,19 @@ impl RetainedNodeOwner {
                         Ok(OpenGpuiBindingAdvance::Retry) => {}
                         Err(error) => {
                             binding_failures.push(RetainedBindingFailure { frame_index, error });
-                            if let Some(retired) = self.store.retire(instance) {
-                                releases.push(self.hard_release(retired));
-                            }
+                            binding_retirements.push(instance.clone());
                             continue;
                         }
                     }
                 }
             }
+
+            let retired = self.store.retire_many(binding_retirements);
+            releases.extend(
+                retired
+                    .into_iter()
+                    .map(|retired| self.hard_release(retired)),
+            );
 
             debug_assert!(preparation.new_mounts.is_empty());
             for (instance, mounted) in self.store.take_unseen_active() {
@@ -522,21 +520,17 @@ impl RetainedNodeOwner {
     pub(super) fn apply_node_changes(
         &mut self,
         changes: &NodeChanges,
-        work_ledger: &mut OpenGpuiSceneHostWorkLedger,
         cx: &mut open_gpui::Context<OpenGpuiSceneHost>,
     ) -> RetainedNodeChangesReceipt {
         let mut bindings = Vec::new();
         let mut releases = Vec::new();
+        let mut retirements = Vec::new();
         for (node, change) in changes {
             let Some(instance) = self.store.retained_instance(*node).cloned() else {
                 continue;
             };
-            work_ledger.binding_reconciliation_visits =
-                work_ledger.binding_reconciliation_visits.saturating_add(1);
             if change.is_stale_for(&instance) {
-                if let Some(retired) = self.store.retire(&instance) {
-                    releases.push(self.hard_release(retired));
-                }
+                retirements.push(instance);
                 continue;
             }
             let Some(mounted) = self.store.get(&instance) else {
@@ -552,7 +546,7 @@ impl RetainedNodeOwner {
 
         let mut binding_failures = Vec::new();
         for (instance, binding, revision) in bindings {
-            match Self::advance_binding(&binding, revision, work_ledger, cx) {
+            match Self::advance_binding(&binding, revision, cx) {
                 Ok(OpenGpuiBindingAdvance::Applied) => {
                     if let Some(mounted) = self.store.get_mut(&instance) {
                         mounted.binding_revision = revision;
@@ -564,12 +558,16 @@ impl RetainedNodeOwner {
                         node: instance.node(),
                         error,
                     });
-                    if let Some(retired) = self.store.retire(&instance) {
-                        releases.push(self.hard_release(retired));
-                    }
+                    retirements.push(instance);
                 }
             }
         }
+        let retired = self.store.retire_many(retirements);
+        releases.extend(
+            retired
+                .into_iter()
+                .map(|retired| self.hard_release(retired)),
+        );
         RetainedNodeChangesReceipt {
             releases,
             binding_failures,
@@ -586,33 +584,6 @@ impl RetainedNodeOwner {
 
     pub(super) fn active_in_order(&self) -> impl Iterator<Item = (&NodeInstanceKey, &MountedNode)> {
         self.store.active_in_order()
-    }
-
-    #[cfg(feature = "test-support")]
-    pub(super) fn smoke_node_footprints(
-        &self,
-        transform: ViewportTransform,
-    ) -> Vec<OpenGpuiSmokeNodeFootprint> {
-        self.store
-            .iter_with_activity()
-            .filter_map(|(instance, mounted, materialized)| {
-                let bounds = mounted.canonical_bounds();
-                let origin = transform.screen_point_for_canvas(bounds.origin)?;
-                let size = mounted.semantic_zoom.screen_size(
-                    transform.zoom,
-                    mounted.graph_presentation(),
-                    mounted.registration_policy.scale_policy(),
-                );
-                let bounds = ViewRect::new(origin, ViewSize::new(size.width, size.height));
-                bounds
-                    .is_positive_finite()
-                    .then_some(OpenGpuiSmokeNodeFootprint::new(
-                        instance.node(),
-                        bounds,
-                        materialized,
-                    ))
-            })
-            .collect()
     }
 
     pub(super) fn protected_required_nodes(&self) -> BTreeSet<NodeId> {
@@ -660,6 +631,18 @@ impl RetainedNodeOwner {
             .mount
             .is_same_mount(mount)
             .then(|| mounted.activity.clone())
+    }
+
+    pub(super) fn content_size_admission_batch(
+        &self,
+        instances: &[NodeInstanceKey],
+        limit: usize,
+    ) -> Vec<NodeInstanceKey> {
+        self.activity.admissible_protected_batch(instances, limit)
+    }
+
+    pub(super) fn wait_for_content_size_capacity(&self) -> OpenGpuiActivityCapacityWait {
+        self.activity.wait_for_protected_capacity()
     }
 
     pub(super) fn content_size_sources(&self) -> Vec<RetainedContentSizeSource> {
@@ -874,7 +857,6 @@ impl RetainedNodeOwner {
     fn advance_binding(
         binding: &Entity<OpenGpuiNodeBinding>,
         revision: GraphRevision,
-        work_ledger: &mut OpenGpuiSceneHostWorkLedger,
         cx: &mut open_gpui::Context<OpenGpuiSceneHost>,
     ) -> Result<OpenGpuiBindingAdvance, OpenGpuiNodeBindingError> {
         let outcome = binding.update(cx, |binding, cx| {
@@ -882,13 +864,12 @@ impl RetainedNodeOwner {
             cx.notify();
             outcome
         });
-        Self::finish_binding_advance(outcome, work_ledger, cx)
+        Self::finish_binding_advance(outcome, cx)
     }
 
     fn advance_binding_from_frame(
         binding: &Entity<OpenGpuiNodeBinding>,
         frame: &FrameNode,
-        work_ledger: &mut OpenGpuiSceneHostWorkLedger,
         cx: &mut open_gpui::Context<OpenGpuiSceneHost>,
     ) -> Result<OpenGpuiBindingAdvance, OpenGpuiNodeBindingError> {
         let outcome = binding.update(cx, |binding, cx| {
@@ -896,31 +877,20 @@ impl RetainedNodeOwner {
             cx.notify();
             outcome
         });
-        Self::finish_binding_advance(outcome, work_ledger, cx)
+        Self::finish_binding_advance(outcome, cx)
     }
 
     fn finish_binding_advance(
         outcome: Result<OpenGpuiBindingAdvance, OpenGpuiNodeBindingError>,
-        work_ledger: &mut OpenGpuiSceneHostWorkLedger,
         cx: &mut open_gpui::Context<OpenGpuiSceneHost>,
     ) -> Result<OpenGpuiBindingAdvance, OpenGpuiNodeBindingError> {
         match outcome {
-            Ok(OpenGpuiBindingAdvance::Applied) => {
-                work_ledger.binding_updates = work_ledger.binding_updates.saturating_add(1);
-                work_ledger.binding_notifications =
-                    work_ledger.binding_notifications.saturating_add(1);
-                Ok(OpenGpuiBindingAdvance::Applied)
-            }
+            Ok(OpenGpuiBindingAdvance::Applied) => Ok(OpenGpuiBindingAdvance::Applied),
             Ok(OpenGpuiBindingAdvance::Retry) => {
                 cx.notify();
                 Ok(OpenGpuiBindingAdvance::Retry)
             }
             Err(error) => Err(error),
         }
-    }
-
-    #[cfg(test)]
-    pub(super) fn active_reconcile_usage(&self) -> (u64, u64) {
-        self.store.active_reconcile_usage()
     }
 }

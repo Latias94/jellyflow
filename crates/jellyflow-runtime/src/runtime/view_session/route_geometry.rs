@@ -4,7 +4,9 @@ use std::sync::Arc;
 
 use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize, EdgeId};
 
-use crate::runtime::adapter_protocol::{GeometrySnapshot, PublishedEdgeRoute, ViewRect};
+use crate::runtime::adapter_protocol::{
+    GeometrySnapshot, PublishedEdgeRoute, RouteGeometryRevision, ViewRect,
+};
 use crate::runtime::geometry::{
     EdgeFlattenOptions, EdgePath, EdgePathFlattenError, EdgePathSegment, FlattenedEdgePath,
     edge_path_conservative_bounds, flatten_edge_path,
@@ -19,8 +21,8 @@ use super::spatial_grid::{
     max_spatial_query_setup_work, spatial_cell_coords, spatial_cell_size,
 };
 use super::{
-    ViewGeneration, ViewId, ViewQueryIdentity, ViewQueryIdentityStaleReason, ViewSession,
-    ViewSessionError, ensure_open,
+    ViewGeneration, ViewId, ViewProvenance, ViewQueryIdentity, ViewQueryIdentityStaleReason,
+    ViewSession, ViewSessionError, ensure_open,
 };
 
 const ROUTE_INDEX_EPSILON: f32 = 0.001;
@@ -33,34 +35,42 @@ pub(super) const MAX_ROUTE_QUERY_SETUP_WORK: u64 =
 const HARD_ROUTE_QUERY_WORK_LIMIT: u64 = HARD_ROUTE_QUERY_ENTRY_LIMIT + MAX_ROUTE_QUERY_SETUP_WORK;
 const ROUTE_FLATTEN_CACHE_CAPACITY: usize = 4_096;
 
+/// Renderer-provided bounds for one runtime-owned visible-route work stream.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VisibleRouteWorkRequest {
+    bounds: ViewRect,
+    margin: f32,
+}
+
+impl VisibleRouteWorkRequest {
+    pub fn new(bounds: ViewRect) -> Self {
+        Self {
+            bounds,
+            margin: 0.0,
+        }
+    }
+
+    pub fn with_margin(mut self, margin: f32) -> Self {
+        self.margin = margin;
+        self
+    }
+}
+
 #[derive(Debug)]
-pub struct VisibleRouteQuery {
+struct VisibleRouteQuery {
     request: VisibleRouteRequest,
     entry_budget: usize,
 }
 
 impl VisibleRouteQuery {
-    pub fn new(bounds: ViewRect, entry_budget: usize) -> Self {
+    fn new(canvas_bounds: CanvasRect, entry_budget: usize) -> Self {
         Self {
-            request: VisibleRouteRequest::Start {
-                bounds,
-                margin: 0.0,
-            },
+            request: VisibleRouteRequest::Start(canvas_bounds),
             entry_budget,
         }
     }
 
-    pub fn with_margin(mut self, margin: f32) -> Self {
-        if let VisibleRouteRequest::Start {
-            margin: current, ..
-        } = &mut self.request
-        {
-            *current = margin;
-        }
-        self
-    }
-
-    pub fn resume(cursor: Box<VisibleRouteCursor>, entry_budget: usize) -> Self {
+    fn resume(cursor: Box<VisibleRouteCursor>, entry_budget: usize) -> Self {
         Self {
             request: VisibleRouteRequest::Resume(cursor),
             entry_budget,
@@ -70,12 +80,12 @@ impl VisibleRouteQuery {
 
 #[derive(Debug)]
 enum VisibleRouteRequest {
-    Start { bounds: ViewRect, margin: f32 },
+    Start(CanvasRect),
     Resume(Box<VisibleRouteCursor>),
 }
 
 #[derive(Debug)]
-pub struct VisibleRouteCursor {
+pub(super) struct VisibleRouteCursor {
     identity: ViewQueryIdentity,
     index_epoch: u128,
     canvas_bounds: CanvasRect,
@@ -167,28 +177,14 @@ impl VisibleRouteGeometryOverflow {
 pub struct VisibleRoutes {
     snapshot: GeometrySnapshot,
     edges: Vec<EdgeId>,
-    geometry_revisions: BTreeMap<EdgeId, RouteGeometryRevision>,
     geometry_overflows: Vec<VisibleRouteGeometryOverflow>,
 }
 
-/// Stable identity for one edge's resolved path geometry inside a view session.
+/// Stable invalidation stamp for one view's visible-route publication.
 ///
-/// Selection, hover, and adapter theme changes do not change this revision. Adapters can use it
-/// to reuse native path resources until the authoritative route itself changes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct RouteGeometryRevision(u128);
-
-impl RouteGeometryRevision {
-    pub fn get(self) -> u128 {
-        self.0
-    }
-}
-
-/// Stable invalidation stamp for one view's visible-route query result.
-///
-/// Adapters can retain a complete query result while this value and their query bounds remain
-/// unchanged. The stamp advances for viewport, route-fact, selection, or draw-order changes even
-/// when the resolved path geometry itself remains identical.
+/// Adapters can retain a complete or truncated publication while this value and their query bounds
+/// remain unchanged. The stamp advances for viewport, route-fact, selection, or draw-order changes
+/// even when the resolved path geometry itself remains identical.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct VisibleRouteQueryRevision {
     view: ViewId,
@@ -198,12 +194,11 @@ pub struct VisibleRouteQueryRevision {
     interaction_order_revision: u128,
 }
 
-/// One visible edge route paired with its geometry-only revision.
+/// One edge from a visible-route membership publication.
 #[derive(Debug, Clone, Copy)]
 pub struct VisibleRoute<'a> {
     edge: EdgeId,
     route: &'a PublishedEdgeRoute,
-    geometry_revision: RouteGeometryRevision,
 }
 
 impl<'a> VisibleRoute<'a> {
@@ -218,10 +213,6 @@ impl<'a> VisibleRoute<'a> {
     pub fn facts(self) -> &'a crate::runtime::geometry::EdgeRouteFacts {
         self.route.facts()
     }
-
-    pub fn geometry_revision(self) -> RouteGeometryRevision {
-        self.geometry_revision
-    }
 }
 
 impl VisibleRoutes {
@@ -234,7 +225,6 @@ impl VisibleRoutes {
             Some(VisibleRoute {
                 edge: *edge,
                 route: self.snapshot.route(*edge)?,
-                geometry_revision: *self.geometry_revisions.get(edge)?,
             })
         })
     }
@@ -248,8 +238,167 @@ impl VisibleRoutes {
     }
 }
 
+/// Terminal or pending state returned by [`VisibleRouteWorkSession::advance`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VisibleRouteWorkStatus {
+    Pending,
+    Complete,
+    Truncated,
+}
+
+/// One bounded visible-route advancement and its currently publishable route set.
+#[derive(Debug, Clone)]
+pub struct VisibleRouteWorkUpdate {
+    routes: Option<Arc<VisibleRoutes>>,
+    query_revision: VisibleRouteQueryRevision,
+    publication_revision: Option<VisibleRouteQueryRevision>,
+    generation: u64,
+    status: VisibleRouteWorkStatus,
+    work: VisibleRouteQueryWork,
+    reused_previous_publication: bool,
+}
+
+impl VisibleRouteWorkUpdate {
+    pub fn routes(&self) -> Option<&VisibleRoutes> {
+        self.routes.as_deref()
+    }
+
+    pub fn query_revision(&self) -> VisibleRouteQueryRevision {
+        self.query_revision
+    }
+
+    pub fn publication_revision(&self) -> Option<VisibleRouteQueryRevision> {
+        self.publication_revision
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub fn status(&self) -> VisibleRouteWorkStatus {
+        self.status
+    }
+
+    pub fn work(&self) -> VisibleRouteQueryWork {
+        self.work
+    }
+
+    pub fn reused_previous_publication(&self) -> bool {
+        self.reused_previous_publication
+    }
+}
+
+/// Runtime-owned visible-route continuation and last complete or truncated publication.
+///
+/// Native adapters retain this owner and choose only the request bounds and per-tick budget. Query
+/// cursors, stale restarts, accumulated matches, and terminal reuse remain private to the runtime.
 #[derive(Debug)]
-pub enum VisibleRouteQueryOutcome {
+pub struct VisibleRouteWorkSession {
+    owner: ViewProvenance,
+    continuation: Option<VisibleRouteContinuation>,
+    publication: Option<VisibleRoutePublication>,
+    generation: u64,
+}
+
+impl VisibleRouteWorkSession {
+    fn attach(view: &ViewSession) -> Result<Self, ViewSessionError> {
+        Ok(Self {
+            owner: view.provenance()?,
+            continuation: None,
+            publication: None,
+            generation: 0,
+        })
+    }
+
+    pub fn clear(&mut self) {
+        self.continuation = None;
+        self.publication = None;
+        self.generation = self.generation.saturating_add(1);
+    }
+
+    pub fn advance(
+        &mut self,
+        view: &ViewSession,
+        request: VisibleRouteWorkRequest,
+        entry_budget: usize,
+    ) -> Result<VisibleRouteWorkUpdate, VisibleRouteWorkError> {
+        let provided = view.provenance()?;
+        if provided != self.owner {
+            return Err(VisibleRouteWorkError::ForeignView {
+                owner: self.owner,
+                provided,
+            });
+        }
+        view.advance_visible_route_work(self, request, entry_budget)
+    }
+
+    fn update(
+        &self,
+        query_revision: VisibleRouteQueryRevision,
+        status: VisibleRouteWorkStatus,
+        work: VisibleRouteQueryWork,
+        reused_previous_publication: bool,
+    ) -> VisibleRouteWorkUpdate {
+        VisibleRouteWorkUpdate {
+            routes: self
+                .publication
+                .as_ref()
+                .map(|publication| Arc::clone(&publication.routes)),
+            query_revision,
+            publication_revision: self
+                .publication
+                .as_ref()
+                .map(|publication| publication.key.revision),
+            generation: self.generation,
+            status,
+            work,
+            reused_previous_publication,
+        }
+    }
+
+    fn publish(
+        &mut self,
+        key: VisibleRouteWorkKey,
+        routes: VisibleRoutes,
+        status: VisibleRouteWorkStatus,
+        work: VisibleRouteQueryWork,
+    ) -> VisibleRouteWorkUpdate {
+        debug_assert!(matches!(
+            status,
+            VisibleRouteWorkStatus::Complete | VisibleRouteWorkStatus::Truncated
+        ));
+        self.continuation = None;
+        self.generation = self.generation.saturating_add(1);
+        self.publication = Some(VisibleRoutePublication {
+            key,
+            routes: Arc::new(routes),
+            status,
+        });
+        self.update(key.revision, status, work, false)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct VisibleRouteWorkKey {
+    request: VisibleRouteWorkRequest,
+    revision: VisibleRouteQueryRevision,
+}
+
+#[derive(Debug)]
+struct VisibleRouteContinuation {
+    key: VisibleRouteWorkKey,
+    cursor: Box<VisibleRouteCursor>,
+}
+
+#[derive(Debug)]
+struct VisibleRoutePublication {
+    key: VisibleRouteWorkKey,
+    routes: Arc<VisibleRoutes>,
+    status: VisibleRouteWorkStatus,
+}
+
+#[derive(Debug)]
+enum VisibleRouteQueryOutcome {
     Complete {
         routes: VisibleRoutes,
         work: VisibleRouteQueryWork,
@@ -258,13 +407,14 @@ pub enum VisibleRouteQueryOutcome {
         cursor: Box<VisibleRouteCursor>,
         work: VisibleRouteQueryWork,
     },
-    BudgetExhausted {
+    Truncated {
+        routes: VisibleRoutes,
         work: VisibleRouteQueryWork,
     },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub enum VisibleRouteCursorStaleReason {
+enum VisibleRouteCursorStaleReason {
     #[error("the cursor belongs to another view")]
     ForeignView,
     #[error("the view generation changed")]
@@ -277,19 +427,31 @@ pub enum VisibleRouteCursorStaleReason {
 
 impl VisibleRouteCursorStaleReason {
     /// Returns whether ordinary mutable view state can invalidate this cursor between pages.
-    pub const fn is_restartable(self) -> bool {
+    const fn is_restartable(self) -> bool {
         matches!(self, Self::ViewportTransform | Self::RouteGeometry)
     }
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum VisibleRouteQueryError {
+enum VisibleRouteQueryError {
     #[error(transparent)]
     Session(#[from] ViewSessionError),
-    #[error("visible-route query bounds or margin are invalid")]
-    InvalidQuery,
     #[error(transparent)]
     StaleCursor(VisibleRouteCursorStaleReason),
+}
+
+/// Failure to advance a runtime-owned visible-route work stream.
+#[derive(Debug, thiserror::Error)]
+pub enum VisibleRouteWorkError {
+    #[error(transparent)]
+    Session(#[from] ViewSessionError),
+    #[error("visible-route work belongs to {owner:?}, not {provided:?}")]
+    ForeignView {
+        owner: ViewProvenance,
+        provided: ViewProvenance,
+    },
+    #[error("visible-route work bounds or margin are invalid")]
+    InvalidRequest,
 }
 
 #[derive(Debug, Default)]
@@ -372,6 +534,18 @@ pub(super) struct RouteIndexMutation {
     pub index_changed: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(super) struct RouteIndexAdmission {
+    #[cfg(test)]
+    pub index_changed: bool,
+    pub geometry_revision: RouteGeometryRevision,
+}
+
+enum PreparedRouteSpatial {
+    Segments(FlattenedEdgePath),
+    Bounds(CanvasRect),
+}
+
 #[derive(Debug, Default)]
 struct RouteSpatialIndex {
     spatial: HierarchicalSpatialIndex<RouteSegmentKey>,
@@ -417,6 +591,11 @@ impl RouteSpatialIndex {
         self.routes.clear();
     }
 
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.spatial.is_empty() && self.routes.is_empty()
+    }
+
     fn new_scan(&self, bounds: CanvasRect) -> RouteScan {
         let query_bounds = inflate_canvas_rect(bounds, INDEX_FLATTEN_ERROR).unwrap_or(bounds);
         RouteScan {
@@ -446,48 +625,23 @@ impl RouteSpatialIndex {
 }
 
 impl RouteGeometryIndex {
-    pub(super) fn geometry_revision(&self, edge: EdgeId) -> Option<RouteGeometryRevision> {
-        self.indexed
-            .get(&edge)
-            .map(|route| RouteGeometryRevision(route.path_revision))
-    }
-
-    #[cfg(test)]
-    pub(super) fn indexed_edges_for_test(&self) -> BTreeSet<EdgeId> {
-        let indexed = self.indexed.keys().copied().collect::<BTreeSet<_>>();
-        assert_eq!(
-            indexed,
-            self.spatial.routes.keys().copied().collect::<BTreeSet<_>>()
-        );
-        indexed
-    }
-
-    #[cfg(test)]
-    pub(super) fn matches_route_for_test(&self, route: &PublishedEdgeRoute) -> bool {
-        self.indexed.get(&route.edge()).is_some_and(|indexed| {
-            indexed.instance == route.instance()
-                && indexed.path == route.facts().path
-                && indexed.pick == IndexedRoutePickFacts::from(route)
-                && edge_path_conservative_bounds(&route.facts().path)
-                    .ok()
-                    .flatten()
-                    .and_then(expand_route_bounds)
-                    == Some(indexed.bounds)
-        })
-    }
-
-    pub(super) fn upsert(
+    pub(super) fn try_upsert(
         &mut self,
         edge: EdgeId,
         route: &PublishedEdgeRoute,
-    ) -> RouteIndexMutation {
+    ) -> Option<RouteIndexAdmission> {
         let pick = IndexedRoutePickFacts::from(route);
         if let Some(indexed) = self.indexed.get(&edge)
             && indexed.instance == route.instance()
             && indexed.path == route.facts().path
         {
+            let geometry_revision = RouteGeometryRevision::new(indexed.path_revision);
             if indexed.pick == pick {
-                return RouteIndexMutation::default();
+                return Some(RouteIndexAdmission {
+                    #[cfg(test)]
+                    index_changed: false,
+                    geometry_revision,
+                });
             }
             let old_width = indexed.pick.interaction_width;
             self.replace_interaction_half_width(old_width, pick.interaction_width);
@@ -496,15 +650,30 @@ impl RouteGeometryIndex {
                 .expect("the route was read immediately before mutation")
                 .pick = pick;
             self.pick_epoch = self.pick_epoch.saturating_add(1);
-            return RouteIndexMutation::default();
+            return Some(RouteIndexAdmission {
+                #[cfg(test)]
+                index_changed: false,
+                geometry_revision,
+            });
+        }
+        if !route.facts().path.is_finite() {
+            return None;
         }
         let Some(bounds) = edge_path_conservative_bounds(&route.facts().path)
             .ok()
             .flatten()
             .and_then(expand_route_bounds)
         else {
-            return self.remove(edge);
+            return None;
         };
+        let spatial = match flatten_edge_path(
+            &route.facts().path,
+            EdgeFlattenOptions::new(INDEX_FLATTEN_ERROR),
+        ) {
+            Ok(path) => PreparedRouteSpatial::Segments(path),
+            Err(_) => PreparedRouteSpatial::Bounds(bounds),
+        };
+
         self.remove_cached_flatten(edge);
         self.next_path_revision = self.next_path_revision.saturating_add(1);
         let path_revision = self.next_path_revision;
@@ -512,14 +681,11 @@ impl RouteGeometryIndex {
             self.remove_interaction_half_width(indexed.pick.interaction_width);
         }
         self.insert_interaction_half_width(pick.interaction_width);
-        match flatten_edge_path(
-            &route.facts().path,
-            EdgeFlattenOptions::new(INDEX_FLATTEN_ERROR),
-        ) {
-            Ok(path) => {
+        match spatial {
+            PreparedRouteSpatial::Segments(path) => {
                 self.spatial.upsert_segments(edge, path.segments());
             }
-            Err(_) => self.spatial.upsert_bounds(edge, bounds),
+            PreparedRouteSpatial::Bounds(bounds) => self.spatial.upsert_bounds(edge, bounds),
         }
         self.indexed.insert(
             edge,
@@ -533,9 +699,21 @@ impl RouteGeometryIndex {
         );
         self.index_epoch = self.index_epoch.saturating_add(1);
         self.pick_epoch = self.pick_epoch.saturating_add(1);
-        RouteIndexMutation {
+        Some(RouteIndexAdmission {
+            #[cfg(test)]
             index_changed: true,
-        }
+            geometry_revision: RouteGeometryRevision::new(path_revision),
+        })
+    }
+
+    #[cfg(test)]
+    pub(super) fn upsert(
+        &mut self,
+        edge: EdgeId,
+        route: &PublishedEdgeRoute,
+    ) -> RouteIndexAdmission {
+        self.try_upsert(edge, route)
+            .expect("test routes must be admissible")
     }
 
     pub(super) fn edge_instance(&self, edge: EdgeId) -> Option<EdgeInstanceKey> {
@@ -571,6 +749,15 @@ impl RouteGeometryIndex {
             self.pick_epoch = self.pick_epoch.saturating_add(1);
         }
         RouteIndexMutation { index_changed }
+    }
+
+    #[cfg(test)]
+    pub(super) fn is_empty(&self) -> bool {
+        self.indexed.is_empty()
+            && self.spatial.is_empty()
+            && self.flatten_cache.is_empty()
+            && self.flatten_lru.is_empty()
+            && self.interaction_half_widths.is_empty()
     }
 
     pub(super) fn index_epoch(&self) -> u128 {
@@ -681,7 +868,12 @@ impl RouteGeometryIndex {
                     return InternalRouteQueryOutcome::Incomplete { cursor, work };
                 }
                 if cursor.total_spatial_work >= HARD_ROUTE_QUERY_WORK_LIMIT {
-                    return InternalRouteQueryOutcome::BudgetExhausted { work };
+                    let cursor = *cursor;
+                    return InternalRouteQueryOutcome::Truncated {
+                        edges: cursor.matched,
+                        overflows: cursor.flatten_overflows,
+                        work,
+                    };
                 }
                 remaining -= 1;
                 cursor.total_spatial_work = cursor.total_spatial_work.saturating_add(1);
@@ -721,7 +913,12 @@ impl RouteGeometryIndex {
             if cursor.total_entries_examined >= HARD_ROUTE_QUERY_ENTRY_LIMIT
                 || cursor.total_spatial_work >= HARD_ROUTE_QUERY_WORK_LIMIT
             {
-                return InternalRouteQueryOutcome::BudgetExhausted { work };
+                let cursor = *cursor;
+                return InternalRouteQueryOutcome::Truncated {
+                    edges: cursor.matched,
+                    overflows: cursor.flatten_overflows,
+                    work,
+                };
             }
             remaining -= 1;
             cursor.total_entries_examined = cursor.total_entries_examined.saturating_add(1);
@@ -939,16 +1136,23 @@ pub(super) enum InternalRouteQueryOutcome {
         cursor: Box<VisibleRouteCursor>,
         work: VisibleRouteQueryWork,
     },
-    BudgetExhausted {
+    Truncated {
+        edges: BTreeSet<EdgeId>,
+        overflows: BTreeMap<EdgeId, EdgePathFlattenError>,
         work: VisibleRouteQueryWork,
     },
 }
 
 impl ViewSession {
-    /// Returns the current invalidation stamp for complete visible-route query results.
-    pub fn visible_route_query_revision(
+    /// Creates a visible-route work owner bound to this exact view generation.
+    pub fn visible_route_work_session(&self) -> Result<VisibleRouteWorkSession, ViewSessionError> {
+        VisibleRouteWorkSession::attach(self)
+    }
+
+    fn prepare_visible_route_work(
         &self,
-    ) -> Result<VisibleRouteQueryRevision, ViewSessionError> {
+        request: VisibleRouteWorkRequest,
+    ) -> Result<(VisibleRouteWorkKey, CanvasRect), VisibleRouteWorkError> {
         self.runtime()?;
         let state = self
             .shared
@@ -956,16 +1160,84 @@ impl ViewSession {
             .try_borrow()
             .map_err(|_| ViewSessionError::Busy)?;
         ensure_open(state.status)?;
-        Ok(VisibleRouteQueryRevision {
+        let transform = ViewportTransform::new(state.facts.pan, state.facts.zoom)
+            .ok_or(ViewSessionError::InvalidViewport)?;
+        let canvas_bounds = expanded_view_rect(request.bounds, request.margin)
+            .and_then(|bounds| bounds.to_canvas_rect(transform))
+            .ok_or(VisibleRouteWorkError::InvalidRequest)?;
+        let revision = VisibleRouteQueryRevision {
             view: state.id,
             generation: state.generation,
             viewport_revision: state.viewport_revision,
             route_facts_revision: state.derived.route_facts_revision(),
             interaction_order_revision: state.interaction_order_revision,
-        })
+        };
+        Ok((VisibleRouteWorkKey { request, revision }, canvas_bounds))
     }
 
-    pub fn visible_routes(
+    fn advance_visible_route_work(
+        &self,
+        session: &mut VisibleRouteWorkSession,
+        request: VisibleRouteWorkRequest,
+        entry_budget: usize,
+    ) -> Result<VisibleRouteWorkUpdate, VisibleRouteWorkError> {
+        let (mut key, canvas_bounds) = self.prepare_visible_route_work(request)?;
+
+        if session.continuation.is_none()
+            && let Some(status) = session
+                .publication
+                .as_ref()
+                .filter(|publication| publication.key == key)
+                .map(|publication| publication.status)
+        {
+            return Ok(session.update(
+                key.revision,
+                status,
+                VisibleRouteQueryWork::default(),
+                true,
+            ));
+        }
+
+        let cursor = session
+            .continuation
+            .take()
+            .filter(|continuation| continuation.key == key)
+            .map(|continuation| continuation.cursor);
+        let query = cursor.map_or_else(
+            || VisibleRouteQuery::new(canvas_bounds, entry_budget),
+            |cursor| VisibleRouteQuery::resume(cursor, entry_budget),
+        );
+        let outcome = match self.visible_route_page(query) {
+            Ok(outcome) => outcome,
+            Err(VisibleRouteQueryError::StaleCursor(reason)) if reason.is_restartable() => {
+                let (fresh_key, fresh_canvas_bounds) = self.prepare_visible_route_work(request)?;
+                key = fresh_key;
+                self.visible_route_page(VisibleRouteQuery::new(fresh_canvas_bounds, entry_budget))
+                    .map_err(map_visible_route_work_error)?
+            }
+            Err(error) => return Err(map_visible_route_work_error(error)),
+        };
+
+        match outcome {
+            VisibleRouteQueryOutcome::Complete { routes, work } => {
+                Ok(session.publish(key, routes, VisibleRouteWorkStatus::Complete, work))
+            }
+            VisibleRouteQueryOutcome::Incomplete { cursor, work } => {
+                session.continuation = Some(VisibleRouteContinuation { key, cursor });
+                Ok(session.update(
+                    key.revision,
+                    VisibleRouteWorkStatus::Pending,
+                    work,
+                    session.publication.is_some(),
+                ))
+            }
+            VisibleRouteQueryOutcome::Truncated { routes, work } => {
+                Ok(session.publish(key, routes, VisibleRouteWorkStatus::Truncated, work))
+            }
+        }
+    }
+
+    fn visible_route_page(
         &self,
         query: VisibleRouteQuery,
     ) -> Result<VisibleRouteQueryOutcome, VisibleRouteQueryError> {
@@ -980,14 +1252,9 @@ impl ViewSession {
             let transform = ViewportTransform::new(state.facts.pan, state.facts.zoom)
                 .ok_or(ViewSessionError::InvalidViewport)?;
             let cursor = match query.request {
-                VisibleRouteRequest::Start { bounds, margin } => {
-                    let bounds = expanded_view_rect(bounds, margin)
-                        .and_then(|bounds| bounds.to_canvas_rect(transform))
-                        .ok_or(VisibleRouteQueryError::InvalidQuery)?;
-                    state
-                        .derived
-                        .new_visible_route_cursor(state.query_identity(), bounds)
-                }
+                VisibleRouteRequest::Start(canvas_bounds) => state
+                    .derived
+                    .new_visible_route_cursor(state.query_identity(), canvas_bounds),
                 VisibleRouteRequest::Resume(cursor) => {
                     validate_cursor(&state, &cursor)?;
                     cursor
@@ -1003,54 +1270,69 @@ impl ViewSession {
                 edges,
                 overflows,
                 work,
-            } => {
-                let mut edges = edges.into_iter().collect::<Vec<_>>();
-                let geometry_revisions = {
-                    let state = self
-                        .shared
-                        .state
-                        .try_borrow()
-                        .map_err(|_| ViewSessionError::Busy)?;
-                    ensure_open(state.status)?;
-                    sort_render_order(
-                        &mut edges,
-                        |edge| *edge,
-                        |edge| state.selected_edge_membership.contains_id(*edge),
-                        &state.edge_draw_order_ranks,
-                        None,
-                    );
-                    edges
-                        .iter()
-                        .filter_map(|edge| {
-                            state
-                                .derived
-                                .route_geometry_revision(*edge)
-                                .map(|revision| (*edge, revision))
-                        })
-                        .collect()
-                };
-                let snapshot = self.shared.geometry_snapshot()?;
-                let geometry_overflows = overflows
-                    .into_iter()
-                    .map(|(edge, error)| VisibleRouteGeometryOverflow { edge, error })
-                    .collect();
-                Ok(VisibleRouteQueryOutcome::Complete {
-                    routes: VisibleRoutes {
-                        snapshot,
-                        edges,
-                        geometry_revisions,
-                        geometry_overflows,
-                    },
-                    work,
-                })
-            }
+            } => Ok(VisibleRouteQueryOutcome::Complete {
+                routes: self.materialize_visible_routes(edges, overflows)?,
+                work,
+            }),
             InternalRouteQueryOutcome::Incomplete { cursor, work } => {
                 Ok(VisibleRouteQueryOutcome::Incomplete { cursor, work })
             }
-            InternalRouteQueryOutcome::BudgetExhausted { work } => {
-                Ok(VisibleRouteQueryOutcome::BudgetExhausted { work })
-            }
+            InternalRouteQueryOutcome::Truncated {
+                edges,
+                overflows,
+                work,
+            } => Ok(VisibleRouteQueryOutcome::Truncated {
+                routes: self.materialize_visible_routes(edges, overflows)?,
+                work,
+            }),
         }
+    }
+
+    fn materialize_visible_routes(
+        &self,
+        edges: BTreeSet<EdgeId>,
+        overflows: BTreeMap<EdgeId, EdgePathFlattenError>,
+    ) -> Result<VisibleRoutes, VisibleRouteQueryError> {
+        let mut edges = edges.into_iter().collect::<Vec<_>>();
+        {
+            let state = self
+                .shared
+                .state
+                .try_borrow()
+                .map_err(|_| ViewSessionError::Busy)?;
+            ensure_open(state.status)?;
+            sort_render_order(
+                &mut edges,
+                |edge| *edge,
+                |edge| state.selected_edge_membership.contains_id(*edge),
+                &state.edge_draw_order_ranks,
+                None,
+            );
+        }
+        let snapshot = self.shared.geometry_snapshot()?;
+        let geometry_overflows = overflows
+            .into_iter()
+            .map(|(edge, error)| VisibleRouteGeometryOverflow { edge, error })
+            .collect();
+        Ok(VisibleRoutes {
+            snapshot,
+            edges,
+            geometry_overflows,
+        })
+    }
+}
+
+fn map_visible_route_work_error(error: VisibleRouteQueryError) -> VisibleRouteWorkError {
+    match error {
+        VisibleRouteQueryError::Session(error) => VisibleRouteWorkError::Session(error),
+        VisibleRouteQueryError::StaleCursor(
+            VisibleRouteCursorStaleReason::ForeignView
+            | VisibleRouteCursorStaleReason::ViewGeneration,
+        ) => VisibleRouteWorkError::Session(ViewSessionError::InvalidViewport),
+        VisibleRouteQueryError::StaleCursor(
+            VisibleRouteCursorStaleReason::ViewportTransform
+            | VisibleRouteCursorStaleReason::RouteGeometry,
+        ) => VisibleRouteWorkError::Session(ViewSessionError::Busy),
     }
 }
 
@@ -1312,7 +1594,9 @@ fn point_in_rect(point: CanvasPoint, min_x: f32, min_y: f32, max_x: f32, max_y: 
 
 #[cfg(test)]
 mod tests {
-    use jellyflow_core::core::{Edge, EdgeKind, EdgeRouteSpec, EdgeViewDescriptor, PortId};
+    use jellyflow_core::core::{
+        Edge, EdgeKind, EdgeRouteSpec, EdgeViewDescriptor, GraphBuilder, GraphId, PortId,
+    };
 
     use super::*;
     use crate::runtime::adapter_protocol::PublishedEdgeRoute;
@@ -1320,6 +1604,8 @@ mod tests {
         EdgeEndpointPosition, EdgePathLabel, EdgePosition, HandlePosition, PathCommand,
         resolve_edge_route_path,
     };
+    use crate::runtime::graph_runtime::GraphRuntime;
+    use crate::runtime::view_session::ViewSessionOptions;
 
     #[test]
     fn visible_route_cursor_identity_and_epoch_staleness_matrix() {
@@ -1385,6 +1671,44 @@ mod tests {
                 expected,
             );
         }
+        assert!(!VisibleRouteCursorStaleReason::ForeignView.is_restartable());
+        assert!(!VisibleRouteCursorStaleReason::ViewGeneration.is_restartable());
+        assert!(VisibleRouteCursorStaleReason::ViewportTransform.is_restartable());
+        assert!(VisibleRouteCursorStaleReason::RouteGeometry.is_restartable());
+    }
+
+    #[test]
+    fn invalid_work_request_preserves_the_existing_continuation() {
+        let graph = GraphBuilder::new(GraphId::from_u128(0x1a11_d001))
+            .build()
+            .unwrap();
+        let runtime = GraphRuntime::builder(Default::default())
+            .build(graph)
+            .unwrap();
+        let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+        let valid = VisibleRouteWorkRequest::new(ViewRect::new(
+            crate::runtime::adapter_protocol::ViewPoint::new(0.0, 0.0),
+            crate::runtime::adapter_protocol::ViewSize::new(800.0, 600.0),
+        ));
+        let (key, canvas_bounds) = view.prepare_visible_route_work(valid).unwrap();
+        let identity = view.shared.state.borrow().query_identity();
+        let cursor = RouteGeometryIndex::default().new_cursor(identity, canvas_bounds);
+        let mut work = view.visible_route_work_session().unwrap();
+        work.continuation = Some(VisibleRouteContinuation { key, cursor });
+
+        let error = work
+            .advance(&view, valid.with_margin(f32::NAN), 64)
+            .unwrap_err();
+
+        assert!(matches!(error, VisibleRouteWorkError::InvalidRequest));
+        let continuation = work
+            .continuation
+            .as_ref()
+            .expect("invalid input must not consume valid pending work");
+        assert_eq!(continuation.key, key);
+        assert_eq!(continuation.cursor.canvas_bounds, canvas_bounds);
+        assert!(work.publication.is_none());
+        assert_eq!(work.generation, 0);
     }
 
     #[test]
@@ -1487,6 +1811,56 @@ mod tests {
         assert_eq!(work.spatial_level_checks, 1);
         assert_eq!(work.spatial_source_setups, 0);
         assert_eq!(work.entries_examined, 0);
+    }
+
+    #[test]
+    fn rejected_route_admission_preserves_the_previous_complete_index_entry() {
+        let edge = EdgeId::from_u128(1);
+        let valid = test_route(edge, 0.0);
+        let mut index = RouteGeometryIndex::default();
+        let admitted = index.upsert(edge, &valid);
+        let revision = admitted.geometry_revision;
+        let index_epoch = index.index_epoch();
+        let pick_epoch = index.pick_epoch();
+
+        let mut invalid_facts = valid.facts().clone();
+        invalid_facts.path = EdgePath {
+            commands: vec![
+                PathCommand::MoveTo(CanvasPoint {
+                    x: -f32::MAX,
+                    y: 0.0,
+                }),
+                PathCommand::LineTo(CanvasPoint {
+                    x: f32::MAX,
+                    y: 0.0,
+                }),
+            ],
+            label: EdgePathLabel {
+                point: CanvasPoint { x: 0.0, y: 0.0 },
+                offset_x: f32::MAX,
+                offset_y: 0.0,
+            },
+        };
+        let invalid = PublishedEdgeRoute::new_for_test(edge, invalid_facts);
+
+        assert!(index.try_upsert(edge, &invalid).is_none());
+        assert_eq!(index.index_epoch(), index_epoch);
+        assert_eq!(index.pick_epoch(), pick_epoch);
+        let retained = index
+            .indexed
+            .get(&edge)
+            .expect("valid route remains indexed");
+        assert_eq!(RouteGeometryRevision::new(retained.path_revision), revision);
+        assert_eq!(retained.instance, valid.instance());
+        assert_eq!(retained.path, valid.facts().path);
+        assert_eq!(retained.pick, IndexedRoutePickFacts::from(&valid));
+        assert_eq!(
+            edge_path_conservative_bounds(&valid.facts().path)
+                .expect("valid route bounds")
+                .and_then(expand_route_bounds),
+            Some(retained.bounds),
+        );
+        assert!(index.spatial.routes.contains_key(&edge));
     }
 
     #[test]
@@ -1816,7 +2190,7 @@ mod tests {
                     accumulate_query_work(&mut total_work, work);
                     cursor = next;
                 }
-                InternalRouteQueryOutcome::BudgetExhausted { .. } => {
+                InternalRouteQueryOutcome::Truncated { .. } => {
                     panic!("small indexed fixture must not exhaust the hard budget")
                 }
             }

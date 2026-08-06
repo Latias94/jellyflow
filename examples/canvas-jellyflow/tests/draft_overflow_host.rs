@@ -102,6 +102,7 @@ fn edit_is_rejected_before_publish_when_host_and_external_field_budgets_are_full
                 .expect("valid atomic capacity registry"),
             initial_bounds(),
         )
+        .expect("valid Open GPUI scene host")
     });
     draw(cx);
     cx.read_entity(&host, |host, _| {
@@ -247,6 +248,7 @@ fn sixty_fifth_dirty_draft_survives_real_host_capacity_and_lru_churn(
             registry.seal(&node_catalog).expect("valid test registry"),
             initial_bounds(),
         )
+        .expect("valid Open GPUI scene host")
     });
     draw(cx);
 
@@ -360,6 +362,7 @@ fn sixty_fifth_workflow_focus_is_rejected_before_the_node_can_park(
                 .expect("valid focus overflow registry"),
             initial_bounds(),
         )
+        .expect("valid Open GPUI scene host")
     });
     draw(cx);
     cx.read_entity(&host, |host, _| {

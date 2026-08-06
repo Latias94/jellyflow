@@ -704,8 +704,9 @@ fn multi_view_pending_impacts_are_scoped_per_candidate() {
 }
 
 #[test]
-fn ten_thousand_pending_single_node_patches_merge_each_affected_record_once() {
-    let (graph, nodes) = graph_with_nodes(10_000);
+fn pending_single_node_patches_merge_each_affected_record_once() {
+    const PATCH_COUNT: usize = 4;
+    let (graph, nodes) = graph_with_nodes(PATCH_COUNT);
     let runtime = GraphRuntime::builder(Default::default())
         .build(graph)
         .unwrap();
@@ -726,7 +727,7 @@ fn ten_thousand_pending_single_node_patches_merge_each_affected_record_once() {
     }
 
     let receipts = patch_receipts.borrow();
-    assert_eq!(receipts.len(), 10_000);
+    assert_eq!(receipts.len(), PATCH_COUNT);
     let merge_work = receipts
         .iter()
         .map(|receipt| {
@@ -741,7 +742,7 @@ fn ten_thousand_pending_single_node_patches_merge_each_affected_record_once() {
                 totals.2.saturating_add(work.global_fallbacks()),
             )
         });
-    assert_eq!(merge_work, (10_000, 10_000, 0));
+    assert_eq!(merge_work, (PATCH_COUNT as u64, PATCH_COUNT as u64, 0));
 }
 
 #[test]

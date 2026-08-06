@@ -1,4 +1,17 @@
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use crate::runtime::graph_runtime::GraphRevision;
+
+static NEXT_FIELD_ATTEMPT: AtomicU64 = AtomicU64::new(1);
+
+fn allocate_field_attempt() -> Option<FieldAttempt> {
+    NEXT_FIELD_ATTEMPT
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            current.checked_add(1)
+        })
+        .ok()
+        .map(FieldAttempt)
+}
 
 /// The local editing phase of a revision-aware retained value.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -34,7 +47,7 @@ impl FieldConflict {
     }
 }
 
-/// Stable identity for one caller-dispatched field submission.
+/// Runtime-wide opaque identity for one caller-dispatched field submission.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct FieldAttempt(u64);
 
@@ -149,6 +162,17 @@ pub enum FieldReconcileDecision {
     Conflict {
         conflict: FieldConflict,
     },
+    /// The accepted attempt was observed at its committed revision with another value.
+    AuthoritativeMismatch {
+        attempt: FieldAttempt,
+        committed_revision: GraphRevision,
+    },
+    /// A newer authoritative revision displaced the accepted attempt before it was observed.
+    Superseded {
+        attempt: FieldAttempt,
+        committed_revision: GraphRevision,
+        current_revision: GraphRevision,
+    },
     SelfAcknowledged {
         attempt: FieldAttempt,
         revision: GraphRevision,
@@ -178,6 +202,10 @@ pub enum FieldReceiptDecision {
     InvalidCommittedRevision {
         attempt: FieldAttempt,
         expected_revision: GraphRevision,
+        committed_revision: GraphRevision,
+    },
+    AuthoritativeMismatch {
+        attempt: FieldAttempt,
         committed_revision: GraphRevision,
     },
     Superseded {
@@ -287,7 +315,6 @@ pub struct FieldExternalization<T> {
     conflict: Option<FieldConflict>,
     pending_attempt: Option<FieldAttempt>,
     was_composing: bool,
-    next_attempt: Option<u64>,
 }
 
 impl<T> FieldExternalization<T> {
@@ -356,7 +383,6 @@ impl<T> FieldRestore<T> {
                 // A pending command is deliberately not reconstructed. It may already have
                 // been accepted while this retained entity was being evicted.
                 pending: None,
-                next_attempt: externalized.next_attempt,
             },
             recovery,
         }
@@ -383,6 +409,25 @@ struct PendingFieldSubmission<T> {
     local_changed_after_submission: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AcceptedFieldObservation {
+    Awaiting,
+    Acknowledged {
+        attempt: FieldAttempt,
+        revision: GraphRevision,
+        local_changed_after_submission: bool,
+    },
+    AuthoritativeMismatch {
+        attempt: FieldAttempt,
+        committed_revision: GraphRevision,
+    },
+    Superseded {
+        attempt: FieldAttempt,
+        committed_revision: GraphRevision,
+        current_revision: GraphRevision,
+    },
+}
+
 /// Pure revision-aware reconciliation for retained editable fields.
 ///
 /// The state machine knows only graph revisions and field values. UI focus,
@@ -398,7 +443,6 @@ pub struct FieldReconciler<T> {
     composing: bool,
     conflict: Option<FieldConflict>,
     pending: Option<PendingFieldSubmission<T>>,
-    next_attempt: Option<u64>,
 }
 
 impl<T> FieldReconciler<T>
@@ -415,7 +459,6 @@ where
             composing: false,
             conflict: None,
             pending: None,
-            next_attempt: Some(1),
         }
     }
 
@@ -477,7 +520,6 @@ where
             conflict: self.conflict,
             pending_attempt: self.pending_attempt(),
             was_composing: self.composing,
-            next_attempt: self.next_attempt,
         }
     }
 
@@ -554,8 +596,8 @@ where
                 };
             }
             self.observe_matching_pending_snapshot(revision);
-            if self.pending_is_acknowledged_by(revision) {
-                return self.finish_snapshot_acknowledgement(revision);
+            if let Some(decision) = self.reconcile_accepted_observation() {
+                return decision;
             }
             return FieldReconcileDecision::Unchanged {
                 revision,
@@ -569,17 +611,8 @@ where
         self.remote = value;
         self.observe_matching_pending_snapshot(revision);
 
-        if self.pending_is_acknowledged_by(revision) {
-            return self.finish_snapshot_acknowledgement(revision);
-        }
-
-        let accepted_attempt_was_superseded = self
-            .pending
-            .as_ref()
-            .and_then(|pending| pending.accepted_revision)
-            .is_some_and(|accepted_revision| accepted_revision < revision);
-        if accepted_attempt_was_superseded {
-            self.pending = None;
+        if let Some(decision) = self.reconcile_accepted_observation() {
+            return decision;
         }
 
         let had_conflict = self.conflict.is_some();
@@ -587,7 +620,7 @@ where
             && self.local == self.remote
             && self.normalize_local_against_remote()
         {
-            if remote_value_changed || accepted_attempt_was_superseded || had_conflict {
+            if remote_value_changed || had_conflict {
                 return FieldReconcileDecision::RemoteApplied {
                     from_revision,
                     to_revision: revision,
@@ -606,7 +639,7 @@ where
             return FieldReconcileDecision::Conflict { conflict };
         }
 
-        if !remote_value_changed && !accepted_attempt_was_superseded {
+        if !remote_value_changed {
             self.base_revision = revision;
             return FieldReconcileDecision::BaseAdvanced {
                 from_revision,
@@ -726,46 +759,40 @@ where
             };
         }
 
-        let matching_observation_revision =
-            pending
-                .matching_snapshot_revision
-                .filter(|matching_revision| {
-                    *matching_revision >= committed_revision
-                        && *matching_revision == self.remote_revision
-                        && self.remote == pending.intent.value
-                });
-
-        if self.remote_revision > committed_revision && matching_observation_revision.is_none() {
-            self.pending = None;
-            if !self.normalize_local_against_remote() {
-                self.ensure_conflict(self.remote_revision);
-            }
-            return FieldReceiptDecision::Superseded {
-                attempt,
-                committed_revision,
-                current_revision: self.remote_revision,
-            };
-        }
-
-        self.base_revision = committed_revision;
         if let Some(pending) = &mut self.pending {
             pending.accepted_revision = Some(committed_revision);
         }
 
-        if let Some(observation_revision) = matching_observation_revision {
-            if let Some(acknowledged) = self.finish_acknowledgement(observation_revision) {
-                return FieldReceiptDecision::Acknowledged {
-                    attempt: acknowledged.attempt,
-                    revision: observation_revision,
-                    local_changed_after_submission: acknowledged.local_changed_after_submission,
-                };
-            }
-            return FieldReceiptDecision::UnknownAttempt { attempt };
-        }
-
-        FieldReceiptDecision::Recorded {
-            attempt,
-            committed_revision,
+        match self.settle_accepted_observation() {
+            AcceptedFieldObservation::Acknowledged {
+                attempt,
+                revision,
+                local_changed_after_submission,
+            } => FieldReceiptDecision::Acknowledged {
+                attempt,
+                revision,
+                local_changed_after_submission,
+            },
+            AcceptedFieldObservation::AuthoritativeMismatch {
+                attempt,
+                committed_revision,
+            } => FieldReceiptDecision::AuthoritativeMismatch {
+                attempt,
+                committed_revision,
+            },
+            AcceptedFieldObservation::Superseded {
+                attempt,
+                committed_revision,
+                current_revision,
+            } => FieldReceiptDecision::Superseded {
+                attempt,
+                committed_revision,
+                current_revision,
+            },
+            AcceptedFieldObservation::Awaiting => FieldReceiptDecision::Recorded {
+                attempt,
+                committed_revision,
+            },
         }
     }
 
@@ -867,13 +894,11 @@ where
                 attempt,
             });
         }
-        let Some(attempt_id) = self.next_attempt else {
+        let Some(attempt) = allocate_field_attempt() else {
             return FieldSubmissionDecision::Rejected(
                 FieldIntentRejection::AttemptIdentityExhausted,
             );
         };
-        let attempt = FieldAttempt(attempt_id);
-        self.next_attempt = attempt_id.checked_add(1);
         let intent = FieldSubmissionIntent {
             attempt,
             kind,
@@ -899,30 +924,75 @@ where
         }
     }
 
-    fn pending_is_acknowledged_by(&self, revision: GraphRevision) -> bool {
-        self.pending.as_ref().is_some_and(|pending| {
-            pending
-                .accepted_revision
-                .is_some_and(|accepted_revision| accepted_revision <= revision)
-                && pending.matching_snapshot_revision == Some(revision)
-                && pending.intent.value == self.remote
-        })
+    fn reconcile_accepted_observation(&mut self) -> Option<FieldReconcileDecision> {
+        match self.settle_accepted_observation() {
+            AcceptedFieldObservation::Awaiting => None,
+            AcceptedFieldObservation::Acknowledged {
+                attempt,
+                revision,
+                local_changed_after_submission,
+            } => Some(FieldReconcileDecision::SelfAcknowledged {
+                attempt,
+                revision,
+                local_changed_after_submission,
+            }),
+            AcceptedFieldObservation::AuthoritativeMismatch {
+                attempt,
+                committed_revision,
+            } => Some(FieldReconcileDecision::AuthoritativeMismatch {
+                attempt,
+                committed_revision,
+            }),
+            AcceptedFieldObservation::Superseded {
+                attempt,
+                committed_revision,
+                current_revision,
+            } => Some(FieldReconcileDecision::Superseded {
+                attempt,
+                committed_revision,
+                current_revision,
+            }),
+        }
     }
 
-    fn finish_snapshot_acknowledgement(
-        &mut self,
-        revision: GraphRevision,
-    ) -> FieldReconcileDecision {
-        match self.finish_acknowledgement(revision) {
-            Some(acknowledged) => FieldReconcileDecision::SelfAcknowledged {
+    fn settle_accepted_observation(&mut self) -> AcceptedFieldObservation {
+        let Some(pending) = &self.pending else {
+            return AcceptedFieldObservation::Awaiting;
+        };
+        let Some(committed_revision) = pending.accepted_revision else {
+            return AcceptedFieldObservation::Awaiting;
+        };
+        if self.remote_revision < committed_revision {
+            return AcceptedFieldObservation::Awaiting;
+        }
+
+        let attempt = pending.intent.attempt;
+        if pending.intent.value == self.remote {
+            let revision = self.remote_revision;
+            let Some(acknowledged) = self.finish_acknowledgement(revision) else {
+                return AcceptedFieldObservation::Awaiting;
+            };
+            return AcceptedFieldObservation::Acknowledged {
                 attempt: acknowledged.attempt,
                 revision,
                 local_changed_after_submission: acknowledged.local_changed_after_submission,
-            },
-            None => FieldReconcileDecision::Unchanged {
-                revision,
-                phase: self.phase(),
-            },
+            };
+        }
+
+        self.pending = None;
+        if !self.normalize_local_against_remote() {
+            self.ensure_conflict(self.remote_revision);
+        }
+        if self.remote_revision == committed_revision {
+            return AcceptedFieldObservation::AuthoritativeMismatch {
+                attempt,
+                committed_revision,
+            };
+        }
+        AcceptedFieldObservation::Superseded {
+            attempt,
+            committed_revision,
+            current_revision: self.remote_revision,
         }
     }
 
@@ -979,6 +1049,21 @@ mod tests {
             panic!("dirty field should produce a submission intent");
         };
         (field, intent.attempt())
+    }
+
+    #[test]
+    fn attempts_are_runtime_wide_and_foreign_receipts_cannot_settle_another_field() {
+        let (_first, first_attempt) = planned_field();
+        let (mut second, second_attempt) = planned_field();
+
+        assert_ne!(first_attempt, second_attempt);
+        assert_eq!(
+            second.record_self_receipt(first_attempt, 2),
+            FieldReceiptDecision::UnknownAttempt {
+                attempt: first_attempt,
+            }
+        );
+        assert_eq!(second.pending_attempt(), Some(second_attempt));
     }
 
     #[test]
@@ -1072,6 +1157,82 @@ mod tests {
     }
 
     #[test]
+    fn receipt_first_same_revision_mismatch_retires_the_attempt() {
+        let (mut field, attempt) = planned_field();
+        assert_eq!(
+            field.record_self_receipt(attempt, 2),
+            FieldReceiptDecision::Recorded {
+                attempt,
+                committed_revision: 2,
+            }
+        );
+
+        assert_eq!(
+            field.reconcile_remote(2, "other".to_owned()),
+            FieldReconcileDecision::AuthoritativeMismatch {
+                attempt,
+                committed_revision: 2,
+            }
+        );
+
+        assert_eq!(field.pending_attempt(), None);
+        assert_eq!(field.local(), "submitted");
+        assert_eq!(field.remote(), "other");
+        assert_eq!(field.phase(), FieldPhase::Conflict);
+        assert_eq!(field.conflict(), Some(FieldConflict::new(1, 2)));
+    }
+
+    #[test]
+    fn receipt_first_newer_mismatch_retires_the_superseded_attempt() {
+        let (mut field, attempt) = planned_field();
+        assert_eq!(
+            field.record_self_receipt(attempt, 2),
+            FieldReceiptDecision::Recorded {
+                attempt,
+                committed_revision: 2,
+            }
+        );
+
+        assert_eq!(
+            field.reconcile_remote(3, "other".to_owned()),
+            FieldReconcileDecision::Superseded {
+                attempt,
+                committed_revision: 2,
+                current_revision: 3,
+            }
+        );
+
+        assert_eq!(field.pending_attempt(), None);
+        assert_eq!(field.local(), "submitted");
+        assert_eq!(field.remote(), "other");
+        assert_eq!(field.phase(), FieldPhase::Conflict);
+        assert_eq!(field.conflict(), Some(FieldConflict::new(1, 3)));
+    }
+
+    #[test]
+    fn receipt_first_mismatch_cannot_acknowledge_an_unrelated_later_equal_value() {
+        let (mut field, attempt) = planned_field();
+        assert!(matches!(
+            field.record_self_receipt(attempt, 2),
+            FieldReceiptDecision::Recorded { .. }
+        ));
+        assert!(matches!(
+            field.reconcile_remote(2, "other".to_owned()),
+            FieldReconcileDecision::AuthoritativeMismatch { .. }
+        ));
+
+        assert_eq!(
+            field.reconcile_remote(3, "submitted".to_owned()),
+            FieldReconcileDecision::RemoteApplied {
+                from_revision: 2,
+                to_revision: 3,
+            }
+        );
+        assert_eq!(field.pending_attempt(), None);
+        assert_eq!(field.phase(), FieldPhase::Clean);
+    }
+
+    #[test]
     fn superseded_receipt_cannot_acknowledge_a_newer_authoritative_value() {
         let (mut field, attempt) = planned_field();
         assert!(matches!(
@@ -1090,6 +1251,34 @@ mod tests {
         assert_eq!(field.local(), "submitted");
         assert_eq!(field.remote(), "other");
         assert_eq!(field.phase(), FieldPhase::Conflict);
+    }
+
+    #[test]
+    fn same_revision_mismatch_retires_attempt_before_a_later_matching_value() {
+        let (mut field, attempt) = planned_field();
+        assert!(matches!(
+            field.reconcile_remote(2, "other".to_owned()),
+            FieldReconcileDecision::Conflict { .. }
+        ));
+        assert_eq!(
+            field.record_self_receipt(attempt, 2),
+            FieldReceiptDecision::AuthoritativeMismatch {
+                attempt,
+                committed_revision: 2,
+            }
+        );
+        assert_eq!(field.pending_attempt(), None);
+        assert_eq!(field.phase(), FieldPhase::Conflict);
+
+        assert_eq!(
+            field.reconcile_remote(3, "submitted".to_owned()),
+            FieldReconcileDecision::RemoteApplied {
+                from_revision: 2,
+                to_revision: 3,
+            }
+        );
+        assert_eq!(field.pending_attempt(), None);
+        assert_eq!(field.phase(), FieldPhase::Clean);
     }
 
     #[test]

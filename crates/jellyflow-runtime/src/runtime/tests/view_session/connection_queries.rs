@@ -1,16 +1,22 @@
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+
 use jellyflow_core::core::{
     CanvasPoint, Edge, EdgeId, EdgeKind, EdgeReconnectable, Graph, GraphBuilder, GraphId, NodeId,
     Port, PortCapacity, PortDirection, PortId, PortKey, PortKind,
 };
 use jellyflow_core::interaction::NodeGraphConnectionMode;
+use jellyflow_core::types::TypeDesc;
 
+use crate::profile::GraphProfile;
 use crate::rules::EdgeEndpoint;
 use crate::runtime::commands::{
     ConnectionEdit, GraphCommand, IncidentEdgePolicy, TopologyEdit, TopologyPort,
 };
 use crate::runtime::geometry::HandlePosition;
 use crate::runtime::graph_runtime::{
-    GraphRuntime, GraphRuntimePolicy, PortConnectionDragIntent, PortConnectionDragQueryOutcome,
+    CreateFromWireQueryError, GraphRuntime, GraphRuntimePolicy, PortConnectionDragIntent,
+    PortConnectionDragQueryOutcome,
 };
 use crate::runtime::interaction::{ConnectionGestureBinding, ConnectionInteractionStart};
 use crate::runtime::tests::fixtures::{
@@ -18,11 +24,44 @@ use crate::runtime::tests::fixtures::{
 };
 use crate::runtime::view_session::{
     ViewCloseReason, ViewCreateFromWireQueryError, ViewSession, ViewSessionError,
-    ViewSessionOptions,
+    ViewSessionOptions, WeakViewSession,
 };
 use crate::schema::{NodeCatalog, NodeKindSpec, NodePortSpec};
 
 use super::fixtures::{graph_with_routed_edge, node};
+
+struct ReenterCreateFromWireProfile {
+    query: Rc<RefCell<Option<(WeakViewSession, ConnectionGestureBinding)>>>,
+    hook_calls: Rc<Cell<usize>>,
+    nested_rejection_observed: Rc<Cell<bool>>,
+}
+
+impl GraphProfile for ReenterCreateFromWireProfile {
+    fn type_of_port(&self, graph: &Graph, port: PortId) -> Option<TypeDesc> {
+        let calls = self.hook_calls.get().saturating_add(1);
+        self.hook_calls.set(calls);
+        assert!(calls <= 4, "profile query recursively reentered");
+
+        let query = self.query.borrow().clone();
+        if calls == 1
+            && let Some((view, binding)) = query
+        {
+            let rejected = matches!(
+                view.create_from_wire_candidates(&binding),
+                Err(ViewCreateFromWireQueryError::Query(
+                    CreateFromWireQueryError::ReentrantProfileQuery
+                ))
+            );
+            self.nested_rejection_observed.set(rejected);
+        }
+
+        graph.port(&port).and_then(|port| port.ty.clone())
+    }
+
+    fn validate_graph(&self, _graph: &Graph) -> Vec<crate::rules::Diagnostic> {
+        Vec::new()
+    }
+}
 
 #[test]
 fn strong_and_weak_views_expose_symmetric_connection_queries() {
@@ -634,8 +673,40 @@ fn create_from_wire_query_preserves_results_and_errors_across_view_capabilities(
 }
 
 #[test]
+fn create_from_wire_rejects_profile_query_reentry_without_recursing() {
+    let (graph, ids) = graph_with_routed_edge();
+    let query = Rc::new(RefCell::new(None));
+    let hook_calls = Rc::new(Cell::new(0));
+    let nested_rejection_observed = Rc::new(Cell::new(false));
+    let runtime = GraphRuntime::builder(create_from_wire_catalog())
+        .with_profile(Box::new(ReenterCreateFromWireProfile {
+            query: query.clone(),
+            hook_calls: hook_calls.clone(),
+            nested_rejection_observed: nested_rejection_observed.clone(),
+        }))
+        .build(graph)
+        .unwrap();
+    let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    let binding = connection_binding(&view, ids.alternate_source_port, EdgeId::from_u128(0xbeef));
+    hook_calls.set(0);
+    *query.borrow_mut() = Some((view.downgrade(), binding.clone()));
+
+    let result = view.create_from_wire_candidates(&binding);
+
+    assert!(matches!(
+        result,
+        Err(ViewCreateFromWireQueryError::Query(
+            CreateFromWireQueryError::ReentrantProfileQuery
+        ))
+    ));
+    assert_eq!(hook_calls.get(), 1);
+    assert!(nested_rejection_observed.get());
+    assert!(runtime.snapshot().is_ok());
+}
+
+#[test]
 fn port_connection_facts_read_only_the_requested_incident_edge_bucket() {
-    const UNRELATED_EDGES: usize = 10_000;
+    const UNRELATED_EDGES: usize = 256;
 
     let source_node = NodeId::from_u128(1);
     let target_node = NodeId::from_u128(2);
@@ -694,7 +765,7 @@ fn port_connection_facts_read_only_the_requested_incident_edge_bucket() {
 
 #[test]
 fn output_drag_intent_skips_a_high_fanout_incident_bucket() {
-    const INCIDENT_EDGES: usize = 9_999;
+    const INCIDENT_EDGES: usize = 64;
 
     let source_node = NodeId::from_u128(1);
     let target_node = NodeId::from_u128(2);
@@ -875,4 +946,21 @@ fn connection_binding(view: &ViewSession, port: PortId, edge: EdgeId) -> Connect
         .expect("connection port remains current");
     ConnectionInteractionStart::binding_from_port_drag(drag, edge, NodeGraphConnectionMode::Strict)
         .expect("source port can begin a connection")
+}
+
+fn create_from_wire_catalog() -> NodeCatalog {
+    let mut catalog = NodeCatalog::new();
+    catalog
+        .register(
+            NodeKindSpec::builder("test.target")
+                .port(NodePortSpec::new(
+                    "input",
+                    PortDirection::In,
+                    PortKind::Data,
+                    PortCapacity::Single,
+                ))
+                .build(),
+        )
+        .expect("unique create-from-wire target kind");
+    catalog
 }

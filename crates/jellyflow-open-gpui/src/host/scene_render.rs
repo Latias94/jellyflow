@@ -2,17 +2,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 #[cfg(test)]
-use std::cell::{Cell, RefCell};
-
-#[cfg(test)]
 use jellyflow_core::EdgeKind;
 use jellyflow_core::{CanvasPoint, CanvasRect, CanvasSize, EdgeId, EdgeLabelAnchor, Graph, NodeId};
 use jellyflow_runtime::geometry::{
     EdgeFlattenOptions, EdgePath, EdgePathAnchor, EdgePathSample, EdgePosition, EdgeRouteFacts,
     HandlePosition, PathCommand, flatten_edge_path, resolve_edge_route_path,
 };
-#[cfg(test)]
-use jellyflow_runtime::graph::PortConnectionQueryWork;
 use jellyflow_runtime::viewport::ViewportTransform;
 use jellyflow_runtime::{
     geometry::ViewPoint, geometry::ViewRect, geometry::ViewSize, graph::EdgeEndpoint,
@@ -41,9 +36,11 @@ use crate::accessibility::{
     open_gpui_node_measurement_element_id, open_gpui_reconnect_element_id,
     open_gpui_scene_element_id, open_gpui_scene_measurement_element_id, scene_semantic_element,
 };
+use crate::activity::OpenGpuiActivityKind;
 use crate::chrome::{
     OpenGpuiEdgeLabelAppearance, OpenGpuiEdgeMarkerShape, OpenGpuiEdgePaintFallbacks,
     OpenGpuiEdgePainterBatchKey, OpenGpuiEdgeStrokePattern, OpenGpuiEdgeVisualFacts,
+    OpenGpuiResolvedEdgePaintRecipe,
 };
 use crate::command_journal::{
     OpenGpuiCommandTicketError, OpenGpuiPendingCommandResolution, resolve_command_tickets,
@@ -52,22 +49,18 @@ use crate::interaction::{
     OpenGpuiGraphKeyDownListener, OpenGpuiGraphKeyUpListener, OpenGpuiSceneGestureKind,
     interaction_root,
 };
+use crate::port_handle::projected_view_rect;
+use crate::presentation::OpenGpuiNodeInteractionState;
 use crate::semantic_zoom::{OpenGpuiNodePresentation, overview_node_corner_radius};
-use crate::theme::{OpenGpuiGraphStyleSlot, OpenGpuiGraphTheme};
-
 #[cfg(test)]
-use crate::interaction::{
-    OpenGpuiSceneGestureCancelReason, OpenGpuiSceneGestureEvent, OpenGpuiSceneGesturePhase,
-};
+use crate::theme::OpenGpuiGraphStyleSlot;
+use crate::theme::OpenGpuiGraphTheme;
 
 use super::OpenGpuiSceneHost;
 use super::connection::OpenGpuiConnectionPreviewPlan;
-#[cfg(test)]
-use super::connection::OpenGpuiConnectionPreviewProbeOutcome;
 use super::diagnostics::OpenGpuiEdgeLayerOverflow;
 use super::edge_layer::{
     OpenGpuiEdgePaintPlanKey, OpenGpuiEdgePaintPlanSegment, OpenGpuiEdgePathCacheKey,
-    OpenGpuiVisibleRouteIdentity,
 };
 use super::edge_semantics::{
     OPEN_GPUI_EDGE_SEMANTIC_SIZE_IN_VIEW, OpenGpuiEdgeActivation, OpenGpuiEdgeSemanticElement,
@@ -82,14 +75,13 @@ use super::frame_feedback::{OpenGpuiFrameTransaction, OpenGpuiFrameTransactionSu
 use super::interaction_session::NodeDragRouteHandoffToken;
 use super::node_lifecycle::suppress_host_panic;
 #[cfg(feature = "test-support")]
-use super::test_support::{
-    OpenGpuiSmokePresentedSceneBuilder, OpenGpuiSmokePreviewRoute, OpenGpuiSmokePreviewTarget,
-    OpenGpuiSmokeRoute,
-};
+use super::test_support::{OpenGpuiSmokePresentedFrameDraft, OpenGpuiSmokePreviewTarget};
 
 pub(super) const OPEN_GPUI_SELECTION_RECTANGLE_SELECTOR: &str = "jellyflow-selection-rectangle";
 pub(super) const OPEN_GPUI_GRID_SELECTOR: &str = "jellyflow-grid";
 pub(super) const OPEN_GPUI_ALIGNMENT_GUIDE_SELECTOR: &str = "jellyflow-alignment-guide";
+pub(super) const OPEN_GPUI_OVERLAY_UNDERLAY_BARRIER_SELECTOR: &str =
+    "jellyflow-overlay-underlay-barrier";
 
 struct OpenGpuiPrepaintFrameOutcome {
     request_next_frame: bool,
@@ -130,35 +122,16 @@ const OPEN_GPUI_EDGE_PATH_FLATTEN_MAX_SEGMENTS: usize = 4_096;
 const OPEN_GPUI_EDGE_PREVIEW_PATH_VERTEX_BUDGET: usize = 65_536;
 const OPEN_GPUI_MIN_STROKE_VERTICES_PER_SEGMENT: usize = 6;
 /// Separates the reconnect grip from native port chrome without scaling with canvas zoom.
-pub(super) const OPEN_GPUI_RECONNECT_GRIP_OFFSET_IN_VIEW: f32 = 12.0;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum OpenGpuiSceneLayer {
-    Edge,
-    EdgeChrome,
-    Preview,
-    EdgeInteraction,
-    Node,
-    InteractionChrome,
-    Overlay,
-}
-
-#[cfg(test)]
-pub(super) const OPEN_GPUI_SCENE_LAYER_ORDER: [OpenGpuiSceneLayer; 7] = [
-    OpenGpuiSceneLayer::Edge,
-    OpenGpuiSceneLayer::EdgeChrome,
-    OpenGpuiSceneLayer::Preview,
-    OpenGpuiSceneLayer::EdgeInteraction,
-    OpenGpuiSceneLayer::Node,
-    OpenGpuiSceneLayer::InteractionChrome,
-    OpenGpuiSceneLayer::Overlay,
-];
+pub(super) const OPEN_GPUI_RECONNECT_GRIP_OFFSET_IN_VIEW: f32 = 8.0;
+const OPEN_GPUI_RECONNECT_HIT_GAP_IN_VIEW: f32 = 2.0;
 
 #[derive(Clone)]
 pub(super) struct OpenGpuiSceneWire {
     pub(super) edge: EdgeId,
     pub(super) geometry_revision: Option<RouteGeometryRevision>,
+    #[cfg(test)]
     pub(super) style_slot: Option<OpenGpuiGraphStyleSlot>,
+    #[cfg(test)]
     pub(super) visual_facts: OpenGpuiEdgeVisualFacts,
     pub(super) base_paint_key: OpenGpuiEdgePainterBatchKey,
     pub(super) halo_paint_key: Option<OpenGpuiEdgePainterBatchKey>,
@@ -190,13 +163,6 @@ struct OpenGpuiPreviewPaintPlan {
     markers: Vec<Path<Pixels>>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum OpenGpuiSceneWirePaintLayer {
-    Composed,
-    Base,
-    Halo,
-}
-
 pub(super) struct OpenGpuiSceneWires {
     pub(super) geometry: GeometrySnapshot,
     // Adapter-owned ephemeral previews compose separately and never consume published budgets.
@@ -216,6 +182,7 @@ struct OpenGpuiPreparedEdgeCacheKey {
     edge_budget: usize,
     hovered_edge: Option<EdgeInstanceKey>,
     active_edge: Option<EdgeInstanceKey>,
+    focused_edge: Option<EdgeInstanceKey>,
     suppressed_edge: Option<EdgeInstanceKey>,
 }
 
@@ -254,132 +221,6 @@ impl OpenGpuiPreparedEdgeCache {
     }
 }
 
-#[cfg(test)]
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(super) struct OpenGpuiConnectionPreviewEvidence {
-    pub(super) source: CanvasPoint,
-    pub(super) target: CanvasPoint,
-    pub(super) suppressed_edge: Option<EdgeId>,
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(super) struct OpenGpuiConnectionPreviewPaintEvidence {
-    pub(super) edge_kind: EdgeKind,
-    pub(super) probe: OpenGpuiConnectionPreviewProbeOutcome,
-    pub(super) style_slot: Option<crate::theme::OpenGpuiGraphStyleSlot>,
-    pub(super) paint_key: OpenGpuiEdgePainterBatchKey,
-    pub(super) halo_paint_key: Option<OpenGpuiEdgePainterBatchKey>,
-    pub(super) stroke_width: f32,
-    pub(super) halo_stroke_width: Option<f32>,
-    pub(super) source_marker: OpenGpuiEdgeMarkerShape,
-    pub(super) target_marker: OpenGpuiEdgeMarkerShape,
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum OpenGpuiNodeLayerEntry {
-    Content(NodeId),
-    Chrome(NodeId),
-}
-
-#[cfg(test)]
-pub(super) struct OpenGpuiSceneEvidence {
-    pub(super) last_layers: Cell<Option<[OpenGpuiSceneLayer; 7]>>,
-    pub(super) last_planned_wire_count: Cell<usize>,
-    pub(super) paint_passes: Cell<u64>,
-    pub(super) first_paint_wire_count: Cell<Option<usize>>,
-    pub(super) first_non_empty_paint_pass: Cell<Option<u64>>,
-    pub(super) last_painted_wire_count: Cell<usize>,
-    pub(super) last_connection_preview: Cell<Option<OpenGpuiConnectionPreviewEvidence>>,
-    pub(super) last_connection_preview_paint: Cell<Option<OpenGpuiConnectionPreviewPaintEvidence>>,
-    pub(super) last_painted_connection_preview_count: Cell<usize>,
-    pub(super) painted_wire_counts: RefCell<Vec<usize>>,
-    pub(super) last_node_layer_sequence: RefCell<Vec<OpenGpuiNodeLayerEntry>>,
-    #[cfg(test)]
-    pending_painted_plan_id: Cell<Option<u64>>,
-    #[cfg(test)]
-    pending_painted_wire_count: Cell<usize>,
-    pub(super) last_scene_phase: Cell<Option<OpenGpuiSceneGesturePhase>>,
-    pub(super) last_scene_kind: RefCell<Option<OpenGpuiSceneGestureKind>>,
-    pub(super) host_closed_scene_cancellations: Cell<u64>,
-    pub(super) last_port_connection_query_work: Cell<Option<PortConnectionQueryWork>>,
-}
-
-#[cfg(test)]
-impl OpenGpuiSceneEvidence {
-    pub(super) fn new() -> Self {
-        Self {
-            last_layers: Cell::new(None),
-            last_planned_wire_count: Cell::new(0),
-            paint_passes: Cell::new(0),
-            first_paint_wire_count: Cell::new(None),
-            first_non_empty_paint_pass: Cell::new(None),
-            last_painted_wire_count: Cell::new(0),
-            last_connection_preview: Cell::new(None),
-            last_connection_preview_paint: Cell::new(None),
-            last_painted_connection_preview_count: Cell::new(0),
-            painted_wire_counts: RefCell::new(Vec::new()),
-            last_node_layer_sequence: RefCell::new(Vec::new()),
-            #[cfg(test)]
-            pending_painted_plan_id: Cell::new(None),
-            #[cfg(test)]
-            pending_painted_wire_count: Cell::new(0),
-            last_scene_phase: Cell::new(None),
-            last_scene_kind: RefCell::new(None),
-            host_closed_scene_cancellations: Cell::new(0),
-            last_port_connection_query_work: Cell::new(None),
-        }
-    }
-
-    fn record_plan(&self, layers: [OpenGpuiSceneLayer; 7], wire_count: usize) {
-        self.last_layers.set(Some(layers));
-        self.last_planned_wire_count.set(wire_count);
-    }
-
-    fn record_paint(&self, wire_count: usize) {
-        let pass = self.paint_passes.get().saturating_add(1);
-        self.paint_passes.set(pass);
-        if self.first_paint_wire_count.get().is_none() {
-            self.first_paint_wire_count.set(Some(wire_count));
-        }
-        if wire_count > 0 && self.first_non_empty_paint_pass.get().is_none() {
-            self.first_non_empty_paint_pass.set(Some(pass));
-        }
-        self.last_painted_wire_count.set(wire_count);
-        self.painted_wire_counts.borrow_mut().push(wire_count);
-    }
-
-    #[cfg(test)]
-    fn record_plan_paint(&self, plan_id: u64, edge_count: usize, final_segment: bool) {
-        if self.pending_painted_plan_id.get() != Some(plan_id) {
-            self.pending_painted_plan_id.set(Some(plan_id));
-            self.pending_painted_wire_count.set(0);
-        }
-        self.pending_painted_wire_count.set(
-            self.pending_painted_wire_count
-                .get()
-                .saturating_add(edge_count),
-        );
-        if final_segment {
-            self.record_paint(self.pending_painted_wire_count.replace(0));
-            self.pending_painted_plan_id.set(None);
-        }
-    }
-
-    pub(super) fn record_scene_event(&self, event: &OpenGpuiSceneGestureEvent) {
-        self.last_scene_phase.set(Some(event.phase()));
-        *self.last_scene_kind.borrow_mut() = Some(event.kind().clone());
-        if matches!(
-            event.phase(),
-            OpenGpuiSceneGesturePhase::Cancel(OpenGpuiSceneGestureCancelReason::HostClosed)
-        ) {
-            self.host_closed_scene_cancellations
-                .set(self.host_closed_scene_cancellations.get().saturating_add(1));
-        }
-    }
-}
-
 impl OpenGpuiSceneHost {
     #[cfg(test)]
     pub(super) fn fail_next_scene_wires_for_test(&mut self, error: ViewSessionError) {
@@ -389,12 +230,13 @@ impl OpenGpuiSceneHost {
     #[cfg(test)]
     pub(super) fn scene_wires(&mut self) -> Result<OpenGpuiSceneWires, ViewSessionError> {
         let presentation_offsets = self.interaction_node_drag_offsets();
-        self.scene_wires_with_offsets(&presentation_offsets)
+        self.scene_wires_with_offsets(&presentation_offsets, None)
     }
 
     pub(super) fn scene_wires_with_offsets(
         &mut self,
         presentation_offsets: &BTreeMap<NodeId, CanvasPoint>,
+        focused_edge: Option<EdgeInstanceKey>,
     ) -> Result<OpenGpuiSceneWires, ViewSessionError> {
         #[cfg(test)]
         if let Some(error) = self.scene_wires_fault.take() {
@@ -406,21 +248,9 @@ impl OpenGpuiSceneHost {
         let suppressed_edge = connection_preview
             .as_ref()
             .and_then(|preview| preview.suppressed_edge);
-        #[cfg(test)]
-        self.scene_evidence
-            .last_connection_preview
-            .set(connection_preview.as_ref().and_then(|preview| {
-                edge_path_endpoints(&preview.path).map(|(source, target)| {
-                    OpenGpuiConnectionPreviewEvidence {
-                        source,
-                        target,
-                        suppressed_edge: preview.suppressed_edge.map(EdgeInstanceKey::edge),
-                    }
-                })
-            }));
-        let transform = self.view.viewport_transform()?;
-        let query_bounds = edge_query_bounds(self.surface_size, self.viewport, transform)
-            .ok_or(ViewSessionError::InvalidViewport)?;
+        let current_viewport = self.current_scene_viewport()?;
+        let transform = current_viewport.transform;
+        let query_bounds = current_viewport.query_bounds;
         let route_plan =
             self.visible_routes
                 .query(&self.view, query_bounds, self.visible_route_query_budget)?;
@@ -448,19 +278,20 @@ impl OpenGpuiSceneHost {
             .is_empty()
             .then_some(OpenGpuiPreparedEdgeCacheKey {
                 query_bounds,
-                query_revision: route_plan.revision,
+                query_revision: route_plan.query_revision,
                 graph_revision: graph.revision(),
                 route_generation: route_plan.generation,
                 geometry_layout_revision: geometry.layout_revision(),
                 edge_budget: self.edge_layer_budget,
                 hovered_edge: hovered,
                 active_edge: active,
+                focused_edge,
                 suppressed_edge,
             });
         let cached = cache_key.and_then(|key| self.prepared_edges.get(key));
         let mut visible_continuity_edges = BTreeSet::new();
-        let (prepared, painter_fallback, rebuilt) = if let Some(prepared) = cached {
-            (prepared, None, false)
+        let (prepared, painter_fallback) = if let Some(prepared) = cached {
+            (prepared, None)
         } else {
             let cull_margin = 4.0 / transform.zoom;
             let mut admitted = BTreeSet::new();
@@ -471,8 +302,7 @@ impl OpenGpuiSceneHost {
             let mut endpoint_fallback_count = 0usize;
             let endpoint_resolver = PublishedEndpointResolver::new(&geometry);
 
-            for identity in identities.iter().copied() {
-                let edge = identity.edge;
+            for edge in identities.iter().copied() {
                 let suppresses_current_lifetime = suppressed_edge.is_some_and(|suppressed| {
                     suppressed.edge() == edge && graph.edge_instance_key(edge) == Some(suppressed)
                 });
@@ -548,20 +378,22 @@ impl OpenGpuiSceneHost {
                         target_endpoint = target_endpoint.with_route_sample(sample);
                     }
                 }
-                if !edge_path_intersects_viewport(visible_path, self.viewport, cull_margin) {
+                if !edge_path_intersects_viewport(
+                    visible_path,
+                    current_viewport.canvas_bounds,
+                    cull_margin,
+                ) {
                     continue;
                 }
                 if continuity_edges.contains(&edge) {
                     visible_continuity_edges.insert(edge);
                 }
+                let edge_instance = graph.edge_instance_key(edge);
                 let visual_facts = OpenGpuiEdgeVisualFacts::default()
                     .with_selected(route.interaction.selected)
-                    .with_hovered(
-                        published_route.is_some_and(|route| Some(route.instance()) == hovered),
-                    )
-                    .with_active(
-                        published_route.is_some_and(|route| Some(route.instance()) == active),
-                    );
+                    .with_hovered(edge_instance == hovered)
+                    .with_active(edge_instance == active)
+                    .with_focused(edge_instance == focused_edge);
                 let style_slot = graph
                     .graph()
                     .port(&graph_edge.from)
@@ -610,8 +442,10 @@ impl OpenGpuiSceneHost {
                 });
                 let wire = OpenGpuiSceneWire {
                     edge,
-                    geometry_revision: identity.geometry_revision,
+                    geometry_revision: geometry.route_geometry_revision(edge),
+                    #[cfg(test)]
                     style_slot,
+                    #[cfg(test)]
                     visual_facts,
                     base_paint_key: paint_recipe.path_batch_key(),
                     halo_paint_key: paint_recipe.halo_path_batch_key(),
@@ -641,18 +475,15 @@ impl OpenGpuiSceneHost {
                     endpoint_fallback_count,
                 );
             }
-            (
-                prepared,
-                Some((painter_fallbacks, painter_fallback_count)),
-                true,
-            )
+            (prepared, Some((painter_fallbacks, painter_fallback_count)))
         };
         let published = prepared.published;
-        let published_edges = published
-            .iter()
-            .map(|wire| wire.edge)
-            .collect::<BTreeSet<_>>();
-        let route_handoff_ready = visible_continuity_edges.is_subset(&published_edges);
+        let route_handoff_ready = visible_continuity_edges.is_empty()
+            || published
+                .iter()
+                .filter(|wire| visible_continuity_edges.contains(&wire.edge))
+                .count()
+                == visible_continuity_edges.len();
         let published_plan_id = prepared.id;
         let budget_omitted = prepared.budget_omitted;
         let report = route_plan.report;
@@ -666,50 +497,6 @@ impl OpenGpuiSceneHost {
             budget_omitted,
         };
         self.last_edge_layer_overflow = overflow;
-        if rebuilt {
-            self.work_ledger.edge_layer_plans = self.work_ledger.edge_layer_plans.saturating_add(1);
-        } else {
-            self.work_ledger.edge_route_list_reuses =
-                self.work_ledger.edge_route_list_reuses.saturating_add(1);
-        }
-        self.work_ledger.edge_route_query_entries_examined = self
-            .work_ledger
-            .edge_route_query_entries_examined
-            .saturating_add(report.work.entries_examined);
-        self.work_ledger.edge_route_query_candidates_matched = self
-            .work_ledger
-            .edge_route_query_candidates_matched
-            .saturating_add(report.work.candidates_matched);
-        self.work_ledger.edge_route_query_pending = self
-            .work_ledger
-            .edge_route_query_pending
-            .saturating_add(u64::from(report.pending));
-        self.work_ledger.edge_route_query_budget_exhausted = self
-            .work_ledger
-            .edge_route_query_budget_exhausted
-            .saturating_add(u64::from(report.budget_exhausted));
-        self.work_ledger.edge_route_geometry_overflows = self
-            .work_ledger
-            .edge_route_geometry_overflows
-            .saturating_add(report.geometry_overflows as u64);
-        self.work_ledger.edge_route_previous_plan_reuses = self
-            .work_ledger
-            .edge_route_previous_plan_reuses
-            .saturating_add(u64::from(report.reused_previous_plan));
-        if rebuilt {
-            self.work_ledger.edge_routes_planned = self
-                .work_ledger
-                .edge_routes_planned
-                .saturating_add(published.len() as u64);
-            self.work_ledger.edge_routes_budget_omitted = self
-                .work_ledger
-                .edge_routes_budget_omitted
-                .saturating_add(budget_omitted as u64);
-        }
-        if !overflow.is_empty() {
-            self.work_ledger.edge_layer_overflows =
-                self.work_ledger.edge_layer_overflows.saturating_add(1);
-        }
         if let Some((fallbacks, total)) = painter_fallback {
             self.record_edge_painter_diagnostics(fallbacks, total);
         }
@@ -729,9 +516,11 @@ impl OpenGpuiSceneHost {
         &self,
         wires: &OpenGpuiSceneWires,
         transform: ViewportTransform,
+        #[cfg(feature = "test-support")] smoke_presented_frame: OpenGpuiSmokePresentedFrameDraft,
     ) -> AnyElement {
         let committed_marker_count = scene_wire_marker_count(&wires.published);
-        self.render_edge_path_canvas(
+        #[cfg(feature = "test-support")]
+        let edge_layer = self.render_edge_path_canvas(
             wires.geometry.clone(),
             wires.published.clone(),
             0..wires.published.len(),
@@ -739,10 +528,19 @@ impl OpenGpuiSceneHost {
             wires.published_plan_id,
             OpenGpuiEdgePaintPlanSegment::Ordinary,
             committed_marker_count,
-            true,
-            true,
-            OpenGpuiSceneWirePaintLayer::Composed,
-        )
+            smoke_presented_frame,
+        );
+        #[cfg(not(feature = "test-support"))]
+        let edge_layer = self.render_edge_path_canvas(
+            wires.geometry.clone(),
+            wires.published.clone(),
+            0..wires.published.len(),
+            transform,
+            wires.published_plan_id,
+            OpenGpuiEdgePaintPlanSegment::Ordinary,
+            committed_marker_count,
+        );
+        edge_layer
     }
 
     fn render_grid_layer(&self, transform: ViewportTransform) -> AnyElement {
@@ -793,16 +591,9 @@ impl OpenGpuiSceneHost {
         plan_id: u64,
         segment: OpenGpuiEdgePaintPlanSegment,
         reserved_items: usize,
-        _accumulate_paint_evidence: bool,
-        _final_paint_evidence_segment: bool,
-        paint_layer: OpenGpuiSceneWirePaintLayer,
+        #[cfg(feature = "test-support")] smoke_presented_frame: OpenGpuiSmokePresentedFrameDraft,
     ) -> AnyElement {
-        #[cfg(test)]
-        let paint_evidence = self.scene_evidence.clone();
-        #[cfg(test)]
-        let paint_evidence_wire_count = range.len();
         let path_cache = self.edge_paths.clone();
-        let paint_path_cache = path_cache.clone();
         canvas(
             move |bounds, _, _| {
                 let plan_key = OpenGpuiEdgePaintPlanKey::new(
@@ -814,22 +605,17 @@ impl OpenGpuiSceneHost {
                     bounds.origin.x.as_f32(),
                     bounds.origin.y.as_f32(),
                 );
-                path_cache.borrow_mut().resolve_paint_plan_reserving(
+                let plan = path_cache.borrow_mut().resolve_paint_plan_reserving(
                     plan_key,
                     reserved_items,
                     |cache, builder| {
                         let visible_wires = &published[range.clone()];
                         let mut remaining_items = visible_wires
                             .iter()
-                            .map(|wire| {
-                                scene_wire_paint_keys(wire, paint_layer)
-                                    .into_iter()
-                                    .flatten()
-                                    .count()
-                            })
+                            .map(|wire| scene_wire_paint_keys(wire).into_iter().flatten().count())
                             .sum::<usize>();
                         for wire in visible_wires {
-                            let paint_keys = scene_wire_paint_keys(wire, paint_layer);
+                            let paint_keys = scene_wire_paint_keys(wire);
                             let paint_key_count = paint_keys.iter().flatten().count();
                             let path = match wire.drag_path.as_ref() {
                                 Some(path) => path,
@@ -881,24 +667,32 @@ impl OpenGpuiSceneHost {
                         }
                         debug_assert_eq!(remaining_items, 0);
                     },
-                )
+                );
+                #[cfg(feature = "test-support")]
+                if plan.is_complete() {
+                    for wire in &published[range.clone()] {
+                        let Some(source) = project_scene_point(
+                            wire.source_endpoint.point(),
+                            transform,
+                            bounds.origin,
+                        ) else {
+                            continue;
+                        };
+                        let Some(target) = project_scene_point(
+                            wire.target_endpoint.point(),
+                            transform,
+                            bounds.origin,
+                        ) else {
+                            continue;
+                        };
+                        smoke_presented_frame.record_authoritative_route(wire.edge, source, target);
+                    }
+                }
+                plan
             },
             move |_, plan, window, _| {
-                let batches = plan.batches();
-                let edge_count = plan.edge_count();
-                #[cfg(test)]
-                if _accumulate_paint_evidence {
-                    paint_evidence.record_plan_paint(
-                        plan_id,
-                        paint_evidence_wire_count,
-                        _final_paint_evidence_segment,
-                    );
-                }
-                paint_path_cache
-                    .borrow_mut()
-                    .record_native_paint(batches.len(), edge_count);
                 // Open GPUI consumes owned paths; the plan builder bounds this aggregate clone.
-                for batch in batches.iter() {
+                for batch in plan.batches().iter() {
                     window.paint_path(batch.path.as_ref().clone(), batch.key.path().color());
                 }
             },
@@ -947,7 +741,6 @@ impl OpenGpuiSceneHost {
     ) -> AnyElement {
         let marker_diameter = self.graph_theme.metrics.edge_marker_diameter;
         let marker_cache = self.edge_paths.clone();
-        let marker_paint_cache = marker_cache.clone();
         canvas(
             move |bounds, _, _| {
                 let key = OpenGpuiEdgePaintPlanKey::new(
@@ -994,13 +787,8 @@ impl OpenGpuiSceneHost {
                 )
             },
             move |_, plan, window, _| {
-                let batches = plan.batches();
-                let marker_count = batches.iter().map(|batch| batch.edge_count).sum::<usize>();
-                marker_paint_cache
-                    .borrow_mut()
-                    .record_native_marker_paint(batches.len(), marker_count);
                 // Open GPUI consumes owned paths; the plan builder bounds this aggregate clone.
-                for batch in batches.iter() {
+                for batch in plan.batches().iter() {
                     window.paint_path(batch.path.as_ref().clone(), batch.key.path().color());
                 }
             },
@@ -1088,7 +876,6 @@ impl OpenGpuiSceneHost {
                 || format!("Graph edge {edge:?}"),
                 |label| format!("Edge {label}"),
             );
-            let focus = self.graph_theme.palette.focus;
             let selected = interaction.selected;
             let edge_focus = self
                 .interaction_owner
@@ -1097,7 +884,6 @@ impl OpenGpuiSceneHost {
                 OpenGpuiGraphFocusTarget::Edge(edge_instance),
                 edge_focus.clone(),
             ));
-            let focused = edge_focus.is_focused(window);
             let activation: Option<OpenGpuiEdgeActivation> = interaction.selectable.then(|| {
                 let host = host.clone();
                 Rc::new(
@@ -1123,60 +909,17 @@ impl OpenGpuiSceneHost {
             };
             let semantic_selector = open_gpui_edge_semantic_selector(edge);
             let semantic_size = OPEN_GPUI_EDGE_SEMANTIC_SIZE_IN_VIEW;
-            let semantic_chrome = div()
-                .debug_selector(move || semantic_selector.clone())
-                .absolute()
-                .left(px(position.x - semantic_size * 0.5))
-                .top(px(position.y - semantic_size * 0.5))
-                .w(px(semantic_size))
-                .h(px(semantic_size))
-                .when(focused, |chrome| {
-                    chrome.rounded_full().border_2().border_color(focus)
-                });
-            if focused {
-                let recipe = self.edge_painters.resolve_with_style_slot(
-                    route.facts().edge_kind,
-                    wire.visual_facts.with_focused(true),
-                    &route.facts().presentation,
-                    wire.style_slot,
-                    &self.graph_theme,
-                );
-                let mut focused_wire = wire.clone();
-                focused_wire.visual_facts = wire.visual_facts.with_focused(true);
-                focused_wire.halo_paint_key = recipe.halo_path_batch_key();
-                let focused_wire = Rc::<[OpenGpuiSceneWire]>::from(vec![focused_wire]);
-                edge_controls = edge_controls
-                    .child(self.render_edge_path_canvas(
-                        wires.geometry.clone(),
-                        focused_wire.clone(),
-                        0..1,
-                        transform,
-                        wires.published_plan_id,
-                        OpenGpuiEdgePaintPlanSegment::Focus(edge),
-                        1,
-                        false,
-                        false,
-                        OpenGpuiSceneWirePaintLayer::Halo,
-                    ))
-                    .child(self.render_edge_path_canvas(
-                        wires.geometry.clone(),
-                        focused_wire,
-                        0..1,
-                        transform,
-                        wires.published_plan_id,
-                        OpenGpuiEdgePaintPlanSegment::FocusBase(edge),
-                        0,
-                        false,
-                        false,
-                        OpenGpuiSceneWirePaintLayer::Base,
-                    ));
-            }
+            let semantic_chrome = div().size_full();
             let control = OpenGpuiEdgeSemanticElement::new(
                 open_gpui_edge_element_id(host_id, view_id, edge),
+                semantic_selector,
                 semantic_name,
                 selected,
                 edge_focus,
                 activation,
+                position.x - semantic_size * 0.5,
+                position.y - semantic_size * 0.5,
+                semantic_size,
                 semantic_chrome,
             );
             edge_controls = edge_controls.child(control);
@@ -1205,13 +948,15 @@ impl OpenGpuiSceneHost {
                 else {
                     continue;
                 };
-                let position = reconnect_grip_center(
-                    anchor_position,
-                    resolved.outward(),
-                    OPEN_GPUI_RECONNECT_GRIP_OFFSET_IN_VIEW,
-                );
                 let marker = self.graph_theme.metrics.reconnect_cap_length;
                 let hit = self.graph_theme.metrics.reconnect_hit_diameter.max(marker);
+                let port_hit_bounds = wires
+                    .geometry
+                    .port(resolved.port())
+                    .and_then(|port| port.hit_bounds())
+                    .and_then(|bounds| projected_view_rect(bounds, transform));
+                let position =
+                    reconnect_hit_center(anchor_position, resolved.outward(), port_hit_bounds, hit);
                 let marker_size = reconnect_grip_visual_size(resolved.outward(), marker);
                 let interaction_handle = native_interactions.clone();
                 let listener = scene_listener.clone();
@@ -1219,6 +964,8 @@ impl OpenGpuiSceneHost {
                 let focus = self.graph_theme.palette.focus;
                 let target = OpenGpuiGraphFocusTarget::reconnect(edge_instance, endpoint);
                 let reconnect_focus = self.interaction_owner.graph_focus_action_handle(target, cx);
+                let reconnect_focused = reconnect_focus.is_focused(window);
+                let hover_group = format!("jellyflow-reconnect-hover-{edge:?}-{endpoint:?}");
                 focus_entries.push(OpenGpuiGraphFocusEntry::new(
                     target,
                     reconnect_focus.clone(),
@@ -1244,10 +991,7 @@ impl OpenGpuiSceneHost {
                     .justify_center()
                     .rounded_full()
                     .cursor(CursorStyle::DragLink)
-                    .border_1()
-                    .border_color(focus.opacity(0.0))
-                    .hover(move |style| style.border_1().border_color(focus.opacity(0.72)))
-                    .focus_visible(move |style| style.border_2().border_color(focus))
+                    .group(hover_group.clone())
                     .on_mouse_down(MouseButton::Left, move |event, window, cx| {
                         if interaction_handle.begin(
                             OpenGpuiSceneGestureKind::EdgeReconnect(edge_instance, endpoint),
@@ -1276,17 +1020,20 @@ impl OpenGpuiSceneHost {
                 let reconnect = reconnect
                     .debug_selector(move || open_gpui_reconnect_hit_selector(edge, endpoint));
                 edge_controls = edge_controls.child(reconnect);
-                reconnect_chrome = reconnect_chrome.child(
-                    div()
-                        .debug_selector(move || open_gpui_reconnect_chrome_selector(edge, endpoint))
-                        .absolute()
-                        .left(px(position.x - marker_size.width * 0.5))
-                        .top(px(position.y - marker_size.height * 0.5))
-                        .w(px(marker_size.width))
-                        .h(px(marker_size.height))
-                        .rounded_full()
-                        .bg(self.graph_theme.palette.selection),
-                );
+                let mut chrome = div()
+                    .debug_selector(move || open_gpui_reconnect_chrome_selector(edge, endpoint))
+                    .absolute()
+                    .left(px(anchor_position.x - marker_size.width * 0.5))
+                    .top(px(anchor_position.y - marker_size.height * 0.5))
+                    .w(px(marker_size.width))
+                    .h(px(marker_size.height))
+                    .rounded_full()
+                    .bg(self.graph_theme.palette.selection)
+                    .group_hover(hover_group, move |style| style.bg(focus));
+                if reconnect_focused {
+                    chrome = chrome.border_1().border_color(focus);
+                }
+                reconnect_chrome = reconnect_chrome.child(chrome);
             }
         }
         (
@@ -1300,45 +1047,30 @@ impl OpenGpuiSceneHost {
         feedback: Rc<OpenGpuiFrameTransaction>,
         transform: ViewportTransform,
         window: &Window,
-        #[cfg(feature = "test-support")] smoke_scene: &mut OpenGpuiSmokePresentedSceneBuilder,
+        #[cfg(feature = "test-support")] smoke_presented_frame: &OpenGpuiSmokePresentedFrameDraft,
         focus_entries: &mut Vec<OpenGpuiGraphFocusEntry>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let host_id = cx.entity_id();
         let selection_bindings = self.navigation.input_bindings().selection();
         let mut nodes = div().absolute().size_full();
-        #[cfg(test)]
-        self.scene_evidence
-            .last_node_layer_sequence
-            .borrow_mut()
-            .clear();
         for (key, mounted) in self.retained_nodes.active_in_order() {
             let presentation = mounted.graph_presentation();
-            let interaction_island = mounted.has_interaction_island();
-
-            let mut bounds = mounted.canonical_bounds();
-            if let Some(delta) = feedback.measurements().presentation_offset(key.node()) {
-                bounds.origin.x += delta.x;
-                bounds.origin.y += delta.y;
-            }
-            let Some(origin) = transform.screen_point_for_canvas(bounds.origin) else {
+            let presentation_offset = feedback
+                .measurements()
+                .presentation_offset(key.node())
+                .unwrap_or_default();
+            let Some(placement) = mounted.scene_placement(transform, presentation_offset) else {
                 continue;
             };
-            let screen_size = mounted.semantic_zoom.screen_size(
-                transform.zoom,
-                presentation,
-                mounted.registration_policy.scale_policy(),
-            );
-            // The graph presentation remains the sole measured node and chrome surface. A
-            // protected native control may overflow this wrapper at its canonical 1:1 size,
-            // but it must not change overview geometry or create another ordered node entry.
-            let wrapper_size = screen_size;
+            let graph_size = placement.graph_bounds.size;
+            let visible_size = placement.surface_bounds.size;
+            let pinned_detail = placement.pinned_detail;
             let overview_binding = mounted.binding.as_ref().map(|binding| binding.read(cx));
             let overview_drag_handle =
                 overview_binding.map(|binding| binding.drag_handle().for_host_presentation());
-            let node_enabled = overview_binding
-                .map(|binding| !binding.presentation().node().disabled())
-                .unwrap_or(true);
+            let binding_node_state = overview_binding.map(|binding| binding.presentation().node());
+            let node_enabled = binding_node_state.is_none_or(|state| !state.disabled());
             let node_focus = mounted.focus.clone().tab_stop(node_enabled);
             if node_enabled {
                 focus_entries.push(OpenGpuiGraphFocusEntry::new(
@@ -1371,12 +1103,23 @@ impl OpenGpuiSceneHost {
                     let overview = mounted.semantic_zoom.overview_element(
                         overview_binding,
                         &mounted.accessible_name,
-                        screen_size,
+                        graph_size,
                         self.graph_theme,
+                        &self.edge_painters,
+                        !pinned_detail,
                     );
-                    match overview_drag_handle {
-                        Some(handle) => handle.wrap(overview).into_any_element(),
-                        None => overview,
+                    if pinned_detail {
+                        div()
+                            .relative()
+                            .size_full()
+                            .opacity(0.0)
+                            .child(overview)
+                            .into_any_element()
+                    } else {
+                        match overview_drag_handle {
+                            Some(handle) => handle.wrap(overview).into_any_element(),
+                            None => overview,
+                        }
                     }
                 }
             };
@@ -1390,25 +1133,29 @@ impl OpenGpuiSceneHost {
                 .measurements()
                 .presentation_offsets()
                 .contains_key(&key.node());
-            let hovered = self.retained_nodes.hovered_node() == Some(key);
+            let node_state = binding_node_state.unwrap_or_else(|| {
+                OpenGpuiNodeInteractionState::idle()
+                    .with_selected(mounted.selected)
+                    .with_hovered(self.retained_nodes.hovered_node() == Some(key))
+                    .with_focused(focused)
+                    .with_dragging(dragging)
+                    .with_disabled(!node_enabled)
+            });
             let chrome_color = node_chrome_color(
-                hovered,
-                mounted.selected,
-                focused,
-                dragging,
+                node_state.hovered(),
+                node_state.selected(),
+                node_state.focused(),
+                node_state.dragging(),
                 self.graph_theme,
             );
             #[cfg(feature = "test-support")]
-            smoke_scene.record_node(
+            smoke_presented_frame.record_node_state(
                 key.node(),
-                ViewRect::new(
-                    origin,
-                    ViewSize::new(wrapper_size.width, wrapper_size.height),
-                ),
+                node_state.selected(),
                 chrome_color.is_some(),
             );
             let chrome_corner_radius =
-                node_chrome_corner_radius(presentation, wrapper_size, self.graph_theme);
+                node_chrome_corner_radius(presentation, graph_size, self.graph_theme);
             let child = node_semantic_element(
                 div().id(open_gpui_node_element_id(host_id, key)),
                 mounted.accessible_name.clone(),
@@ -1461,34 +1208,34 @@ impl OpenGpuiSceneHost {
             let instance = key.clone();
             let source = mounted.graph_measurement_source();
             let measurements = feedback.measurement_writer();
+            #[cfg(feature = "test-support")]
+            let smoke_node_measurement = smoke_presented_frame.clone();
+            #[cfg(feature = "test-support")]
+            let smoke_node = key.node();
             let measured = measured_element(
                 open_gpui_node_measurement_element_id(host_id, key),
                 child,
                 move |_, bounds, _, _, _| {
                     let _ = measurements.record_root(&instance, source, bounds);
+                    #[cfg(feature = "test-support")]
+                    smoke_node_measurement.record_node_bounds(smoke_node, bounds);
                 },
             );
             let mut wrapper = div()
                 .absolute()
-                .left(px(origin.x))
-                .top(px(origin.y))
-                .w(px(wrapper_size.width))
-                .h(px(wrapper_size.height))
+                .left(px(placement.graph_bounds.origin.x))
+                .top(px(placement.graph_bounds.origin.y))
+                .w(px(graph_size.width))
+                .h(px(graph_size.height))
                 .child(measured);
-            #[cfg(test)]
-            self.scene_evidence
-                .last_node_layer_sequence
-                .borrow_mut()
-                .push(OpenGpuiNodeLayerEntry::Content(key.node()));
-            if interaction_island {
-                let interaction_size = mounted.semantic_zoom.canonical_size();
+            if pinned_detail {
                 wrapper = wrapper.child(
                     div()
                         .absolute()
                         .left_0()
                         .top_0()
-                        .w(px(interaction_size.width))
-                        .h(px(interaction_size.height))
+                        .w(px(visible_size.width))
+                        .h(px(visible_size.height))
                         .child(
                             self.interaction_owner
                                 .overlay_boundary()
@@ -1498,65 +1245,69 @@ impl OpenGpuiSceneHost {
             }
             if let Some(chrome_color) = chrome_color {
                 let chrome_node = key.node();
-                wrapper = wrapper.child(
-                    div()
-                        .debug_selector(move || open_gpui_node_chrome_selector(chrome_node))
-                        .absolute()
-                        .inset_0()
-                        .rounded(px(chrome_corner_radius))
-                        .border_1()
-                        .border_color(chrome_color),
-                );
-                #[cfg(test)]
-                self.scene_evidence
-                    .last_node_layer_sequence
-                    .borrow_mut()
-                    .push(OpenGpuiNodeLayerEntry::Chrome(key.node()));
+                let chrome = div()
+                    .debug_selector(move || open_gpui_node_chrome_selector(chrome_node))
+                    .absolute()
+                    .left_0()
+                    .top_0()
+                    .w(px(graph_size.width))
+                    .h(px(graph_size.height))
+                    .rounded(px(chrome_corner_radius))
+                    .border_1()
+                    .border_color(chrome_color);
+                #[cfg(feature = "test-support")]
+                let chrome = {
+                    let smoke_chrome_measurement = smoke_presented_frame.clone();
+                    measured_element(
+                        format!("jellyflow-node-chrome-measurement-{chrome_node:?}"),
+                        chrome,
+                        move |_, bounds, _, _, _| {
+                            smoke_chrome_measurement.record_node_chrome_bounds(chrome_node, bounds);
+                        },
+                    )
+                    .into_any_element()
+                };
+                #[cfg(not(feature = "test-support"))]
+                let chrome = chrome.into_any_element();
+                wrapper = wrapper.child(chrome);
             }
             nodes = nodes.child(wrapper);
         }
         nodes.into_any_element()
     }
 
+    pub(super) fn resolve_connection_preview_paint_recipe<'a>(
+        &self,
+        preview: &'a OpenGpuiConnectionPreviewPlan,
+    ) -> OpenGpuiResolvedEdgePaintRecipe<'a> {
+        let resolved = self.edge_painters.resolve_with_style_slot(
+            preview.edge_kind,
+            OpenGpuiEdgeVisualFacts::default().with_preview(true),
+            &preview.presentation,
+            preview.style_slot,
+            &self.graph_theme,
+        );
+        if preview.probe.is_invalid() {
+            resolved.with_invalid_connection_cue()
+        } else {
+            resolved
+        }
+    }
+
     fn render_preview_layer(
         &self,
         connection_preview: Option<OpenGpuiConnectionPreviewPlan>,
         transform: ViewportTransform,
+        #[cfg(feature = "test-support")] smoke_presented_frame: OpenGpuiSmokePresentedFrameDraft,
     ) -> AnyElement {
-        #[cfg(test)]
-        {
-            self.scene_evidence.last_connection_preview_paint.set(None);
-            self.scene_evidence
-                .last_painted_connection_preview_count
-                .set(0);
-        }
         let mut preview_layer = div().absolute().size_full();
         if let Some(connection_preview) = connection_preview {
-            let OpenGpuiConnectionPreviewPlan {
-                path: preview_path,
-                edge_kind,
-                style_slot,
-                presentation,
-                probe,
-                suppressed_edge: _,
-            } = connection_preview;
-            let resolved = self.edge_painters.resolve_with_style_slot(
-                edge_kind,
-                OpenGpuiEdgeVisualFacts::default().with_preview(true),
-                &presentation,
-                style_slot,
-                &self.graph_theme,
-            );
-            let resolved = if probe.is_invalid() {
-                resolved.with_invalid_connection_cue()
-            } else {
-                resolved
-            };
+            let resolved = self.resolve_connection_preview_paint_recipe(&connection_preview);
             let preview_style = resolved.style();
             let path_batch_key = resolved.path_batch_key();
             let halo_path_batch_key = resolved.halo_path_batch_key();
             let preview_halo_color = connection_preview_halo_color(
-                probe,
+                connection_preview.probe,
                 self.graph_theme,
                 halo_path_batch_key
                     .map(|key| key.path().color())
@@ -1564,38 +1315,28 @@ impl OpenGpuiSceneHost {
             );
             let source_marker = resolved.source_marker().shape();
             let target_marker = resolved.target_marker().shape();
-            #[cfg(test)]
-            self.scene_evidence.last_connection_preview_paint.set(Some(
-                OpenGpuiConnectionPreviewPaintEvidence {
-                    edge_kind,
-                    probe,
-                    style_slot: preview_style.style_slot(),
-                    paint_key: path_batch_key,
-                    halo_paint_key: halo_path_batch_key,
-                    stroke_width: preview_style.stroke_width(),
-                    halo_stroke_width: preview_style.halo().map(|halo| halo.stroke_width()),
-                    source_marker,
-                    target_marker,
-                },
-            ));
             let label = resolved.label().and_then(|label| {
                 let anchor = match label.anchor() {
                     EdgeLabelAnchor::Source => EdgePathAnchor::Progress(0.2),
                     EdgeLabelAnchor::Center => EdgePathAnchor::Center,
                     EdgeLabelAnchor::Target => EdgePathAnchor::Progress(0.8),
                 };
-                preview_path
-                    .sample(anchor)
-                    .ok()
-                    .map(|sample| OpenGpuiPreparedEdgeLabel {
+                connection_preview.path.sample(anchor).ok().map(|sample| {
+                    OpenGpuiPreparedEdgeLabel {
                         text: label.text().to_owned(),
                         point: sample.point,
                         appearance: label.appearance(),
-                    })
+                    }
+                })
             });
+            let preview_path = connection_preview.path;
+            #[cfg(feature = "test-support")]
+            let smoke_preview_endpoints = preview_path
+                .sample(EdgePathAnchor::Source)
+                .ok()
+                .zip(preview_path.sample(EdgePathAnchor::Target).ok())
+                .map(|(source, target)| (source.point, target.point));
             let marker_diameter = self.graph_theme.metrics.edge_marker_diameter;
-            #[cfg(test)]
-            let paint_evidence = self.scene_evidence.clone();
             let preview = canvas(
                 move |bounds, _, _| {
                     let base_path = build_scene_wire_path(
@@ -1641,6 +1382,16 @@ impl OpenGpuiSceneHost {
                             markers.push(path);
                         }
                     }
+                    #[cfg(feature = "test-support")]
+                    if base_path.is_some()
+                        && let Some((source, target)) = smoke_preview_endpoints
+                        && let (Some(source), Some(target)) = (
+                            project_scene_point(source, transform, bounds.origin),
+                            project_scene_point(target, transform, bounds.origin),
+                        )
+                    {
+                        smoke_presented_frame.record_preview_route(source, target);
+                    }
                     OpenGpuiPreviewPaintPlan {
                         base_path,
                         halo_path,
@@ -1648,10 +1399,6 @@ impl OpenGpuiSceneHost {
                     }
                 },
                 move |_, plan, window, _| {
-                    #[cfg(test)]
-                    paint_evidence
-                        .last_painted_connection_preview_count
-                        .set(usize::from(plan.base_path.is_some()));
                     if let (Some(path), Some(_)) = (plan.halo_path, halo_path_batch_key) {
                         window.paint_path(path, preview_halo_color);
                     }
@@ -1759,6 +1506,16 @@ impl OpenGpuiSceneHost {
                     .bg(self.graph_theme.palette.selection.opacity(0.14)),
             );
         }
+        if self
+            .retained_nodes
+            .has_activity(OpenGpuiActivityKind::Overlay)
+        {
+            let barrier = div()
+                .debug_selector(|| OPEN_GPUI_OVERLAY_UNDERLAY_BARRIER_SELECTOR.to_owned())
+                .absolute()
+                .size_full();
+            overlay = overlay.child(self.interaction_owner.overlay_boundary().wrap(barrier));
+        }
         overlay.into_any_element()
     }
 
@@ -1814,15 +1571,15 @@ impl OpenGpuiSceneHost {
         resolutions.extend(self.settle_retained_command_batch(result.take_command_batch_result()));
         match result.submission {
             OpenGpuiFrameTransactionSubmission::Submitted(disposition) => {
-                self.work_ledger.feedback_submissions =
-                    self.work_ledger.feedback_submissions.saturating_add(1);
                 let disposition = self.apply_frame_receipt_disposition(disposition);
                 request_next_frame |= disposition.request_next_frame;
                 request_next_frame |= self.observe_content_measurements(
                     feedback.measurements(),
                     &disposition.accepted_content_nodes,
                 );
-                request_next_frame |= self.observe_content_size_publication_after_feedback();
+                request_next_frame |= self.observe_content_size_publication_after_feedback(
+                    &disposition.stale_content_nodes,
+                );
                 node_drag_route_handoff_candidate = feedback.node_drag_route_handoff();
                 if self.interaction_owner.needs_authoritative_reconciliation() {
                     match self.interaction_owner.reconcile_authoritative_state() {
@@ -1868,6 +1625,7 @@ impl OpenGpuiSceneHost {
         }
         request_next_frame |= self.schedule_content_size_prefix(cx);
         request_next_frame |= self.content_sizes.needs_frame();
+        request_next_frame |= self.interaction_owner.has_pending_settlement();
         OpenGpuiPrepaintFrameOutcome {
             request_next_frame,
             resolutions,
@@ -1891,23 +1649,49 @@ impl OpenGpuiSceneHost {
         #[cfg(feature = "test-support")]
         let smoke_presentation = self.interaction_owner.presentation();
         #[cfg(feature = "test-support")]
-        let mut smoke_scene = self.smoke_presented_scene.begin(
+        let smoke_presented_frame = feedback.smoke_presented_frame();
+        #[cfg(feature = "test-support")]
+        smoke_presented_frame.begin(
             _graph_revision,
             smoke_presentation.phase(),
-            smoke_presentation.node_drag().is_some(),
+            smoke_presentation
+                .node_drag()
+                .map_or(&[] as &[NodeId], |drag| drag.nodes()),
             transform,
         );
         #[cfg(feature = "test-support")]
-        record_smoke_scene_wires(&mut smoke_scene, &wires, transform, &smoke_presentation);
-        #[cfg(test)]
-        let wire_count = wires.published.len();
+        smoke_presented_frame.set_preview_metadata(
+            smoke_presentation.connection().and_then(|connection| {
+                let target = connection
+                    .probe()
+                    .target()
+                    .filter(|_| connection.probe().is_committable())?;
+                Some(OpenGpuiSmokePreviewTarget::new(
+                    target.port(),
+                    transform.screen_point_for_canvas(target.route_anchor())?,
+                ))
+            }),
+            wires
+                .connection_preview
+                .as_ref()
+                .and_then(|preview| preview.suppressed_edge.map(EdgeInstanceKey::edge)),
+        );
         let connection_preview = wires.connection_preview.take();
+        #[cfg(feature = "test-support")]
+        let rendered_edge_layer =
+            self.render_edge_layer(&wires, transform, smoke_presented_frame.clone());
+        #[cfg(not(feature = "test-support"))]
+        let rendered_edge_layer = self.render_edge_layer(&wires, transform);
         let edge_layer = div()
             .absolute()
             .size_full()
             .child(self.render_grid_layer(transform))
-            .child(self.render_edge_layer(&wires, transform))
+            .child(rendered_edge_layer)
             .into_any_element();
+        #[cfg(feature = "test-support")]
+        let preview_layer =
+            self.render_preview_layer(connection_preview, transform, smoke_presented_frame.clone());
+        #[cfg(not(feature = "test-support"))]
         let preview_layer = self.render_preview_layer(connection_preview, transform);
         let edge_chrome_layer = self.render_edge_chrome_layer(&wires, transform);
         let mut focus_entries = Vec::new();
@@ -1916,7 +1700,7 @@ impl OpenGpuiSceneHost {
             transform,
             window,
             #[cfg(feature = "test-support")]
-            &mut smoke_scene,
+            &smoke_presented_frame,
             &mut focus_entries,
             cx,
         );
@@ -1957,23 +1741,18 @@ impl OpenGpuiSceneHost {
             .child(edge_interaction_chrome_layer)
             .into_any_element();
         let layers = [
-            (OpenGpuiSceneLayer::Edge, edge_layer),
-            (OpenGpuiSceneLayer::EdgeChrome, edge_chrome_layer),
-            (OpenGpuiSceneLayer::Preview, preview_layer),
-            (OpenGpuiSceneLayer::EdgeInteraction, edge_interaction_layer),
-            (OpenGpuiSceneLayer::Node, node_layer),
-            (
-                OpenGpuiSceneLayer::InteractionChrome,
-                interaction_chrome_layer,
-            ),
-            (OpenGpuiSceneLayer::Overlay, overlay_layer),
+            edge_layer,
+            edge_chrome_layer,
+            preview_layer,
+            edge_interaction_layer,
+            node_layer,
+            interaction_chrome_layer,
+            overlay_layer,
         ];
-        #[cfg(test)]
-        let mut recorded_layers = [OpenGpuiSceneLayer::Overlay; 7];
         let native_interactions = self.interaction_owner.native_capability();
         let selection_listener = Self::host_scene_listener(cx);
         let pan_listener = selection_listener.clone();
-        let right_pan_listener = selection_listener.clone();
+        let right_pan_listener = Self::host_right_pan_scene_listener(cx);
         let input_bindings = self.navigation.input_bindings();
         let middle_button_pans = input_bindings.middle_button_pans();
         let right_button_pans = input_bindings.right_button_pans();
@@ -1988,6 +1767,11 @@ impl OpenGpuiSceneHost {
             })
         });
         let scene_cursor = native_scene_cursor(presentation.phase(), hovered_edge_is_selectable);
+        let scene_cursor_override = matches!(
+            presentation.phase(),
+            CanvasInteractionPhase::Pan | CanvasInteractionPhase::ConnectionDrag
+        )
+        .then_some(scene_cursor);
         let host = cx.weak_entity();
         let hover_host = host.clone();
         let hover_state_host = host.clone();
@@ -2143,28 +1927,43 @@ impl OpenGpuiSceneHost {
                 cx.stop_propagation();
             }
         });
-        #[cfg(test)]
-        for (index, (layer, element)) in layers.into_iter().enumerate() {
-            recorded_layers[index] = layer;
+        for element in layers {
             scene = scene.child(element);
         }
-        #[cfg(not(test))]
-        for (_, element) in layers {
-            scene = scene.child(element);
-        }
-        #[cfg(test)]
-        {
-            self.scene_evidence.record_plan(recorded_layers, wire_count);
+        if let Some(cursor) = scene_cursor_override {
+            scene = scene.child(
+                canvas(
+                    |_, _, _| (),
+                    move |_, _, window, _| window.set_window_cursor_style(cursor),
+                )
+                .absolute()
+                .size_full(),
+            );
         }
         #[cfg(feature = "test-support")]
-        self.smoke_presented_scene.publish(smoke_scene);
+        {
+            let host = cx.weak_entity();
+            let smoke_presented_frame = smoke_presented_frame.clone();
+            window.on_next_frame(move |_, cx| {
+                let Some(host) = host.upgrade() else {
+                    return;
+                };
+                host.update(cx, |host, _| {
+                    host.smoke_presented_scene.present(&smoke_presented_frame);
+                });
+            });
+        }
 
         let host = cx.weak_entity();
+        #[cfg(feature = "test-support")]
+        let smoke_scene_measurement = smoke_presented_frame.clone();
         let scene = measured_element(
             open_gpui_scene_measurement_element_id(host_id, self.view.id()),
             scene,
             move |_, bounds, _, window, cx| {
                 feedback.measurements().record_scene(bounds);
+                #[cfg(feature = "test-support")]
+                smoke_scene_measurement.record_scene_bounds(bounds);
                 let measured_origin = bounds.origin;
                 let measured_size =
                     ViewSize::new(bounds.size.width.as_f32(), bounds.size.height.as_f32());
@@ -2270,49 +2069,6 @@ impl OpenGpuiSceneHost {
     }
 }
 
-#[cfg(feature = "test-support")]
-fn record_smoke_scene_wires(
-    scene: &mut OpenGpuiSmokePresentedSceneBuilder,
-    wires: &OpenGpuiSceneWires,
-    transform: ViewportTransform,
-    presentation: &jellyflow_runtime::interaction::CanvasInteractionPresentation,
-) {
-    for wire in wires.published.iter() {
-        let Some(source) = transform.screen_point_for_canvas(wire.source_endpoint.point()) else {
-            continue;
-        };
-        let Some(target) = transform.screen_point_for_canvas(wire.target_endpoint.point()) else {
-            continue;
-        };
-        scene.record_route(OpenGpuiSmokeRoute::new(wire.edge, source, target));
-    }
-
-    let preview = wires.connection_preview.as_ref();
-    let preview_route = preview.and_then(|preview| {
-        let source = preview.path.sample(EdgePathAnchor::Source).ok()?.point;
-        let target = preview.path.sample(EdgePathAnchor::Target).ok()?.point;
-        Some(OpenGpuiSmokePreviewRoute::new(
-            transform.screen_point_for_canvas(source)?,
-            transform.screen_point_for_canvas(target)?,
-        ))
-    });
-    let preview_target = presentation.connection().and_then(|connection| {
-        let target = connection
-            .probe()
-            .target()
-            .filter(|_| connection.probe().is_committable())?;
-        Some(OpenGpuiSmokePreviewTarget::new(
-            target.port(),
-            transform.screen_point_for_canvas(target.route_anchor())?,
-        ))
-    });
-    scene.set_preview(
-        preview_route,
-        preview_target,
-        preview.and_then(|preview| preview.suppressed_edge.map(EdgeInstanceKey::edge)),
-    );
-}
-
 fn connection_preview_halo_color(
     probe: ConnectionProbeValidity,
     theme: OpenGpuiGraphTheme,
@@ -2326,28 +2082,11 @@ fn connection_preview_halo_color(
     }
 }
 
-fn edge_query_bounds(
-    surface_size: Option<ViewSize>,
-    viewport: CanvasRect,
-    transform: ViewportTransform,
-) -> Option<ViewRect> {
-    if let Some(size) = surface_size.filter(|size| size.is_positive_finite()) {
-        return Some(ViewRect::new(ViewPoint::default(), size));
-    }
-    let origin = transform.screen_point_for_canvas(viewport.origin)?;
-    let size = ViewSize::new(
-        viewport.size.width * transform.zoom,
-        viewport.size.height * transform.zoom,
-    );
-    let bounds = ViewRect::new(ViewPoint::new(origin.x, origin.y), size);
-    bounds.is_positive_finite().then_some(bounds)
-}
-
 pub(super) fn promote_incident_routes(
     view: &jellyflow_runtime::view::ViewSession,
     graph: Option<&Graph>,
     nodes: &BTreeSet<NodeId>,
-    routes: &mut Vec<OpenGpuiVisibleRouteIdentity>,
+    routes: &mut Vec<EdgeId>,
     limit: usize,
 ) -> Result<BTreeSet<EdgeId>, ViewSessionError> {
     if limit == 0 {
@@ -2359,7 +2098,7 @@ pub(super) fn promote_incident_routes(
     let current = routes
         .iter()
         .copied()
-        .map(|route| (route.edge, route))
+        .map(|edge| (edge, edge))
         .collect::<BTreeMap<_, _>>();
     let mut incident = BTreeSet::new();
     let mut promoted = Vec::new();
@@ -2374,12 +2113,7 @@ pub(super) fn promote_incident_routes(
             for connection in facts.incident() {
                 let edge = connection.edge();
                 if incident.insert(edge) {
-                    promoted.push(current.get(&edge).copied().unwrap_or(
-                        OpenGpuiVisibleRouteIdentity {
-                            edge,
-                            geometry_revision: None,
-                        },
-                    ));
+                    promoted.push(current.get(&edge).copied().unwrap_or(edge));
                     if promoted.len() >= limit {
                         break 'nodes;
                     }
@@ -2387,7 +2121,7 @@ pub(super) fn promote_incident_routes(
             }
         }
     }
-    routes.retain(|route| !incident.contains(&route.edge));
+    routes.retain(|edge| !incident.contains(edge));
     routes.extend(promoted);
     Ok(incident)
 }
@@ -2793,6 +2527,39 @@ mod edge_path_budget_tests {
     }
 
     #[test]
+    fn simplified_fallback_keeps_round_caps_when_the_budget_allows_them() {
+        let transform =
+            ViewportTransform::new(CanvasPoint::default(), 1.0).expect("valid transform");
+        let built = build_simplified_scene_wire_path(
+            &straight_path(0.0, 40.0),
+            4.0,
+            transform,
+            point(px(0.0), px(0.0)),
+            256,
+        )
+        .expect("the simplified fallback fits its budget");
+        let min_x = built
+            .vertices
+            .iter()
+            .map(|vertex| vertex.xy_position.x.as_f32())
+            .fold(f32::INFINITY, f32::min);
+        let max_x = built
+            .vertices
+            .iter()
+            .map(|vertex| vertex.xy_position.x.as_f32())
+            .fold(f32::NEG_INFINITY, f32::max);
+
+        assert!(
+            min_x < -1.5,
+            "round source cap must extend behind the endpoint"
+        );
+        assert!(
+            max_x > 41.5,
+            "round target cap must extend beyond the endpoint"
+        );
+    }
+
+    #[test]
     fn bounded_stroke_output_aborts_instead_of_growing_past_the_vertex_limit() {
         let segments = [ProjectedEdgeSegment {
             from: lyon_point(0.0, 0.0),
@@ -2835,8 +2602,6 @@ fn edge_path_cache_key(
         origin.y.as_f32(),
         paint_key.path().stroke_width(),
         paint_key.stroke_pattern(),
-        paint_key.uses_round_line_cap(),
-        paint_key.uses_round_line_join(),
     ))
 }
 
@@ -2997,13 +2762,9 @@ fn build_detailed_scene_wire_path(
     let source =
         build_bounded_stroke_source(&projected, paint_key.stroke_pattern(), vertex_budget)?;
     let mut options = StrokeOptions::default().with_line_width(stroke_width);
-    if paint_key.uses_round_line_cap() {
-        options.start_cap = LineCap::Round;
-        options.end_cap = LineCap::Round;
-    }
-    if paint_key.uses_round_line_join() {
-        options.line_join = LineJoin::Round;
-    }
+    options.start_cap = LineCap::Round;
+    options.end_cap = LineCap::Round;
+    options.line_join = LineJoin::Round;
 
     let mut output = BoundedOpenGpuiStrokeOutput::new(vertex_budget);
     StrokeTessellator::new()
@@ -3039,12 +2800,21 @@ fn build_simplified_scene_wire_path(
         to: target,
     }];
     let source = build_solid_stroke_source(&projected);
-    let options = StrokeOptions::default().with_line_width(stroke_width);
-    let mut output = BoundedOpenGpuiStrokeOutput::new(vertex_budget);
-    StrokeTessellator::new()
-        .tessellate_path(&source, &options, &mut output)
-        .ok()?;
-    output.finish()
+    let tessellate = |round_caps: bool| {
+        let mut options = StrokeOptions::default().with_line_width(stroke_width);
+        if round_caps {
+            options.start_cap = LineCap::Round;
+            options.end_cap = LineCap::Round;
+        }
+        options.line_join = LineJoin::Round;
+        let mut output = BoundedOpenGpuiStrokeOutput::new(vertex_budget);
+        StrokeTessellator::new()
+            .tessellate_path(&source, &options, &mut output)
+            .ok()?;
+        output.finish()
+    };
+
+    tessellate(true).or_else(|| tessellate(false))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -3289,15 +3059,8 @@ pub(super) fn visit_edge_chrome_wires_in_paint_order(
     }
 }
 
-fn scene_wire_paint_keys(
-    wire: &OpenGpuiSceneWire,
-    layer: OpenGpuiSceneWirePaintLayer,
-) -> [Option<OpenGpuiEdgePainterBatchKey>; 2] {
-    match layer {
-        OpenGpuiSceneWirePaintLayer::Composed => [wire.halo_paint_key, Some(wire.base_paint_key)],
-        OpenGpuiSceneWirePaintLayer::Base => [Some(wire.base_paint_key), None],
-        OpenGpuiSceneWirePaintLayer::Halo => [wire.halo_paint_key, None],
-    }
+fn scene_wire_paint_keys(wire: &OpenGpuiSceneWire) -> [Option<OpenGpuiEdgePainterBatchKey>; 2] {
+    [wire.halo_paint_key, Some(wire.base_paint_key)]
 }
 
 fn scene_wire_marker_count(wires: &[OpenGpuiSceneWire]) -> usize {
@@ -3332,17 +3095,31 @@ fn reconnect_grip_center(
     }
 }
 
-fn reconnect_grip_visual_size(outward: HandlePosition, extent: f32) -> CanvasSize {
+pub(super) fn reconnect_hit_center(
+    anchor: ViewPoint,
+    outward: HandlePosition,
+    port_hit_bounds: Option<ViewRect>,
+    hit_diameter: f32,
+) -> ViewPoint {
+    let offset = port_hit_bounds.map_or(OPEN_GPUI_RECONNECT_GRIP_OFFSET_IN_VIEW, |bounds| {
+        let outward_extent = match outward {
+            HandlePosition::Top => anchor.y - bounds.origin.y,
+            HandlePosition::Right => bounds.origin.x + bounds.size.width - anchor.x,
+            HandlePosition::Bottom => bounds.origin.y + bounds.size.height - anchor.y,
+            HandlePosition::Left => anchor.x - bounds.origin.x,
+        }
+        .max(0.0);
+        OPEN_GPUI_RECONNECT_GRIP_OFFSET_IN_VIEW
+            .max(outward_extent + hit_diameter.max(0.0) * 0.5 + OPEN_GPUI_RECONNECT_HIT_GAP_IN_VIEW)
+    });
+    reconnect_grip_center(anchor, outward, offset)
+}
+
+fn reconnect_grip_visual_size(outward: HandlePosition, extent: f32) -> ViewSize {
     let thickness = (extent / 3.0).max(2.0).min(extent);
     match outward {
-        HandlePosition::Top | HandlePosition::Bottom => CanvasSize {
-            width: extent,
-            height: thickness,
-        },
-        HandlePosition::Left | HandlePosition::Right => CanvasSize {
-            width: thickness,
-            height: extent,
-        },
+        HandlePosition::Top | HandlePosition::Bottom => ViewSize::new(extent, thickness),
+        HandlePosition::Left | HandlePosition::Right => ViewSize::new(thickness, extent),
     }
 }
 
@@ -3360,15 +3137,15 @@ fn native_scene_cursor(
 
 fn node_chrome_corner_radius(
     presentation: OpenGpuiNodePresentation,
-    screen_size: CanvasSize,
+    view_size: ViewSize,
     theme: crate::theme::OpenGpuiGraphTheme,
 ) -> f32 {
     match presentation {
-        OpenGpuiNodePresentation::Overview => overview_node_corner_radius(screen_size, theme),
+        OpenGpuiNodePresentation::Overview => overview_node_corner_radius(view_size, theme),
         OpenGpuiNodePresentation::Detail => theme
             .metrics
             .node_corner_radius
-            .min(screen_size.width.min(screen_size.height).max(0.0) * 0.5),
+            .min(view_size.width.min(view_size.height).max(0.0) * 0.5),
     }
 }
 
@@ -3384,7 +3161,12 @@ fn node_chrome_color(
     } else if selected {
         Some(theme.palette.selection)
     } else if hovered {
-        Some(theme.palette.node_border)
+        Some(
+            theme
+                .palette
+                .node_border
+                .blend(theme.palette.selection.opacity(0.52)),
+        )
     } else {
         None
     }
@@ -3467,19 +3249,19 @@ mod navigation_render_tests {
 
         assert_eq!(
             reconnect_grip_center(anchor, HandlePosition::Top, offset),
-            ViewPoint { x: 40.0, y: 48.0 }
+            ViewPoint { x: 40.0, y: 52.0 }
         );
         assert_eq!(
             reconnect_grip_center(anchor, HandlePosition::Right, offset),
-            ViewPoint { x: 52.0, y: 60.0 }
+            ViewPoint { x: 48.0, y: 60.0 }
         );
         assert_eq!(
             reconnect_grip_center(anchor, HandlePosition::Bottom, offset),
-            ViewPoint { x: 40.0, y: 72.0 }
+            ViewPoint { x: 40.0, y: 68.0 }
         );
         assert_eq!(
             reconnect_grip_center(anchor, HandlePosition::Left, offset),
-            ViewPoint { x: 28.0, y: 60.0 }
+            ViewPoint { x: 32.0, y: 60.0 }
         );
     }
 
@@ -3498,26 +3280,31 @@ mod navigation_render_tests {
                 OPEN_GPUI_RECONNECT_GRIP_OFFSET_IN_VIEW,
             );
 
-            assert_eq!(grip.x - anchor.x, 12.0);
+            assert_eq!(grip.x - anchor.x, OPEN_GPUI_RECONNECT_GRIP_OFFSET_IN_VIEW);
             assert_eq!(grip.y, anchor.y);
         }
+    }
+
+    #[test]
+    fn reconnect_hit_target_clears_a_large_native_port_hitbox() {
+        let anchor = ViewPoint::new(50.0, 60.0);
+        let port_hit = ViewRect::new(ViewPoint::new(30.0, 40.0), ViewSize::new(40.0, 40.0));
+        let center = reconnect_hit_center(anchor, HandlePosition::Left, Some(port_hit), 22.0);
+        let reconnect_right = center.x + 11.0;
+
+        assert_eq!(center, ViewPoint::new(17.0, 60.0));
+        assert_eq!(port_hit.origin.x - reconnect_right, 2.0);
     }
 
     #[test]
     fn reconnect_grip_is_an_oriented_endpoint_cap() {
         assert_eq!(
             reconnect_grip_visual_size(HandlePosition::Top, 9.0),
-            CanvasSize {
-                width: 9.0,
-                height: 3.0,
-            }
+            ViewSize::new(9.0, 3.0)
         );
         assert_eq!(
             reconnect_grip_visual_size(HandlePosition::Right, 9.0),
-            CanvasSize {
-                width: 3.0,
-                height: 9.0,
-            }
+            ViewSize::new(3.0, 9.0)
         );
     }
 
@@ -3567,10 +3354,7 @@ mod navigation_render_tests {
     #[test]
     fn node_chrome_corner_radius_matches_detail_and_overview_surfaces() {
         let theme = crate::theme::OpenGpuiGraphTheme::default();
-        let normal = CanvasSize {
-            width: 220.0,
-            height: 120.0,
-        };
+        let normal = ViewSize::new(220.0, 120.0);
         assert_eq!(
             node_chrome_corner_radius(OpenGpuiNodePresentation::Detail, normal, theme),
             6.0
@@ -3582,10 +3366,7 @@ mod navigation_render_tests {
         assert_eq!(
             node_chrome_corner_radius(
                 OpenGpuiNodePresentation::Detail,
-                CanvasSize {
-                    width: 10.0,
-                    height: 8.0,
-                },
+                ViewSize::new(10.0, 8.0),
                 theme,
             ),
             4.0
@@ -3597,26 +3378,24 @@ mod navigation_render_tests {
     }
 
     #[test]
-    fn node_chrome_state_combinations_resolve_to_one_visual_layer() {
+    fn node_chrome_color_priority_keeps_hover_distinct_from_the_base_border() {
         let theme = OpenGpuiGraphTheme::default();
-        for hovered in [false, true] {
-            for selected in [false, true] {
-                for focused in [false, true] {
-                    for dragging in [false, true] {
-                        let color = node_chrome_color(hovered, selected, focused, dragging, theme);
-                        let expected = if dragging || focused {
-                            Some(theme.palette.focus)
-                        } else if selected {
-                            Some(theme.palette.selection)
-                        } else if hovered {
-                            Some(theme.palette.node_border)
-                        } else {
-                            None
-                        };
-                        assert_eq!(color, expected);
-                    }
-                }
-            }
+        let hover = theme
+            .palette
+            .node_border
+            .blend(theme.palette.selection.opacity(0.52));
+        assert_ne!(hover, theme.palette.node_border);
+        for (hovered, selected, focused, dragging, expected) in [
+            (false, false, false, false, None),
+            (true, false, false, false, Some(hover)),
+            (true, true, false, false, Some(theme.palette.selection)),
+            (true, true, true, false, Some(theme.palette.focus)),
+            (true, true, true, true, Some(theme.palette.focus)),
+        ] {
+            assert_eq!(
+                node_chrome_color(hovered, selected, focused, dragging, theme),
+                expected
+            );
         }
     }
 }

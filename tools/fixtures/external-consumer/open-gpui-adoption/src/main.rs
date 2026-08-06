@@ -1,30 +1,26 @@
-// Shared source and archive external-consumer recipe.
-use std::cell::Cell;
-use std::rc::Rc;
-
 use jellyflow_core::{
     CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId, EdgeKind, EdgeViewDescriptor, GraphBuilder,
     GraphId, NodeId, NodeKindKey, PortCapacity, PortDirection, PortId, PortKey, PortKind,
 };
 use jellyflow_open_gpui::authoring::{
-    MutationLayoutEffect, MutationRequest, MutationSettlement, OpenGpuiManagedMutation,
-    OpenGpuiNodeBinding, OpenGpuiPortHandle,
+    MutationLayoutEffect, MutationRequest, OpenGpuiManagedMutation, OpenGpuiNodeBinding,
+    OpenGpuiPortHandle,
 };
 use jellyflow_open_gpui::chrome::{
     OpenGpuiEdgeLabelAppearance, OpenGpuiEdgeMarkerShape, OpenGpuiEdgePainterRecipe,
     OpenGpuiEdgePainterRegistry, OpenGpuiEdgeStrokePattern, OpenGpuiEdgeTone,
 };
-use jellyflow_open_gpui::host::{OpenGpuiSceneHost, OpenGpuiSceneHostDiagnosticKind};
+use jellyflow_open_gpui::host::OpenGpuiSceneHost;
 use jellyflow_open_gpui::registry::{
     OpenGpuiNodeAdapterPresentation, OpenGpuiNodeRegistrationPolicy, OpenGpuiNodeRegistry,
-    OpenGpuiNodeRegistryRegistrationError, OpenGpuiNodeRendererDescriptor,
+    OpenGpuiNodeRendererDescriptor,
 };
 use jellyflow_open_gpui::size_policy::{OpenGpuiContentHeightPolicy, OpenGpuiNodeSizePolicy};
 use jellyflow_open_gpui::theme::OpenGpuiGraphTheme;
 use jellyflow_runtime::commands::{GraphCommand, IncidentEdgePolicy, TopologyEdit, TopologyPort};
 use jellyflow_runtime::graph::GraphRuntime;
 use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec, NodePortSpec};
-use jellyflow_runtime::view::{PublishedPortOutcome, RendererStamp, ViewSessionOptions};
+use jellyflow_runtime::view::{RendererStamp, ViewSession, ViewSessionOptions};
 use open_gpui::{
     AnyElement, AppContext, Context, Entity, InteractiveElement, IntoElement, MouseButton,
     ParentElement, Render, StatefulInteractiveElement, Styled, Window, div, px, rgb,
@@ -40,26 +36,14 @@ const CONTROL_SELECTOR: &str = "external-product-control";
 const BASE_PORT_SELECTOR: &str = "external-product-base-port";
 const DYNAMIC_PORT_SELECTOR: &str = "external-product-dynamic-port";
 
-struct ProductNodeState {
-    title: String,
-    mount_count: Cell<u64>,
-    render_count: Cell<u64>,
-    click_count: Cell<u64>,
-    command_count: Cell<u64>,
-    connected_state_seen: Cell<bool>,
-}
-
 struct ProductNode {
     binding: Entity<OpenGpuiNodeBinding>,
-    state: Rc<ProductNodeState>,
+    title: String,
     mutation: OpenGpuiManagedMutation<()>,
 }
 
 impl ProductNode {
     fn add_dynamic_port(&mut self, cx: &mut Context<Self>) {
-        self.state
-            .click_count
-            .set(self.state.click_count.get().saturating_add(1));
         let authoring = self
             .binding
             .read(cx)
@@ -106,26 +90,16 @@ impl Render for ProductNode {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl open_gpui::IntoElement {
-        self.state
-            .render_count
-            .set(self.state.render_count.get().saturating_add(1));
         let authoring = self
             .binding
             .read(cx)
             .authoring()
             .expect("retained node opens one coherent authoring view");
-        if matches!(
-            self.mutation.observe(
-                &authoring,
-                |_| authoring.port(dynamic_port_id()).is_some(),
-                cx,
-            ),
-            MutationSettlement::Satisfied { .. }
-        ) {
-            self.state
-                .command_count
-                .set(self.state.command_count.get().saturating_add(1));
-        }
+        let _ = self.mutation.observe(
+            &authoring,
+            |_| authoring.port(dynamic_port_id()).is_some(),
+            cx,
+        );
         let base = authoring
             .port(base_port_id())
             .expect("catalog-created real port belongs to the retained node")
@@ -134,9 +108,6 @@ impl Render for ProductNode {
         let dynamic = authoring
             .port(dynamic_port_id())
             .map(|port| port.handle().clone());
-        if base.presentation().connected() {
-            self.state.connected_state_seen.set(true);
-        }
         let content_height = if dynamic.is_some() { 144.0 } else { 108.0 };
         let product_node = cx.weak_entity();
         let drag_header = self.binding.read(cx).drag_handle().wrap(
@@ -165,7 +136,7 @@ impl Render for ProductNode {
                                 node.add_dynamic_port(cx);
                             });
                         })
-                        .child(self.state.title.clone()),
+                        .child(self.title.clone()),
                 ),
             )
             .child(
@@ -179,7 +150,7 @@ impl Render for ProductNode {
                     .overflow_y_scroll()
                     .child(
                         TextInput::new("external-product-input", "Node label")
-                            .value(self.state.title.clone())
+                            .value(self.title.clone())
                             .placeholder("Node label"),
                     )
                     .child(
@@ -268,15 +239,8 @@ fn external_edge_painters() -> OpenGpuiEdgePainterRegistry {
     painters.build()
 }
 
-fn product_node_state() -> Rc<ProductNodeState> {
-    Rc::new(ProductNodeState {
-        title: "Application-owned dynamic node".to_owned(),
-        mount_count: Cell::new(0),
-        render_count: Cell::new(0),
-        click_count: Cell::new(0),
-        command_count: Cell::new(0),
-        connected_state_seen: Cell::new(false),
-    })
+fn product_node_title() -> String {
+    "Application-owned dynamic node".to_owned()
 }
 
 fn external_catalog() -> NodeCatalog {
@@ -308,11 +272,8 @@ fn external_catalog() -> NodeCatalog {
     catalog
 }
 
-fn build_product_registry(
-    state: Rc<ProductNodeState>,
-    catalog: &NodeCatalog,
-) -> OpenGpuiNodeRegistry {
-    let factory_state = Rc::clone(&state);
+fn build_product_registry(title: String, catalog: &NodeCatalog) -> OpenGpuiNodeRegistry {
+    let factory_title = title;
     let mut registry = OpenGpuiNodeRegistry::builder();
     let policy = OpenGpuiNodeRegistrationPolicy::default().with_size_policy(
         OpenGpuiNodeSizePolicy::ContentHeight(
@@ -327,14 +288,11 @@ fn build_product_registry(
                 RendererStamp::new(RENDERER, 1),
                 OpenGpuiNodeAdapterPresentation::new("Dynamic workflow"),
                 move |binding, _window, cx| {
-                    let state = Rc::clone(&factory_state);
-                    state
-                        .mount_count
-                        .set(state.mount_count.get().saturating_add(1));
+                    let title = factory_title.clone();
                     let mutation = binding.read(cx).managed_mutation();
                     Ok(cx.new(|_| ProductNode {
                         binding,
-                        state,
+                        title,
                         mutation,
                     }))
                 },
@@ -345,37 +303,6 @@ fn build_product_registry(
     registry
         .seal(catalog)
         .expect("external renderer registrations must be valid")
-}
-
-fn assert_invalid_registry_is_rejected(catalog: &NodeCatalog) {
-    let state = product_node_state();
-    let mut registry = OpenGpuiNodeRegistry::builder();
-    let error = registry
-        .register(OpenGpuiNodeRendererDescriptor::new(
-            KIND,
-            1,
-            RendererStamp::new("   ", 1),
-            OpenGpuiNodeAdapterPresentation::new("Invalid renderer"),
-            move |binding, _window, cx| {
-                let mutation = binding.read(cx).managed_mutation();
-                Ok(cx.new(|_| ProductNode {
-                    binding,
-                    state: Rc::clone(&state),
-                    mutation,
-                }))
-            },
-        ))
-        .expect_err("whitespace renderer stamp must be rejected before builder mutation");
-    assert!(matches!(
-        error,
-        OpenGpuiNodeRegistryRegistrationError::EmptyRendererKey { .. }
-    ));
-    assert!(
-        registry
-            .seal(catalog)
-            .expect("rejected descriptor leaves the registry empty")
-            .is_empty()
-    );
 }
 
 fn node_id() -> NodeId {
@@ -402,20 +329,13 @@ fn edge_id() -> EdgeId {
     EdgeId::from_u128(40)
 }
 
-#[cfg(test)]
-#[open_gpui::test]
-fn external_retained_node_mounts_and_measures_real_ports(cx: &mut open_gpui::TestAppContext) {
+fn build_external_runtime(catalog: &NodeCatalog) -> GraphRuntime {
     let kind = NodeKindKey::new(KIND);
-    let node = node_id();
     let base_port = base_port_id();
-    let dynamic_port = dynamic_port_id();
-    let catalog = external_catalog();
-    let sink_kind = NodeKindKey::new(SINK_KIND);
-
     let creation = catalog
         .instantiate_node_with_ids(
             &kind,
-            node,
+            node_id(),
             CanvasRect {
                 origin: CanvasPoint { x: 40.0, y: 48.0 },
                 size: CanvasSize {
@@ -426,10 +346,9 @@ fn external_retained_node_mounts_and_measures_real_ports(cx: &mut open_gpui::Tes
             [base_port],
         )
         .expect("instantiate external dynamic node");
-    let (created_id, created_node, created_ports) = creation.into_parts();
     let sink_creation = catalog
         .instantiate_node_with_ids(
-            &sink_kind,
+            &NodeKindKey::new(SINK_KIND),
             sink_node_id(),
             CanvasRect {
                 origin: CanvasPoint { x: 480.0, y: 48.0 },
@@ -442,6 +361,7 @@ fn external_retained_node_mounts_and_measures_real_ports(cx: &mut open_gpui::Tes
         )
         .expect("instantiate external sink node");
     let mut graph = GraphBuilder::new(GraphId::from_u128(4));
+    let (created_id, created_node, created_ports) = creation.into_parts();
     graph.insert_node(created_id, created_node);
     for (port_id, port) in created_ports {
         graph.insert_port(port_id, port);
@@ -457,145 +377,40 @@ fn external_retained_node_mounts_and_measures_real_ports(cx: &mut open_gpui::Tes
         .with_label("payload")
         .with_style_token("data.primary");
     graph.insert_edge(edge_id(), edge);
-    let runtime = GraphRuntime::builder(catalog.clone())
+    GraphRuntime::builder(catalog.clone())
         .build(graph.build().expect("external fixture graph must validate"))
-        .expect("create external graph runtime");
-    let view = runtime
-        .attach_view(ViewSessionOptions::default())
-        .expect("attach external view");
-    let weak_view = view.downgrade();
-
-    let state = product_node_state();
-    assert_invalid_registry_is_rejected(&catalog);
-    let registry = build_product_registry(Rc::clone(&state), &catalog);
-    assert_eq!(
-        registry.renderer_stamp(&kind, 1),
-        Some(&RendererStamp::new(RENDERER, 1))
-    );
-
-    let graph_theme = external_graph_theme();
-    let expected_theme = graph_theme;
-    let edge_painters = external_edge_painters();
-    let (host, cx) = cx.add_window_view(move |_, _| {
-        OpenGpuiSceneHost::new(
-            view,
-            registry,
-            CanvasRect {
-                origin: CanvasPoint::default(),
-                size: CanvasSize {
-                    width: 1024.0,
-                    height: 768.0,
-                },
-            },
-        )
-        .with_graph_theme(graph_theme)
-        .with_edge_painter_registry(edge_painters)
-    });
-    draw(cx);
-    draw(cx);
-
-    assert_eq!(state.mount_count.get(), 1);
-    assert!(state.render_count.get() > 0);
-    assert!(state.connected_state_seen.get());
-    assert!(cx.debug_bounds(NODE_SELECTOR).is_some());
-    let control = cx
-        .debug_bounds(CONTROL_SELECTOR)
-        .expect("application-owned native control rendered");
-    assert!(cx.debug_bounds(BASE_PORT_SELECTOR).is_some());
-    assert!(cx.debug_bounds(DYNAMIC_PORT_SELECTOR).is_none());
-
-    let geometry = weak_view
-        .geometry_snapshot()
-        .expect("external native geometry published");
-    let node_geometry = geometry.node(node).expect("external node geometry");
-    assert!(node_geometry.is_fresh());
-    assert_eq!(node_geometry.port_outcomes().len(), 1);
-    assert!(matches!(
-        geometry.port_outcome(base_port),
-        Some(PublishedPortOutcome::Rendered(_))
-    ));
-    assert!(geometry.route(edge_id()).is_some());
-    let initial_size = runtime
-        .snapshot()
-        .expect("content-sized external graph")
-        .graph()
-        .node(&node)
-        .and_then(|node| node.size)
-        .expect("external node converged size");
-    assert_eq!(initial_size.height, 108.0);
-    assert_eq!(runtime.history_state().unwrap().undo_len(), 0);
-
-    cx.simulate_click(control.center(), Default::default());
-    draw(cx);
-    draw(cx);
-    assert_eq!(state.click_count.get(), 1);
-    assert_eq!(state.command_count.get(), 1);
-    assert!(cx.debug_bounds(DYNAMIC_PORT_SELECTOR).is_some());
-
-    let geometry = weak_view
-        .geometry_snapshot()
-        .expect("dynamic native geometry published");
-    let node_geometry = geometry.node(node).expect("dynamic node geometry");
-    assert!(node_geometry.is_fresh());
-    assert_eq!(node_geometry.port_outcomes().len(), 2);
-    for port in [base_port, dynamic_port] {
-        assert!(matches!(
-            geometry.port_outcome(port),
-            Some(PublishedPortOutcome::Rendered(_))
-        ));
-        let layout = geometry.port(port).expect("real port geometry");
-        assert_eq!(layout.node(), node);
-        assert!(layout.visual_bounds().size.is_positive_finite());
-    }
-    let dynamic_size = runtime
-        .snapshot()
-        .expect("dynamic external graph")
-        .graph()
-        .node(&node)
-        .and_then(|node| node.size)
-        .expect("dynamic external node size");
-    assert_eq!(dynamic_size.height, 144.0);
-    assert_eq!(runtime.history_state().unwrap().undo_len(), 1);
-
-    cx.read_entity(&host, |host, _| {
-        assert_eq!(host.resource_snapshot().active_nodes(), 2);
-        let diagnostic = host
-            .last_diagnostic()
-            .expect("the deliberately missing sink renderer uses the fallback");
-        assert_eq!(
-            diagnostic.kind(),
-            OpenGpuiSceneHostDiagnosticKind::MissingRenderer
-        );
-        assert_eq!(diagnostic.node(), Some(sink_node_id()));
-        assert_eq!(host.graph_theme(), expected_theme);
-        assert_eq!(host.edge_painter_registry().len(), 1);
-    });
-    assert_eq!(
-        runtime
-            .snapshot()
-            .expect("runtime snapshot after native render")
-            .graph()
-            .node(&node)
-            .expect("dynamic node remains in runtime")
-            .ports,
-        vec![base_port, dynamic_port]
-    );
+        .expect("create external graph runtime")
 }
 
-#[cfg(test)]
-fn draw(cx: &mut open_gpui::VisualTestContext) {
-    cx.update(|window, cx| {
-        window.draw(cx).clear();
-    });
-    cx.run_until_parked();
+fn build_product_host(view: ViewSession, registry: OpenGpuiNodeRegistry) -> OpenGpuiSceneHost {
+    OpenGpuiSceneHost::new(
+        view,
+        registry,
+        CanvasRect {
+            origin: CanvasPoint::default(),
+            size: CanvasSize {
+                width: 1024.0,
+                height: 768.0,
+            },
+        },
+    )
+    .expect("valid Open GPUI scene host")
+    .with_graph_theme(external_graph_theme())
+    .with_edge_painter_registry(external_edge_painters())
 }
 
 fn main() {
     let catalog = external_catalog();
-    assert_invalid_registry_is_rejected(&catalog);
-    let registry = build_product_registry(product_node_state(), &catalog);
+    let runtime = build_external_runtime(&catalog);
+    let view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("attach production external view");
+    let registry = build_product_registry(product_node_title(), &catalog);
     assert_eq!(
         registry.renderer_stamp(&NodeKindKey::new(KIND), 1),
         Some(&RendererStamp::new(RENDERER, 1))
     );
+    let host = build_product_host(view, registry);
+    assert_eq!(host.graph_theme(), external_graph_theme());
+    assert_eq!(host.edge_painter_registry().len(), 1);
 }

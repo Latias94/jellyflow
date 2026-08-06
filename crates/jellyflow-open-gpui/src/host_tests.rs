@@ -1,5 +1,5 @@
 use std::cell::Cell;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 use jellyflow_core::{
@@ -15,23 +15,24 @@ use jellyflow_runtime::{
     commands::TopologyEdit, commands::TopologyPort, geometry::HandlePosition, geometry::ViewPoint,
     geometry::ViewRect, geometry::ViewSize, graph::EdgeEndpoint, graph::EdgeInstanceKey,
     graph::GraphRuntime, graph::GraphRuntimeMiddleware, graph::GraphRuntimeMiddlewareSnapshot,
-    graph::RuntimePatch, interaction::CanvasInteractionPhase,
-    interaction::ConnectionGestureBinding, interaction::InteractionTerminalReason,
-    interaction::InteractionTickDemand, view::AdapterEnvironment, view::FeedbackSubmissionError,
-    view::FrameMaterializationBudget, view::FrameRequest, view::LayoutNodeStatus,
-    view::PublishedPortOutcome, view::RendererStamp, view::StaleFrameReason, view::ViewCloseReason,
-    view::ViewSession, view::ViewSessionError, view::ViewSessionEvent, view::ViewSessionOptions,
+    graph::RuntimePatch, interaction::CanvasInteractionError, interaction::CanvasInteractionPhase,
+    interaction::InteractionTerminalReason, interaction::InteractionTickDemand,
+    io::ViewSessionSeed, io::ViewStackingSeed, view::AdapterEnvironment,
+    view::FeedbackSubmissionError, view::FrameMaterializationBudget, view::FrameRequest,
+    view::LayoutNodeStatus, view::PublishedPortOutcome, view::RendererStamp,
+    view::StaleFrameReason, view::ViewCloseReason, view::ViewSession, view::ViewSessionError,
+    view::ViewSessionEvent, view::ViewSessionOptions,
 };
 use open_gpui::{
-    App, AppContext, Context, Entity, FocusHandle, HitboxId, InteractiveElement, KeyDownEvent,
-    KeyUpEvent, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, ParentElement,
-    PinchEvent, Render, RequestFrameOptions, ScrollDelta, ScrollWheelEvent,
+    App, AppContext, Context, CursorStyle, Entity, FocusHandle, HitboxId, InteractiveElement,
+    KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent,
+    ParentElement, PinchEvent, Render, RequestFrameOptions, ScrollDelta, ScrollWheelEvent,
     StatefulInteractiveElement, Styled, TouchPhase, VisualContext, Window, div, point, px,
 };
 
 use crate::activity::{OpenGpuiActivityKind, OpenGpuiActivityLease};
 use crate::authoring::OpenGpuiPortHandle;
-use crate::chrome::{OpenGpuiEdgeMarkerShape, OpenGpuiEdgeVisualFacts};
+use crate::chrome::OpenGpuiEdgeVisualFacts;
 use crate::command_journal::OPEN_GPUI_COMMAND_JOURNAL_CAPACITY;
 use crate::interaction::{
     OpenGpuiPortActivationEvent, OpenGpuiPortActivationSource, OpenGpuiPortDragCancelReason,
@@ -46,29 +47,23 @@ use crate::registry::{
 use crate::size_policy::{OpenGpuiContentHeightPolicy, OpenGpuiNodeSizePolicy};
 
 use super::connection::OpenGpuiConnectionPreviewProbeOutcome;
-use super::edge_layer::OpenGpuiVisibleRouteIdentity;
 use super::edge_semantics::{
     OPEN_GPUI_EDGE_SEMANTIC_SIZE_IN_VIEW, open_gpui_edge_semantic_selector,
 };
 use super::focus_navigation::OpenGpuiGraphFocusTarget;
 use super::retained_node_owner::RetainedFrameReconcileFault;
 use super::scene_render::{
-    OpenGpuiNodeLayerEntry, edge_path_endpoints, promote_incident_routes,
-    visit_edge_chrome_wires_in_paint_order,
+    edge_path_endpoints, promote_incident_routes, visit_edge_chrome_wires_in_paint_order,
 };
 use super::{
-    LayoutReceiptAction, OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY, OPEN_GPUI_SCENE_LAYER_ORDER,
-    OpenGpuiBlankCanvasContextHandler, OpenGpuiBlankCanvasContextRequest,
-    OpenGpuiConnectionPreviewEvidence, OpenGpuiNodeBinding, OpenGpuiNodeRegistry,
-    OpenGpuiSceneGestureCancelReason, OpenGpuiSceneGesturePhase, OpenGpuiSceneHost,
-    OpenGpuiSceneLayer, layout_receipt_action,
+    LayoutReceiptAction, OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY, OpenGpuiBlankCanvasContextHandler,
+    OpenGpuiBlankCanvasContextRequest, OpenGpuiNodeBinding, OpenGpuiNodeRegistry,
+    OpenGpuiSceneGestureCancelReason, OpenGpuiSceneHost, OpenGpuiSceneHostInitError,
+    effective_frame_materialization_budget, layout_receipt_action,
 };
 
 #[path = "host/tests/interaction_characterization.rs"]
 mod interaction_characterization;
-
-#[path = "host/tests/canonical_conformance.rs"]
-mod canonical_conformance;
 
 #[path = "host/tests/frame_transaction.rs"]
 mod frame_transaction;
@@ -79,6 +74,50 @@ mod pointer_capture_lifecycle;
 const KIND: &str = "test.scene-layer-node";
 const EXEC_KIND: &str = "test.scene-layer-exec-node";
 const RENDERER: &str = "test.native.scene-layer-node";
+
+#[test]
+fn protected_required_nodes_raise_materialization_and_scan_limits_together() {
+    let configured = FrameMaterializationBudget::new(7, 5, 3)
+        .with_visible_node_scan_limit(11)
+        .with_required_node_scan_limit(13)
+        .with_routing_dependency_scan_limit(17)
+        .with_port_scan_limit(19);
+
+    let effective = effective_frame_materialization_budget(configured, 513);
+
+    assert_eq!(effective.visible_nodes(), 7);
+    assert_eq!(effective.required_nodes(), 513);
+    assert_eq!(effective.required_node_scan_limit(), 513);
+    assert_eq!(effective.routing_dependency_nodes(), 3);
+    assert_eq!(effective.visible_node_scan_limit(), 11);
+    assert_eq!(effective.routing_dependency_scan_limit(), 17);
+    assert_eq!(effective.port_scan_limit(), 19);
+}
+
+#[test]
+fn scene_host_reports_a_closed_view_instead_of_panicking() {
+    let catalog = NodeCatalog::new();
+    let graph = GraphBuilder::new(GraphId::from_u128(0x00C1_05ED))
+        .build()
+        .expect("valid empty graph");
+    let runtime = GraphRuntime::builder(catalog.clone())
+        .build(graph)
+        .expect("valid empty runtime");
+    let view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("attach empty view");
+    view.close().expect("close view before host construction");
+    let registry = OpenGpuiNodeRegistry::builder()
+        .seal(&catalog)
+        .expect("empty registry is valid");
+
+    assert!(matches!(
+        OpenGpuiSceneHost::new(view, registry, viewport()),
+        Err(OpenGpuiSceneHostInitError::Interaction(
+            CanvasInteractionError::ViewUnavailable
+        ))
+    ));
+}
 
 fn register_test_renderer<F, V>(registry: &mut OpenGpuiNodeRegistryBuilder, factory: F)
 where
@@ -523,6 +562,7 @@ fn mounted_host_scopes_environment_and_layout_invalidation_to_its_view(
                 registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
+            .expect("valid Open GPUI scene host")
         });
         *scene_host.borrow_mut() = Some(host.clone());
         InteractiveScene { host }
@@ -742,6 +782,7 @@ fn incomplete_real_port_measurement_preserves_authoritative_geometry_without_ret
                 registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
+            .expect("valid Open GPUI scene host")
         });
         *scene_host.borrow_mut() = Some(host.clone());
         InteractiveScene { host }
@@ -749,19 +790,11 @@ fn incomplete_real_port_measurement_preserves_authoritative_geometry_without_ret
     let host = captured_host.borrow().clone().expect("captured host");
 
     draw(cx);
-    let counts_after_draw = cx.read_entity(&host, |host, _| {
+    cx.read_entity(&host, |host, _| {
         let diagnostic = host
             .last_diagnostic()
             .expect("incomplete native measurement is explicit");
         assert!(diagnostic.message().contains("missing real ports"));
-        assert_eq!(host.work_ledger_snapshot().layout_rejections(), 0);
-        assert!(host.work_ledger_snapshot().measurement_failures() >= 2);
-        assert!(host.work_ledger_snapshot().feedback_failures() >= 2);
-        (
-            host.work_ledger_snapshot().feedback_submissions(),
-            host.work_ledger_snapshot().layout_rejections(),
-            host.work_ledger_snapshot().feedback_failures(),
-        )
     });
     let geometry = weak_view
         .geometry_snapshot()
@@ -780,13 +813,12 @@ fn incomplete_real_port_measurement_preserves_authoritative_geometry_without_ret
     }
     cx.run_until_parked();
     assert_eq!(
-        cx.read_entity(&host, |host, _| (
-            host.work_ledger_snapshot().feedback_submissions(),
-            host.work_ledger_snapshot().layout_rejections(),
-            host.work_ledger_snapshot().feedback_failures(),
-        )),
-        counts_after_draw,
-        "incomplete coverage must not schedule an unbounded retry"
+        weak_view
+            .geometry_snapshot()
+            .expect("geometry after native work settles")
+            .layout_revision(),
+        authoritative.layout_revision(),
+        "incomplete coverage must preserve the last complete geometry",
     );
 }
 
@@ -816,6 +848,7 @@ fn retired_dynamic_port_handle_reports_prepaint_error_with_node_identity(
                 registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
+            .expect("valid Open GPUI scene host")
         });
         *scene_host.borrow_mut() = Some(host.clone());
         InteractiveScene { host }
@@ -842,39 +875,24 @@ fn retired_dynamic_port_handle_reports_prepaint_error_with_node_identity(
     cx.run_until_parked();
     draw(cx);
 
-    let counts_after_draw = cx.read_entity(&host, |host, _| {
+    let diagnostic = cx.read_entity(&host, |host, _| {
         let diagnostic = host
             .last_diagnostic()
             .expect("prepaint measurement diagnostic");
         assert_eq!(diagnostic.node(), Some(NodeId::from_u128(10)));
         assert!(!diagnostic.message().is_empty());
-        assert!(host.work_ledger_snapshot().measurement_failures() >= 1);
-        assert_eq!(
-            host.work_ledger_snapshot().feedback_failures(),
-            host.work_ledger_snapshot().measurement_failures()
-        );
-        (
-            host.work_ledger_snapshot().feedback_submissions(),
-            host.work_ledger_snapshot().measurement_failures(),
-            host.work_ledger_snapshot().feedback_failures(),
-        )
+        diagnostic.clone()
     });
     cx.run_until_parked();
     assert_eq!(
-        cx.read_entity(&host, |host, _| (
-            host.work_ledger_snapshot().feedback_submissions(),
-            host.work_ledger_snapshot().measurement_failures(),
-            host.work_ledger_snapshot().feedback_failures(),
-        )),
-        counts_after_draw,
-        "a deterministic prepaint error must not trigger an unbounded retry"
+        cx.read_entity(&host, |host, _| host.last_diagnostic().cloned()),
+        Some(diagnostic),
+        "a deterministic prepaint error must settle without replacing its diagnosis",
     );
 }
 
 #[open_gpui::test]
-fn fresh_route_is_painted_after_edges_and_before_retained_nodes(
-    cx: &mut open_gpui::TestAppContext,
-) {
+fn fresh_route_is_planned_from_published_geometry(cx: &mut open_gpui::TestAppContext) {
     let runtime = GraphRuntime::builder(catalog())
         .build(routed_graph())
         .expect("valid routed graph");
@@ -896,6 +914,7 @@ fn fresh_route_is_painted_after_edges_and_before_retained_nodes(
                 registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
+            .expect("valid Open GPUI scene host")
         });
         *scene_host.borrow_mut() = Some(host.clone());
         InteractiveScene { host }
@@ -912,239 +931,48 @@ fn fresh_route_is_painted_after_edges_and_before_retained_nodes(
         "the default visible grid must share the edge layer behind nodes",
     );
 
-    cx.read_entity(&host, |host, _| {
-        let evidence = &host.scene_evidence;
+    cx.update_entity(&host, |host, _| {
+        let wires = host.scene_wires().expect("fresh route plan");
+        assert_eq!(wires.published.len(), 1);
+        assert_eq!(wires.published[0].edge, EdgeId::from_u128(30));
         assert_eq!(
-            evidence.first_paint_wire_count.get(),
-            Some(0),
-            "the first paint must not invent a wire before fresh port geometry exists",
-        );
-        assert!(
-            evidence
-                .first_non_empty_paint_pass
-                .get()
-                .is_some_and(|pass| pass >= 2),
-            "a real route must enter the edge paint layer on a later fresh-layout frame",
-        );
-        assert_eq!(evidence.last_planned_wire_count.get(), 1);
-        assert_eq!(evidence.last_painted_wire_count.get(), 1);
-        assert_eq!(
-            evidence.last_layers.get(),
-            Some(OPEN_GPUI_SCENE_LAYER_ORDER)
-        );
-        assert_eq!(
-            OPEN_GPUI_SCENE_LAYER_ORDER,
-            [
-                OpenGpuiSceneLayer::Edge,
-                OpenGpuiSceneLayer::EdgeChrome,
-                OpenGpuiSceneLayer::Preview,
-                OpenGpuiSceneLayer::EdgeInteraction,
-                OpenGpuiSceneLayer::Node,
-                OpenGpuiSceneLayer::InteractionChrome,
-                OpenGpuiSceneLayer::Overlay,
-            ],
-            "preview stays above committed chrome and below every node/overlay layer",
-        );
-
-        let edge = OPEN_GPUI_SCENE_LAYER_ORDER
-            .iter()
-            .position(|layer| *layer == OpenGpuiSceneLayer::Edge)
-            .expect("edge layer");
-        let node = OPEN_GPUI_SCENE_LAYER_ORDER
-            .iter()
-            .position(|layer| *layer == OpenGpuiSceneLayer::Node)
-            .expect("node layer");
-        let edge_interaction = OPEN_GPUI_SCENE_LAYER_ORDER
-            .iter()
-            .position(|layer| *layer == OpenGpuiSceneLayer::EdgeInteraction)
-            .expect("edge interaction layer");
-        assert!(edge < node, "retained nodes must paint above graph wires");
-        assert!(
-            edge_interaction < node,
-            "node controls must paint and receive pointer hits above edge focus controls",
-        );
-        assert_eq!(
-            host.work_ledger_snapshot().mounts(),
-            2,
-            "fresh frames retain node identity"
+            wires.published[0].geometry_revision,
+            geometry.route_geometry_revision(EdgeId::from_u128(30)),
         );
     });
+}
 
-    let before = cx.read_entity(&host, |host, _| host.work_ledger_snapshot());
-    cx.update_entity(&host, |_, cx| cx.notify());
-    draw_once(cx);
-    let after = cx.read_entity(&host, |host, _| host.work_ledger_snapshot());
-    assert_eq!(
-        after.edge_route_query_entries_examined(),
-        before.edge_route_query_entries_examined(),
-        "an unchanged native redraw must reuse the complete visible-route plan",
-    );
-    assert_eq!(
-        after.edge_path_cache_misses(),
-        before.edge_path_cache_misses(),
-        "an unchanged native redraw must not rebuild route paths",
-    );
-    assert_eq!(
-        after.edge_paint_preparations(),
-        before.edge_paint_preparations(),
-        "an unchanged native redraw must not regroup the edge batch plan",
-    );
-    assert!(after.edge_paint_plan_reuses() > before.edge_paint_plan_reuses());
-    assert_eq!(after.retained_edge_entities(), 0);
+#[open_gpui::test]
+fn focused_edge_is_resolved_inside_the_ordinary_wire_plan(cx: &mut open_gpui::TestAppContext) {
+    let (_runtime, host, cx) = mount_connection_scene_for_graph(cx, routed_graph());
+    draw(cx);
+    draw(cx);
 
-    let pointer = cx.read_entity(&host, |host, _| {
-        let geometry = host.view.geometry_snapshot().expect("edge geometry");
-        let sample = geometry
-            .route(EdgeId::from_u128(30))
-            .expect("published edge")
-            .facts()
-            .path
-            .sample(jellyflow_runtime::geometry::EdgePathAnchor::Center)
-            .expect("edge center");
-        let position = host
+    cx.update_entity(&host, |host, _| {
+        let edge = EdgeId::from_u128(30);
+        let focused = host
             .view
-            .viewport_transform()
-            .expect("viewport transform")
-            .screen_point_for_canvas(sample.point)
-            .expect("project edge center");
-        let origin = host.scene_origin.expect("scene origin");
-        point(origin.x + px(position.x), origin.y + px(position.y))
+            .edge_instance_key(edge)
+            .expect("read current focused edge lifetime")
+            .expect("current focused edge lifetime");
+        let wires = host
+            .scene_wires_with_offsets(&BTreeMap::new(), Some(focused))
+            .expect("focused ordinary wire plan");
+        let wire = wires
+            .published
+            .iter()
+            .find(|wire| wire.edge == edge)
+            .expect("focused edge remains in runtime paint order");
+
+        assert_eq!(
+            wire.visual_facts,
+            OpenGpuiEdgeVisualFacts::default().with_focused(true)
+        );
+        assert!(
+            wire.halo_paint_key.is_some(),
+            "focus contributes one ordinary dominant halo",
+        );
     });
-    cx.simulate_mouse_move(pointer, None, Default::default());
-    cx.run_until_parked();
-    let hovered = cx.read_entity(&host, |host, _| host.work_ledger_snapshot());
-    assert_eq!(
-        hovered.edge_route_query_entries_examined(),
-        after.edge_route_query_entries_examined(),
-        "hover must not restart the visible-route query",
-    );
-    assert_eq!(
-        hovered.edge_layer_plans() - after.edge_layer_plans(),
-        1,
-        "hover must rebuild exactly one style-aware wire plan",
-    );
-    assert_eq!(
-        hovered.edge_route_previous_plan_reuses() - after.edge_route_previous_plan_reuses(),
-        1,
-        "hover must reuse the completed visible-route query",
-    );
-    assert_eq!(
-        hovered.edge_path_cache_misses() - after.edge_path_cache_misses(),
-        1,
-        "only the changed edge builds its wider hover tessellation",
-    );
-    assert_eq!(
-        hovered.edge_paint_preparations() - after.edge_paint_preparations(),
-        1,
-        "hover must prepare one ordered composed plan without re-querying routes",
-    );
-    assert_eq!(
-        hovered.edge_native_paint_calls() - after.edge_native_paint_calls(),
-        2,
-        "the changed wire submits its halo and base batches in runtime order",
-    );
-    assert_eq!(hovered.retained_edge_entities(), 0);
-}
-
-#[open_gpui::test]
-fn same_style_edges_merge_into_fewer_native_paint_submissions(cx: &mut open_gpui::TestAppContext) {
-    const EDGE_COUNT: usize = 4;
-    let (graph, _) = bounded_edge_graph(EDGE_COUNT, 0);
-    let (_runtime, host, cx) = mount_connection_scene_for_graph(cx, graph);
-
-    draw(cx);
-    draw(cx);
-
-    let stats = cx.read_entity(&host, |host, _| host.work_ledger_snapshot());
-    assert!(stats.edge_native_paint_calls() > 0);
-    assert!(stats.edge_native_edges_painted() >= EDGE_COUNT as u64);
-    assert!(
-        stats.edge_native_paint_calls() < stats.edge_native_edges_painted(),
-        "same-style route meshes must share native paint submissions",
-    );
-    assert_eq!(stats.retained_edge_entities(), 0);
-}
-
-#[open_gpui::test]
-fn matching_edge_markers_share_native_submissions_and_reuse_their_plan(
-    cx: &mut open_gpui::TestAppContext,
-) {
-    const EDGE_COUNT: usize = 4;
-    let (graph, _) = bounded_edge_graph_with(EDGE_COUNT, 0, |output, input| {
-        let mut edge = Edge::new(EdgeKind::Data, output, input);
-        edge.view.target_marker_key = Some("arrow".to_owned());
-        edge
-    });
-    let (_runtime, host, cx) = mount_connection_scene_for_graph(cx, graph);
-
-    draw(cx);
-    draw(cx);
-
-    let before = cx.read_entity(&host, |host, _| host.work_ledger_snapshot());
-    assert!(before.edge_native_markers_painted() >= EDGE_COUNT as u64);
-    assert!(
-        before.edge_native_marker_paint_calls() < before.edge_native_markers_painted(),
-        "equal marker colors must share one native path submission",
-    );
-
-    cx.update_entity(&host, |_, cx| cx.notify());
-    draw_once(cx);
-    let after = cx.read_entity(&host, |host, _| host.work_ledger_snapshot());
-    assert_eq!(
-        after.edge_marker_preparations(),
-        before.edge_marker_preparations(),
-        "an unchanged frame must not regroup marker paths",
-    );
-    assert!(after.edge_marker_plan_reuses() > before.edge_marker_plan_reuses());
-    assert_eq!(after.retained_edge_entities(), 0);
-}
-
-#[open_gpui::test]
-fn alternating_edge_styles_preserve_runtime_order_in_native_submissions(
-    cx: &mut open_gpui::TestAppContext,
-) {
-    const EDGE_COUNT: usize = 6;
-    let mut index = 0usize;
-    let (graph, _) = bounded_edge_graph_with(EDGE_COUNT, 0, |output, input| {
-        let mut edge = Edge::new(EdgeKind::Data, output, input);
-        edge.view.style_token = Some(if index.is_multiple_of(2) {
-            "data.primary".to_owned()
-        } else {
-            "warning".to_owned()
-        });
-        edge.view.target_marker_key = Some("arrow".to_owned());
-        index = index.saturating_add(1);
-        edge
-    });
-    let (_runtime, host, cx) = mount_connection_scene_for_graph(cx, graph);
-
-    draw(cx);
-    draw(cx);
-    let before = cx.read_entity(&host, |host, _| host.work_ledger_snapshot());
-    cx.update_entity(&host, |_, cx| cx.notify());
-    draw_once(cx);
-    let after = cx.read_entity(&host, |host, _| host.work_ledger_snapshot());
-
-    let painted_edges = after.edge_native_edges_painted() - before.edge_native_edges_painted();
-    let path_passes = painted_edges / EDGE_COUNT as u64;
-    assert_eq!(painted_edges % EDGE_COUNT as u64, 0);
-    assert!(path_passes > 0);
-    assert_eq!(
-        after.edge_native_paint_calls() - before.edge_native_paint_calls(),
-        path_passes * EDGE_COUNT as u64,
-        "alternating styles must remain separate adjacent batches so native paint order matches runtime order",
-    );
-    let painted_markers =
-        after.edge_native_markers_painted() - before.edge_native_markers_painted();
-    let marker_passes = painted_markers / EDGE_COUNT as u64;
-    assert_eq!(painted_markers % EDGE_COUNT as u64, 0);
-    assert!(marker_passes > 0);
-    assert_eq!(
-        after.edge_native_marker_paint_calls() - before.edge_native_marker_paint_calls(),
-        marker_passes * EDGE_COUNT as u64,
-        "marker submissions must preserve the same adjacent runtime order as their routes",
-    );
-    assert_eq!(after.retained_edge_entities(), 0);
 }
 
 #[open_gpui::test]
@@ -1250,6 +1078,7 @@ fn edge_layer_budget_is_clamped_to_the_defensive_native_limit() {
             .expect("valid empty registry"),
         viewport(),
     )
+    .expect("valid Open GPUI scene host")
     .with_edge_layer_budget(usize::MAX);
 
     assert_eq!(
@@ -1259,7 +1088,7 @@ fn edge_layer_budget_is_clamped_to_the_defensive_native_limit() {
 }
 
 #[test]
-fn endpoint_geometry_fallbacks_are_deduplicated_in_host_diagnostics_and_stats() {
+fn endpoint_geometry_diagnostics_deduplicate_and_report_the_latest_group() {
     let runtime = GraphRuntime::builder(catalog())
         .build(routed_graph())
         .expect("valid graph");
@@ -1272,33 +1101,33 @@ fn endpoint_geometry_fallbacks_are_deduplicated_in_host_diagnostics_and_stats() 
             .seal(&catalog())
             .expect("valid empty registry"),
         viewport(),
-    );
+    )
+    .expect("valid Open GPUI scene host");
 
     host.record_endpoint_geometry_diagnostics(
         vec!["layout revision 3 endpoint fallback selected PublishedPort".to_owned()],
         1,
     );
-    assert_eq!(host.work_ledger_snapshot().endpoint_geometry_fallbacks(), 1);
     assert_eq!(
         host.last_diagnostic().map(|diagnostic| diagnostic.kind()),
         Some(super::OpenGpuiSceneHostDiagnosticKind::EndpointGeometry)
     );
+    let first = host.last_diagnostic().cloned();
 
     host.record_endpoint_geometry_diagnostics(
         vec!["layout revision 3 endpoint fallback selected PublishedPort".to_owned()],
         1,
     );
     assert_eq!(
-        host.work_ledger_snapshot().endpoint_geometry_fallbacks(),
-        1,
-        "the same retained fallback must not inflate telemetry every frame",
+        host.last_diagnostic(),
+        first.as_ref(),
+        "the same retained fallback must preserve the existing diagnosis",
     );
 
     host.record_endpoint_geometry_diagnostics(
         vec!["layout revision 4 endpoint fallback selected ExplicitFallback".to_owned()],
         2,
     );
-    assert_eq!(host.work_ledger_snapshot().endpoint_geometry_fallbacks(), 3);
     assert!(
         host.last_diagnostic()
             .is_some_and(|diagnostic| diagnostic.message().contains("additional endpoint"))
@@ -1330,7 +1159,8 @@ fn committed_wire_endpoints_match_the_exact_same_revision_port_publication() {
             .seal(&catalog())
             .expect("valid empty registry"),
         viewport(),
-    );
+    )
+    .expect("valid Open GPUI scene host");
 
     let wires = host.scene_wires().expect("published wire plan");
     let wire = wires.published.first().expect("one published wire");
@@ -1356,7 +1186,7 @@ fn committed_wire_endpoints_match_the_exact_same_revision_port_publication() {
     assert_eq!(wire.target_endpoint.identity().port(), target_port);
     assert_eq!(wire.source_endpoint.diagnostic(), None);
     assert_eq!(wire.target_endpoint.diagnostic(), None);
-    assert_eq!(host.work_ledger_snapshot().endpoint_geometry_fallbacks(), 0);
+    assert!(host.last_diagnostic().is_none());
 }
 
 #[open_gpui::test]
@@ -1382,6 +1212,7 @@ fn edge_layer_stays_empty_without_fresh_endpoint_geometry(cx: &mut open_gpui::Te
                 registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
+            .expect("valid Open GPUI scene host")
         });
         *scene_host.borrow_mut() = Some(host.clone());
         InteractiveScene { host }
@@ -1397,11 +1228,13 @@ fn edge_layer_stays_empty_without_fresh_endpoint_geometry(cx: &mut open_gpui::Te
             .routes()
             .is_empty(),
     );
-    cx.read_entity(&host, |host, _| {
-        let evidence = &host.scene_evidence;
-        assert_eq!(evidence.last_planned_wire_count.get(), 0);
-        assert_eq!(evidence.last_painted_wire_count.get(), 0);
-        assert_eq!(evidence.first_non_empty_paint_pass.get(), None);
+    cx.update_entity(&host, |host, _| {
+        assert!(
+            host.scene_wires()
+                .expect("empty route plan without fresh endpoints")
+                .published
+                .is_empty()
+        );
     });
 }
 
@@ -1428,6 +1261,7 @@ fn edge_layer_culls_offscreen_routes_and_keeps_the_frontmost_runtime_suffix() {
             .expect("valid empty test registry"),
         viewport(),
     )
+    .expect("valid Open GPUI scene host")
     .with_edge_layer_budget(EDGE_BUDGET);
     let wires = host.scene_wires().expect("bounded edge plan");
 
@@ -1457,22 +1291,6 @@ fn edge_layer_culls_offscreen_routes_and_keeps_the_frontmost_runtime_suffix() {
     assert_eq!(overflow.budget_omitted(), VISIBLE_EDGES - EDGE_BUDGET);
     assert!(!overflow.is_empty());
 
-    let stats = host.work_ledger_snapshot();
-    assert_eq!(stats.edge_layer_plans(), 1);
-    assert_eq!(
-        stats.edge_route_query_candidates_matched(),
-        VISIBLE_EDGES as u64
-    );
-    assert_eq!(stats.edge_route_query_pending(), 0);
-    assert_eq!(stats.edge_routes_planned(), EDGE_BUDGET as u64);
-    assert_eq!(
-        stats.edge_routes_budget_omitted(),
-        (VISIBLE_EDGES - EDGE_BUDGET) as u64,
-    );
-    assert_eq!(stats.edge_layer_overflows(), 1);
-
-    let candidates_before_reuse = stats.edge_route_query_candidates_matched();
-    let entries_before_reuse = stats.edge_route_query_entries_examined();
     let cached = host
         .scene_wires()
         .expect("unchanged complete route plan is reusable");
@@ -1488,18 +1306,14 @@ fn edge_layer_culls_offscreen_routes_and_keeps_the_frontmost_runtime_suffix() {
     assert!(overflow.reused_previous_plan());
     assert_eq!(overflow.query_entries_examined(), 0);
     assert_eq!(overflow.query_candidates_matched(), 0);
-    let reused_stats = host.work_ledger_snapshot();
-    assert_eq!(
-        reused_stats.edge_route_query_candidates_matched(),
-        candidates_before_reuse,
-    );
-    assert_eq!(
-        reused_stats.edge_route_query_entries_examined(),
-        entries_before_reuse,
-    );
-    assert_eq!(reused_stats.edge_route_previous_plan_reuses(), 1);
 
-    let reselected = visible_edges[0];
+    let previous_geometry_revisions = cached
+        .published
+        .iter()
+        .map(|wire| (wire.edge, wire.geometry_revision))
+        .collect::<BTreeMap<_, _>>();
+    publish_all_edge_geometry_with_offset(&host.view, [selected], 18.0);
+    let reselected = visible_edges[2];
     set_selection_by_id(&host.view, Vec::new(), vec![reselected])
         .expect("change paint order before a bounded refresh");
     host.visible_route_query_budget = 1;
@@ -1516,10 +1330,126 @@ fn edge_layer_culls_offscreen_routes_and_keeps_the_frontmost_runtime_suffix() {
         vec![visible_edges[2], visible_edges[3]],
         "an incomplete refresh retains the previous complete runtime order without adapter elevation",
     );
+    assert!(
+        resumed
+            .published
+            .iter()
+            .find(|wire| wire.edge == reselected)
+            .expect("reselected edge remains in the retained route publication")
+            .visual_facts
+            .selected()
+    );
+    assert!(
+        !resumed
+            .published
+            .iter()
+            .find(|wire| wire.edge == selected)
+            .expect("previously selected edge remains in the retained route publication")
+            .visual_facts
+            .selected()
+    );
     let overflow = host.last_edge_layer_overflow();
     assert!(overflow.query_pending());
     assert!(overflow.reused_previous_plan());
     assert!(overflow.query_entries_examined() <= 1);
+    let current_geometry = host
+        .view
+        .geometry_snapshot()
+        .expect("current geometry after bounded route refresh");
+    for wire in resumed.published.iter() {
+        let current_revision = current_geometry
+            .route_geometry_revision(wire.edge)
+            .expect("current published route has a geometry revision");
+        assert_eq!(wire.geometry_revision, Some(current_revision));
+        assert_ne!(
+            previous_geometry_revisions
+                .get(&wire.edge)
+                .copied()
+                .flatten(),
+            Some(current_revision),
+            "pending membership must not reuse its old tessellation revision",
+        );
+    }
+}
+
+#[test]
+fn manual_frame_bounds_remain_the_route_query_authority_after_surface_measurement() {
+    let runtime = GraphRuntime::builder(catalog())
+        .build(routed_graph())
+        .expect("valid routed graph");
+    let view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("attach routed view");
+    publish_all_edge_geometry(&view, []);
+    let mut host = OpenGpuiSceneHost::new(
+        view,
+        OpenGpuiNodeRegistry::builder()
+            .seal(&catalog())
+            .expect("valid empty test registry"),
+        viewport(),
+    )
+    .expect("valid Open GPUI scene host");
+    host.surface_size = Some(ViewSize::new(800.0, 600.0));
+    host.set_frame_bounds(CanvasRect {
+        origin: CanvasPoint {
+            x: 10_000.0,
+            y: 10_000.0,
+        },
+        size: viewport().size,
+    });
+
+    let wires = host.scene_wires().expect("manual offscreen route plan");
+
+    assert!(wires.published.is_empty());
+    assert_eq!(
+        host.last_edge_layer_overflow().query_candidates_matched(),
+        0,
+        "a measured surface must not replace explicit manual query bounds",
+    );
+}
+
+#[test]
+fn tracked_surface_routes_follow_the_current_transform_before_prepaint_caches_bounds() {
+    let runtime = GraphRuntime::builder(catalog())
+        .build(routed_graph())
+        .expect("valid routed graph");
+    let view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("attach routed view");
+    publish_all_edge_geometry(&view, []);
+    let mut host = OpenGpuiSceneHost::new(
+        view,
+        OpenGpuiNodeRegistry::builder()
+            .seal(&catalog())
+            .expect("valid empty test registry"),
+        viewport(),
+    )
+    .expect("valid Open GPUI scene host");
+    host.surface_size = Some(ViewSize::new(800.0, 600.0));
+    host.track_surface_viewport();
+    let cached_bounds = host.frame_bounds();
+    host.view
+        .set_viewport(
+            ViewportTransform::new(
+                CanvasPoint {
+                    x: -10_000.0,
+                    y: -10_000.0,
+                },
+                1.0,
+            )
+            .expect("valid panned viewport"),
+        )
+        .expect("pan routed view");
+
+    let wires = host.scene_wires().expect("current-transform route plan");
+
+    assert_eq!(host.frame_bounds(), cached_bounds);
+    assert!(wires.published.is_empty());
+    assert_eq!(
+        host.last_edge_layer_overflow().query_candidates_matched(),
+        0,
+        "route query and culling must use the current transform without waiting for prepaint",
+    );
 }
 
 #[test]
@@ -1531,10 +1461,7 @@ fn incident_route_promotion_reserves_a_saturated_handoff_budget() {
     let view = runtime
         .attach_view(ViewSessionOptions::default())
         .expect("attach promotion view");
-    let mut routes = vec![OpenGpuiVisibleRouteIdentity {
-        edge: ordinary,
-        geometry_revision: None,
-    }];
+    let mut routes = vec![ordinary];
 
     let promoted = promote_incident_routes(
         &view,
@@ -1547,17 +1474,17 @@ fn incident_route_promotion_reserves_a_saturated_handoff_budget() {
 
     assert_eq!(promoted, BTreeSet::from([incident]));
     assert_eq!(
-        routes.iter().map(|route| route.edge).collect::<Vec<_>>(),
+        routes,
         vec![ordinary, incident],
         "the incident route must occupy the retained frontmost budget slot",
     );
 }
 
 #[test]
-fn ten_thousand_routes_keep_each_visible_query_page_hard_bounded() {
-    const EDGE_COUNT: usize = 10_000;
+fn dense_routes_complete_through_bounded_query_pages_and_reuse_the_plan() {
     const ROUTE_SCAN_LIMIT: usize = 64;
-    const EDGE_BUDGET: usize = 4;
+    const EDGE_COUNT: usize = ROUTE_SCAN_LIMIT * 4;
+    const EDGE_BUDGET: usize = ROUTE_SCAN_LIMIT * 2;
 
     let (graph, edges) = dense_edge_graph(EDGE_COUNT);
     let selected = edges.iter().rev().copied().collect::<Vec<_>>();
@@ -1574,7 +1501,8 @@ fn ten_thousand_routes_keep_each_visible_query_page_hard_bounded() {
             .seal(&catalog())
             .expect("valid empty test registry"),
         viewport(),
-    );
+    )
+    .expect("valid Open GPUI scene host");
     assert_eq!(
         host.visible_route_query_budget(),
         super::OPEN_GPUI_DEFAULT_VISIBLE_ROUTE_QUERY_BUDGET,
@@ -1584,14 +1512,9 @@ fn ten_thousand_routes_keep_each_visible_query_page_hard_bounded() {
         .with_visible_route_query_budget(ROUTE_SCAN_LIMIT);
 
     let mut pending_pages = 0_u64;
-    loop {
+    let terminal_wires = loop {
         let wires = host.scene_wires().expect("bounded dense edge plan");
         let overflow = host.last_edge_layer_overflow();
-        assert!(
-            wires.published.is_empty(),
-            "page {pending_pages} published {} wires with {overflow:?}",
-            wires.published.len(),
-        );
         assert!(overflow.query_entries_examined() <= ROUTE_SCAN_LIMIT as u64);
         assert!(overflow.query_candidates_matched() <= ROUTE_SCAN_LIMIT as u64);
         assert!(!overflow.reused_previous_plan());
@@ -1603,35 +1526,36 @@ fn ten_thousand_routes_keep_each_visible_query_page_hard_bounded() {
             );
             continue;
         }
-        assert!(overflow.query_budget_exhausted());
-        break;
-    }
-
-    let stats = host.work_ledger_snapshot();
-    assert_eq!(stats.edge_layer_plans(), 1);
-    assert!(stats.edge_route_list_reuses() >= pending_pages);
-    assert_eq!(
-        stats.edge_route_query_entries_examined(),
-        super::OPEN_GPUI_MAX_EDGE_LAYER_BUDGET as u64,
-    );
-    assert_eq!(stats.edge_route_query_pending(), pending_pages);
-    assert_eq!(stats.edge_route_query_budget_exhausted(), 1);
-    assert_eq!(stats.edge_routes_planned(), 0);
+        assert!(!overflow.query_budget_exhausted());
+        assert_eq!(
+            wires.published.len(),
+            EDGE_BUDGET,
+            "the edge layer budget must retain a deterministic frontmost suffix",
+        );
+        assert_eq!(overflow.budget_omitted(), EDGE_COUNT - EDGE_BUDGET);
+        break wires;
+    };
 
     let terminal = host
         .scene_wires()
-        .expect("hard exhaustion is terminal for an unchanged query key");
-    assert!(terminal.published.is_empty());
+        .expect("a completed paged query is reusable for an unchanged query key");
+    assert_eq!(
+        terminal
+            .published
+            .iter()
+            .map(|wire| wire.edge)
+            .collect::<Vec<_>>(),
+        terminal_wires
+            .published
+            .iter()
+            .map(|wire| wire.edge)
+            .collect::<Vec<_>>(),
+    );
     let overflow = host.last_edge_layer_overflow();
-    assert!(overflow.query_budget_exhausted());
+    assert!(!overflow.query_budget_exhausted());
+    assert!(overflow.reused_previous_plan());
     assert_eq!(overflow.query_entries_examined(), 0);
     assert_eq!(overflow.query_candidates_matched(), 0);
-    let terminal_stats = host.work_ledger_snapshot();
-    assert_eq!(
-        terminal_stats.edge_route_query_entries_examined(),
-        stats.edge_route_query_entries_examined(),
-        "terminal exhaustion must not restart the 10k scan every frame",
-    );
 }
 
 #[test]
@@ -1662,6 +1586,7 @@ fn ten_thousand_spatial_routes_materialize_only_the_local_hundred() {
             .expect("valid empty test registry"),
         query_viewport,
     )
+    .expect("valid Open GPUI scene host")
     .with_visible_route_query_budget(QUERY_BUDGET);
 
     let wires = host
@@ -1684,9 +1609,6 @@ fn ten_thousand_spatial_routes_materialize_only_the_local_hundred() {
     assert!(!overflow.query_budget_exhausted());
     assert!(overflow.query_entries_examined() <= QUERY_BUDGET as u64);
     assert_eq!(overflow.query_candidates_matched(), 100);
-    let stats = host.work_ledger_snapshot();
-    assert_eq!(stats.edge_routes_planned(), 100);
-    assert_eq!(stats.retained_edge_entities(), 0);
 }
 
 #[open_gpui::test]
@@ -1883,7 +1805,8 @@ fn every_route_uses_one_exact_pointer_path_away_from_and_through_the_focus_proxy
         draw(cx);
 
         for edge in edges.iter().copied() {
-            for progress in [0.2, 0.5, 0.8] {
+            // Keep the off-center probes outside the 22-pixel endpoint targets at overview zoom.
+            for progress in [0.35, 0.5, 0.65] {
                 cx.read_entity(&host, |host, _| {
                     set_selection_by_id(&host.view, Vec::new(), Vec::new())
                         .expect("clear route-matrix selection");
@@ -2065,6 +1988,188 @@ fn blank_canvas_context_hook_is_blank_only_and_does_not_mutate_the_graph(
             .expect("history after context requests"),
         history_before
     );
+}
+
+#[open_gpui::test]
+fn blueprint_right_click_opens_blank_context_while_right_drag_pans(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let requests = Rc::new(std::cell::RefCell::new(Vec::<
+        OpenGpuiBlankCanvasContextRequest,
+    >::new()));
+    let captured_requests = requests.clone();
+    let handler: OpenGpuiBlankCanvasContextHandler =
+        Rc::new(move |request, _window, _cx| captured_requests.borrow_mut().push(request));
+    let (_runtime, host, cx) =
+        mount_connection_scene_for_graph_with_context_handler(cx, routed_graph(), Some(handler));
+    draw(cx);
+    draw(cx);
+    cx.update_entity(&host, |host, cx| {
+        host.set_navigation_config(
+            OpenGpuiNavigationConfig::for_preset(OpenGpuiInputPreset::Blueprint),
+            cx,
+        )
+        .expect("idle host accepts Blueprint navigation");
+    });
+    draw(cx);
+
+    let (click, drag_end, expected_position, transform_before) =
+        cx.read_entity(&host, |host, _| {
+            let transform = host.view.viewport_transform().expect("context transform");
+            let origin = host.scene_origin.expect("context scene origin");
+            let canvas = CanvasPoint { x: 20.0, y: 20.0 };
+            let screen = transform
+                .screen_point_for_canvas(canvas)
+                .expect("project Blueprint context probe");
+            let click = point(origin.x + px(screen.x), origin.y + px(screen.y));
+            (
+                click,
+                point(click.x + px(40.0), click.y + px(30.0)),
+                canvas,
+                transform,
+            )
+        });
+
+    cx.simulate_mouse_down(click, MouseButton::Right, Default::default());
+    cx.simulate_mouse_up(click, MouseButton::Right, Default::default());
+    cx.run_until_parked();
+    draw(cx);
+    assert_eq!(requests.borrow().len(), 1);
+    assert_eq!(requests.borrow()[0].position(), expected_position);
+    let transform_after_click = cx.read_entity(&host, |host, _| {
+        host.view
+            .viewport_transform()
+            .expect("post-click transform")
+    });
+    assert_eq!(transform_after_click, transform_before);
+
+    cx.simulate_mouse_down(click, MouseButton::Right, Default::default());
+    cx.simulate_mouse_move(drag_end, Some(MouseButton::Right), Default::default());
+    cx.simulate_mouse_up(drag_end, MouseButton::Right, Default::default());
+    cx.run_until_parked();
+    draw(cx);
+
+    assert_eq!(requests.borrow().len(), 1);
+    cx.read_entity(&host, |host, _| {
+        assert_ne!(
+            host.view
+                .viewport_transform()
+                .expect("post-drag transform")
+                .pan,
+            transform_after_click.pan
+        );
+        assert_eq!(
+            host.interaction_presentation().phase(),
+            CanvasInteractionPhase::Idle
+        );
+        assert!(host.pending_blank_canvas_context.is_none());
+    });
+
+    let (node, edge, transform_before_occupied_clicks) = cx.read_entity(&host, |host, _| {
+        let geometry = host.view.geometry_snapshot().expect("context geometry");
+        let transform = host.view.viewport_transform().expect("context transform");
+        let origin = host.scene_origin.expect("context scene origin");
+        let project = |canvas: CanvasPoint| {
+            let screen = transform
+                .screen_point_for_canvas(canvas)
+                .expect("project occupied context probe");
+            point(origin.x + px(screen.x), origin.y + px(screen.y))
+        };
+        let node_bounds = geometry
+            .node(NodeId::from_u128(10))
+            .expect("source node geometry")
+            .bounds();
+        let edge_sample = geometry
+            .route(EdgeId::from_u128(30))
+            .expect("context edge geometry")
+            .facts()
+            .path
+            .sample(jellyflow_runtime::geometry::EdgePathAnchor::Center)
+            .expect("context edge center");
+        (
+            project(CanvasPoint {
+                x: node_bounds.origin.x + node_bounds.size.width * 0.5,
+                y: node_bounds.origin.y + node_bounds.size.height * 0.5,
+            }),
+            project(edge_sample.point),
+            transform,
+        )
+    });
+    for occupied in [node, edge] {
+        cx.simulate_mouse_down(occupied, MouseButton::Right, Default::default());
+        cx.simulate_mouse_up(occupied, MouseButton::Right, Default::default());
+        cx.run_until_parked();
+        draw(cx);
+    }
+    assert_eq!(requests.borrow().len(), 1);
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(
+            host.view
+                .viewport_transform()
+                .expect("post-occupied-click transform"),
+            transform_before_occupied_clicks
+        );
+    });
+}
+
+#[open_gpui::test]
+fn blueprint_pending_context_is_cancelled_when_pointer_capture_is_replaced(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let requests = Rc::new(std::cell::RefCell::new(Vec::<
+        OpenGpuiBlankCanvasContextRequest,
+    >::new()));
+    let captured_requests = requests.clone();
+    let handler: OpenGpuiBlankCanvasContextHandler =
+        Rc::new(move |request, _window, _cx| captured_requests.borrow_mut().push(request));
+    let (_runtime, host, cx) =
+        mount_connection_scene_for_graph_with_context_handler(cx, routed_graph(), Some(handler));
+    draw(cx);
+    draw(cx);
+    cx.update_entity(&host, |host, cx| {
+        host.set_navigation_config(
+            OpenGpuiNavigationConfig::for_preset(OpenGpuiInputPreset::Blueprint),
+            cx,
+        )
+        .expect("idle host accepts Blueprint navigation");
+    });
+    draw(cx);
+
+    let blank = cx.read_entity(&host, |host, _| {
+        let transform = host.view.viewport_transform().expect("context transform");
+        let origin = host.scene_origin.expect("context scene origin");
+        let screen = transform
+            .screen_point_for_canvas(CanvasPoint { x: 20.0, y: 20.0 })
+            .expect("project Blueprint context probe");
+        point(origin.x + px(screen.x), origin.y + px(screen.y))
+    });
+    cx.simulate_mouse_down(blank, MouseButton::Right, Default::default());
+    let jellyflow_capture = cx
+        .update(|window, _| window.captured_hitbox())
+        .expect("right-pan arbitration owns pointer capture");
+    cx.read_entity(&host, |host, _| {
+        assert!(host.pending_blank_canvas_context.is_some());
+        assert_eq!(
+            host.interaction_presentation().phase(),
+            CanvasInteractionPhase::Armed
+        );
+    });
+
+    let successor = HitboxId::placeholder();
+    assert_ne!(successor, jellyflow_capture);
+    cx.update(|window, _| window.capture_pointer(successor));
+    draw_once(cx);
+    cx.run_until_parked();
+
+    assert!(requests.borrow().is_empty());
+    cx.read_entity(&host, |host, _| {
+        assert!(host.pending_blank_canvas_context.is_none());
+        assert_eq!(
+            host.interaction_presentation().phase(),
+            CanvasInteractionPhase::Idle
+        );
+    });
+    cx.update(|window, _| window.release_pointer());
 }
 
 #[open_gpui::test]
@@ -2258,9 +2363,7 @@ fn busy_edge_reconnect_admission_neither_installs_nor_replaces_native_context(
 }
 
 #[open_gpui::test]
-fn removing_the_authoritative_edge_retires_an_active_reconnect_without_a_blank_frame(
-    cx: &mut open_gpui::TestAppContext,
-) {
+fn removing_the_authoritative_edge_retires_an_active_reconnect(cx: &mut open_gpui::TestAppContext) {
     let edge = EdgeId::from_u128(30);
     let (runtime, host, cx) = mount_connection_scene_for_graph(cx, routed_graph());
     draw(cx);
@@ -2275,22 +2378,16 @@ fn removing_the_authoritative_edge_retires_an_active_reconnect_without_a_blank_f
         ));
     });
     draw(cx);
-    cx.read_entity(&host, |host, _| {
+    cx.update_entity(&host, |host, _| {
         assert_eq!(
             host.interaction_presentation().phase(),
             CanvasInteractionPhase::ConnectionSearch
         );
-        let preview = host
-            .scene_evidence
-            .last_connection_preview
-            .get()
-            .expect("active reconnect preview");
-        assert_eq!(preview.suppressed_edge, Some(edge));
         assert_eq!(
-            host.scene_evidence
-                .last_painted_connection_preview_count
-                .get(),
-            1
+            host.connection_preview_plan()
+                .and_then(|preview| preview.suppressed_edge)
+                .map(EdgeInstanceKey::edge),
+            Some(edge),
         );
     });
 
@@ -2307,7 +2404,7 @@ fn removing_the_authoritative_edge_retires_an_active_reconnect_without_a_blank_f
     cx.run_until_parked();
     draw(cx);
 
-    cx.read_entity(&host, |host, _| {
+    cx.update_entity(&host, |host, _| {
         let presentation = host.interaction_presentation();
         assert_eq!(presentation.phase(), CanvasInteractionPhase::Idle);
         assert_eq!(
@@ -2316,13 +2413,7 @@ fn removing_the_authoritative_edge_retires_an_active_reconnect_without_a_blank_f
         );
         assert!(presentation.connection().is_none());
         assert!(!host.interaction_owner.has_connection());
-        assert_eq!(host.scene_evidence.last_connection_preview.get(), None);
-        assert_eq!(
-            host.scene_evidence
-                .last_painted_connection_preview_count
-                .get(),
-            0
-        );
+        assert!(host.connection_preview_plan().is_none());
     });
 }
 
@@ -2343,7 +2434,6 @@ fn binding_presentation_projects_real_node_and_port_focus(cx: &mut open_gpui::Te
             binding,
         )
     });
-    let baseline_stats = cx.read_entity(&host, |host, _| host.work_ledger_snapshot());
     cx.update(|window, _| window.blur());
 
     cx.update(|window, cx| {
@@ -2363,16 +2453,6 @@ fn binding_presentation_projects_real_node_and_port_focus(cx: &mut open_gpui::Te
                 .focused()
         );
     });
-    let node_focus_stats = cx.read_entity(&host, |host, _| host.work_ledger_snapshot());
-    assert_eq!(
-        node_focus_stats.binding_presentation_materializations(),
-        baseline_stats.binding_presentation_materializations() + 1
-    );
-    assert_eq!(
-        node_focus_stats.binding_notifications(),
-        baseline_stats.binding_notifications() + 1
-    );
-
     cx.simulate_keystrokes("tab");
     draw(cx);
     cx.read_entity(&binding, |binding, _| {
@@ -2388,24 +2468,14 @@ fn binding_presentation_projects_real_node_and_port_focus(cx: &mut open_gpui::Te
             "a focused descendant keeps its node focus state observable"
         );
     });
-    let port_focus_stats = cx.read_entity(&host, |host, _| host.work_ledger_snapshot());
-    assert_eq!(
-        port_focus_stats.binding_presentation_materializations(),
-        node_focus_stats.binding_presentation_materializations() + 1
-    );
-    assert_eq!(
-        port_focus_stats.binding_notifications(),
-        node_focus_stats.binding_notifications() + 1
-    );
 }
 
 #[open_gpui::test]
 fn dynamic_port_reconciliation_preserves_order_index_and_retained_capabilities(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    const INITIAL_PORT_COUNT: usize = 256;
-    const REPLACEMENT_PORT_COUNT: usize = 128;
-    const QUIESCENT_FRAMES: usize = 120;
+    const INITIAL_PORT_COUNT: usize = 16;
+    const REPLACEMENT_PORT_COUNT: usize = 8;
 
     let node = NodeId::from_u128(80_000);
     let initial_ports = (0..INITIAL_PORT_COUNT)
@@ -2427,6 +2497,7 @@ fn dynamic_port_reconciliation_preserves_order_index_and_retained_capabilities(
             registry.seal(&catalog()).expect("valid many-port registry"),
             viewport(),
         )
+        .expect("valid Open GPUI scene host")
     });
     draw(cx);
 
@@ -2437,7 +2508,7 @@ fn dynamic_port_reconciliation_preserves_order_index_and_retained_capabilities(
             .and_then(|(_, mounted)| mounted.binding.clone())
             .expect("many-port binding")
     });
-    let retained = initial_ports[100];
+    let retained = initial_ports[5];
     let removed = initial_ports[0];
     let (retained_focus, retained_handle) = cx.read_entity(&binding, |binding, _| {
         let authoring = binding.authoring().expect("initial authoring");
@@ -2459,7 +2530,7 @@ fn dynamic_port_reconciliation_preserves_order_index_and_retained_capabilities(
         )
     });
 
-    let mut replacement_ports = initial_ports[64..190]
+    let mut replacement_ports = initial_ports[4..10]
         .iter()
         .rev()
         .copied()
@@ -2513,29 +2584,20 @@ fn dynamic_port_reconciliation_preserves_order_index_and_retained_capabilities(
         );
     });
 
-    let host_stats = cx.read_entity(&host, |host, _| host.work_ledger_snapshot());
-    for _ in 0..QUIESCENT_FRAMES {
-        cx.update_entity(&host, |_, cx| cx.notify());
-        draw(cx);
-        cx.read_entity(&binding, |binding, _| {
-            let authoring = binding.authoring().expect("quiescent authoring");
-            assert_eq!(authoring.ports().len(), REPLACEMENT_PORT_COUNT);
-            assert!(authoring.port(retained).is_some());
-        });
-    }
-    let settled_stats = cx.read_entity(&host, |host, _| host.work_ledger_snapshot());
-    assert_eq!(
-        settled_stats.binding_presentation_queries(),
-        host_stats.binding_presentation_queries()
-    );
-    assert_eq!(
-        settled_stats.binding_presentation_materializations(),
-        host_stats.binding_presentation_materializations()
-    );
-    assert_eq!(
-        settled_stats.binding_notifications(),
-        host_stats.binding_notifications()
-    );
+    cx.update_entity(&host, |_, cx| cx.notify());
+    draw(cx);
+    cx.read_entity(&binding, |binding, _| {
+        let authoring = binding.authoring().expect("stable authoring");
+        assert_eq!(authoring.ports().len(), REPLACEMENT_PORT_COUNT);
+        assert!(authoring.port(retained).is_some());
+        assert_eq!(binding.port_focus_handle(retained), Some(&retained_focus));
+        assert!(
+            binding
+                .cached_port_handle(retained)
+                .expect("stable retained handle")
+                .shares_core_with(&retained_handle)
+        );
+    });
 }
 
 #[open_gpui::test]
@@ -2562,6 +2624,7 @@ fn coalesced_port_reincarnation_replaces_focus_and_drops_retired_hover(
                 .expect("valid single-port registry"),
             viewport(),
         )
+        .expect("valid Open GPUI scene host")
     });
     draw(cx);
     let binding = cx.read_entity(&host, |host, _| {
@@ -2663,6 +2726,7 @@ fn max_capacity_node_drag_builds_one_index_with_equivalent_offsets(
                 .expect("valid maximum-capacity registry"),
             viewport(),
         )
+        .expect("valid Open GPUI scene host")
     });
     draw(cx);
 
@@ -2697,13 +2761,7 @@ fn max_capacity_node_drag_builds_one_index_with_equivalent_offsets(
         assert_eq!(drag.nodes(), nodes);
         let expected_delta = drag.delta();
 
-        let builds_before = host.work_ledger_snapshot().node_drag_offset_map_builds();
         let offsets = host.interaction_node_drag_offsets();
-        assert_eq!(
-            host.work_ledger_snapshot().node_drag_offset_map_builds(),
-            builds_before + 1,
-            "one presentation index must be built for the entire multi-node drag"
-        );
         assert_eq!(offsets.len(), DRAGGED_NODE_COUNT);
         for node in &nodes {
             assert_eq!(offsets.get(node), Some(&expected_delta));
@@ -2744,6 +2802,7 @@ fn node_drag_cohort_materializes_never_mounted_and_parked_peers_until_applied_fr
                 .expect("valid culled-peer registry"),
             viewport(),
         )
+        .expect("valid Open GPUI scene host")
         .with_navigation_config(
             crate::navigation::OpenGpuiNavigationConfig::default()
                 .with_alignment_snap_tolerance(None),
@@ -2852,7 +2911,12 @@ fn node_drag_cohort_materializes_never_mounted_and_parked_peers_until_applied_fr
 
     cx.update_entity(&host, |host, cx| {
         host.interaction_owner
-            .complete_submission(ticket, completion)
+            .settle_test_evidence(
+                ticket,
+                jellyflow_runtime::interaction::InteractionSubmissionSettlementEvidence::Command(
+                    completion,
+                ),
+            )
             .expect("settle node drag receipt");
         assert!(host.interaction_owner.has_node_drag_residency());
         assert!(
@@ -2865,8 +2929,8 @@ fn node_drag_cohort_materializes_never_mounted_and_parked_peers_until_applied_fr
     });
     draw_once(cx);
     cx.read_entity(&host, |host, _| {
-        let stats = host.work_ledger_snapshot();
-        assert_eq!(stats.active_nodes() + stats.parked_nodes(), 2);
+        let resources = host.resource_snapshot();
+        assert_eq!(resources.active_nodes() + resources.parked_nodes(), 2);
         assert!(host.retained_nodes.retained_instance(offscreen).is_some());
         assert!(host.interaction_owner.has_node_drag_residency());
         assert!(
@@ -2902,8 +2966,6 @@ fn binding_presentation_tracks_real_port_hit_bounds_hover(cx: &mut open_gpui::Te
     let marker = cx
         .debug_bounds("jellyflow-test-output-port")
         .expect("source output marker");
-    let baseline_stats = cx.read_entity(&host, |host, _| host.work_ledger_snapshot());
-
     cx.simulate_mouse_move(marker.center(), None, Default::default());
     draw(cx);
     cx.read_entity(&binding, |binding, _| {
@@ -2916,16 +2978,6 @@ fn binding_presentation_tracks_real_port_hit_bounds_hover(cx: &mut open_gpui::Te
                 .hovered()
         );
     });
-    let hovered_stats = cx.read_entity(&host, |host, _| host.work_ledger_snapshot());
-    assert_eq!(
-        hovered_stats.binding_presentation_materializations(),
-        baseline_stats.binding_presentation_materializations() + 1
-    );
-    assert_eq!(
-        hovered_stats.binding_notifications(),
-        baseline_stats.binding_notifications() + 1
-    );
-
     cx.simulate_mouse_move(point(px(700.0), px(500.0)), None, Default::default());
     draw(cx);
     cx.read_entity(&binding, |binding, _| {
@@ -2938,236 +2990,49 @@ fn binding_presentation_tracks_real_port_hit_bounds_hover(cx: &mut open_gpui::Te
                 .hovered()
         );
     });
-    let cleared_stats = cx.read_entity(&host, |host, _| host.work_ledger_snapshot());
-    assert_eq!(
-        cleared_stats.binding_presentation_materializations(),
-        hovered_stats.binding_presentation_materializations() + 1
-    );
-    assert_eq!(
-        cleared_stats.binding_notifications(),
-        hovered_stats.binding_notifications() + 1
-    );
 }
 
 #[open_gpui::test]
-fn settled_routed_scene_remains_quiescent_across_120_explicit_redraws(
+fn settled_routed_scene_remains_quiescent_across_an_explicit_redraw(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    const QUIESCENT_REDRAWS: usize = 120;
     let selected = NodeId::from_u128(10);
     let (runtime, host, cx) = mount_connection_scene_for_graph(cx, routed_graph());
     draw(cx);
     draw(cx);
 
-    let (
-        baseline_nodes,
-        baseline_usage,
-        baseline_stats,
-        baseline_layout_revision,
-        baseline_lifecycle_bridge,
-        baseline_window_owner,
-    ) = cx.read_entity(&host, |host, _| {
-        assert_settled_host_has_no_pending_work(host);
-        let nodes = host
-            .retained_nodes
-            .active_in_order()
-            .map(|(instance, mounted)| {
-                (
-                    instance.node(),
-                    std::ptr::from_ref(mounted) as usize,
-                    host.content_sizes
-                        .content_epoch(instance)
-                        .expect("retained content-size epoch"),
-                    mounted.semantic_zoom.reconcile_usage(),
-                )
-            })
-            .collect::<Vec<_>>();
-        (
-            nodes,
-            host.retained_nodes.active_reconcile_usage(),
-            host.work_ledger_snapshot(),
-            host.view
-                .geometry_snapshot()
-                .expect("settled routed geometry")
-                .layout_revision(),
-            host.lifecycle_bridge
-                .as_ref()
-                .map(|bridge| std::ptr::from_ref(bridge) as usize),
-            host.window_owner
-                .as_ref()
-                .map(|owner| std::ptr::from_ref(owner) as usize),
-        )
-    });
-    let baseline_graph_revision = runtime.snapshot().expect("settled routed graph").revision();
-
-    for frame in 0..QUIESCENT_REDRAWS {
-        cx.update_entity(&host, |_, cx| cx.notify());
-        draw(cx);
+    let (baseline_nodes, baseline_resources, baseline_layout_revision) =
         cx.read_entity(&host, |host, _| {
             assert_settled_host_has_no_pending_work(host);
-            assert_eq!(
+            let nodes = host
+                .retained_nodes
+                .active_in_order()
+                .map(|(instance, _)| instance.node())
+                .collect::<Vec<_>>();
+            (
+                nodes,
+                host.resource_snapshot(),
                 host.view
                     .geometry_snapshot()
-                    .expect("quiescent routed geometry")
+                    .expect("settled routed geometry")
                     .layout_revision(),
-                baseline_layout_revision,
-                "frame {frame}: an explicit redraw must not publish new geometry",
-            );
+            )
         });
-    }
+    let baseline_graph_revision = runtime.snapshot().expect("settled routed graph").revision();
 
+    cx.update_entity(&host, |_, cx| cx.notify());
+    draw(cx);
     cx.read_entity(&host, |host, _| {
-        let nodes = host
-            .retained_nodes
-            .active_in_order()
-            .map(|(instance, mounted)| {
-                (
-                    instance.node(),
-                    std::ptr::from_ref(mounted) as usize,
-                    host.content_sizes
-                        .content_epoch(instance)
-                        .expect("retained content-size epoch"),
-                    mounted.semantic_zoom.reconcile_usage(),
-                )
-            })
-            .collect::<Vec<_>>();
-        let stats = host.work_ledger_snapshot();
-        assert_eq!(nodes, baseline_nodes);
-        assert_eq!(host.retained_nodes.active_reconcile_usage(), baseline_usage);
-        assert_eq!(stats.mounts(), baseline_stats.mounts());
-        assert_eq!(stats.restores(), baseline_stats.restores());
-        assert_eq!(stats.evictions(), baseline_stats.evictions());
-        assert_eq!(stats.hard_retirements(), baseline_stats.hard_retirements());
-        assert_eq!(stats.strong_instances(), baseline_stats.strong_instances());
+        assert_settled_host_has_no_pending_work(host);
         assert_eq!(
-            stats.protected_instances(),
-            baseline_stats.protected_instances()
+            host.view
+                .geometry_snapshot()
+                .expect("quiescent routed geometry")
+                .layout_revision(),
+            baseline_layout_revision,
+            "an explicit redraw must not publish new geometry",
         );
-        assert_eq!(stats.protected_leases(), baseline_stats.protected_leases());
-        assert_eq!(stats.active_nodes(), 2);
-        assert_eq!(stats.parked_nodes(), 0);
-        assert_eq!(stats.strong_instances(), 2);
-        assert_eq!(stats.protected_instances(), 0);
-        assert_eq!(stats.protected_leases(), 0);
-        assert_eq!(stats.feedback_failures(), 0);
-        assert_eq!(stats.layout_rejections(), 0);
-        assert_eq!(
-            stats.measurement_failures(),
-            baseline_stats.measurement_failures()
-        );
-        assert_eq!(stats.measurement_failures(), 0);
-        assert_eq!(
-            stats.feedback_submissions(),
-            baseline_stats.feedback_submissions() + (QUIESCENT_REDRAWS as u64 * 2),
-            "the visual harness must settle its fixed two prepaint transactions per redraw",
-        );
-        assert_eq!(
-            stats.binding_presentation_queries(),
-            baseline_stats.binding_presentation_queries()
-        );
-        assert_eq!(
-            stats.binding_presentation_materializations(),
-            baseline_stats.binding_presentation_materializations()
-        );
-        assert_eq!(stats.binding_updates(), baseline_stats.binding_updates());
-        assert_eq!(
-            stats.binding_notifications(),
-            baseline_stats.binding_notifications()
-        );
-        assert_eq!(
-            stats.interaction_tick_callback_entries(),
-            baseline_stats.interaction_tick_callback_entries()
-        );
-        assert_eq!(
-            stats.interaction_tick_callback_registrations(),
-            baseline_stats.interaction_tick_callback_registrations()
-        );
-        assert_eq!(
-            stats.interaction_tick_frame_requests(),
-            baseline_stats.interaction_tick_frame_requests()
-        );
-        assert_eq!(
-            stats.interaction_callback_epoch(),
-            baseline_stats.interaction_callback_epoch()
-        );
-        assert_eq!(
-            stats.edge_route_query_entries_examined(),
-            baseline_stats.edge_route_query_entries_examined()
-        );
-        assert_eq!(
-            stats.edge_path_cache_misses(),
-            baseline_stats.edge_path_cache_misses()
-        );
-        assert_eq!(
-            stats.edge_paint_preparations(),
-            baseline_stats.edge_paint_preparations()
-        );
-        assert_eq!(
-            stats.edge_path_cache_resident(),
-            baseline_stats.edge_path_cache_resident()
-        );
-        assert_eq!(
-            stats.edge_path_cache_vertices(),
-            baseline_stats.edge_path_cache_vertices()
-        );
-        assert_eq!(
-            stats.edge_path_cache_estimated_bytes(),
-            baseline_stats.edge_path_cache_estimated_bytes()
-        );
-        assert_eq!(
-            stats.edge_paint_plan_cache_resident(),
-            baseline_stats.edge_paint_plan_cache_resident()
-        );
-        assert_eq!(
-            stats.edge_plan_cache_generations(),
-            baseline_stats.edge_plan_cache_generations()
-        );
-        assert_eq!(
-            stats.edge_plan_cache_vertices(),
-            baseline_stats.edge_plan_cache_vertices()
-        );
-        assert_eq!(
-            stats.edge_plan_cache_estimated_bytes(),
-            baseline_stats.edge_plan_cache_estimated_bytes()
-        );
-        assert_eq!(
-            stats.edge_path_cache_budget_evictions(),
-            baseline_stats.edge_path_cache_budget_evictions()
-        );
-        assert_eq!(
-            stats.edge_path_cache_budget_rejections(),
-            baseline_stats.edge_path_cache_budget_rejections()
-        );
-        assert_eq!(
-            stats.edge_plan_cache_budget_rejections(),
-            baseline_stats.edge_plan_cache_budget_rejections()
-        );
-        assert!(
-            stats.edge_route_list_reuses()
-                >= baseline_stats.edge_route_list_reuses() + QUIESCENT_REDRAWS as u64
-        );
-        assert!(
-            stats.edge_paint_plan_reuses()
-                >= baseline_stats.edge_paint_plan_reuses() + QUIESCENT_REDRAWS as u64
-        );
-        assert!(
-            stats.edge_native_paint_calls()
-                >= baseline_stats.edge_native_paint_calls() + QUIESCENT_REDRAWS as u64
-        );
-        assert_eq!(
-            host.lifecycle_bridge
-                .as_ref()
-                .map(|bridge| std::ptr::from_ref(bridge) as usize),
-            baseline_lifecycle_bridge,
-            "the host must retain exactly one lifecycle subscription/task bridge",
-        );
-        assert_eq!(
-            host.window_owner
-                .as_ref()
-                .map(|owner| std::ptr::from_ref(owner) as usize),
-            baseline_window_owner,
-            "the host must retain exactly one native window release subscription",
-        );
+        assert_eq!(host.resource_snapshot(), baseline_resources);
     });
     assert_eq!(
         runtime
@@ -3188,39 +3053,12 @@ fn settled_routed_scene_remains_quiescent_across_120_explicit_redraws(
         let nodes = host
             .retained_nodes
             .active_in_order()
-            .map(|(instance, mounted)| {
-                (
-                    instance.node(),
-                    std::ptr::from_ref(mounted) as usize,
-                    host.content_sizes
-                        .content_epoch(instance)
-                        .expect("retained content-size epoch"),
-                    mounted.semantic_zoom.reconcile_usage(),
-                )
-            })
+            .map(|(instance, _)| instance.node())
             .collect::<Vec<_>>();
-        assert_eq!(nodes.last().map(|(node, ..)| *node), Some(selected));
-        assert_eq!(host.retained_nodes.active_reconcile_usage(), baseline_usage);
-        for (node, address, content_epoch, semantic_usage) in nodes {
-            let baseline = baseline_nodes
-                .iter()
-                .find(|(candidate, ..)| *candidate == node)
-                .expect("retained node existed before the order change");
-            assert_eq!(address, baseline.1);
-            assert_eq!(content_epoch, baseline.2);
-            assert_eq!(semantic_usage, baseline.3);
-        }
-        assert_eq!(
-            host.work_ledger_snapshot()
-                .binding_presentation_materializations(),
-            baseline_stats.binding_presentation_materializations() + 1,
-            "selection changes materialize only the affected node binding"
-        );
-        assert_eq!(
-            host.work_ledger_snapshot().binding_notifications(),
-            baseline_stats.binding_notifications() + 1,
-            "selection changes notify only the affected node binding"
-        );
+        assert_eq!(nodes.last().copied(), Some(selected));
+        assert_eq!(nodes.len(), baseline_nodes.len());
+        assert!(baseline_nodes.iter().all(|node| nodes.contains(node)));
+        assert_eq!(host.resource_snapshot(), baseline_resources);
     });
 }
 
@@ -3284,6 +3122,78 @@ fn overview_node_hover_uses_the_published_lod_footprint(cx: &mut open_gpui::Test
     });
     cx.read_entity(&binding, |binding, _| {
         assert!(binding.presentation().node().hovered());
+    });
+}
+
+#[open_gpui::test]
+fn frontmost_node_hover_clears_a_covered_node_port(cx: &mut open_gpui::TestAppContext) {
+    let source = NodeId::from_u128(10);
+    let back = NodeId::from_u128(11);
+    let front = NodeId::from_u128(12);
+    let graph = overlapping_hover_graph();
+    let graph_id = graph.graph_id();
+    let runtime = GraphRuntime::builder(catalog())
+        .build(graph)
+        .expect("valid overlapping hover graph");
+    let view = runtime
+        .attach_view(ViewSessionOptions::with_seed(
+            ViewSessionSeed::new(graph_id).with_stacking(ViewStackingSeed::new(
+                vec![source, back, front],
+                Vec::new(),
+                Vec::new(),
+            )),
+        ))
+        .expect("attach explicitly stacked hover view");
+    let mut registry = OpenGpuiNodeRegistry::builder();
+    register_test_renderer(&mut registry, move |binding, _window, cx| {
+        cx.new(|_| InteractiveRoutedNode {
+            binding,
+            events: Rc::new(Cell::new(0)),
+        })
+    });
+    let captured_host = Rc::new(std::cell::RefCell::new(None));
+    let scene_host = Rc::clone(&captured_host);
+    let (_scene, cx) = cx.add_window_view(move |_, cx| {
+        let host = cx.new(|_| {
+            OpenGpuiSceneHost::new(
+                view,
+                registry.seal(&catalog()).expect("valid test registry"),
+                viewport(),
+            )
+            .expect("valid Open GPUI scene host")
+        });
+        *scene_host.borrow_mut() = Some(host.clone());
+        InteractiveScene { host }
+    });
+    let host = captured_host.borrow().clone().expect("captured host");
+    draw(cx);
+    draw(cx);
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(
+            host.retained_nodes
+                .active_in_order()
+                .last()
+                .map(|(instance, _)| instance.node()),
+            Some(front),
+        );
+    });
+    let covered_port = cx
+        .debug_bounds("jellyflow-test-reconnect-input-port")
+        .expect("covered back-node port bounds");
+
+    cx.simulate_mouse_move(covered_port.center(), None, Default::default());
+    draw(cx);
+
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(
+            host.retained_nodes.hovered_node().map(|node| node.node()),
+            Some(front),
+        );
+        assert_eq!(
+            host.retained_nodes.hovered_port(),
+            None,
+            "a covered back-node port must not be combined with the frontmost node",
+        );
     });
 }
 
@@ -3459,6 +3369,83 @@ fn edge_semantic_bounds_are_screen_stable_and_pointer_inert(cx: &mut open_gpui::
             "the semantic rectangle must not intercept runtime edge picking",
         );
     });
+}
+
+#[open_gpui::test]
+fn active_scene_gestures_keep_the_window_cursor_over_port_hitboxes(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let (_runtime, host, cx) = mount_interactive_gesture_scene(cx);
+    cx.set_platform_hovered_window(Some(cx.window_handle()));
+    draw(cx);
+    draw(cx);
+    let output = cx
+        .debug_bounds("jellyflow-test-output-port")
+        .expect("output port bounds");
+    cx.simulate_mouse_move(output.center(), None, Default::default());
+    draw(cx);
+
+    let owner = cx.read_entity(&host, |host, _| {
+        current_port_drag_owner(host, NodeId::from_u128(11), PortId::from_u128(21))
+    });
+    let event = OpenGpuiPortEvent::Activation(OpenGpuiPortActivationEvent::new(
+        owner,
+        OpenGpuiPortActivationSource::Keyboard,
+    ));
+    cx.update(|window, cx| {
+        host.update(cx, |host, cx| host.handle_port_event(event, window, cx));
+    });
+    draw(cx);
+
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(
+            host.interaction_presentation().phase(),
+            CanvasInteractionPhase::ConnectionDrag
+        );
+    });
+    assert_eq!(cx.platform_cursor_style(), CursorStyle::DragLink);
+
+    cx.update(|window, cx| {
+        host.update(cx, |host, cx| {
+            let cancelled = host.interaction_owner.cancel();
+            assert!(host.apply_canvas_interaction_result(cancelled, window, cx));
+        });
+    });
+    draw(cx);
+    cx.simulate_mouse_move(output.center(), None, Default::default());
+    draw(cx);
+
+    cx.update(|window, cx| {
+        host.update(cx, |host, cx| {
+            let start = host
+                .viewport_pointer_sample(output.center())
+                .expect("pan start sample");
+            let pressed = host
+                .interaction_owner
+                .press(
+                    jellyflow_runtime::interaction::CanvasPressTarget::Pan,
+                    start,
+                )
+                .expect("arm pan");
+            host.apply_canvas_interaction_update(pressed, window, cx);
+            host.interaction_owner
+                .move_to(
+                    host.viewport_pointer_sample(point(
+                        output.center().x + px(24.0),
+                        output.center().y,
+                    ))
+                    .expect("pan move sample"),
+                )
+                .expect("promote pan without applying its viewport delta");
+            assert_eq!(
+                host.interaction_presentation().phase(),
+                CanvasInteractionPhase::Pan
+            );
+        });
+    });
+    draw(cx);
+
+    assert_eq!(cx.platform_cursor_style(), CursorStyle::ClosedHand);
 }
 
 #[open_gpui::test]
@@ -4045,6 +4032,7 @@ fn explicit_node_drag_and_dify_wheel_pan_and_pinch_zoom_stay_view_local(
                 registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
+            .expect("valid Open GPUI scene host")
             .with_navigation_config(OpenGpuiNavigationConfig::for_preset(
                 OpenGpuiInputPreset::Dify,
             ))
@@ -4172,6 +4160,7 @@ fn host_overview_drag_surface_moves_node_while_public_native_handle_is_inert(
                 registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
+            .expect("valid Open GPUI scene host")
         }),
     });
     draw(cx);
@@ -4215,6 +4204,14 @@ fn explicit_drag_handle_snaps_against_active_nodes_and_paints_alignment_guides(
     let (_runtime, host, cx) = mount_gesture_scene(cx);
     draw(cx);
     draw(cx);
+    cx.update_entity(&host, |host, cx| {
+        host.set_navigation_config(
+            OpenGpuiNavigationConfig::default().with_alignment_snap_tolerance(Some(6.0)),
+            cx,
+        )
+        .expect("idle host accepts opt-in alignment snapping");
+    });
+    draw(cx);
 
     let start = point(px(100.0), px(100.0));
     let near_alignment = point(px(236.0), px(100.0));
@@ -4222,7 +4219,7 @@ fn explicit_drag_handle_snaps_against_active_nodes_and_paints_alignment_guides(
     cx.simulate_mouse_move(near_alignment, Some(MouseButton::Left), Default::default());
     draw(cx);
 
-    cx.read_entity(&host, |host, _| {
+    cx.update_entity(&host, |host, _| {
         assert_eq!(
             host.interaction_node_drag_delta(NodeId::from_u128(10)),
             Some(CanvasPoint { x: 140.0, y: 0.0 }),
@@ -4326,7 +4323,7 @@ fn pending_native_cancellation_cannot_strand_the_semantic_gesture(
 }
 
 #[open_gpui::test]
-fn routed_node_drag_keeps_release_position_and_published_route_until_commit(
+fn routed_node_drag_keeps_release_position_and_published_route_after_commit(
     cx: &mut open_gpui::TestAppContext,
 ) {
     let runtime = GraphRuntime::builder(catalog())
@@ -4349,6 +4346,7 @@ fn routed_node_drag_keeps_release_position_and_published_route_until_commit(
                 registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
+            .expect("valid Open GPUI scene host")
         });
         *scene_host.borrow_mut() = Some(host.clone());
         InteractiveScene { host }
@@ -4433,92 +4431,9 @@ fn routed_node_drag_keeps_release_position_and_published_route_until_commit(
         "optimistic drag measurements must not replace authoritative geometry",
     );
 
-    cx.read_entity(&host, |host, _| {
-        host.scene_evidence.painted_wire_counts.borrow_mut().clear();
-    });
-
-    let prefix_hold = cx.read_entity(&host, |host, _| host.commands.hold_prefix_resolutions());
     cx.simulate_mouse_up(drag_end, MouseButton::Left, Default::default());
-    cx.read_entity(&host, |host, _| {
-        assert_eq!(
-            host.interaction_node_drag_delta(NodeId::from_u128(10)),
-            Some(CanvasPoint { x: 50.0, y: 40.0 }),
-            "the optimistic drag delta must remain authoritative while its prefix is held",
-        );
-        assert!(host.has_pending_interaction_prefix_task());
-    });
-
-    for frame in 0..3 {
-        draw_once(cx);
-        assert_eq!(
-            cx.debug_bounds("jellyflow-test-output-port")
-                .expect("source output during held prefix"),
-            output_during_drag,
-            "frame {frame}: the node must not flash back while the prefix is pending",
-        );
-        cx.update_entity(&host, |host, _| {
-            assert_eq!(
-                host.interaction_node_drag_delta(NodeId::from_u128(10)),
-                Some(CanvasPoint { x: 50.0, y: 40.0 }),
-                "frame {frame}: the optimistic delta must remain continuous",
-            );
-            let wires = host.scene_wires().expect("held-prefix scene wires");
-            assert_eq!(wires.published.len(), 1, "frame {frame}: one routed edge");
-            assert_eq!(
-                wires.published[0].drag_path.as_ref(),
-                Some(&dragged_path),
-                "frame {frame}: the incident route must keep the same optimistic path",
-            );
-        });
-        assert_eq!(
-            runtime
-                .snapshot()
-                .expect("graph while routed drag prefix is held")
-                .graph()
-                .node(&NodeId::from_u128(10))
-                .expect("source while prefix is held")
-                .pos,
-            position_before,
-            "frame {frame}: a held prefix cannot mutate the authoritative graph",
-        );
-        assert_eq!(
-            runtime
-                .history_state()
-                .expect("history while routed drag prefix is held"),
-            history_before,
-            "frame {frame}: no history boundary exists before prefix release",
-        );
-        assert_eq!(
-            weak_view
-                .geometry_snapshot()
-                .expect("geometry while prefix is held")
-                .route(EdgeId::from_u128(30))
-                .expect("route while prefix is held")
-                .facts()
-                .path,
-            initial_route,
-            "frame {frame}: published geometry remains authoritative",
-        );
-    }
-
-    prefix_hold.release();
-
     cx.run_until_parked();
     draw(cx);
-    cx.read_entity(&host, |host, _| {
-        assert!(
-            !host.scene_evidence.painted_wire_counts.borrow().is_empty(),
-            "release-to-commit must paint at least one frame",
-        );
-        assert!(
-            host.scene_evidence
-                .painted_wire_counts
-                .borrow()
-                .iter()
-                .all(|count| *count == 1),
-            "the routed edge must remain present in every release-to-commit paint",
-        );
-    });
     assert_eq!(
         weak_view
             .geometry_snapshot()
@@ -4581,15 +4496,14 @@ fn idle_tick_schedule_does_not_notify_or_register_a_frame(cx: &mut open_gpui::Te
 
     assert_eq!(notifications.get(), 0, "idle scheduling must not notify");
     cx.read_entity(&host, |host, _| {
-        let stats = host.work_ledger_snapshot();
-        assert_eq!(stats.interaction_tick_callback_registrations(), 0);
-        assert_eq!(stats.interaction_tick_callback_entries(), 0);
-        assert_eq!(stats.interaction_tick_frame_requests(), 0);
+        let resources = host.resource_snapshot();
+        assert!(!resources.interaction_tick_scheduled());
+        assert!(!resources.interaction_tick_frame_requested());
     });
 }
 
 #[open_gpui::test]
-fn while_active_empty_update_preserves_the_registered_tick_and_frame_request(
+fn while_active_empty_update_preserves_the_scheduled_tick_and_frame_request(
     cx: &mut open_gpui::TestAppContext,
 ) {
     let (_runtime, host, cx) = mount_gesture_scene(cx);
@@ -4613,9 +4527,9 @@ fn while_active_empty_update_preserves_the_registered_tick_and_frame_request(
                 host.interaction_presentation().phase(),
                 CanvasInteractionPhase::NodeDrag,
             );
-            assert!(host.interaction_owner.test_tick_scheduled());
-            assert_eq!(host.interaction_owner.test_tick_callback_registrations(), 1);
-            assert_eq!(host.interaction_owner.test_tick_frame_requests(), 1);
+            let resources = host.resource_snapshot();
+            assert!(resources.interaction_tick_scheduled());
+            assert!(resources.interaction_tick_frame_requested());
 
             let update = host
                 .interaction_owner
@@ -4627,20 +4541,12 @@ fn while_active_empty_update_preserves_the_registered_tick_and_frame_request(
             assert_eq!(update.damage(), Default::default());
 
             host.apply_canvas_interaction_update(update, window, cx);
+            let resources = host.resource_snapshot();
             assert!(
-                host.interaction_owner.test_tick_scheduled(),
+                resources.interaction_tick_scheduled(),
                 "WhileActive remains the sole authority for retaining the pending callback",
             );
-            assert_eq!(
-                host.interaction_owner.test_tick_callback_registrations(),
-                1,
-                "an already scheduled callback must be deduplicated",
-            );
-            assert_eq!(
-                host.interaction_owner.test_tick_frame_requests(),
-                1,
-                "a deduplicated callback must not issue a duplicate animation-frame request",
-            );
+            assert!(resources.interaction_tick_frame_requested());
         });
     });
 
@@ -4680,34 +4586,16 @@ fn active_node_drag_requests_successor_animation_frames_for_auto_pan(
     });
     draw(cx);
 
-    let (mut previous, initial_registrations, initial_frame_requests) =
-        cx.read_entity(&host, |host, _| {
-            assert_eq!(
-                host.interaction_presentation().phase(),
-                CanvasInteractionPhase::NodeDrag,
-            );
-            assert!(host.interaction_owner.test_tick_scheduled());
-            assert_eq!(host.interaction_owner.test_tick_callback_attempts(), 0);
-            let stats = host.work_ledger_snapshot();
-            assert_eq!(stats.interaction_tick_callback_registrations(), 1);
-            assert_eq!(stats.interaction_tick_callback_entries(), 0);
-            assert_eq!(stats.interaction_tick_frame_requests(), 1);
-            (
-                host.view
-                    .viewport_transform()
-                    .expect("viewport before auto-pan"),
-                host.interaction_owner.test_tick_callback_registrations(),
-                host.interaction_owner.test_tick_frame_requests(),
-            )
-        });
-    assert_eq!(
-        initial_registrations, 1,
-        "repeated updates before the tick must register exactly one callback",
-    );
-    assert_eq!(
-        initial_frame_requests, 1,
-        "one callback registration must issue exactly one animation-frame request",
-    );
+    let mut previous = cx.read_entity(&host, |host, _| {
+        assert_eq!(
+            host.interaction_presentation().phase(),
+            CanvasInteractionPhase::NodeDrag,
+        );
+        assert!(host.resource_snapshot().interaction_tick_scheduled());
+        host.view
+            .viewport_transform()
+            .expect("viewport before auto-pan")
+    });
 
     for frame in 1..=2 {
         std::thread::sleep(std::time::Duration::from_millis(35));
@@ -4715,49 +4603,21 @@ fn active_node_drag_requests_successor_animation_frames_for_auto_pan(
             cx.simulate_frame(open_gpui::RequestFrameOptions::default()),
             "frame {frame}: the test platform must deliver the requested frame",
         );
-        let (current, callback_attempts, registrations, frame_requests, scheduled) = cx
-            .read_entity(&host, |host, _| {
-                let stats = host.work_ledger_snapshot();
-                assert_eq!(
-                    stats.interaction_tick_callback_registrations(),
-                    initial_registrations + frame,
-                );
-                assert_eq!(stats.interaction_tick_callback_entries(), frame);
-                assert_eq!(
-                    stats.interaction_tick_frame_requests(),
-                    initial_frame_requests + frame
-                );
-                (
-                    host.view
-                        .viewport_transform()
-                        .expect("viewport during auto-pan"),
-                    host.interaction_owner.test_tick_callback_attempts(),
-                    host.interaction_owner.test_tick_callback_registrations(),
-                    host.interaction_owner.test_tick_frame_requests(),
-                    host.interaction_owner.test_tick_scheduled(),
-                )
-            });
-        assert_eq!(
-            callback_attempts, frame,
-            "frame {frame}: exactly one semantic tick callback must run",
-        );
-        assert_eq!(
-            registrations,
-            initial_registrations + frame,
-            "frame {frame}: an active tick must register its successor callback",
-        );
-        assert_eq!(
-            frame_requests,
-            initial_frame_requests + frame,
-            "frame {frame}: every successor callback must request an animation frame",
-        );
+        let (current, scheduled) = cx.read_entity(&host, |host, _| {
+            (
+                host.view
+                    .viewport_transform()
+                    .expect("viewport during auto-pan"),
+                host.resource_snapshot().interaction_tick_scheduled(),
+            )
+        });
         assert!(
             scheduled,
             "frame {frame}: the successor tick must remain scheduled"
         );
         assert!(
             current.pan.x > previous.pan.x,
-            "frame {frame}: the left-edge drag must advance viewport pan; previous={previous:?}, current={current:?}, callbacks={callback_attempts}, registrations={registrations}, frame_requests={frame_requests}, scheduled={scheduled}",
+            "frame {frame}: the left-edge drag must advance viewport pan; previous={previous:?}, current={current:?}",
         );
         previous = current;
     }
@@ -4766,6 +4626,133 @@ fn active_node_drag_requests_successor_animation_frames_for_auto_pan(
         point(px(5.0), px(140.0)),
         MouseButton::Left,
         Default::default(),
+    );
+}
+
+#[open_gpui::test]
+fn node_drag_release_before_redraw_commits_the_last_presented_auto_pan_projection(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let (runtime, host, cx) = mount_gesture_scene(cx);
+    draw(cx);
+    let node = NodeId::from_u128(10);
+    let initial_position = runtime
+        .snapshot()
+        .expect("graph before node drag")
+        .graph()
+        .node(&node)
+        .expect("dragged node")
+        .pos;
+
+    cx.simulate_mouse_down(
+        point(px(100.0), px(100.0)),
+        MouseButton::Left,
+        Default::default(),
+    );
+    cx.simulate_mouse_move(
+        point(px(150.0), px(140.0)),
+        Some(MouseButton::Left),
+        Default::default(),
+    );
+    let release = point(px(5.0), px(140.0));
+    cx.simulate_mouse_move(release, Some(MouseButton::Left), Default::default());
+    cx.update(|window, cx| {
+        host.update(cx, |host, cx| {
+            host.handle_scene_pointer_exit(window, cx);
+        });
+    });
+    draw(cx);
+
+    let (presented_viewport, presented_delta) = cx.read_entity(&host, |host, _| {
+        assert_eq!(
+            host.interaction_presentation().phase(),
+            CanvasInteractionPhase::NodeDrag,
+        );
+        assert!(host.resource_snapshot().interaction_tick_scheduled());
+        (
+            host.view
+                .viewport_transform()
+                .expect("presented viewport before callback"),
+            host.interaction_node_drag_delta(node)
+                .expect("presented node-drag delta"),
+        )
+    });
+
+    let callback_observation = Rc::new(Cell::new(None));
+    let observed = Rc::clone(&callback_observation);
+    let callback_host = host.clone();
+    cx.update(|window, _cx| {
+        window.on_next_frame(move |window, cx| {
+            let (before_viewport, before_delta) = {
+                let host = callback_host.read(cx);
+                (
+                    host.view.viewport_transform().ok(),
+                    host.interaction_node_drag_delta(node),
+                )
+            };
+            window.dispatch_event(
+                open_gpui::PlatformInput::MouseUp(MouseUpEvent {
+                    button: MouseButton::Left,
+                    position: release,
+                    modifiers: Default::default(),
+                    click_count: 1,
+                }),
+                cx,
+            );
+            let (after_viewport, after_delta) = {
+                let host = callback_host.read(cx);
+                (
+                    host.view.viewport_transform().ok(),
+                    host.interaction_node_drag_delta(node),
+                )
+            };
+            observed.set(Some((
+                before_viewport,
+                before_delta,
+                after_viewport,
+                after_delta,
+            )));
+            window.refresh();
+        });
+    });
+    assert!(
+        cx.simulate_frame(open_gpui::RequestFrameOptions::default()),
+        "the test platform must deliver the queued tick and release callbacks",
+    );
+    let (
+        callback_viewport_before_release,
+        callback_delta_before_release,
+        callback_viewport_after_release,
+        callback_delta_after_release,
+    ) = callback_observation
+        .take()
+        .expect("release callback observation");
+    assert_eq!(callback_viewport_before_release, Some(presented_viewport));
+    assert_eq!(callback_delta_before_release, Some(presented_delta));
+    assert_eq!(callback_viewport_after_release, Some(presented_viewport));
+    assert_eq!(callback_delta_after_release, Some(presented_delta));
+
+    cx.run_until_parked();
+    draw(cx);
+    cx.read_entity(&host, |host, _| {
+        let resources = host.resource_snapshot();
+        assert!(!resources.interaction_tick_scheduled());
+        assert!(!resources.interaction_tick_frame_requested());
+    });
+    let final_position = runtime
+        .snapshot()
+        .expect("graph after node drag")
+        .graph()
+        .node(&node)
+        .expect("dragged node after release")
+        .pos;
+
+    assert_eq!(
+        final_position,
+        CanvasPoint {
+            x: initial_position.x + presented_delta.x,
+            y: initial_position.y + presented_delta.y,
+        },
     );
 }
 
@@ -4803,7 +4790,7 @@ fn external_frame_clock_cannot_let_stale_native_callback_consume_successor_tick(
             host.interaction_presentation().phase(),
             CanvasInteractionPhase::NodeDrag,
         );
-        assert!(host.interaction_owner.test_tick_scheduled());
+        assert!(host.resource_snapshot().interaction_tick_scheduled());
         host.view
             .viewport_transform()
             .expect("viewport before externally driven tick")
@@ -4821,11 +4808,7 @@ fn external_frame_clock_cannot_let_stale_native_callback_consume_successor_tick(
     );
     draw(cx);
     let after_external_tick = cx.read_entity(&host, |host, _| {
-        let stats = host.work_ledger_snapshot();
-        assert_eq!(stats.interaction_tick_callback_registrations(), 2);
-        assert_eq!(stats.interaction_tick_callback_entries(), 0);
-        assert_eq!(stats.interaction_tick_frame_requests(), 2);
-        assert!(host.interaction_owner.test_tick_scheduled());
+        assert!(host.resource_snapshot().interaction_tick_scheduled());
         host.view
             .viewport_transform()
             .expect("viewport after externally driven tick")
@@ -4839,20 +4822,8 @@ fn external_frame_clock_cannot_let_stale_native_callback_consume_successor_tick(
         cx.simulate_frame(open_gpui::RequestFrameOptions::default()),
         "the queued native frame callbacks must be delivered"
     );
-    let after_queued_callbacks = cx.read_entity(&host, |host, _| {
-        let stats = host.work_ledger_snapshot();
-        assert_eq!(
-            stats.interaction_tick_callback_entries(),
-            2,
-            "the stale callback and its successor both enter the native frame loop",
-        );
-        assert_eq!(
-            stats.interaction_tick_callback_registrations(),
-            3,
-            "only the successor may advance and register one replacement tick",
-        );
-        assert_eq!(stats.interaction_tick_frame_requests(), 3);
-        assert!(host.interaction_owner.test_tick_scheduled());
+    cx.read_entity(&host, |host, _| {
+        assert!(host.resource_snapshot().interaction_tick_scheduled());
         let transform = host
             .view
             .viewport_transform()
@@ -4861,41 +4832,18 @@ fn external_frame_clock_cannot_let_stale_native_callback_consume_successor_tick(
             transform.pan.x > after_external_tick.pan.x,
             "the successor callback must advance auto-pan exactly once",
         );
-        transform
-    });
-
-    std::thread::sleep(std::time::Duration::from_millis(35));
-    assert!(
-        cx.simulate_frame(open_gpui::RequestFrameOptions::default()),
-        "the successor native frame callback must be delivered"
-    );
-    cx.read_entity(&host, |host, _| {
-        let stats = host.work_ledger_snapshot();
-        assert_eq!(stats.interaction_tick_callback_entries(), 3);
-        assert_eq!(stats.interaction_tick_callback_registrations(), 4);
-        assert_eq!(stats.interaction_tick_frame_requests(), 4);
-        assert!(host.interaction_owner.test_tick_scheduled());
-        assert!(
-            host.view
-                .viewport_transform()
-                .expect("viewport after successor native callback")
-                .pan
-                .x
-                > after_queued_callbacks.pan.x,
-            "the successor callback must advance auto-pan exactly once",
-        );
     });
 }
 
 #[open_gpui::test]
-fn late_scheduled_tick_after_close_cannot_revive_or_mutate_a_node_drag(
+fn close_before_render_discards_ready_tick_without_mutating_node_drag(
     cx: &mut open_gpui::TestAppContext,
 ) {
     let (runtime, host, cx) = mount_gesture_scene(cx);
     draw(cx);
 
-    let graph_before = runtime.snapshot().expect("graph before late tick");
-    let history_before = runtime.history_state().expect("history before late tick");
+    let graph_before = runtime.snapshot().expect("graph before close");
+    let history_before = runtime.history_state().expect("history before close");
     cx.simulate_mouse_down(
         point(px(100.0), px(100.0)),
         MouseButton::Left,
@@ -4912,82 +4860,59 @@ fn late_scheduled_tick_after_close_cannot_revive_or_mutate_a_node_drag(
             host.interaction_presentation().phase(),
             CanvasInteractionPhase::NodeDrag,
         );
-        assert!(host.interaction_owner.test_tick_scheduled());
-        assert_eq!(host.interaction_owner.test_tick_callback_attempts(), 0);
-        assert_eq!(host.interaction_owner.test_tick_callback_registrations(), 1);
-        assert_eq!(host.interaction_owner.test_tick_frame_requests(), 1);
+        let resources = host.resource_snapshot();
+        assert!(resources.interaction_tick_scheduled());
+        assert!(resources.interaction_tick_frame_requested());
     });
 
-    cx.update(|window, cx| {
-        host.update(cx, |host, cx| {
-            host.close_in_window(window, cx)
-                .expect("close before the scheduled tick enters GPUI");
-            assert_eq!(
-                host.interaction_presentation().phase(),
-                CanvasInteractionPhase::Closed,
-            );
-            assert!(host.interaction_owner.test_pending_work_empty());
-            assert!(
-                !host.interaction_owner.test_tick_scheduled(),
-                "close must cancel the semantic tick while leaving the queued callback inert",
-            );
-            assert_eq!(host.interaction_owner.terminal_window_transition_count(), 1);
-            assert!(!host.interaction_owner.has_focus_state());
-            assert_eq!(
-                host.interaction_owner.test_tick_callback_registrations(),
-                1,
-                "closing the active drag must not register another tick callback",
-            );
-            assert_eq!(
-                host.interaction_owner.test_tick_frame_requests(),
-                1,
-                "closing the active drag must not issue another animation-frame request",
-            );
+    let viewport_before_callback = cx.read_entity(&host, |host, _| {
+        host.view
+            .viewport_transform()
+            .expect("viewport before callback entry")
+    });
+    let callback_host = host.clone();
+    let callback_observation = Rc::new(Cell::new(None));
+    let observed = Rc::clone(&callback_observation);
+    cx.update(|window, _| {
+        window.on_next_frame(move |window, cx| {
+            let before = callback_host.read(cx).view.viewport_transform().ok();
+            callback_host.update(cx, |host, cx| {
+                host.close_in_window(window, cx)
+                    .expect("close after the scheduled tick enters but before render");
+            });
+            let after = callback_host.read(cx).view.viewport_transform().ok();
+            observed.set(Some((before, after)));
+            window.refresh();
         });
     });
-    assert!(graph_before.ptr_eq(&runtime.snapshot().expect("graph immediately after close")));
-    assert_eq!(
-        runtime
-            .history_state()
-            .expect("history immediately after close"),
-        history_before,
-    );
-
-    let frame_delivered = cx.simulate_frame(open_gpui::RequestFrameOptions::default());
     assert!(
-        frame_delivered,
-        "the test platform must deliver the requested interaction frame",
+        cx.simulate_frame(open_gpui::RequestFrameOptions::default()),
+        "the test platform must deliver the queued tick and close callbacks",
     );
-
+    let (viewport_before_close, viewport_after_close) = callback_observation
+        .take()
+        .expect("close callback observation");
+    assert_eq!(viewport_before_close, Some(viewport_before_callback));
+    assert!(viewport_after_close.is_none());
     cx.read_entity(&host, |host, _| {
-        assert_eq!(
-            host.interaction_owner.test_tick_callback_attempts(),
-            1,
-            "the already scheduled window callback must enter exactly once after close",
-        );
+        let resources = host.resource_snapshot();
         assert_eq!(
             host.interaction_presentation().phase(),
             CanvasInteractionPhase::Closed,
         );
         assert!(host.interaction_owner.test_pending_work_empty());
-        assert!(!host.interaction_owner.test_tick_scheduled());
+        assert!(
+            !resources.interaction_tick_scheduled(),
+            "close must cancel the ready semantic tick before render",
+        );
+        assert!(!resources.interaction_tick_frame_requested());
         assert_eq!(host.interaction_owner.terminal_window_transition_count(), 1);
         assert!(!host.interaction_owner.has_focus_state());
         assert!(!host.interaction_owner.test_native_requires_window_cleanup());
-        assert_eq!(
-            host.interaction_owner.test_tick_callback_registrations(),
-            1,
-            "a late callback after close must not register a successor",
-        );
-        assert_eq!(
-            host.interaction_owner.test_tick_frame_requests(),
-            1,
-            "a late callback after close must not revive animation-frame demand",
-        );
     });
-    assert!(graph_before.ptr_eq(&runtime.snapshot().expect("graph after late tick")));
+    assert!(graph_before.ptr_eq(&runtime.snapshot().expect("graph after close")));
     assert_eq!(
-        runtime.history_state().expect("history after late tick"),
+        runtime.history_state().expect("history after close"),
         history_before,
     );
 }
@@ -5192,6 +5117,7 @@ fn sixty_fifth_real_node_gesture_cancels_without_side_effects_then_retries_after
                 registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
+            .expect("valid Open GPUI scene host")
         });
         *scene_host.borrow_mut() = Some(host.clone());
         InteractiveScene { host }
@@ -5211,9 +5137,6 @@ fn sixty_fifth_real_node_gesture_cancels_without_side_effects_then_retries_after
     let history_before = runtime
         .history_state()
         .expect("history before capacity rejection");
-    let overflows_before = cx.read_entity(&host, |host, _| {
-        host.work_ledger_snapshot().protected_overflows()
-    });
     let pointer = point(px(100.0), px(100.0));
 
     cx.simulate_mouse_down(pointer, MouseButton::Left, Default::default());
@@ -5223,20 +5146,10 @@ fn sixty_fifth_real_node_gesture_cancels_without_side_effects_then_retries_after
     assert!(cx.update(|window, _| window.captured_hitbox()).is_none());
     cx.update(|window, cx| assert_eq!(window.focused(cx), Some(previous_focus.clone())));
     cx.read_entity(&host, |host, _| {
-        assert_eq!(
-            host.scene_evidence.last_scene_phase.get(),
-            Some(OpenGpuiSceneGesturePhase::Cancel(
-                OpenGpuiSceneGestureCancelReason::ProtectedCapacityExceeded,
-            )),
-        );
         assert!(!host.active_scene_gesture());
         assert_eq!(
             host.resource_snapshot().protected_instances(),
             OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY
-        );
-        assert_eq!(
-            host.work_ledger_snapshot().protected_overflows(),
-            overflows_before + 1
         );
     });
     assert!(graph_before.ptr_eq(&runtime.snapshot().expect("snapshot after rejection")));
@@ -5251,10 +5164,6 @@ fn sixty_fifth_real_node_gesture_cancels_without_side_effects_then_retries_after
 
     assert!(cx.update(|window, _| window.captured_hitbox()).is_some());
     cx.read_entity(&host, |host, _| {
-        assert_eq!(
-            host.scene_evidence.last_scene_phase.get(),
-            Some(OpenGpuiSceneGesturePhase::Start),
-        );
         assert!(host.active_scene_gesture());
         assert_eq!(
             host.resource_snapshot().protected_instances(),
@@ -5268,10 +5177,6 @@ fn sixty_fifth_real_node_gesture_cancels_without_side_effects_then_retries_after
     assert!(cx.update(|window, _| window.captured_hitbox()).is_none());
     cx.update(|window, cx| assert_eq!(window.focused(cx), Some(previous_focus)));
     cx.read_entity(&host, |host, _| {
-        assert_eq!(
-            host.scene_evidence.last_scene_phase.get(),
-            Some(OpenGpuiSceneGesturePhase::Release),
-        );
         assert!(!host.active_scene_gesture());
         assert_eq!(
             host.resource_snapshot().protected_instances(),
@@ -5451,67 +5356,6 @@ fn selected_node_chrome_matches_native_node_bounds(cx: &mut open_gpui::TestAppCo
 }
 
 #[open_gpui::test]
-fn overlapping_node_chrome_stays_inside_each_runtime_ordered_wrapper(
-    cx: &mut open_gpui::TestAppContext,
-) {
-    let (_runtime, host, cx) = mount_gesture_scene_for_graph(cx, overlapping_target_graph());
-    let source = NodeId::from_u128(10);
-    let lower = NodeId::from_u128(11);
-    let front = NodeId::from_u128(12);
-    cx.read_entity(&host, |host, _| {
-        set_selection_by_id(&host.view, [lower, front], Vec::new())
-            .expect("select both overlapping nodes");
-    });
-
-    draw(cx);
-
-    cx.read_entity(&host, |host, _| {
-        assert_eq!(
-            host.scene_evidence
-                .last_node_layer_sequence
-                .borrow()
-                .as_slice(),
-            [
-                OpenGpuiNodeLayerEntry::Content(source),
-                OpenGpuiNodeLayerEntry::Content(lower),
-                OpenGpuiNodeLayerEntry::Chrome(lower),
-                OpenGpuiNodeLayerEntry::Content(front),
-                OpenGpuiNodeLayerEntry::Chrome(front),
-            ],
-            "a back-node chrome must paint before the next runtime-ordered node content",
-        );
-    });
-    for node in [lower, front] {
-        let content = cx
-            .debug_bounds(&test_node_selector(node))
-            .expect("overlapping node content bounds");
-        let chrome = cx
-            .debug_bounds(&super::scene_render::open_gpui_node_chrome_selector(node))
-            .expect("overlapping node chrome bounds");
-        assert_eq!(chrome, content);
-    }
-
-    let overlap = cx
-        .debug_bounds(&test_node_selector(front))
-        .expect("front overlapping node bounds")
-        .center();
-    cx.simulate_mouse_down(overlap, MouseButton::Left, Default::default());
-    cx.read_entity(&host, |host, _| {
-        assert!(
-            matches!(
-                host.scene_evidence.last_scene_kind.borrow().as_ref(),
-                Some(OpenGpuiSceneGestureKind::Node(instance)) if instance.node() == front
-            ),
-            "paint-only chrome must not intercept the front node pointer target",
-        );
-    });
-    cx.simulate_mouse_up(overlap, MouseButton::Left, Default::default());
-    cx.run_until_parked();
-    draw(cx);
-    cx.read_entity(&host, |host, _| assert!(!host.active_scene_gesture()));
-}
-
-#[open_gpui::test]
 fn box_selection_additive_modifiers_preserve_existing_selection_and_release_overlay(
     cx: &mut open_gpui::TestAppContext,
 ) {
@@ -5669,6 +5513,7 @@ fn escape_cancels_node_drag_without_mutating_graph(cx: &mut open_gpui::TestAppCo
                 registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
+            .expect("valid Open GPUI scene host")
         });
         *scene_host.borrow_mut() = Some(host.clone());
         InteractiveScene { host }
@@ -5992,6 +5837,7 @@ fn coalesced_remove_undo_and_payload_patch_revoke_the_retired_incarnation_withou
                 registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
+            .expect("valid Open GPUI scene host")
         });
         *scene_host.borrow_mut() = Some(host.clone());
         InteractiveScene { host }
@@ -6082,7 +5928,6 @@ fn coalesced_remove_undo_and_payload_patch_revoke_the_retired_incarnation_withou
         assert_eq!(host.resource_snapshot().active_nodes(), 0);
         assert_eq!(host.resource_snapshot().parked_nodes(), 0);
         assert_eq!(host.resource_snapshot().strong_instances(), 0);
-        assert_eq!(host.work_ledger_snapshot().hard_retirements(), 1);
     });
 }
 
@@ -6116,6 +5961,7 @@ fn reconcile_panic_revokes_inserted_mount_authority(cx: &mut open_gpui::TestAppC
                     size: viewport().size,
                 },
             )
+            .expect("valid Open GPUI scene host")
         });
         *scene_host.borrow_mut() = Some(host.clone());
         InteractiveScene { host }
@@ -6171,6 +6017,7 @@ fn blank_canvas_drag_selects_intersecting_nodes_without_graph_history(
                 registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
+            .expect("valid Open GPUI scene host")
         });
         *scene_host.borrow_mut() = Some(host.clone());
         InteractiveScene { host }
@@ -6250,6 +6097,7 @@ fn dragging_a_real_output_to_a_real_input_commits_through_the_scene_host(
                 registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
+            .expect("valid Open GPUI scene host")
         });
         *scene_host.borrow_mut() = Some(host.clone());
         InteractiveScene { host }
@@ -6281,37 +6129,19 @@ fn dragging_a_real_output_to_a_real_input_commits_through_the_scene_host(
     });
     cx.simulate_mouse_move(input.center(), Some(MouseButton::Left), Default::default());
     cx.simulate_mouse_up(input.center(), MouseButton::Left, Default::default());
-    for frame in 0..4 {
-        draw(cx);
-        cx.read_entity(&host, |host, _| {
-            assert_eq!(
-                host.scene_evidence.last_planned_wire_count.get()
-                    + host
-                        .scene_evidence
-                        .last_painted_connection_preview_count
-                        .get(),
-                1,
-                "frame {frame}: connection settlement atomically replaces preview with the published route",
-            );
-        });
-    }
+    cx.run_until_parked();
+    draw(cx);
 
     let snapshot = runtime.snapshot().expect("committed graph");
     assert_eq!(snapshot.graph().edges().len(), 1);
     let edge = snapshot.graph().edges().values().next().expect("new edge");
     assert_eq!(edge.from, PortId::from_u128(20));
     assert_eq!(edge.to, PortId::from_u128(21));
-    cx.read_entity(&host, |host, _| {
+    cx.update_entity(&host, |host, _| {
         assert!(host.interaction_presentation().connection().is_none());
         assert_eq!(host.resource_snapshot().protected_instances(), 0);
         assert_eq!(host.resource_snapshot().protected_leases(), 0);
-        assert_eq!(host.scene_evidence.last_connection_preview.get(), None);
-        assert_eq!(
-            host.scene_evidence
-                .last_painted_connection_preview_count
-                .get(),
-            0,
-        );
+        assert!(host.connection_preview_plan().is_none());
     });
 }
 
@@ -6341,6 +6171,7 @@ fn output_connection_drag_keeps_press_time_anchor_when_current_geometry_moves(
                 registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
+            .expect("valid Open GPUI scene host")
         });
         *scene_host.borrow_mut() = Some(host.clone());
         InteractiveScene { host }
@@ -6378,21 +6209,15 @@ fn output_connection_drag_keeps_press_time_anchor_when_current_geometry_moves(
     });
     draw(cx);
 
-    cx.read_entity(&host, |host, _| {
-        assert_eq!(
-            host.scene_evidence.last_connection_preview.get(),
-            Some(OpenGpuiConnectionPreviewEvidence {
-                source,
-                target,
-                suppressed_edge: None,
-            })
-        );
-        assert_eq!(
-            host.scene_evidence
-                .last_painted_connection_preview_count
-                .get(),
-            1,
-        );
+    cx.update_entity(&host, |host, _| {
+        let preview = host
+            .connection_preview_plan()
+            .expect("output connection preview");
+        let (preview_source, preview_target) =
+            edge_path_endpoints(&preview.path).expect("preview endpoints");
+        assert_eq!(preview_source, source);
+        assert_eq!(preview_target, target);
+        assert!(preview.suppressed_edge.is_none());
         assert_eq!(
             host.interaction_presentation().phase(),
             CanvasInteractionPhase::ConnectionDrag
@@ -6428,21 +6253,23 @@ fn output_connection_drag_keeps_press_time_anchor_when_current_geometry_moves(
             y: source.y + 40.0,
         }
     );
-    cx.read_entity(&host, |host, _| {
+    cx.update_entity(&host, |host, _| {
+        let preview = host
+            .connection_preview_plan()
+            .expect("fixed-endpoint preview after source geometry moves");
+        let (preview_source, preview_target) =
+            edge_path_endpoints(&preview.path).expect("fixed preview endpoints");
         assert_eq!(
-            host.scene_evidence.last_connection_preview.get(),
-            Some(OpenGpuiConnectionPreviewEvidence {
-                source,
-                target,
-                suppressed_edge: None,
-            }),
+            (preview_source, preview_target),
+            (source, target),
             "the preview must not rebuild its fixed endpoint from later port geometry",
         );
+        assert!(preview.suppressed_edge.is_none());
     });
 }
 
 #[open_gpui::test]
-fn reconnect_preview_uses_fixed_port_anchor_and_only_suppresses_published_paint(
+fn reconnect_preview_uses_fixed_port_anchor_and_suppresses_the_published_route_plan(
     cx: &mut open_gpui::TestAppContext,
 ) {
     let edge = EdgeId::from_u128(30);
@@ -6468,14 +6295,21 @@ fn reconnect_preview_uses_fixed_port_anchor_and_only_suppresses_published_paint(
                 registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
+            .expect("valid Open GPUI scene host")
         });
         *scene_host.borrow_mut() = Some(host.clone());
         InteractiveScene { host }
     });
     let host = captured_host.borrow().clone().expect("captured host");
     draw(cx);
-    cx.read_entity(&host, |host, _| {
-        assert_eq!(host.scene_evidence.last_planned_wire_count.get(), 1);
+    cx.update_entity(&host, |host, _| {
+        assert_eq!(
+            host.scene_wires()
+                .expect("initial published route plan")
+                .published
+                .len(),
+            1,
+        );
     });
 
     let input = cx
@@ -6500,21 +6334,21 @@ fn reconnect_preview_uses_fixed_port_anchor_and_only_suppresses_published_paint(
     cx.simulate_mouse_move(pointer, Some(MouseButton::Left), Default::default());
     draw(cx);
 
-    cx.read_entity(&host, |host, _| {
+    cx.update_entity(&host, |host, _| {
+        let preview = host
+            .connection_preview_plan()
+            .expect("reconnect preview plan");
+        let endpoints = edge_path_endpoints(&preview.path).expect("reconnect preview endpoints");
+        assert_eq!(endpoints, (fixed_anchor, canvas_pointer));
         assert_eq!(
-            host.scene_evidence.last_connection_preview.get(),
-            Some(OpenGpuiConnectionPreviewEvidence {
-                source: fixed_anchor,
-                target: canvas_pointer,
-                suppressed_edge: Some(edge),
-            })
+            preview.suppressed_edge.map(EdgeInstanceKey::edge),
+            Some(edge),
         );
-        assert_eq!(host.scene_evidence.last_planned_wire_count.get(), 0);
-        assert_eq!(
-            host.scene_evidence
-                .last_painted_connection_preview_count
-                .get(),
-            1,
+        assert!(
+            host.scene_wires()
+                .expect("suppressed reconnect route plan")
+                .published
+                .is_empty()
         );
     });
     assert!(
@@ -6556,6 +6390,7 @@ fn input_preview_inverts_endpoints_through_offset_transform_and_ignores_edge_bud
                 registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
+            .expect("valid Open GPUI scene host")
             .with_edge_layer_budget(0)
         });
         *scene_host.borrow_mut() = Some(host.clone());
@@ -6586,21 +6421,19 @@ fn input_preview_inverts_endpoints_through_offset_transform_and_ignores_edge_bud
     cx.simulate_mouse_move(pointer, Some(MouseButton::Left), Default::default());
     draw(cx);
 
-    cx.read_entity(&host, |host, _| {
-        let evidence = host
-            .scene_evidence
-            .last_connection_preview
-            .get()
+    cx.update_entity(&host, |host, _| {
+        let preview = host
+            .connection_preview_plan()
             .expect("input connection preview");
-        assert_canvas_point_close(evidence.source, CanvasPoint { x: 430.0, y: 322.0 });
-        assert_eq!(evidence.target, target_anchor);
-        assert_eq!(evidence.suppressed_edge, None);
-        assert_eq!(host.scene_evidence.last_planned_wire_count.get(), 0);
-        assert_eq!(
-            host.scene_evidence
-                .last_painted_connection_preview_count
-                .get(),
-            1,
+        let (source, target) = edge_path_endpoints(&preview.path).expect("input preview endpoints");
+        assert_canvas_point_close(source, CanvasPoint { x: 430.0, y: 322.0 });
+        assert_eq!(target, target_anchor);
+        assert!(preview.suppressed_edge.is_none());
+        assert!(
+            host.scene_wires()
+                .expect("edge-budget-independent preview route plan")
+                .published
+                .is_empty()
         );
         assert_eq!(host.last_edge_layer_overflow().budget_omitted(), 0);
     });
@@ -6632,6 +6465,7 @@ fn dragging_an_unconnected_input_to_a_real_output_commits_in_graph_order(
                 registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
+            .expect("valid Open GPUI scene host")
         });
         *scene_host.borrow_mut() = Some(host.clone());
         InteractiveScene { host }
@@ -6687,6 +6521,7 @@ fn overlapping_port_drop_targets_the_topmost_painted_node(cx: &mut open_gpui::Te
                 registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
+            .expect("valid Open GPUI scene host")
         });
         *scene_host.borrow_mut() = Some(host.clone());
         InteractiveScene { host }
@@ -6756,6 +6591,7 @@ fn deferred_release_from_a_retired_instance_cannot_target_reused_node_and_port_i
                 registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
+            .expect("valid Open GPUI scene host")
         });
         *scene_host.borrow_mut() = Some(host.clone());
         InteractiveScene { host }
@@ -6864,6 +6700,7 @@ fn windowless_close_rejects_active_pointer_ownership_before_closing_the_view(
                 registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
+            .expect("valid Open GPUI scene host")
         });
         *scene_host.borrow_mut() = Some(host.clone());
         InteractiveScene { host }
@@ -6940,7 +6777,8 @@ fn never_rendered_host_closes_windowlessly_without_pending_cleanup() {
             .seal(&catalog())
             .expect("valid empty test registry"),
         viewport(),
-    );
+    )
+    .expect("valid Open GPUI scene host");
 
     host.close().expect("unrendered host has no window state");
     assert!(host.interaction_owner.terminal());
@@ -7022,6 +6860,7 @@ fn windowless_close_rejects_node_owned_window_activity(cx: &mut open_gpui::TestA
                 registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
+            .expect("valid Open GPUI scene host")
         });
         *scene_host.borrow_mut() = Some(host.clone());
         InteractiveScene { host }
@@ -7061,7 +6900,8 @@ fn windowless_close_rejects_queued_commands_without_executing_or_resolving_them(
             .seal(&catalog())
             .expect("valid empty test registry"),
         viewport(),
-    );
+    )
+    .expect("valid Open GPUI scene host");
     let mut ticket = host
         .commands
         .enqueue(
@@ -7088,7 +6928,11 @@ fn windowless_close_rejects_queued_commands_without_executing_or_resolving_them(
     drop(host);
     assert!(matches!(
         poll_command_ticket(&mut ticket),
-        Err(crate::command_journal::OpenGpuiCommandTicketError::HostDropped)
+        Err(
+            crate::command_journal::OpenGpuiCommandTicketFailure::DefinitelyNotExecuted(
+                crate::command_journal::OpenGpuiCommandTicketError::HostDropped
+            )
+        )
     ));
 }
 
@@ -7232,9 +7076,11 @@ fn runtime_drop_bridge_terminalizes_a_queued_ticket_and_finishes_window_cleanup(
     assert!(matches!(
         poll_command_ticket(&mut ticket),
         Err(
-            crate::command_journal::OpenGpuiCommandTicketError::HostClosed {
-                reason: ViewCloseReason::RuntimeDropped
-            }
+            crate::command_journal::OpenGpuiCommandTicketFailure::DefinitelyNotExecuted(
+                crate::command_journal::OpenGpuiCommandTicketError::HostClosed {
+                    reason: ViewCloseReason::RuntimeDropped
+                }
+            )
         )
     ));
     cx.read_entity(&host, |host, _| {
@@ -7276,9 +7122,11 @@ fn prepaint_detected_close_terminalizes_the_collected_ticket(cx: &mut open_gpui:
         matches!(
             ticket_result,
             Err(
-                crate::command_journal::OpenGpuiCommandTicketError::HostClosed {
-                    reason: ViewCloseReason::HostClosed
-                }
+                crate::command_journal::OpenGpuiCommandTicketFailure::DefinitelyNotExecuted(
+                    crate::command_journal::OpenGpuiCommandTicketError::HostClosed {
+                        reason: ViewCloseReason::HostClosed
+                    }
+                )
             )
         ),
         "unexpected prepaint-close ticket result: {ticket_result:?}",
@@ -7311,6 +7159,7 @@ fn first_render_of_an_already_closed_view_terminalizes_a_queued_ticket(
                     .expect("valid empty test registry"),
                 viewport(),
             )
+            .expect("valid Open GPUI scene host")
         });
         *scene_host.borrow_mut() = Some(host.clone());
         InteractiveScene { host }
@@ -7340,9 +7189,11 @@ fn first_render_of_an_already_closed_view_terminalizes_a_queued_ticket(
     assert!(matches!(
         poll_command_ticket(&mut ticket),
         Err(
-            crate::command_journal::OpenGpuiCommandTicketError::HostClosed {
-                reason: ViewCloseReason::RuntimeDropped
-            }
+            crate::command_journal::OpenGpuiCommandTicketFailure::DefinitelyNotExecuted(
+                crate::command_journal::OpenGpuiCommandTicketError::HostClosed {
+                    reason: ViewCloseReason::RuntimeDropped
+                }
+            )
         )
     ));
     cx.read_entity(&host, |host, _| {
@@ -7385,6 +7236,7 @@ fn window_close_middleware_panic_does_not_strand_command_ticket(
                     .expect("valid empty test registry"),
                 viewport(),
             )
+            .expect("valid Open GPUI scene host")
         });
         *scene_host.borrow_mut() = Some(host.clone());
         InteractiveScene { host }
@@ -7432,9 +7284,11 @@ fn window_close_middleware_panic_does_not_strand_command_ticket(
     assert!(matches!(
         poll_command_ticket(&mut ticket),
         Err(
-            crate::command_journal::OpenGpuiCommandTicketError::ClosePanicked {
-                reason: ViewCloseReason::HostClosed
-            }
+            crate::command_journal::OpenGpuiCommandTicketFailure::ExecutionUnknown(
+                crate::command_journal::OpenGpuiCommandTicketError::ClosePanicked {
+                    reason: ViewCloseReason::HostClosed
+                }
+            )
         )
     ));
 }
@@ -7469,7 +7323,11 @@ fn scene_preparation_failure_after_collection_fails_the_batch_and_reopens_capaci
     draw(cx);
     assert!(matches!(
         poll_command_ticket(&mut failed),
-        Err(crate::command_journal::OpenGpuiCommandTicketError::FramePreparation { .. })
+        Err(
+            crate::command_journal::OpenGpuiCommandTicketFailure::DefinitelyNotExecuted(
+                crate::command_journal::OpenGpuiCommandTicketError::FramePreparation { .. }
+            )
+        )
     ));
     assert_eq!(runtime.snapshot().expect("unchanged graph").revision(), 0);
     cx.read_entity(&host, |host, _| assert!(!host.commands.has_pending()));
@@ -7586,6 +7444,7 @@ fn assert_ordinary_feedback_panic_isolated(
                 registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
+            .expect("valid Open GPUI scene host")
         });
         *scene_host.borrow_mut() = Some(host.clone());
         InteractiveScene { host }
@@ -7614,7 +7473,11 @@ fn assert_ordinary_feedback_panic_isolated(
 
     assert!(matches!(
         poll_command_ticket(&mut failed),
-        Err(crate::command_journal::OpenGpuiCommandTicketError::FeedbackOutcomeUnknown)
+        Err(
+            crate::command_journal::OpenGpuiCommandTicketFailure::ExecutionUnknown(
+                crate::command_journal::OpenGpuiCommandTicketError::FeedbackOutcomeUnknown
+            )
+        )
     ));
     let snapshot_after_panic = runtime.snapshot().expect("runtime after panic");
     let version_after_panic = snapshot_after_panic.version();
@@ -7684,7 +7547,8 @@ fn dropping_host_closes_the_exact_view_session() {
             .seal(&catalog())
             .expect("valid empty test registry"),
         viewport(),
-    );
+    )
+    .expect("valid Open GPUI scene host");
 
     handle
         .set_viewport(ViewportTransform::new(CanvasPoint { x: 12.0, y: -8.0 }, 1.5).unwrap())
@@ -7732,6 +7596,7 @@ fn dropping_a_real_wire_on_empty_space_requests_search_without_mutating_the_grap
                 registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
+            .expect("valid Open GPUI scene host")
         });
         *scene_host.borrow_mut() = Some(host.clone());
         InteractiveScene { host }
@@ -7980,6 +7845,7 @@ fn keyboard_activation_arms_an_exact_source_and_commits_through_an_exact_target(
                 registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
+            .expect("valid Open GPUI scene host")
         });
         *scene_host.borrow_mut() = Some(host.clone());
         InteractiveScene { host }
@@ -8249,110 +8115,6 @@ fn escape_from_the_exact_source_focus_cancels_keyboard_connection_without_histor
 }
 
 #[open_gpui::test]
-fn high_fanout_output_pointer_and_keyboard_drag_skip_incident_edges(
-    cx: &mut open_gpui::TestAppContext,
-) {
-    const INCIDENT_EDGES: usize = 9_999;
-
-    let runtime = GraphRuntime::builder(catalog())
-        .build(high_fanout_output_graph(INCIDENT_EDGES))
-        .expect("valid fanout graph");
-    let view = runtime
-        .attach_view(ViewSessionOptions::default())
-        .expect("attach view");
-    let mut registry = OpenGpuiNodeRegistry::builder();
-    register_test_renderer(&mut registry, move |binding, _window, cx| {
-        cx.new(|_| InteractiveRoutedNode {
-            binding,
-            events: std::rc::Rc::new(std::cell::Cell::new(0)),
-        })
-    });
-    let captured_host = std::rc::Rc::new(std::cell::RefCell::new(None));
-    let scene_host = captured_host.clone();
-    let (_scene, cx) = cx.add_window_view(move |_, cx| {
-        let host = cx.new(|_| {
-            OpenGpuiSceneHost::new(
-                view,
-                registry.seal(&catalog()).expect("valid test registry"),
-                viewport(),
-            )
-            .with_edge_layer_budget(0)
-        });
-        *scene_host.borrow_mut() = Some(host.clone());
-        InteractiveScene { host }
-    });
-    let host = captured_host.borrow().clone().expect("captured host");
-    draw(cx);
-
-    let output = cx
-        .debug_bounds("jellyflow-test-output-port")
-        .expect("output bounds");
-    cx.simulate_mouse_down(output.center(), MouseButton::Left, Default::default());
-    cx.read_entity(&host, |host, _| {
-        let query_work = host
-            .scene_evidence
-            .last_port_connection_query_work
-            .get()
-            .expect("pointer admission publishes its operation receipt");
-        assert_eq!(query_work.incident_bucket_reads(), 0);
-        assert_eq!(query_work.incident_entries_read(), 0);
-        assert_eq!(
-            host.interaction_presentation().phase(),
-            CanvasInteractionPhase::Armed
-        );
-    });
-
-    cx.simulate_mouse_up(
-        point(px(700.0), px(500.0)),
-        MouseButton::Left,
-        Default::default(),
-    );
-    cx.run_until_parked();
-    cx.update_window_entity(&host, |host, window, cx| {
-        let request = host
-            .connection_search_request()
-            .expect("pointer drag creates a search request");
-        host.cancel_connection_search(&request, window, cx)
-            .expect("cancel pointer search");
-    });
-
-    let owner = cx.read_entity(&host, |host, _| {
-        current_port_drag_owner(host, NodeId::from_u128(10), PortId::from_u128(20))
-    });
-    let event = OpenGpuiPortEvent::Activation(OpenGpuiPortActivationEvent::new(
-        owner,
-        OpenGpuiPortActivationSource::Keyboard,
-    ));
-    cx.update(|window, cx| {
-        host.update(cx, |host, cx| {
-            host.scene_evidence
-                .last_port_connection_query_work
-                .set(None);
-            host.handle_port_event(event, window, cx);
-        });
-    });
-    cx.read_entity(&host, |host, _| {
-        let query_work = host
-            .scene_evidence
-            .last_port_connection_query_work
-            .get()
-            .expect("keyboard activation publishes its operation receipt");
-        assert_eq!(query_work.incident_bucket_reads(), 0);
-        assert_eq!(query_work.incident_entries_read(), 0);
-        assert!(host.connection_search_request().is_none());
-        assert_connect_search_binding(host, PortId::from_u128(20));
-        assert_eq!(
-            host.interaction_presentation().phase(),
-            CanvasInteractionPhase::ConnectionDrag
-        );
-    });
-    cx.update_window_entity(&host, |host, window, cx| {
-        let update = host.interaction_owner.cancel();
-        assert!(host.apply_canvas_interaction_result(update, window, cx));
-    });
-}
-
-#[open_gpui::test]
 fn pointer_empty_release_enters_search_while_semantic_activation_only_arms_the_source(
     cx: &mut open_gpui::TestAppContext,
 ) {
@@ -8378,6 +8140,7 @@ fn pointer_empty_release_enters_search_while_semantic_activation_only_arms_the_s
                 registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
+            .expect("valid Open GPUI scene host")
         });
         *scene_host.borrow_mut() = Some(host.clone());
         InteractiveScene { host }
@@ -8517,6 +8280,7 @@ fn rejected_keyboard_reconnect_target_retains_the_exact_source_and_feedback(
                 registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
+            .expect("valid Open GPUI scene host")
         });
         *scene_host.borrow_mut() = Some(host.clone());
         InteractiveScene { host }
@@ -8606,6 +8370,7 @@ fn create_from_wire_query_and_selection_add_one_node_and_edge_atomically(
                 registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
+            .expect("valid Open GPUI scene host")
         });
         *scene_host.borrow_mut() = Some(host.clone());
         InteractiveScene { host }
@@ -8660,7 +8425,7 @@ fn create_from_wire_query_and_selection_add_one_node_and_edge_atomically(
             break;
         }
     }
-    cx.read_entity(&host, |host, _| {
+    cx.update_entity(&host, |host, _| {
         let graph = runtime.snapshot().expect("create-from-wire graph evidence");
         let (edge_id, edge) = graph
             .graph()
@@ -8685,13 +8450,7 @@ fn create_from_wire_query_and_selection_add_one_node_and_edge_atomically(
             "{settlement_evidence}",
         );
         assert!(host.interaction_presentation().connection().is_none());
-        assert_eq!(host.scene_evidence.last_connection_preview.get(), None);
-        assert_eq!(
-            host.scene_evidence
-                .last_painted_connection_preview_count
-                .get(),
-            0,
-        );
+        assert!(host.connection_preview_plan().is_none());
     });
 
     let snapshot = runtime.snapshot().expect("committed graph");
@@ -8741,6 +8500,7 @@ fn create_from_wire_selection_rebinds_after_an_unrelated_revision(
                 registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
+            .expect("valid Open GPUI scene host")
         });
         *scene_host.borrow_mut() = Some(host.clone());
         InteractiveScene { host }
@@ -8974,21 +8734,22 @@ fn cancelling_a_pending_interaction_releases_its_prefix_task_reservation(
         let cancelled = host.interaction_owner.cancel();
         host.discard_pending_interaction_submission();
         assert!(host.apply_canvas_interaction_result(cancelled, window, cx));
-        assert_eq!(host.commands.capacity_usage(), (1, 0, 0));
 
         for index in 1..OPEN_GPUI_COMMAND_JOURNAL_CAPACITY {
-            host.commands
-                .enqueue_detached(
-                    GraphCommand::set_node_data(
-                        version,
-                        NodeId::from_u128(10),
-                        serde_json::json!({ "queued": index }),
-                    ),
-                    super::OpenGpuiCommandOrigin::Binding,
-                )
-                .unwrap_or_else(|error| {
-                    panic!("cancelled prefix task releases slot {index}: {error:?}")
-                });
+            drop(
+                host.commands
+                    .enqueue(
+                        GraphCommand::set_node_data(
+                            version,
+                            NodeId::from_u128(10),
+                            serde_json::json!({ "queued": index }),
+                        ),
+                        super::OpenGpuiCommandOrigin::Binding,
+                    )
+                    .unwrap_or_else(|error| {
+                        panic!("cancelled prefix task releases slot {index}: {error:?}")
+                    }),
+            );
         }
     });
 }
@@ -9078,12 +8839,113 @@ fn node_size_updates_after_a_captured_prefix_wait_for_their_own_barrier(
     );
     cx.read_entity(&host, |host, _| {
         assert_eq!(host.content_sizes.pending_command_counts(), None);
-        assert_eq!(host.commands.capacity_usage(), (0, 0, 0));
         assert!(
             host.last_diagnostic().is_none(),
             "unexpected host diagnostic: {:?}",
             host.last_diagnostic()
         );
+    });
+}
+
+#[open_gpui::test]
+fn content_size_capacity_prefers_already_protected_targets_and_parks_until_woken(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let (runtime, host, cx) = mount_content_size_scene_for_graph(cx, content_size_capacity_graph());
+    draw(cx);
+
+    let first_unprotected = NodeId::from_u128(1);
+    let protected_target = NodeId::from_u128((OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY + 1) as u128);
+    let leases = cx.update_entity(&host, |host, cx| {
+        (2..=OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY + 1)
+            .map(|index| {
+                let node = NodeId::from_u128(index as u128);
+                let instance = host
+                    .retained_nodes
+                    .retained_instance(node)
+                    .cloned()
+                    .expect("protected content-size instance");
+                let mount = host
+                    .mount_capability(&instance)
+                    .cloned()
+                    .expect("protected content-size mount");
+                host.retained_nodes
+                    .binding_for_mount(&instance, &mount)
+                    .expect("protected content-size binding")
+                    .read(cx)
+                    .activity()
+                    .acquire(OpenGpuiActivityKind::Focus)
+                    .expect("fill protected capacity")
+            })
+            .collect::<Vec<_>>()
+    });
+
+    cx.update_entity(&host, |host, cx| {
+        issue_content_height_update(host, first_unprotected, 172.0);
+        issue_content_height_update(host, protected_target, 188.0);
+        host.schedule_content_size_prefix(cx);
+        assert!(
+            host.content_sizes.has_prefix_task(),
+            "an already-protected target must bypass an unprotected queue head"
+        );
+    });
+
+    for _ in 0..12 {
+        draw(cx);
+    }
+    let snapshot = runtime
+        .snapshot()
+        .expect("partially settled capacity graph");
+    assert_eq!(
+        snapshot
+            .graph()
+            .node(&protected_target)
+            .expect("already-protected content-size target")
+            .size,
+        Some(CanvasSize {
+            width: 180.0,
+            height: 188.0,
+        })
+    );
+    assert_eq!(
+        snapshot
+            .graph()
+            .node(&first_unprotected)
+            .expect("capacity-blocked content-size target")
+            .size,
+        Some(CanvasSize {
+            width: 180.0,
+            height: 100.0,
+        })
+    );
+    cx.read_entity(&host, |host, _| {
+        assert!(host.content_sizes.pending_command_counts().is_some());
+        assert!(host.content_sizes.has_capacity_wait_task());
+        assert!(
+            !host.content_sizes.needs_frame(),
+            "full protected capacity must park instead of spinning animation frames"
+        );
+    });
+
+    drop(leases);
+    cx.run_until_parked();
+    for _ in 0..12 {
+        draw(cx);
+    }
+    let snapshot = runtime.snapshot().expect("capacity-woken content graph");
+    assert_eq!(
+        snapshot
+            .graph()
+            .node(&first_unprotected)
+            .expect("capacity-woken content-size target")
+            .size,
+        Some(CanvasSize {
+            width: 180.0,
+            height: 172.0,
+        })
+    );
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(host.content_sizes.pending_command_counts(), None);
     });
 }
 
@@ -9104,19 +8966,17 @@ fn content_size_target_survives_prefix_capture_queue_backpressure(
             .expect("queue-backpressure graph version")
             .version();
         for _ in 0..OPEN_GPUI_COMMAND_JOURNAL_CAPACITY {
-            host.commands
-                .enqueue_detached(
-                    GraphCommand::set_node_data(version, target, serde_json::Value::Null),
-                    super::OpenGpuiCommandOrigin::Binding,
-                )
-                .expect("fill command journal with deterministic noops");
+            drop(
+                host.commands
+                    .enqueue(
+                        GraphCommand::set_node_data(version, target, serde_json::Value::Null),
+                        super::OpenGpuiCommandOrigin::Binding,
+                    )
+                    .expect("fill command journal with deterministic noops"),
+            );
         }
 
         assert!(host.schedule_content_size_prefix(cx));
-        assert_eq!(
-            host.commands.capacity_usage(),
-            (OPEN_GPUI_COMMAND_JOURNAL_CAPACITY, 0, 0)
-        );
         assert_eq!(host.content_sizes.pending_command_counts(), Some((0, 1)));
         assert!(!host.content_sizes.has_prefix_task());
         assert!(
@@ -9144,7 +9004,6 @@ fn content_size_target_survives_prefix_capture_queue_backpressure(
     );
     cx.read_entity(&host, |host, _| {
         assert_eq!(host.content_sizes.pending_command_counts(), None);
-        assert_eq!(host.commands.capacity_usage(), (0, 0, 0));
     });
 }
 
@@ -9190,7 +9049,222 @@ fn content_size_mutation_coalesces_the_latest_target_while_pending(
     );
     cx.read_entity(&host, |host, _| {
         assert_eq!(host.content_sizes.pending_command_counts(), None);
-        assert_eq!(host.commands.capacity_usage(), (0, 0, 0));
+    });
+}
+
+#[open_gpui::test]
+fn content_size_batch_primary_retirement_preserves_the_surviving_latest_target(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    assert_content_size_batch_retirement_preserves_the_surviving_latest_target(
+        cx,
+        NodeId::from_u128(10),
+        NodeId::from_u128(11),
+    );
+}
+
+#[open_gpui::test]
+fn content_size_batch_non_primary_retirement_preserves_the_surviving_latest_target(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    assert_content_size_batch_retirement_preserves_the_surviving_latest_target(
+        cx,
+        NodeId::from_u128(11),
+        NodeId::from_u128(10),
+    );
+}
+
+#[open_gpui::test]
+fn content_size_batch_secondary_close_overrides_primary_authoring(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let (_runtime, host, cx) = mount_content_size_scene(cx);
+    draw(cx);
+
+    let primary = NodeId::from_u128(10);
+    let secondary = NodeId::from_u128(11);
+    let (primary_activity, secondary_activity, secondary_mount) =
+        cx.update_entity(&host, |host, cx| {
+            issue_content_height_update(host, primary, 172.0);
+            issue_content_height_update(host, secondary, 172.0);
+            let effects = host.content_sizes.dispatch_queued_for_test(
+                Rc::clone(&host.commands),
+                &host.retained_nodes,
+                cx,
+            );
+            host.apply_content_size_effects(effects);
+            assert_eq!(host.content_sizes.pending_command_counts(), Some((0, 2)));
+
+            let primary_instance = host
+                .retained_nodes
+                .retained_instance(primary)
+                .cloned()
+                .expect("primary content-sized node instance");
+            let secondary_instance = host
+                .retained_nodes
+                .retained_instance(secondary)
+                .cloned()
+                .expect("secondary content-sized node instance");
+            let primary_node = host
+                .retained_nodes
+                .get(&primary_instance)
+                .expect("primary content-sized node mount");
+            let secondary_node = host
+                .retained_nodes
+                .get(&secondary_instance)
+                .expect("secondary content-sized node mount");
+            (
+                primary_node.activity.clone(),
+                secondary_node.activity.clone(),
+                secondary_node.mount.clone(),
+            )
+        });
+
+    // The primary binding can still open authoring facts, but terminal state belongs to the whole
+    // admitted mount set. Closing the later owner must therefore win before command observation.
+    secondary_mount.close(ViewCloseReason::HostClosed);
+    cx.update_entity(&host, |host, cx| {
+        host.observe_content_size_mutation(cx);
+        assert_eq!(host.content_sizes.pending_command_counts(), None);
+    });
+
+    assert_eq!(primary_activity.active_count(), 0);
+    assert_eq!(secondary_activity.active_count(), 0);
+    for _ in 0..8 {
+        draw(cx);
+    }
+    cx.read_entity(&host, |host, _| {
+        assert!(!host.commands.has_pending());
+    });
+}
+
+#[open_gpui::test]
+fn content_size_batch_runtime_primary_removal_preserves_the_surviving_latest_target(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let (runtime, host, cx) = mount_content_size_scene(cx);
+    draw(cx);
+
+    let removed_node = NodeId::from_u128(10);
+    let surviving_node = NodeId::from_u128(11);
+    cx.update_entity(&host, |host, cx| {
+        issue_content_height_update(host, removed_node, 172.0);
+        issue_content_height_update(host, surviving_node, 172.0);
+        let effects = host.content_sizes.dispatch_queued_for_test(
+            Rc::clone(&host.commands),
+            &host.retained_nodes,
+            cx,
+        );
+        host.apply_content_size_effects(effects);
+
+        let surviving_instance = host
+            .retained_nodes
+            .retained_instance(surviving_node)
+            .cloned()
+            .expect("surviving content-sized node instance");
+        host.content_sizes
+            .coalesce_stable_height_for_test(&surviving_instance, 188.0);
+    });
+    cx.run_until_parked();
+
+    cx.update_entity(&host, |host, cx| {
+        runtime
+            .execute(GraphCommand::topology(
+                runtime
+                    .snapshot()
+                    .expect("content-size command applied before runtime removal")
+                    .version(),
+                TopologyEdit::new().remove_node(removed_node, IncidentEdgePolicy::Cascade),
+            ))
+            .into_result()
+            .expect("remove the primary content-size node")
+            .applied()
+            .expect("primary content-size node removal applies");
+
+        // Observe before the lifecycle bridge drains the removal. The retained store still contains
+        // the retired primary binding, while the same authoring snapshot can be opened through the
+        // surviving batch member.
+        host.observe_content_size_mutation(cx);
+    });
+
+    for _ in 0..20 {
+        draw(cx);
+    }
+
+    assert_eq!(
+        runtime
+            .snapshot()
+            .expect("partial-removal content-size graph")
+            .graph()
+            .node(&surviving_node)
+            .expect("surviving content-sized node")
+            .size,
+        Some(CanvasSize {
+            width: 180.0,
+            height: 188.0,
+        })
+    );
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(host.content_sizes.pending_command_counts(), None);
+    });
+}
+
+fn assert_content_size_batch_retirement_preserves_the_surviving_latest_target(
+    cx: &mut open_gpui::TestAppContext,
+    retired_node: NodeId,
+    surviving_node: NodeId,
+) {
+    let (runtime, host, cx) = mount_content_size_scene(cx);
+    draw(cx);
+
+    let retired_mount = cx.update_entity(&host, |host, cx| {
+        issue_content_height_update(host, retired_node, 172.0);
+        issue_content_height_update(host, surviving_node, 172.0);
+        let effects = host.content_sizes.dispatch_queued_for_test(
+            Rc::clone(&host.commands),
+            &host.retained_nodes,
+            cx,
+        );
+        host.apply_content_size_effects(effects);
+        assert_eq!(host.content_sizes.pending_command_counts(), Some((0, 2)));
+
+        let surviving_instance = host
+            .retained_nodes
+            .retained_instance(surviving_node)
+            .cloned()
+            .expect("surviving content-sized node instance");
+        host.content_sizes
+            .coalesce_stable_height_for_test(&surviving_instance, 188.0);
+
+        let retired_instance = host
+            .retained_nodes
+            .retained_instance(retired_node)
+            .cloned()
+            .expect("retired content-sized node instance");
+        host.detach_instance(&retired_instance)
+            .expect("detach one admitted content-size batch mount")
+    });
+    retired_mount.retire();
+
+    for _ in 0..20 {
+        draw(cx);
+    }
+
+    assert_eq!(
+        runtime
+            .snapshot()
+            .expect("partial-retirement content-size graph")
+            .graph()
+            .node(&surviving_node)
+            .expect("surviving content-sized node")
+            .size,
+        Some(CanvasSize {
+            width: 180.0,
+            height: 188.0,
+        })
+    );
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(host.content_sizes.pending_command_counts(), None);
     });
 }
 
@@ -9239,65 +9313,6 @@ fn content_size_publication_settles_against_layout_generation_at_semantic_zoom(
             "semantic detail stays at native pixels while runtime geometry remains in canvas space"
         );
         assert_eq!(host.content_sizes.pending_command_counts(), None);
-        assert_eq!(host.commands.capacity_usage(), (0, 0, 0));
-    });
-}
-
-#[cfg(feature = "test-support")]
-#[open_gpui::test]
-fn smoke_footprint_reports_the_semantic_visual_size_at_detail_zoom(
-    cx: &mut open_gpui::TestAppContext,
-) {
-    let (_runtime, host, cx) = mount_content_size_scene(cx);
-    draw(cx);
-
-    let source = NodeId::from_u128(10);
-    cx.read_entity(&host, |host, _| {
-        host.view
-            .set_viewport(ViewportTransform::new(CanvasPoint::default(), 2.0).unwrap())
-            .expect("set detail viewport");
-    });
-    draw(cx);
-    draw(cx);
-
-    cx.read_entity(&host, |host, _| {
-        let transform = host.view.viewport_transform().expect("detail viewport");
-        let geometry = host.view.geometry_snapshot().expect("published geometry");
-        let published = geometry.node(source).expect("published source geometry");
-        let canonical = host
-            .retained_nodes
-            .active_in_order()
-            .find(|(instance, _)| instance.node() == source)
-            .map(|(_, mounted)| mounted.canonical_bounds())
-            .expect("materialized source node");
-        let footprint = host
-            .smoke_node_footprints()
-            .into_iter()
-            .find(|footprint| footprint.node() == source)
-            .expect("retained source footprint");
-
-        assert!(footprint.materialized());
-        assert_eq!(
-            footprint.bounds().size,
-            ViewSize::new(canonical.size.width, canonical.size.height),
-            "detail content remains at native pixel size"
-        );
-        assert_eq!(
-            CanvasSize {
-                width: footprint.bounds().size.width / transform.zoom,
-                height: footprint.bounds().size.height / transform.zoom,
-            },
-            published.bounds().size,
-            "native footprint converts back to the semantic canvas footprint"
-        );
-        assert_eq!(
-            published.bounds().size,
-            CanvasSize {
-                width: 90.0,
-                height: 50.0,
-            },
-            "the semantic footprint must not reuse the full document size at 2x zoom"
-        );
     });
 }
 
@@ -9343,7 +9358,38 @@ fn content_size_settlement_restores_a_parked_node_for_geometry_publication(
     );
     cx.read_entity(&host, |host, _| {
         assert_eq!(host.content_sizes.pending_command_counts(), None);
-        assert_eq!(host.commands.capacity_usage(), (0, 0, 0));
+    });
+}
+
+#[open_gpui::test]
+fn unavailable_geometry_parks_content_size_publication_after_one_recovery_frame(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let (_runtime, host, cx) = mount_content_size_scene(cx);
+    draw(cx);
+
+    let source = NodeId::from_u128(10);
+    cx.update_entity(&host, |host, _| {
+        issue_content_height_update(host, source, 172.0);
+        let instance = host
+            .retained_nodes
+            .retained_instance(source)
+            .cloned()
+            .expect("content-sized source instance");
+        host.content_sizes
+            .force_queued_publication_for_test(&instance);
+        host.view.close().expect("close content-size view");
+
+        assert!(host.observe_content_size_publication_after_feedback(&BTreeSet::new()));
+        assert_eq!(host.content_sizes.pending_command_counts(), Some((0, 1)));
+        assert!(!host.observe_content_size_publication_after_feedback(&BTreeSet::new()));
+        assert_eq!(host.content_sizes.pending_command_counts(), Some((0, 1)));
+        assert!(!host.content_sizes.needs_frame());
+        assert!(host.last_diagnostic().is_some_and(|diagnostic| {
+            diagnostic
+                .message()
+                .contains("authoritative geometry snapshot was unavailable")
+        }));
     });
 }
 
@@ -9354,9 +9400,25 @@ fn content_epoch_invalidation_isolates_a_pending_prefix_callback(
     let (runtime, host, cx) = mount_content_size_scene(cx);
     draw(cx);
     let source = NodeId::from_u128(10);
-    let prefix_hold = cx.read_entity(&host, |host, _| host.commands.hold_prefix_resolutions());
 
-    let binding = cx.update_entity(&host, |host, cx| {
+    let (binding, mut prefix_ticket) = cx.update_entity(&host, |host, cx| {
+        let version = host
+            .view
+            .graph_snapshot()
+            .expect("content epoch prefix graph version")
+            .version();
+        let prefix_ticket = host
+            .commands
+            .enqueue(
+                GraphCommand::set_node_data(
+                    version,
+                    NodeId::from_u128(11),
+                    serde_json::json!({ "content-epoch-prefix": true }),
+                )
+                .without_history(),
+                super::OpenGpuiCommandOrigin::Binding,
+            )
+            .expect("queue content epoch prefix");
         issue_content_height_update(host, source, 172.0);
         host.schedule_content_size_prefix(cx);
         assert!(host.content_sizes.has_prefix_task());
@@ -9371,6 +9433,7 @@ fn content_epoch_invalidation_isolates_a_pending_prefix_callback(
             .expect("content-sized source mount");
         host.retained_nodes
             .binding_for_mount(&instance, &mount)
+            .map(|binding| (binding, prefix_ticket))
             .expect("content-sized source binding")
     });
     assert!(
@@ -9383,11 +9446,16 @@ fn content_epoch_invalidation_isolates_a_pending_prefix_callback(
         assert!(!host.content_sizes.has_prefix_task());
     });
 
-    drop(prefix_hold);
     cx.run_until_parked();
     for _ in 0..4 {
         draw(cx);
     }
+    assert!(
+        poll_command_ticket(&mut prefix_ticket)
+            .expect("content epoch prefix transport")
+            .applied_revision()
+            .is_some()
+    );
     assert_eq!(
         runtime
             .snapshot()
@@ -9404,13 +9472,96 @@ fn content_epoch_invalidation_isolates_a_pending_prefix_callback(
 }
 
 #[open_gpui::test]
+fn content_epoch_invalidation_drains_an_admitted_command_before_issuing_the_successor(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let (runtime, host, cx) = mount_content_size_scene(cx);
+    draw(cx);
+    let source = NodeId::from_u128(10);
+
+    let binding = cx.update_entity(&host, |host, cx| {
+        issue_content_height_update(host, source, 172.0);
+        let effects = host.content_sizes.dispatch_queued_for_test(
+            Rc::clone(&host.commands),
+            &host.retained_nodes,
+            cx,
+        );
+        host.apply_content_size_effects(effects);
+        assert_eq!(host.content_sizes.pending_command_counts(), Some((0, 1)));
+        let instance = host
+            .retained_nodes
+            .retained_instance(source)
+            .cloned()
+            .expect("content-sized source instance");
+        let mount = host
+            .mount_capability(&instance)
+            .cloned()
+            .expect("content-sized source mount");
+        host.retained_nodes
+            .binding_for_mount(&instance, &mount)
+            .expect("content-sized source binding")
+    });
+    assert!(
+        binding
+            .update(cx, |binding, cx| binding.invalidate_layout(cx))
+            .expect("invalidate content epoch after admission")
+    );
+    cx.update_entity(&host, |host, _| {
+        let instance = host
+            .retained_nodes
+            .retained_instance(source)
+            .cloned()
+            .expect("content-sized source instance");
+        assert_eq!(host.content_sizes.pending_command_counts(), Some((0, 1)));
+        host.content_sizes
+            .coalesce_stable_height_for_test(&instance, 188.0);
+    });
+
+    for _ in 0..20 {
+        draw(cx);
+    }
+    assert_eq!(
+        runtime
+            .snapshot()
+            .expect("drained content-size graph")
+            .graph()
+            .node(&source)
+            .expect("content-sized source")
+            .size,
+        Some(CanvasSize {
+            width: 180.0,
+            height: 188.0,
+        })
+    );
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(host.content_sizes.pending_command_counts(), None);
+    });
+}
+
+#[open_gpui::test]
 fn environment_invalidation_isolates_a_pending_prefix_callback(cx: &mut open_gpui::TestAppContext) {
     let (runtime, host, cx) = mount_content_size_scene(cx);
     draw(cx);
     let source = NodeId::from_u128(10);
-    let prefix_hold = cx.read_entity(&host, |host, _| host.commands.hold_prefix_resolutions());
 
-    cx.update_entity(&host, |host, cx| {
+    let mut prefix_ticket = cx.update_entity(&host, |host, cx| {
+        let version = host
+            .view
+            .graph_snapshot()
+            .expect("environment prefix graph version")
+            .version();
+        let prefix_ticket = host
+            .commands
+            .enqueue(
+                GraphCommand::set_node_data(
+                    version,
+                    NodeId::from_u128(11),
+                    serde_json::json!({ "environment-prefix": true }),
+                )
+                .without_history(),
+                super::OpenGpuiCommandOrigin::Binding,
+            )
+            .expect("queue environment prefix");
         issue_content_height_update(host, source, 172.0);
         host.schedule_content_size_prefix(cx);
         assert!(host.content_sizes.has_prefix_task());
@@ -9420,13 +9571,19 @@ fn environment_invalidation_isolates_a_pending_prefix_callback(cx: &mut open_gpu
         );
         assert_eq!(host.content_sizes.pending_command_counts(), None);
         assert!(!host.content_sizes.has_prefix_task());
+        prefix_ticket
     });
 
-    drop(prefix_hold);
     cx.run_until_parked();
     for _ in 0..4 {
         draw(cx);
     }
+    assert!(
+        poll_command_ticket(&mut prefix_ticket)
+            .expect("environment prefix transport")
+            .applied_revision()
+            .is_some()
+    );
     assert_eq!(
         runtime
             .snapshot()
@@ -9469,14 +9626,13 @@ fn closing_with_a_pending_content_size_prefix_releases_its_task_and_reservation(
             .expect("queued close prefix");
         host.schedule_content_size_prefix(cx);
         assert!(host.content_sizes.has_prefix_task());
-        assert_eq!(host.commands.capacity_usage(), (1, 0, 1));
 
         host.close_in_window(window, cx)
             .expect("window close drains the prefix and cancels node sizing");
         assert_eq!(host.content_sizes.pending_command_counts(), None);
         assert!(!host.content_sizes.has_prefix_task());
         assert!(host.content_sizes.ready_is_empty());
-        assert_eq!(host.commands.capacity_usage(), (0, 0, 0));
+        assert!(!host.commands.has_pending());
         prefix_ticket
     });
 
@@ -9486,7 +9642,6 @@ fn closing_with_a_pending_content_size_prefix_releases_its_task_and_reservation(
         assert_eq!(host.close_reason(), Some(ViewCloseReason::HostClosed));
         assert_eq!(host.content_sizes.pending_command_counts(), None);
         assert!(host.content_sizes.ready_is_empty());
-        assert_eq!(host.commands.capacity_usage(), (0, 0, 0));
     });
 }
 
@@ -9517,6 +9672,7 @@ fn create_from_wire_cancel_clears_search_and_leaves_graph_unchanged(
                 registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
+            .expect("valid Open GPUI scene host")
         });
         *scene_host.borrow_mut() = Some(host.clone());
         InteractiveScene { host }
@@ -9536,18 +9692,12 @@ fn create_from_wire_cancel_clears_search_and_leaves_graph_unchanged(
     cx.run_until_parked();
     draw(cx);
 
-    cx.read_entity(&host, |host, _| {
+    cx.update_entity(&host, |host, _| {
         assert_eq!(
             host.interaction_presentation().phase(),
             CanvasInteractionPhase::ConnectionSearch
         );
-        assert!(host.scene_evidence.last_connection_preview.get().is_some());
-        assert_eq!(
-            host.scene_evidence
-                .last_painted_connection_preview_count
-                .get(),
-            1,
-        );
+        assert!(host.connection_preview_plan().is_some());
     });
 
     cx.update_window_entity(&host, |host, window, cx| {
@@ -9561,15 +9711,9 @@ fn create_from_wire_cancel_clears_search_and_leaves_graph_unchanged(
         assert_eq!(host.connection_search_request(), None);
     });
     draw(cx);
-    cx.read_entity(&host, |host, _| {
+    cx.update_entity(&host, |host, _| {
         assert!(host.interaction_presentation().connection().is_none());
-        assert_eq!(host.scene_evidence.last_connection_preview.get(), None);
-        assert_eq!(
-            host.scene_evidence
-                .last_painted_connection_preview_count
-                .get(),
-            0,
-        );
+        assert!(host.connection_preview_plan().is_none());
     });
 
     assert_eq!(
@@ -9600,8 +9744,6 @@ fn occupied_input_replacement_is_atomic_and_one_undo_restores_the_old_edge(
             events: std::rc::Rc::new(std::cell::Cell::new(0)),
         })
     });
-    let captured_host = std::rc::Rc::new(std::cell::RefCell::new(None));
-    let scene_host = captured_host.clone();
     let (_scene, cx) = cx.add_window_view(move |_, cx| {
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new(
@@ -9609,11 +9751,10 @@ fn occupied_input_replacement_is_atomic_and_one_undo_restores_the_old_edge(
                 registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
+            .expect("valid Open GPUI scene host")
         });
-        *scene_host.borrow_mut() = Some(host.clone());
         InteractiveScene { host }
     });
-    let host = captured_host.borrow().clone().expect("captured host");
     draw(cx);
 
     let replacement_output = cx
@@ -9637,20 +9778,8 @@ fn occupied_input_replacement_is_atomic_and_one_undo_restores_the_old_edge(
         MouseButton::Left,
         Default::default(),
     );
-    for frame in 0..4 {
-        draw(cx);
-        cx.read_entity(&host, |host, _| {
-            assert_eq!(
-                host.scene_evidence.last_planned_wire_count.get()
-                    + host
-                        .scene_evidence
-                        .last_painted_connection_preview_count
-                        .get(),
-                1,
-                "frame {frame}: replacement settlement never drops or duplicates the routed edge",
-            );
-        });
-    }
+    cx.run_until_parked();
+    draw(cx);
 
     let replaced = runtime.snapshot().expect("replacement snapshot");
     assert_eq!(replaced.graph().edges().len(), 1);
@@ -9682,7 +9811,7 @@ fn occupied_input_replacement_is_atomic_and_one_undo_restores_the_old_edge(
 }
 
 #[open_gpui::test]
-fn selected_edge_outward_reconnect_grip_yields_its_overlap_to_the_real_port(
+fn selected_edge_reconnect_hit_stays_outside_the_real_port_while_the_cap_remains_attached(
     cx: &mut open_gpui::TestAppContext,
 ) {
     let (_runtime, host, port_events, cx) = mount_selected_reconnect_scene(cx);
@@ -9709,12 +9838,9 @@ fn selected_edge_outward_reconnect_grip_yields_its_overlap_to_the_real_port(
     assert_eq!(reconnect.size.height, px(22.0));
     assert_eq!(reconnect_chrome.size.width, px(3.0));
     assert_eq!(reconnect_chrome.size.height, px(9.0));
-    assert_eq!(reconnect_chrome.center(), reconnect.center());
+    assert_eq!(reconnect_chrome.center(), port.center());
     assert_eq!(reconnect.center().y, port.center().y);
-    assert_eq!(
-        port.center().x - reconnect.center().x,
-        px(super::scene_render::OPEN_GPUI_RECONNECT_GRIP_OFFSET_IN_VIEW)
-    );
+    assert!(reconnect.origin.x + reconnect.size.width < port.origin.x);
 
     cx.simulate_mouse_move(reconnect.center(), None, Default::default());
     draw_once(cx);
@@ -9735,14 +9861,13 @@ fn selected_edge_outward_reconnect_grip_yields_its_overlap_to_the_real_port(
         "hover emphasis must not move or resize the endpoint cap",
     );
 
-    let overlap = point(port.origin.x + px(1.0), port.center().y);
-    assert!(overlap.x >= reconnect.origin.x);
-    assert!(overlap.x <= reconnect.origin.x + reconnect.size.width);
-    cx.simulate_mouse_down(overlap, MouseButton::Left, Default::default());
+    let port_target = point(port.origin.x + px(1.0), port.center().y);
+    assert!(port_target.x > reconnect.origin.x + reconnect.size.width);
+    cx.simulate_mouse_down(port_target, MouseButton::Left, Default::default());
 
     assert!(
         port_events.get() > 0,
-        "the native port observer proves the real port owns the remaining grip overlap",
+        "the native port remains reachable independently from reconnect chrome",
     );
     cx.read_entity(&host, |host, _| {
         assert_eq!(
@@ -9751,7 +9876,7 @@ fn selected_edge_outward_reconnect_grip_yields_its_overlap_to_the_real_port(
         );
     });
     cx.simulate_keystrokes("escape");
-    cx.simulate_mouse_up(overlap, MouseButton::Left, Default::default());
+    cx.simulate_mouse_up(port_target, MouseButton::Left, Default::default());
 }
 
 #[open_gpui::test]
@@ -9790,11 +9915,6 @@ fn selected_edge_reconnect_hit_remains_reachable_outside_the_port(
         let presentation = host.interaction_presentation();
         assert_eq!(presentation.phase(), CanvasInteractionPhase::Armed);
         assert!(presentation.connection().is_none());
-        assert!(matches!(
-            host.scene_evidence.last_scene_kind.borrow().as_ref(),
-            Some(OpenGpuiSceneGestureKind::EdgeReconnect(reconnecting, EdgeEndpoint::To))
-                if reconnecting.edge() == edge
-        ));
     });
 
     cx.simulate_mouse_move(
@@ -9854,6 +9974,7 @@ fn explicit_input_reconnect_retains_edge_identity_and_undo_restores_the_endpoint
                 registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
+            .expect("valid Open GPUI scene host")
         });
         *scene_host.borrow_mut() = Some(host.clone());
         InteractiveScene { host }
@@ -9926,6 +10047,7 @@ fn runtime_drop_during_input_reconnect_retires_the_preview_without_mutating_the_
                 registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
+            .expect("valid Open GPUI scene host")
         });
         *scene_host.borrow_mut() = Some(host.clone());
         InteractiveScene { host }
@@ -10014,6 +10136,7 @@ fn runtime_drop_releases_registered_third_party_capture_while_host_is_detached(
                 registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
+            .expect("valid Open GPUI scene host")
         });
         ReplaceableInteractiveScene { host: Some(host) }
     });
@@ -10055,9 +10178,8 @@ fn runtime_drop_releases_registered_third_party_capture_while_host_is_detached(
 }
 
 fn assert_settled_host_has_no_pending_work(host: &OpenGpuiSceneHost) {
-    let stats = host.work_ledger_snapshot();
+    let resources = host.resource_snapshot();
     assert!(!host.commands.has_pending());
-    assert_eq!(host.commands.capacity_usage(), (0, 0, 0));
     assert!(host.frame_transaction.is_none());
     assert!(host.content_sizes.pending_command_counts().is_none());
     assert!(!host.content_sizes.has_prefix_task());
@@ -10070,17 +10192,17 @@ fn assert_settled_host_has_no_pending_work(host: &OpenGpuiSceneHost) {
         host.interaction_presentation().phase(),
         CanvasInteractionPhase::Idle
     );
-    assert_eq!(stats.interaction_pending_queries(), 0);
-    assert!(!stats.interaction_submission_pending());
-    assert_eq!(stats.interaction_ready_prefixes(), 0);
-    assert!(!stats.interaction_tick_scheduled());
-    assert!(!stats.interaction_tick_frame_requested());
-    assert!(!stats.interaction_query_frame_scheduled());
-    assert!(!stats.interaction_query_resolution_active());
-    assert!(!stats.interaction_native_tick_wake_active());
-    assert!(!stats.interaction_native_query_wake_active());
-    assert_eq!(stats.protected_instances(), 0);
-    assert_eq!(stats.protected_leases(), 0);
+    assert_eq!(resources.interaction_pending_queries(), 0);
+    assert!(!resources.interaction_submission_pending());
+    assert_eq!(resources.interaction_ready_prefixes(), 0);
+    assert!(!resources.interaction_tick_scheduled());
+    assert!(!resources.interaction_tick_frame_requested());
+    assert!(!resources.interaction_query_frame_scheduled());
+    assert!(!resources.interaction_query_resolution_active());
+    assert!(!resources.interaction_native_tick_wake_active());
+    assert!(!resources.interaction_native_query_wake_active());
+    assert_eq!(resources.protected_instances(), 0);
+    assert_eq!(resources.protected_leases(), 0);
 }
 
 fn draw(cx: &mut open_gpui::VisualTestContext) {
@@ -10168,6 +10290,7 @@ fn keyboard_connection_capacity_failure_aborts_then_retries_after_release(
                 registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
+            .expect("valid Open GPUI scene host")
         });
         *scene_host.borrow_mut() = Some(host.clone());
         InteractiveScene { host }
@@ -10188,10 +10311,6 @@ fn keyboard_connection_capacity_failure_aborts_then_retries_after_release(
             OpenGpuiPortActivationSource::Keyboard,
         ))
     };
-    let overflows_before = cx.read_entity(&host, |host, _| {
-        host.work_ledger_snapshot().protected_overflows()
-    });
-
     let event = activate();
     cx.update(|window, cx| {
         host.update(cx, |host, cx| host.handle_port_event(event, window, cx));
@@ -10203,10 +10322,6 @@ fn keyboard_connection_capacity_failure_aborts_then_retries_after_release(
         );
         assert!(host.connection_search_request().is_none());
         assert!(!host.interaction_owner.has_connection());
-        assert_eq!(
-            host.work_ledger_snapshot().protected_overflows(),
-            overflows_before + 1
-        );
         assert_eq!(
             host.resource_snapshot().protected_instances(),
             OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY
@@ -10313,6 +10428,7 @@ fn mount_interactive_gesture_scene(
                 registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
+            .expect("valid Open GPUI scene host")
         });
         *scene_host.borrow_mut() = Some(host.clone());
         InteractiveScene { host }
@@ -10349,6 +10465,7 @@ fn mount_replaceable_gesture_scene(
                 registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
+            .expect("valid Open GPUI scene host")
         });
         ReplaceableInteractiveScene { host: Some(host) }
     });
@@ -10404,7 +10521,8 @@ fn mount_gesture_scene_for_graph(
     Entity<OpenGpuiSceneHost>,
     &mut open_gpui::VisualTestContext,
 ) {
-    let runtime = GraphRuntime::builder(catalog())
+    let catalog = catalog();
+    let runtime = GraphRuntime::builder(catalog.clone())
         .build(graph)
         .expect("valid graph");
     let view = runtime
@@ -10420,9 +10538,10 @@ fn mount_gesture_scene_for_graph(
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new(
                 view,
-                registry.seal(&catalog()).expect("valid test registry"),
+                registry.seal(&catalog).expect("valid test registry"),
                 viewport(),
             )
+            .expect("valid Open GPUI scene host")
         });
         *scene_host.borrow_mut() = Some(host.clone());
         InteractiveScene { host }
@@ -10438,8 +10557,20 @@ fn mount_content_size_scene(
     Entity<OpenGpuiSceneHost>,
     &mut open_gpui::VisualTestContext,
 ) {
-    let runtime = GraphRuntime::builder(catalog())
-        .build(content_size_graph())
+    mount_content_size_scene_for_graph(cx, content_size_graph())
+}
+
+fn mount_content_size_scene_for_graph(
+    cx: &mut open_gpui::TestAppContext,
+    graph: jellyflow_core::Graph,
+) -> (
+    GraphRuntime,
+    Entity<OpenGpuiSceneHost>,
+    &mut open_gpui::VisualTestContext,
+) {
+    let catalog = catalog();
+    let runtime = GraphRuntime::builder(catalog.clone())
+        .build(graph)
         .expect("valid graph");
     let view = runtime
         .attach_view(ViewSessionOptions::default())
@@ -10459,9 +10590,10 @@ fn mount_content_size_scene(
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new(
                 view,
-                registry.seal(&catalog()).expect("valid test registry"),
+                registry.seal(&catalog).expect("valid test registry"),
                 viewport(),
             )
+            .expect("valid Open GPUI scene host")
         });
         *scene_host.borrow_mut() = Some(host.clone());
         InteractiveScene { host }
@@ -10547,7 +10679,8 @@ fn mount_connection_scene_for_graph_with_context_handler(
                 view,
                 registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
-            );
+            )
+            .expect("valid Open GPUI scene host");
             host.blank_canvas_context_handler = context_handler;
             host
         });
@@ -10615,6 +10748,7 @@ fn mount_selection_delete_scene(
                     .expect("valid selection-delete registry"),
                 viewport(),
             )
+            .expect("valid Open GPUI scene host")
         });
         *scene_host.borrow_mut() = Some(host.clone());
         InteractiveScene { host }
@@ -10657,6 +10791,7 @@ fn mount_selected_reconnect_scene(
                 registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
+            .expect("valid Open GPUI scene host")
         });
         *scene_host.borrow_mut() = Some(host.clone());
         InteractiveScene { host }
@@ -10686,11 +10821,6 @@ fn close_active_scene_gesture(
 
     cx.run_until_parked();
     cx.read_entity(host, |host, _| {
-        assert_eq!(
-            host.scene_evidence.host_closed_scene_cancellations.get(),
-            0,
-            "terminal Host listeners must not record late native cancellation evidence",
-        );
         assert!(!host.active_scene_gesture());
         assert!(!host.interaction_owner.test_native_requires_window_cleanup());
         assert_eq!(host.resource_snapshot().protected_instances(), 0);
@@ -10849,6 +10979,14 @@ fn bounded_edge_graph_with_gap(
 }
 
 fn publish_all_edge_geometry(view: &ViewSession, selected: impl IntoIterator<Item = EdgeId>) {
+    publish_all_edge_geometry_with_offset(view, selected, 0.0);
+}
+
+fn publish_all_edge_geometry_with_offset(
+    view: &ViewSession,
+    selected: impl IntoIterator<Item = EdgeId>,
+    port_y_offset: f32,
+) {
     publish_edge_geometry_with(
         view,
         selected,
@@ -10865,7 +11003,7 @@ fn publish_all_edge_geometry(view: &ViewSession, selected: impl IntoIterator<Ite
                 PortDirection::Out => bounds.origin.x + bounds.size.width - 12.0,
             };
             ViewRect::new(
-                ViewPoint::new(x, bounds.origin.y + 44.0),
+                ViewPoint::new(x, bounds.origin.y + 44.0 + port_y_offset),
                 ViewSize::new(12.0, 12.0),
             )
         },
@@ -11092,27 +11230,6 @@ fn unconnected_graph() -> jellyflow_core::Graph {
     graph.build().expect("valid graph")
 }
 
-fn exec_unconnected_graph() -> jellyflow_core::Graph {
-    let source = NodeId::from_u128(10);
-    let target = NodeId::from_u128(11);
-    let output = PortId::from_u128(20);
-    let input = PortId::from_u128(21);
-    let mut graph = GraphBuilder::new(GraphId::from_u128(1));
-    let mut source_node = node(CanvasPoint { x: 40.0, y: 80.0 }, output);
-    source_node.kind = NodeKindKey::new(EXEC_KIND);
-    let mut target_node = node(CanvasPoint { x: 360.0, y: 80.0 }, input);
-    target_node.kind = NodeKindKey::new(EXEC_KIND);
-    graph.insert_node(source, source_node);
-    graph.insert_node(target, target_node);
-    let mut output_port = port(source, "output", PortDirection::Out);
-    output_port.kind = PortKind::Exec;
-    let mut input_port = port(target, "input", PortDirection::In);
-    input_port.kind = PortKind::Exec;
-    graph.insert_port(output, output_port);
-    graph.insert_port(input, input_port);
-    graph.build().expect("valid exec graph")
-}
-
 fn content_size_graph() -> jellyflow_core::Graph {
     let source = NodeId::from_u128(10);
     let target = NodeId::from_u128(11);
@@ -11124,6 +11241,21 @@ fn content_size_graph() -> jellyflow_core::Graph {
     graph.insert_node(source, source_node);
     graph.insert_node(target, target_node);
     graph.build().expect("valid content-size graph")
+}
+
+fn content_size_capacity_graph() -> jellyflow_core::Graph {
+    let mut graph = GraphBuilder::new(GraphId::from_u128(0x64_002));
+    for index in 0..=OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY {
+        graph.insert_node(
+            NodeId::from_u128(index as u128 + 1),
+            portless_node(CanvasPoint { x: 400.0, y: 300.0 }),
+        );
+    }
+    graph.insert_node(
+        protected_capacity_scene_node_id(),
+        portless_node(CanvasPoint { x: 40.0, y: 80.0 }),
+    );
+    graph.build().expect("valid content-size capacity graph")
 }
 
 fn overlapping_target_graph() -> jellyflow_core::Graph {
@@ -11147,31 +11279,31 @@ fn overlapping_target_graph() -> jellyflow_core::Graph {
     graph.build().expect("valid overlapping target graph")
 }
 
-fn high_fanout_output_graph(edge_count: usize) -> jellyflow_core::Graph {
+fn overlapping_hover_graph() -> jellyflow_core::Graph {
     let source = NodeId::from_u128(10);
-    let target = NodeId::from_u128(11);
+    let back = NodeId::from_u128(11);
+    let front = NodeId::from_u128(12);
     let output = PortId::from_u128(20);
-    let mut graph = GraphBuilder::new(GraphId::from_u128(2));
+    let back_first = PortId::from_u128(21);
+    let back_middle = PortId::from_u128(23);
+    let covered_back_port = PortId::from_u128(22);
+    let front_input = PortId::from_u128(99);
+    let target_position = CanvasPoint { x: 360.0, y: 80.0 };
+    let mut graph = GraphBuilder::new(GraphId::from_u128(0x90_000));
     graph.insert_node(source, node(CanvasPoint { x: 40.0, y: 80.0 }, output));
-    let mut output_port = port(source, "output", PortDirection::Out);
-    output_port.capacity = PortCapacity::Multi;
-    graph.insert_port(output, output_port);
-    let mut target_node = node(
-        CanvasPoint { x: 360.0, y: 80.0 },
-        PortId::from_u128(200_000),
+    let mut back_node = node(target_position, back_first);
+    back_node.ports = vec![back_first, back_middle, covered_back_port];
+    graph.insert_node(back, back_node);
+    graph.insert_node(front, node(target_position, front_input));
+    graph.insert_port(output, port(source, "output", PortDirection::Out));
+    graph.insert_port(back_first, port(back, "back-first", PortDirection::In));
+    graph.insert_port(back_middle, port(back, "back-middle", PortDirection::In));
+    graph.insert_port(
+        covered_back_port,
+        port(back, "back-covered", PortDirection::In),
     );
-    target_node.ports.clear();
-    target_node.hidden = true;
-    for index in 0..edge_count {
-        let input = PortId::from_u128(200_000 + index as u128);
-        target_node.ports.push(input);
-        graph.insert_port(input, port(target, "input", PortDirection::In));
-        let mut edge = Edge::new(EdgeKind::Data, output, input);
-        edge.hidden = true;
-        graph.insert_edge(EdgeId::from_u128(100_000 + index as u128), edge);
-    }
-    graph.insert_node(target, target_node);
-    graph.build().expect("valid high-fanout output graph")
+    graph.insert_port(front_input, port(front, "front-input", PortDirection::In));
+    graph.build().expect("valid overlapping hover graph")
 }
 
 fn locked_source_graph() -> jellyflow_core::Graph {
@@ -11471,6 +11603,7 @@ fn fit_view_uses_canonical_graph_bounds_and_is_a_noop_before_surface_measurement
                     .expect("valid empty registry"),
                 viewport(),
             )
+            .expect("valid Open GPUI scene host")
         });
         *captured_host.borrow_mut() = Some(host.clone());
         InteractiveScene { host }

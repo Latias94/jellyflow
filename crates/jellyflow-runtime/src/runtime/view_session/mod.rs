@@ -61,9 +61,9 @@ pub(crate) use self::port_geometry::{
 };
 use self::protocol::PendingFrame;
 pub use self::route_geometry::{
-    RouteGeometryRevision, VisibleRoute, VisibleRouteCursor, VisibleRouteCursorStaleReason,
-    VisibleRouteGeometryOverflow, VisibleRouteQuery, VisibleRouteQueryError,
-    VisibleRouteQueryOutcome, VisibleRouteQueryRevision, VisibleRouteQueryWork, VisibleRoutes,
+    VisibleRoute, VisibleRouteGeometryOverflow, VisibleRouteQueryRevision, VisibleRouteQueryWork,
+    VisibleRouteWorkError, VisibleRouteWorkRequest, VisibleRouteWorkSession,
+    VisibleRouteWorkStatus, VisibleRouteWorkUpdate, VisibleRoutes,
 };
 use self::selection_membership::SelectedEdgeMembership;
 pub use self::subscriptions::ViewSubscriptionToken;
@@ -733,6 +733,26 @@ enum ViewStatus {
     Closed(ViewCloseReason),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ViewTerminalization {
+    Installed(ViewCloseReason),
+    AlreadyClosed(ViewCloseReason),
+    Busy,
+}
+
+impl ViewTerminalization {
+    pub(crate) const fn installed(self) -> bool {
+        matches!(self, Self::Installed(_))
+    }
+
+    pub(crate) const fn reason(self) -> Option<ViewCloseReason> {
+        match self {
+            Self::Installed(reason) | Self::AlreadyClosed(reason) => Some(reason),
+            Self::Busy => None,
+        }
+    }
+}
+
 struct ViewState {
     id: ViewId,
     generation: ViewGeneration,
@@ -1202,10 +1222,10 @@ impl ViewSession {
         &self,
         binding: &ConnectionGestureBinding,
     ) -> Result<CreateFromWireCandidates, ViewCreateFromWireQueryError> {
+        let runtime = self.runtime()?;
+        runtime.ensure_create_from_wire_query_entry()?;
         self.validate_connection_binding(binding)?;
-        Ok(self
-            .runtime()?
-            .create_from_wire_candidates(binding.fixed_port_instance(), binding.mode())?)
+        Ok(runtime.create_from_wire_candidates(binding.fixed_port_instance(), binding.mode())?)
     }
 
     /// Resolves full incident connection facts and exact work for one port query.
@@ -1303,20 +1323,20 @@ impl ViewSession {
         request.validate_unique_identities()?;
         let runtime = self.runtime()?;
         if request.commands().is_empty() {
-            let (terminalized, callback_panic) =
+            let (terminalization, callback_panic) =
                 self.shared.terminalize(ViewCloseReason::HostClosed);
-            if !terminalized {
-                resume(callback_panic);
-                return self
-                    .close_reason()
-                    .map_or(Err(ViewSessionError::Busy), |reason| {
-                        Err(ViewSessionError::Closed { reason })
-                    });
-            }
-            runtime.unregister_view(self.id());
-            let outcome = ViewCloseOutcome::new(ViewCloseReason::HostClosed, Vec::new());
+            let outcome = match terminalization {
+                ViewTerminalization::Installed(reason) => {
+                    runtime.unregister_view(self.id());
+                    Ok(ViewCloseOutcome::new(reason, Vec::new()))
+                }
+                ViewTerminalization::AlreadyClosed(reason) => {
+                    Err(ViewSessionError::Closed { reason })
+                }
+                ViewTerminalization::Busy => Err(ViewSessionError::Busy),
+            };
             resume(callback_panic);
-            return Ok(outcome);
+            return outcome;
         }
         runtime.close_view(&self.shared, request)
     }
@@ -1333,58 +1353,6 @@ impl ViewSession {
             })
     }
 
-    #[cfg(test)]
-    pub(crate) fn layout_revision_for_test(&self) -> u64 {
-        self.shared.state.borrow().derived.layout_revision()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn draw_order_storage_counts_for_test(&self) -> (usize, usize) {
-        let state = self.shared.state.borrow();
-        (
-            state.facts.draw_order.len(),
-            state.retired_draw_order_nodes.len(),
-        )
-    }
-
-    #[cfg(test)]
-    pub(crate) fn with_state_borrowed_for_test<R>(&self, callback: impl FnOnce() -> R) -> R {
-        let _state = self.shared.state.borrow_mut();
-        callback()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn with_closing_for_test<R>(&self, callback: impl FnOnce() -> R) -> R {
-        struct RestoreOpen<'a>(&'a ViewShared);
-
-        impl Drop for RestoreOpen<'_> {
-            fn drop(&mut self) {
-                let mut state = self.0.state.borrow_mut();
-                if matches!(state.status, ViewStatus::Closing) {
-                    state.status = ViewStatus::Open;
-                }
-            }
-        }
-
-        self.shared
-            .begin_close()
-            .expect("test view must be open before entering Closing");
-        let _restore = RestoreOpen(&self.shared);
-        callback()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn exhaust_viewport_revision_for_test(&self) {
-        self.shared.state.borrow_mut().viewport_revision = ViewportRevision::exhausted_for_test();
-    }
-
-    #[cfg(test)]
-    pub(crate) fn advance_generation_for_test(&self) {
-        let mut state = self.shared.state.borrow_mut();
-        assert!(matches!(state.status, ViewStatus::Open));
-        state.generation = state.generation.terminal();
-    }
-
     fn ensure_open(&self) -> Result<(), ViewSessionError> {
         let state = self
             .shared
@@ -1397,18 +1365,24 @@ impl ViewSession {
     fn runtime(&self) -> Result<Rc<RuntimeShared>, ViewSessionError> {
         self.ensure_open()?;
         let Some(runtime) = self.runtime.upgrade() else {
-            let (_, callback_panic) = self.shared.terminalize(ViewCloseReason::RuntimeDropped);
+            let (terminalization, callback_panic) =
+                self.shared.terminalize(ViewCloseReason::RuntimeDropped);
             resume(callback_panic);
-            return Err(ViewSessionError::Closed {
-                reason: ViewCloseReason::RuntimeDropped,
-            });
+            return terminalization
+                .reason()
+                .map_or(Err(ViewSessionError::Busy), |reason| {
+                    Err(ViewSessionError::Closed { reason })
+                });
         };
         if !runtime.alive.get() {
-            let (_, callback_panic) = self.shared.terminalize(ViewCloseReason::RuntimeDropped);
+            let (terminalization, callback_panic) =
+                self.shared.terminalize(ViewCloseReason::RuntimeDropped);
             resume(callback_panic);
-            return Err(ViewSessionError::Closed {
-                reason: ViewCloseReason::RuntimeDropped,
-            });
+            return terminalization
+                .reason()
+                .map_or(Err(ViewSessionError::Busy), |reason| {
+                    Err(ViewSessionError::Closed { reason })
+                });
         }
         Ok(runtime)
     }
@@ -1416,24 +1390,18 @@ impl ViewSession {
 
 impl Drop for ViewSession {
     fn drop(&mut self) {
-        let (terminalized, callback_panic) = self.shared.terminalize(ViewCloseReason::HostClosed);
+        let (terminalization, callback_panic) =
+            self.shared.terminalize(ViewCloseReason::HostClosed);
         suppress(callback_panic);
-        if terminalized && let Some(runtime) = self.runtime.upgrade() {
+        if terminalization.installed()
+            && let Some(runtime) = self.runtime.upgrade()
+        {
             runtime.unregister_view(self.id());
         }
     }
 }
 
 impl WeakViewSession {
-    #[cfg(test)]
-    pub(crate) fn unavailable_for_test() -> Self {
-        Self {
-            runtime: Weak::new(),
-            view: Weak::new(),
-            catalog: Arc::new(NodeCatalog::new()),
-        }
-    }
-
     pub fn is_open(&self) -> bool {
         self.runtime
             .upgrade()
@@ -1458,10 +1426,20 @@ impl WeakViewSession {
         view.live_selection()
     }
 
+    #[cfg(test)]
     pub(crate) fn apply_selection_mutation(
         &self,
         mutation: SelectionMutation,
     ) -> Result<(), ViewSessionError> {
+        let callback_panic = self.apply_selection_mutation_deferred(mutation)?;
+        resume(callback_panic);
+        Ok(())
+    }
+
+    pub(crate) fn apply_selection_mutation_deferred(
+        &self,
+        mutation: SelectionMutation,
+    ) -> Result<Option<PanicPayload>, ViewSessionError> {
         let (view, runtime) = self.open_capability()?;
         let snapshot = runtime.snapshot().map_err(ViewSessionError::from)?;
         let provenance = view.provenance()?;
@@ -1734,6 +1712,7 @@ impl WeakViewSession {
         binding: &ConnectionGestureBinding,
     ) -> Result<CreateFromWireCandidates, ViewCreateFromWireQueryError> {
         let (_, runtime) = self.open_capability()?;
+        runtime.ensure_create_from_wire_query_entry()?;
         let snapshot = runtime.snapshot().map_err(ViewSessionError::from)?;
         if binding.provenance() != snapshot.provenance() {
             return Err(ViewSessionError::ForeignInteractionFacts.into());
@@ -1817,18 +1796,24 @@ impl WeakViewSession {
             ensure_open(state.status)?;
         }
         let Some(runtime) = self.runtime.upgrade() else {
-            let (_, callback_panic) = view.terminalize(ViewCloseReason::RuntimeDropped);
+            let (terminalization, callback_panic) =
+                view.terminalize(ViewCloseReason::RuntimeDropped);
             resume(callback_panic);
-            return Err(ViewSessionError::Closed {
-                reason: ViewCloseReason::RuntimeDropped,
-            });
+            return terminalization
+                .reason()
+                .map_or(Err(ViewSessionError::Busy), |reason| {
+                    Err(ViewSessionError::Closed { reason })
+                });
         };
         if !runtime.alive.get() {
-            let (_, callback_panic) = view.terminalize(ViewCloseReason::RuntimeDropped);
+            let (terminalization, callback_panic) =
+                view.terminalize(ViewCloseReason::RuntimeDropped);
             resume(callback_panic);
-            return Err(ViewSessionError::Closed {
-                reason: ViewCloseReason::RuntimeDropped,
-            });
+            return terminalization
+                .reason()
+                .map_or(Err(ViewSessionError::Busy), |reason| {
+                    Err(ViewSessionError::Closed { reason })
+                });
         }
         Ok((view, runtime))
     }
@@ -2145,7 +2130,7 @@ impl ViewShared {
         nodes: Vec<NodeLifetimeKey>,
         edges: Vec<EdgeInstanceKey>,
         groups: Vec<GroupId>,
-    ) -> Result<(), ViewSessionError> {
+    ) -> Result<Option<PanicPayload>, ViewSessionError> {
         let changed = {
             let mut state = self
                 .state
@@ -2182,13 +2167,10 @@ impl ViewShared {
                 Some(selection)
             }
         };
-        if let Some(selection) = changed {
-            resume(
-                self.subscriptions
-                    .publish_event(ViewSessionEvent::SelectionChanged { selection }),
-            );
-        }
-        Ok(())
+        Ok(changed.and_then(|selection| {
+            self.subscriptions
+                .publish_event(ViewSessionEvent::SelectionChanged { selection })
+        }))
     }
 
     fn export_seed(&self, snapshot: &GraphSnapshot) -> Result<ViewSessionSeed, ViewSessionError> {
@@ -2396,19 +2378,37 @@ impl ViewShared {
         panics.into_payload()
     }
 
-    pub(crate) fn terminalize(&self, reason: ViewCloseReason) -> (bool, Option<PanicPayload>) {
+    pub(crate) fn terminalize(
+        &self,
+        reason: ViewCloseReason,
+    ) -> (ViewTerminalization, Option<PanicPayload>) {
+        let terminalization = self.install_terminal(reason);
+        let callback_panic = self.publish_terminal(terminalization);
+        (terminalization, callback_panic)
+    }
+
+    pub(crate) fn install_terminal(&self, reason: ViewCloseReason) -> ViewTerminalization {
         let Ok(mut state) = self.state.try_borrow_mut() else {
-            return (false, None);
+            return ViewTerminalization::Busy;
         };
-        if matches!(state.status, ViewStatus::Closed(_)) {
-            return (false, None);
+        if let ViewStatus::Closed(reason) = state.status {
+            return ViewTerminalization::AlreadyClosed(reason);
         }
         state.status = ViewStatus::Closed(reason);
         state.generation = state.generation.terminal();
         state.derived.reset();
         state.pending_frame = None;
-        drop(state);
-        (true, self.subscriptions.publish_terminal(reason))
+        ViewTerminalization::Installed(reason)
+    }
+
+    pub(crate) fn publish_terminal(
+        &self,
+        terminalization: ViewTerminalization,
+    ) -> Option<PanicPayload> {
+        match terminalization {
+            ViewTerminalization::Installed(reason) => self.subscriptions.publish_terminal(reason),
+            ViewTerminalization::AlreadyClosed(_) | ViewTerminalization::Busy => None,
+        }
     }
 }
 
@@ -2465,7 +2465,7 @@ fn apply_selection_mutation(
     snapshot: &GraphSnapshot,
     expected_provenance: ViewProvenance,
     mutation: SelectionMutation,
-) -> Result<(), ViewSessionError> {
+) -> Result<Option<PanicPayload>, ViewSessionError> {
     match mutation {
         SelectionMutation::Node {
             provenance,

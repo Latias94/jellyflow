@@ -10,8 +10,11 @@ use crate::rules::Diagnostic;
 use crate::runtime::commands::{GraphCommand, IncidentEdgePolicy, TopologyEdit};
 use crate::runtime::graph_runtime::GraphRuntime;
 use crate::runtime::interaction::{
-    CanvasInteractionConfig, CanvasInteractionEffect, CanvasInteractionError,
-    CanvasInteractionPhase, CanvasInteractionSession, InteractionTerminalReason,
+    BoundInteractionSubmission, CanvasInteractionConfig, CanvasInteractionEffect,
+    CanvasInteractionError, CanvasInteractionPhase, CanvasInteractionSession,
+    ConnectionSettlementCapability, ConnectionSettlementPresentation, InteractionGraphSubmission,
+    InteractionSubmissionSettlementEvidence, InteractionSubmissionSettlementResult,
+    InteractionTerminalReason,
 };
 use crate::runtime::tests::fixtures::{current_port_instance, keyboard_connection_port_by_id};
 use crate::runtime::view_session::{ViewSessionError, ViewSessionOptions};
@@ -61,14 +64,13 @@ fn keyboard_connection_uses_exact_ports_and_the_fresh_connection_mutation_pipeli
     let submitted = session
         .activate_connection_port(target, edge, NodeGraphConnectionMode::Strict)
         .expect("compatible exact target");
-    let [CanvasInteractionEffect::SubmitGraph { submission }] = submitted.effects() else {
+    let [CanvasInteractionEffect::SubmitGraph { .. }] = submitted.effects() else {
         panic!("keyboard target must emit one ordinary graph mutation");
     };
     assert_eq!(
         session.presentation().phase(),
         CanvasInteractionPhase::Committing
     );
-    let ticket = submission.ticket();
     let submitted = submitted.into_dispatch();
     let CanvasInteractionEffect::SubmitGraph { submission } = submitted
         .effects
@@ -78,19 +80,14 @@ fn keyboard_connection_uses_exact_ports_and_the_fresh_connection_mutation_pipeli
     else {
         unreachable!("the only effect was checked above")
     };
-    let command = session
-        .bind_submission(submission)
-        .expect("fresh binding")
-        .expect("accepted connection command");
+    let (bound, command) = bind_command(&mut session, submission);
     let completion = runtime.execute(command);
     completion
         .result()
         .expect("keyboard connection execution")
         .applied()
         .expect("keyboard connection applies");
-    session
-        .complete_submission(ticket, completion)
-        .expect("keyboard settlement");
+    settle_command(&mut session, bound, completion);
 
     let graph = runtime.snapshot().expect("connected graph");
     let connected = graph.graph().edge(&edge).expect("new keyboard edge");
@@ -144,20 +141,20 @@ fn keyboard_connection_reconciles_a_lost_applied_completion_before_route_publica
     else {
         unreachable!("keyboard target emits one graph submission")
     };
-    let ticket = submission.ticket();
-    let command = session
-        .bind_submission(submission)
-        .expect("bind keyboard uncertainty submission")
-        .expect("keyboard uncertainty emits a command");
+    let (bound, command) = bind_command(&mut session, submission);
     runtime
         .execute(command)
         .into_result()
         .expect("keyboard command executes")
         .applied()
         .expect("keyboard command applies");
-    session
-        .submission_outcome_unknown(ticket)
-        .expect("lost callback enters shared uncertainty settlement");
+    assert!(matches!(
+        session.settle_submission(
+            bound,
+            InteractionSubmissionSettlementEvidence::OutcomeUnknown,
+        ),
+        InteractionSubmissionSettlementResult::Settled(_)
+    ));
 
     assert_eq!(
         session.presentation().terminal(),
@@ -184,6 +181,78 @@ fn keyboard_connection_reconciles_a_lost_applied_completion_before_route_publica
     assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
     assert_eq!(session.armed_keyboard_connection_source(), None);
     assert_eq!(session.retained_keyboard_connection_source(), None);
+}
+
+#[test]
+fn uncertain_keyboard_retry_issues_a_fresh_exact_capability() {
+    let (graph, ids) = graph_with_routed_edge();
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .expect("keyboard retry runtime");
+    let view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("keyboard retry view");
+    let source = keyboard_connection_port_by_id(&view, ids.alternate_source_port)
+        .expect("keyboard retry source");
+    let target =
+        keyboard_connection_port_by_id(&view, ids.target_port).expect("keyboard retry target");
+    let edge = EdgeId::from_u128(0x307);
+    let mut session = CanvasInteractionSession::attach(&view, CanvasInteractionConfig::default())
+        .expect("keyboard retry session");
+
+    session
+        .activate_keyboard_connection(source, edge, NodeGraphConnectionMode::Strict)
+        .expect("arm keyboard retry source");
+    let first = session
+        .activate_keyboard_connection_target(target)
+        .expect("submit first keyboard attempt");
+    let (first_bound, first_command) = bind_command(&mut session, take_submission(first));
+    drop(first_command);
+    assert!(matches!(
+        session.settle_submission(
+            first_bound,
+            InteractionSubmissionSettlementEvidence::OutcomeUnknown,
+        ),
+        InteractionSubmissionSettlementResult::Settled(_)
+    ));
+
+    advance_unrelated_revision(&runtime, ids.source, 1);
+    session
+        .reconcile_authoritative_state()
+        .expect("newer authority proves first attempt absent");
+    let first_capability = retryable_uncertain_capability(&session);
+
+    let retry = session
+        .retry_connection_settlement(first_capability)
+        .expect("exact uncertainty capability starts one retry");
+    let (retry_bound, retry_command) = bind_command(&mut session, take_submission(retry));
+    drop(retry_command);
+    assert!(matches!(
+        session.settle_submission(
+            retry_bound,
+            InteractionSubmissionSettlementEvidence::OutcomeUnknown,
+        ),
+        InteractionSubmissionSettlementResult::Settled(_)
+    ));
+
+    advance_unrelated_revision(&runtime, ids.source, 2);
+    session
+        .reconcile_authoritative_state()
+        .expect("newer authority proves retry absent");
+    let successor_capability = retryable_uncertain_capability(&session);
+    assert_ne!(successor_capability, first_capability);
+    assert!(matches!(
+        session.cancel_connection_settlement(first_capability),
+        Err(CanvasInteractionError::ConnectionSettlementStaleCapability)
+    ));
+    session
+        .cancel_connection_settlement(successor_capability)
+        .expect("only the current uncertainty capability may cancel");
+    assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
+    assert_eq!(
+        session.presentation().terminal(),
+        Some(InteractionTerminalReason::Cancelled)
+    );
 }
 
 #[test]
@@ -245,8 +314,7 @@ fn keyboard_target_activation_defers_profile_hooks_to_authoritative_execution() 
     else {
         unreachable!("keyboard target emits one graph submission")
     };
-    let ticket = submission.ticket();
-    let command = session.bind_submission(submission).unwrap().unwrap();
+    let (bound, command) = bind_command(&mut session, submission);
     assert_eq!(
         calls.get(),
         0,
@@ -257,7 +325,7 @@ fn keyboard_target_activation_defers_profile_hooks_to_authoritative_execution() 
         calls.get() > 0,
         "command planning owns product profile hooks"
     );
-    session.complete_submission(ticket, completion).unwrap();
+    settle_command(&mut session, bound, completion);
 }
 
 #[test]
@@ -284,10 +352,9 @@ fn keyboard_connection_retains_structured_invalid_feedback_and_escape_cancels() 
     let rejected = session
         .activate_keyboard_connection_target(invalid_target)
         .expect("target activation defers policy planning to command execution");
-    let [CanvasInteractionEffect::SubmitGraph { submission }] = rejected.effects() else {
+    let [CanvasInteractionEffect::SubmitGraph { .. }] = rejected.effects() else {
         panic!("keyboard target must submit one authoritative command");
     };
-    let ticket = submission.ticket();
     let rejected = rejected.into_dispatch();
     let CanvasInteractionEffect::SubmitGraph { submission } = rejected
         .effects
@@ -297,15 +364,10 @@ fn keyboard_connection_retains_structured_invalid_feedback_and_escape_cancels() 
     else {
         unreachable!("the only effect was checked above")
     };
-    let command = session
-        .bind_submission(submission)
-        .expect("fresh binding")
-        .expect("connection command");
+    let (bound, command) = bind_command(&mut session, submission);
     let completion = runtime.execute(command);
     assert!(completion.result().unwrap().rejection().is_some());
-    session
-        .complete_submission(ticket, completion)
-        .expect("policy rejection becomes structured interaction feedback");
+    settle_command(&mut session, bound, completion);
     let feedback = session
         .keyboard_connection_feedback()
         .expect("invalid target feedback");
@@ -403,4 +465,72 @@ fn keyboard_port_capability_is_stale_after_same_id_replacement() {
         Err(CanvasInteractionError::StaleInteractionFacts)
     ));
     assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
+}
+
+fn bind_command(
+    session: &mut CanvasInteractionSession,
+    submission: InteractionGraphSubmission,
+) -> (BoundInteractionSubmission, GraphCommand) {
+    let mut bound = session.bind_submission(submission).unwrap();
+    let command = bound.take_command().expect("interaction command");
+    (bound, command)
+}
+
+fn take_submission(
+    update: crate::runtime::interaction::CanvasInteractionUpdate,
+) -> InteractionGraphSubmission {
+    let mut effects = update.into_dispatch().effects.into_iter();
+    let Some(CanvasInteractionEffect::SubmitGraph { submission }) = effects.next() else {
+        panic!("expected one keyboard graph submission");
+    };
+    assert!(effects.next().is_none());
+    submission
+}
+
+fn advance_unrelated_revision(
+    runtime: &GraphRuntime,
+    node: jellyflow_core::core::NodeId,
+    epoch: u64,
+) {
+    let version = runtime
+        .snapshot()
+        .expect("unrelated revision snapshot")
+        .version();
+    runtime
+        .execute(GraphCommand::set_node_data(
+            version,
+            node,
+            serde_json::json!({ "settlement_epoch": epoch }),
+        ))
+        .into_result()
+        .expect("unrelated revision executes")
+        .applied()
+        .expect("unrelated revision applies");
+}
+
+fn retryable_uncertain_capability(
+    session: &CanvasInteractionSession,
+) -> ConnectionSettlementCapability {
+    match session.presentation().connection_settlement() {
+        Some(ConnectionSettlementPresentation::Uncertain {
+            capability,
+            can_retry: true,
+        }) => capability,
+        settlement => panic!("expected retryable uncertainty, got {settlement:?}"),
+    }
+}
+
+fn settle_command(
+    session: &mut CanvasInteractionSession,
+    bound: BoundInteractionSubmission,
+    completion: crate::runtime::commands::CommandExecutionCompletion,
+) {
+    assert!(matches!(
+        session.settle_submission(
+            bound,
+            InteractionSubmissionSettlementEvidence::Command(completion),
+        ),
+        InteractionSubmissionSettlementResult::Settled(_)
+            | InteractionSubmissionSettlementResult::Stale(_)
+    ));
 }

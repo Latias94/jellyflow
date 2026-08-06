@@ -1816,19 +1816,18 @@ The final contract intentionally does not invoke `tools/check_no_legacy_ui_surfa
 cargo fmt --manifest-path examples/canvas-jellyflow/Cargo.toml --all -- --check
 cargo check --manifest-path examples/canvas-jellyflow/Cargo.toml --workspace --locked
 cargo nextest run --manifest-path examples/canvas-jellyflow/Cargo.toml -p open-gpui-canvas-jellyflow --locked --no-fail-fast
+cargo nextest run --manifest-path examples/canvas-jellyflow/Cargo.toml -p open-gpui-canvas-jellyflow --bin open-gpui-real-window-smoke --features real-window-smoke --locked --no-fail-fast
 cargo test --manifest-path examples/canvas-jellyflow/Cargo.toml --workspace --doc --locked
 cargo clippy --manifest-path examples/canvas-jellyflow/Cargo.toml --workspace --all-targets --locked -- -D warnings
-cargo build --manifest-path examples/canvas-jellyflow/Cargo.toml -p open-gpui-canvas-jellyflow --locked --no-default-features --bin open-gpui-native-frame-clock-witness
-python3 tools/check_open_gpui_native_frame_clock.py --require-native
-cargo build --manifest-path examples/canvas-jellyflow/Cargo.toml -p open-gpui-canvas-jellyflow --bins --locked --features real-window-smoke
-python3 tools/run_real_window_smoke_matrix.py --binary examples/canvas-jellyflow/target/debug/open-gpui-canvas-jellyflow --receipt-validator examples/canvas-jellyflow/target/debug/smoke_receipt_contract --capture-root target/real-window-smoke-final --timeout-seconds 60 --capture-dir-output target/real-window-smoke-final.output
-python3 tools/check_real_window_smoke_evidence.py --capture-dir-from-output target/real-window-smoke-final.output --receipt-validator examples/canvas-jellyflow/target/debug/smoke_receipt_contract
+cargo clippy --manifest-path examples/canvas-jellyflow/Cargo.toml -p open-gpui-canvas-jellyflow --bin open-gpui-real-window-smoke --features real-window-smoke --locked -- -D warnings
+cargo build --manifest-path examples/canvas-jellyflow/Cargo.toml -p open-gpui-canvas-jellyflow --bin open-gpui-real-window-smoke --locked --features real-window-smoke
+python3 tools/run_real_window_smoke_matrix.py --binary examples/canvas-jellyflow/target/debug/open-gpui-real-window-smoke --capture-root target/real-window-smoke-final --timeout-seconds 60 --capture-dir-output target/real-window-smoke-final.output
 ```
 
-The matrix command runs eight shader/workflow interaction witnesses across compact/normal bounds and
-0.5/1/2 zoom plus one LOD-threshold witness. The validator requires exact pass receipts and the
-complete screenshot set from the latest unique capture directory; do not replace it with unverified
-single-product smoke runs.
+This historical plan's original nine-run matrix has been superseded by the representative five-run
+contract in `2026-07-27-001-refactor-runtime-authoring-ownership-plan.md`. The runner requires exact
+validated receipts and the complete named capture set from the latest unique capture directory;
+do not replace it with an unverified single-product smoke run or a second Python semantic checker.
 
 ### Structural and Distribution Gates
 

@@ -178,14 +178,6 @@ impl OpenGpuiEdgePainterRecipe {
     pub const fn weight_tier(self) -> OpenGpuiEdgeWeightTier {
         self.weight_tier
     }
-
-    const fn uses_round_line_cap(self) -> bool {
-        true
-    }
-
-    const fn uses_round_line_join(self) -> bool {
-        true
-    }
 }
 
 /// Registration failure for an edge painter recipe.
@@ -448,8 +440,6 @@ impl OpenGpuiEdgePainterRegistry {
             path_batch_key: OpenGpuiEdgePainterBatchKey {
                 path: style.batch_key(),
                 stroke_pattern,
-                round_line_cap: painter.uses_round_line_cap(),
-                round_line_join: painter.uses_round_line_join(),
                 invalid_cue: false,
             },
             halo_path_batch_key: None,
@@ -499,8 +489,6 @@ impl OpenGpuiEdgePainterRegistry {
 pub struct OpenGpuiEdgePainterBatchKey {
     path: OpenGpuiEdgeBatchKey,
     stroke_pattern: OpenGpuiEdgeStrokePattern,
-    round_line_cap: bool,
-    round_line_join: bool,
     invalid_cue: bool,
 }
 
@@ -511,8 +499,6 @@ impl OpenGpuiEdgePainterBatchKey {
         Self {
             path,
             stroke_pattern: OpenGpuiEdgeStrokePattern::Solid,
-            round_line_cap: true,
-            round_line_join: true,
             invalid_cue: false,
         }
     }
@@ -532,18 +518,6 @@ impl OpenGpuiEdgePainterBatchKey {
     #[must_use]
     pub const fn stroke_pattern(self) -> OpenGpuiEdgeStrokePattern {
         self.stroke_pattern
-    }
-
-    /// Returns whether the stroke uses a round cap at open path and dash boundaries.
-    #[must_use]
-    pub const fn uses_round_line_cap(self) -> bool {
-        self.round_line_cap
-    }
-
-    /// Returns whether adjacent route segments use a round join.
-    #[must_use]
-    pub const fn uses_round_line_join(self) -> bool {
-        self.round_line_join
     }
 
     /// Returns whether this batch carries the non-color invalid-connection cue.
@@ -1202,15 +1176,11 @@ mod tests {
     }
 
     #[test]
-    fn resolved_geometry_recipe_requests_smooth_strokes_and_tangent_aligned_markers() {
+    fn resolved_geometry_recipe_keeps_tangent_aligned_markers() {
         let registry = OpenGpuiEdgePainterRegistry::default();
         let presentation = presentation();
         let theme = OpenGpuiGraphTheme::default();
         let resolved = registry.resolve(EdgeKind::Exec, ordinary(), &presentation, &theme);
-        let batch = resolved.path_batch_key();
-
-        assert!(batch.uses_round_line_cap());
-        assert!(batch.uses_round_line_join());
         assert!(resolved.source_marker().follows_path_tangent());
         assert!(resolved.target_marker().follows_path_tangent());
     }

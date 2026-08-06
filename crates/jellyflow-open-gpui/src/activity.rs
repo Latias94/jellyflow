@@ -1,8 +1,11 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::fmt;
+use std::future::Future;
 use std::mem;
-use std::rc::Rc;
+use std::pin::Pin;
+use std::rc::{Rc, Weak};
+use std::task::{Context as TaskContext, Poll, Waker};
 
 use jellyflow_runtime::view::NodeInstanceKey;
 use open_gpui::{HitboxId, Window};
@@ -35,7 +38,7 @@ impl OpenGpuiActivityKind {
         )
     }
 
-    fn requires_interaction_island(self) -> bool {
+    fn requires_pinned_detail(self) -> bool {
         matches!(self, Self::Focus | Self::Ime | Self::Overlay)
     }
 }
@@ -61,9 +64,9 @@ impl ActivityEntryKind {
         }
     }
 
-    fn requires_interaction_island(self) -> bool {
+    fn requires_pinned_detail(self) -> bool {
         match self {
-            Self::Activity(kind) => kind.requires_interaction_island(),
+            Self::Activity(kind) => kind.requires_pinned_detail(),
             Self::PointerCapture(_) => true,
         }
     }
@@ -98,16 +101,47 @@ struct ActivityCoordinatorState {
     capacity: usize,
     protected: BTreeMap<NodeInstanceKey, usize>,
     window_owned_leases: usize,
-    protected_high_water: usize,
-    overflows: u64,
+    capacity_waiters: Vec<Weak<ActivityCapacityWaitState>>,
+}
+
+struct ActivityCapacityWaitState {
+    ready: Cell<bool>,
+    waker: RefCell<Option<Waker>>,
+}
+
+impl ActivityCapacityWaitState {
+    fn signal(&self) {
+        self.ready.set(true);
+        if let Some(waker) = self.waker.borrow_mut().take() {
+            waker.wake();
+        }
+    }
+}
+
+pub(crate) struct OpenGpuiActivityCapacityWait {
+    state: Rc<ActivityCapacityWaitState>,
+}
+
+impl Future for OpenGpuiActivityCapacityWait {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, context: &mut TaskContext<'_>) -> Poll<Self::Output> {
+        if self.state.ready.get() {
+            return Poll::Ready(());
+        }
+        *self.state.waker.borrow_mut() = Some(context.waker().clone());
+        self.state
+            .ready
+            .get()
+            .then_some(())
+            .map_or(Poll::Pending, Poll::Ready)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct OpenGpuiActivityCoordinatorStats {
     pub(crate) protected_instances: usize,
     pub(crate) protected_leases: usize,
-    pub(crate) protected_high_water: usize,
-    pub(crate) overflows: u64,
 }
 
 impl OpenGpuiActivityCoordinator {
@@ -117,8 +151,7 @@ impl OpenGpuiActivityCoordinator {
                 capacity,
                 protected: BTreeMap::new(),
                 window_owned_leases: 0,
-                protected_high_water: 0,
-                overflows: 0,
+                capacity_waiters: Vec::new(),
             })),
         }
     }
@@ -137,7 +170,6 @@ impl OpenGpuiActivityCoordinator {
             return Ok(());
         }
         if state.protected.len() >= state.capacity {
-            state.overflows = state.overflows.saturating_add(1);
             return Err(OpenGpuiActivityAcquireError::ProtectedCapacityExceeded {
                 capacity: state.capacity,
             });
@@ -146,7 +178,6 @@ impl OpenGpuiActivityCoordinator {
         if kind.requires_window_cleanup() {
             state.window_owned_leases = state.window_owned_leases.saturating_add(1);
         }
-        state.protected_high_water = state.protected_high_water.max(state.protected.len());
         Ok(())
     }
 
@@ -155,6 +186,7 @@ impl OpenGpuiActivityCoordinator {
             return;
         }
         let mut state = self.state.borrow_mut();
+        let was_full = state.protected.len() >= state.capacity;
         let Some(count) = state.protected.get_mut(instance) else {
             return;
         };
@@ -166,10 +198,65 @@ impl OpenGpuiActivityCoordinator {
         state.window_owned_leases = state
             .window_owned_leases
             .saturating_sub(window_owned_leases);
+        let waiters = if was_full && state.protected.len() < state.capacity {
+            mem::take(&mut state.capacity_waiters)
+        } else {
+            Vec::new()
+        };
+        drop(state);
+        for waiter in waiters.into_iter().filter_map(|waiter| waiter.upgrade()) {
+            waiter.signal();
+        }
     }
 
     pub(crate) fn requires_window_cleanup(&self) -> bool {
         self.state.borrow().window_owned_leases > 0
+    }
+
+    pub(crate) fn admissible_protected_batch(
+        &self,
+        instances: &[NodeInstanceKey],
+        limit: usize,
+    ) -> Vec<NodeInstanceKey> {
+        let state = self.state.borrow();
+        let mut available = state.capacity.saturating_sub(state.protected.len());
+        let mut admitted = instances
+            .iter()
+            .filter(|instance| state.protected.contains_key(*instance))
+            .take(limit)
+            .cloned()
+            .collect::<Vec<_>>();
+        if admitted.len() == limit {
+            return admitted;
+        }
+        for instance in instances
+            .iter()
+            .filter(|instance| !state.protected.contains_key(*instance))
+        {
+            if available == 0 || admitted.len() == limit {
+                break;
+            }
+            admitted.push(instance.clone());
+            available -= 1;
+        }
+        admitted
+    }
+
+    pub(crate) fn wait_for_protected_capacity(&self) -> OpenGpuiActivityCapacityWait {
+        let waiter = Rc::new(ActivityCapacityWaitState {
+            ready: Cell::new(false),
+            waker: RefCell::new(None),
+        });
+        let mut state = self.state.borrow_mut();
+        if state.protected.len() < state.capacity {
+            waiter.signal();
+        } else {
+            state
+                .capacity_waiters
+                .retain(|waiter| waiter.strong_count() > 0);
+            state.capacity_waiters.push(Rc::downgrade(&waiter));
+        }
+        OpenGpuiActivityCapacityWait { state: waiter }
     }
 
     pub(crate) fn stats(&self) -> OpenGpuiActivityCoordinatorStats {
@@ -177,8 +264,6 @@ impl OpenGpuiActivityCoordinator {
         OpenGpuiActivityCoordinatorStats {
             protected_instances: state.protected.len(),
             protected_leases: state.protected.values().copied().sum(),
-            protected_high_water: state.protected_high_water,
-            overflows: state.overflows,
         }
     }
 }
@@ -374,12 +459,12 @@ impl OpenGpuiNodeActivityRegistry {
             .count()
     }
 
-    pub(crate) fn requires_interaction_island(&self) -> bool {
+    pub(crate) fn requires_pinned_detail(&self) -> bool {
         self.state
             .borrow()
             .entries
             .values()
-            .any(|entry| entry.kind.requires_interaction_island())
+            .any(|entry| entry.kind.requires_pinned_detail())
     }
 
     pub(crate) fn release_pointer_capture_if_owned(&self, window: &mut Window) -> bool {
@@ -776,14 +861,14 @@ mod tests {
     }
 
     #[test]
-    fn pointer_capture_requires_an_interaction_island_until_release() {
+    fn pointer_capture_requires_pinned_detail_until_release() {
         let registry = OpenGpuiNodeActivityRegistry::detached();
         let capture = registry
             .acquire_pointer_capture(HitboxId::placeholder())
             .unwrap();
 
-        assert!(registry.requires_interaction_island());
+        assert!(registry.requires_pinned_detail());
         drop(capture);
-        assert!(!registry.requires_interaction_island());
+        assert!(!registry.requires_pinned_detail());
     }
 }

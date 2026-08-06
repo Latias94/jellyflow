@@ -19,7 +19,7 @@ use jellyflow_runtime::profile::GraphProfile;
 use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec, NodePortSpec};
 use jellyflow_runtime::view::{
     AdapterEnvironment, EdgePickQuery, FrameRequest, RendererStamp, ViewSessionOptions,
-    VisibleRouteQuery,
+    VisibleRouteWorkRequest,
 };
 use jellyflow_runtime::viewport::ViewportTransform;
 
@@ -175,11 +175,20 @@ fn graph_runtime_and_view_session_are_the_public_adapter_seam() {
     assert_eq!(receipt.layout_receipts().count(), 1);
     assert!(receipt.publication().is_some());
     assert_eq!(view.geometry_snapshot().unwrap().layout_revision(), 1);
-    let _visible_routes = VisibleRouteQuery::new(
-        ViewRect::new(ViewPoint::new(0.0, 0.0), ViewSize::new(800.0, 600.0)),
-        64,
-    )
-    .with_margin(24.0);
+    let mut visible_route_work = view
+        .visible_route_work_session()
+        .expect("attach visible-route work");
+    let _visible_routes = visible_route_work
+        .advance(
+            &view,
+            VisibleRouteWorkRequest::new(ViewRect::new(
+                ViewPoint::new(0.0, 0.0),
+                ViewSize::new(800.0, 600.0),
+            ))
+            .with_margin(24.0),
+            64,
+        )
+        .expect("advance visible-route work");
     let _edge_pick = EdgePickQuery::new(ViewPoint::new(160.0, 186.0), 4.0, 64);
     let mut interaction =
         CanvasInteractionSession::attach(&view, CanvasInteractionConfig::default()).unwrap();

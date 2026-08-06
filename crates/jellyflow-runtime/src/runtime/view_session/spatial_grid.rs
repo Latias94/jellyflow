@@ -154,6 +154,11 @@ impl<Key: Copy + Ord> HierarchicalSpatialIndex<Key> {
         self.levels.clear();
     }
 
+    #[cfg(test)]
+    pub fn is_empty(&self) -> bool {
+        self.cells.is_empty() && self.entries.is_empty() && self.levels.is_empty()
+    }
+
     pub fn advance_query(&self, cursor: &mut SpatialQueryCursor) -> SpatialQueryStep {
         match &mut cursor.state {
             SpatialQueryCursorState::FindLevel => {

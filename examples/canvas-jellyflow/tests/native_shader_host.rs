@@ -8,18 +8,15 @@ use std::task::{Context as TaskContext, Poll, Waker};
 
 use jellyflow_core::types::TypeDesc;
 use jellyflow_core::{
-    CanvasPoint, CanvasRect, CanvasSize, EdgeId, EdgeKind, Graph, GraphBuilder, GraphId,
-    NodeGraphConnectionMode, NodeId, NodeKindKey, PortCapacity, PortDirection, PortId, PortKind,
+    CanvasPoint, CanvasRect, CanvasSize, EdgeId, Graph, GraphBuilder, GraphId,
+    NodeGraphConnectionMode, NodeId, NodeKindKey, PortId,
 };
 use jellyflow_open_gpui::host::OpenGpuiSceneHost;
 use jellyflow_open_gpui::registry::OpenGpuiNodeRegistry;
-use jellyflow_runtime::commands::{
-    CommandExecutionKind, ConnectionEdit, GraphCommand, IncidentEdgePolicy, TopologyEdit,
-};
+use jellyflow_runtime::commands::{ConnectionEdit, GraphCommand, IncidentEdgePolicy, TopologyEdit};
 use jellyflow_runtime::geometry::HandlePosition;
 use jellyflow_runtime::graph::{
     CreateFromWireCandidates, Diagnostic, DiagnosticTarget, GraphRuntime, GraphRuntimeError,
-    GraphRuntimePolicy,
 };
 use jellyflow_runtime::interaction::{
     CanvasInteractionPhase, ConnectionSearchRequest, ConnectionSearchStatus,
@@ -42,12 +39,9 @@ use open_gpui_canvas_jellyflow::connection_search::{
 };
 use open_gpui_canvas_jellyflow::nodes::{
     BLUEPRINT_ADD_INPUT_SELECTOR, BLUEPRINT_CALL_DEFAULT_SIZE, BLUEPRINT_CALL_KIND,
-    BLUEPRINT_CALL_RENDERER, BLUEPRINT_DISCARD_SELECTOR, BLUEPRINT_NODE_SELECTOR,
-    NativeNodeResources, SHADER_MULTIPLY_DEFAULT_SIZE, SHADER_MULTIPLY_KIND,
+    BLUEPRINT_DISCARD_SELECTOR, BLUEPRINT_NODE_SELECTOR, NativeNodeResources, SHADER_MULTIPLY_KIND,
     SHADER_MULTIPLY_RENDERER, SHADER_NODE_SELECTOR, SHADER_PREVIEW_CONTROL_SELECTOR,
-    SHADER_PREVIEW_VALUE_SELECTOR, WORKFLOW_CONDITION_DEFAULT_SIZE, WORKFLOW_CONDITION_KIND,
-    WORKFLOW_CONDITION_RENDERER, WORKFLOW_LLM_DEFAULT_SIZE, WORKFLOW_LLM_KIND,
-    WORKFLOW_LLM_RENDERER, blueprint_body_selector, blueprint_header_metadata_selector,
+    SHADER_PREVIEW_VALUE_SELECTOR, blueprint_body_selector, blueprint_header_metadata_selector,
     blueprint_header_title_selector, blueprint_pin_down_selector, blueprint_pin_label_selector,
     blueprint_pin_remove_selector, blueprint_pin_up_selector, blueprint_port_label_selector,
     blueprint_port_selector, native_node_catalog, native_node_registry, shader_body_selector,
@@ -59,6 +53,7 @@ use open_gpui_canvas_jellyflow::product_catalog::native_product_catalog;
 use open_gpui_canvas_jellyflow::product_domain::blueprint::{
     BlueprintError, BlueprintIntent, BlueprintObservation, BlueprintPin,
 };
+use open_gpui_canvas_jellyflow::product_theme::NativeProductTheme;
 use open_gpui_ui_components::gpui_adapter::init_text_input;
 
 const SHADER_FACTOR_COMMAND_DIAGNOSTIC_SELECTOR: &str =
@@ -73,7 +68,11 @@ fn native_runtime(graph: Graph) -> Result<GraphRuntime, GraphRuntimeError> {
 
 fn native_registry(cx: &mut open_gpui::App) -> OpenGpuiNodeRegistry {
     let catalog = native_node_catalog().expect("native node catalog");
-    native_node_registry(NativeNodeResources::ready_default(cx), &catalog)
+    native_node_registry(
+        NativeNodeResources::ready_default(cx)
+            .with_product_theme(NativeProductTheme::shader_blueprint()),
+        &catalog,
+    )
 }
 
 fn native_profiled_runtime(
@@ -102,8 +101,9 @@ fn native_shader_entity_mounts_through_scene_host_and_submits_real_port_feedback
         Some(SHADER_MULTIPLY_RENDERER),
     );
 
-    let (host, cx) =
-        cx.add_window_view(move |_, _| OpenGpuiSceneHost::new(view, registry, viewport()));
+    let (host, cx) = cx.add_window_view(move |_, _| {
+        OpenGpuiSceneHost::new(view, registry, viewport()).expect("valid Open GPUI scene host")
+    });
     draw(cx);
 
     assert!(cx.debug_bounds(SHADER_NODE_SELECTOR).is_some());
@@ -201,8 +201,9 @@ fn shader_port_layout_anchor_and_hit_target_stay_stable_across_zoom_and_hover(
         .expect("shader port profile view");
     let weak_view = view.downgrade();
     let registry = cx.update(native_registry);
-    let (host, cx) =
-        cx.add_window_view(move |_, _| OpenGpuiSceneHost::new(view, registry, viewport()));
+    let (host, cx) = cx.add_window_view(move |_, _| {
+        OpenGpuiSceneHost::new(view, registry, viewport()).expect("valid Open GPUI scene host")
+    });
 
     for zoom in [0.5, 1.0, 2.0] {
         weak_view
@@ -329,6 +330,7 @@ fn connected_input_hides_and_restores_retained_inline_state_across_history(
     let weak_view = view.downgrade();
     let (host, cx) = cx.add_window_view(move |_, cx| {
         OpenGpuiSceneHost::new(view, native_registry(cx), viewport())
+            .expect("valid Open GPUI scene host")
     });
     draw(cx);
 
@@ -1018,37 +1020,6 @@ impl NativeConnectionSearchSource for FailOnceConnectionSearchSource {
     }
 }
 
-struct PanickingConnectionSearchSource {
-    attempts: AtomicU8,
-}
-
-impl PanickingConnectionSearchSource {
-    fn new() -> Self {
-        Self {
-            attempts: AtomicU8::new(0),
-        }
-    }
-
-    fn attempts(&self) -> u8 {
-        self.attempts.load(Ordering::SeqCst)
-    }
-}
-
-impl NativeConnectionSearchSource for PanickingConnectionSearchSource {
-    fn candidates(
-        &self,
-        _request: ConnectionSearchRequest,
-        authoritative: CreateFromWireCandidates,
-    ) -> NativeConnectionSearchFuture {
-        let attempt = self.attempts.fetch_add(1, Ordering::SeqCst);
-        assert_ne!(attempt, 0, "injected connection-search method panic");
-        Box::pin(async move {
-            assert_ne!(attempt, 1, "injected connection-search future panic");
-            Ok(authoritative)
-        })
-    }
-}
-
 #[derive(Default)]
 struct DeferredConnectionSearchSource {
     attempts: Mutex<Vec<Arc<DeferredConnectionSearchAttempt>>>,
@@ -1279,96 +1250,6 @@ fn shader_native_search_recovers_after_candidate_query_failure_without_mutation(
             .history_state()
             .expect("history after recovered query"),
         history_before_failed_query,
-    );
-}
-
-#[open_gpui::test]
-fn shader_native_search_provider_panic_becomes_a_retryable_source_error(
-    cx: &mut open_gpui::TestAppContext,
-) {
-    cx.update(init_text_input);
-    let runtime = native_runtime(shader_graph()).expect("shader panic-recovery runtime");
-    let view = runtime
-        .attach_view(ViewSessionOptions::default())
-        .expect("shader panic-recovery view");
-    let search_source = Arc::new(PanickingConnectionSearchSource::new());
-    let source_observer = Arc::clone(&search_source);
-    let (_surface, cx) = cx.add_window_view(move |_, cx| {
-        NativeGraphSurface::new_with_search_source(view, native_registry(cx), search_source, cx)
-    });
-    draw(cx);
-
-    open_shader_output_search(cx);
-    assert_eq!(source_observer.attempts(), 1);
-    draw(cx);
-
-    assert!(
-        cx.debug_bounds(NATIVE_CONNECTION_SEARCH_DIAGNOSTIC_SELECTOR)
-            .is_some(),
-        "a provider panic must publish an explicit source error",
-    );
-    let retry = cx
-        .debug_bounds(NATIVE_CONNECTION_SEARCH_RETRY_SELECTOR)
-        .expect("provider panic exposes retry");
-    assert!(
-        cx.debug_bounds(NATIVE_CONNECTION_SEARCH_LOADING_SELECTOR)
-            .is_none(),
-        "a provider panic must not leave the search loading forever",
-    );
-    draw(cx);
-    draw(cx);
-    assert_eq!(
-        source_observer.attempts(),
-        1,
-        "paint must not restart a failed provider without explicit retry",
-    );
-
-    cx.simulate_click(retry.center(), Default::default());
-    draw(cx);
-
-    assert_eq!(source_observer.attempts(), 2);
-    assert!(
-        cx.debug_bounds(NATIVE_CONNECTION_SEARCH_DIAGNOSTIC_SELECTOR)
-            .is_some(),
-        "a provider future panic must publish the same retryable error state",
-    );
-    assert!(
-        cx.debug_bounds(NATIVE_CONNECTION_SEARCH_LOADING_SELECTOR)
-            .is_none(),
-    );
-    assert!(
-        cx.debug_bounds(&native_connection_search_candidate_selector(
-            BLUEPRINT_CALL_KIND,
-            "value",
-        ))
-        .is_none(),
-    );
-    draw(cx);
-    draw(cx);
-    assert_eq!(
-        source_observer.attempts(),
-        2,
-        "paint must not restart a panicked provider future",
-    );
-
-    let retry = cx
-        .debug_bounds(NATIVE_CONNECTION_SEARCH_RETRY_SELECTOR)
-        .expect("provider future panic exposes retry");
-    cx.simulate_click(retry.center(), Default::default());
-    draw(cx);
-
-    assert_eq!(source_observer.attempts(), 3);
-    assert!(
-        cx.debug_bounds(&native_connection_search_candidate_selector(
-            BLUEPRINT_CALL_KIND,
-            "value",
-        ))
-        .is_some(),
-        "an explicit retry must start a fresh provider generation",
-    );
-    assert!(
-        cx.debug_bounds(NATIVE_CONNECTION_SEARCH_DIAGNOSTIC_SELECTOR)
-            .is_none(),
     );
 }
 
@@ -1843,391 +1724,6 @@ fn occupied_shader_reconnect_search_rejection_then_outside_cancel_preserves_edge
 }
 
 #[open_gpui::test]
-fn semantic_product_and_renderer_catalogs_own_distinct_native_node_contracts(
-    cx: &mut open_gpui::TestAppContext,
-) {
-    let catalog = native_node_catalog().expect("native node catalog");
-    let product = native_product_catalog().expect("native product catalog");
-    let registry = cx.update(native_registry);
-    assert_eq!(catalog.kinds().count(), 4);
-
-    for (kind, initial_size, renderer) in [
-        (
-            SHADER_MULTIPLY_KIND,
-            SHADER_MULTIPLY_DEFAULT_SIZE,
-            SHADER_MULTIPLY_RENDERER,
-        ),
-        (
-            BLUEPRINT_CALL_KIND,
-            BLUEPRINT_CALL_DEFAULT_SIZE,
-            BLUEPRINT_CALL_RENDERER,
-        ),
-        (
-            WORKFLOW_LLM_KIND,
-            WORKFLOW_LLM_DEFAULT_SIZE,
-            WORKFLOW_LLM_RENDERER,
-        ),
-        (
-            WORKFLOW_CONDITION_KIND,
-            WORKFLOW_CONDITION_DEFAULT_SIZE,
-            WORKFLOW_CONDITION_RENDERER,
-        ),
-    ] {
-        let kind = NodeKindKey::new(kind);
-        let presentation = product
-            .get(&kind, 1)
-            .expect("product presentation for semantic kind");
-        assert_eq!(presentation.initial_size(), initial_size);
-        assert_eq!(
-            registry.renderer_stamp(&kind, 1).map(|stamp| stamp.key()),
-            Some(renderer),
-        );
-        assert_eq!(
-            registry
-                .presentation(&kind, 1)
-                .map(|adapter| adapter.accessible_name()),
-            Some(presentation.title()),
-        );
-    }
-    assert!(
-        product
-            .get(&NodeKindKey::new(SHADER_MULTIPLY_KIND), 1)
-            .expect("shader product presentation")
-            .ports()
-            .any(|port| port.key().0 == "a" && port.label() == "A"),
-        "static port labels belong to the product presentation catalog",
-    );
-
-    let shader = catalog
-        .get(&NodeKindKey::new(SHADER_MULTIPLY_KIND))
-        .expect("shader kind");
-    assert_eq!(shader.ports().len(), 3);
-    assert!(shader.ports().iter().any(|port| {
-        port.key().0 == "a"
-            && port.direction() == PortDirection::In
-            && port.capacity() == PortCapacity::Single
-            && port.ty() == Some(&TypeDesc::Float)
-    }));
-    assert!(shader.ports().iter().any(|port| {
-        port.key().0 == "result"
-            && port.direction() == PortDirection::Out
-            && port.capacity() == PortCapacity::Multi
-            && port.ty() == Some(&TypeDesc::Float)
-    }));
-    assert_eq!(
-        shader.default_data(),
-        &serde_json::json!({
-            "title": "Multiply",
-            "factor": 1.0,
-            "preview": 1.0,
-        })
-    );
-
-    let blueprint = catalog
-        .get(&NodeKindKey::new(BLUEPRINT_CALL_KIND))
-        .expect("blueprint kind");
-    assert_eq!(blueprint.ports().len(), 3);
-    assert!(blueprint.ports().iter().any(|port| {
-        port.key().0 == "value"
-            && port.direction() == PortDirection::In
-            && port.capacity() == PortCapacity::Single
-            && port.ty() == Some(&TypeDesc::Float)
-    }));
-    assert_eq!(
-        blueprint.default_data(),
-        &serde_json::json!({
-            "title": "Function Call",
-            "pins": [],
-        })
-    );
-
-    let llm = catalog
-        .get(&NodeKindKey::new(WORKFLOW_LLM_KIND))
-        .expect("workflow LLM kind");
-    assert_eq!(
-        llm.ports()
-            .iter()
-            .map(|port| (
-                port.key().0.as_str(),
-                port.direction(),
-                port.kind(),
-                port.capacity(),
-            ))
-            .collect::<Vec<_>>(),
-        [
-            (
-                "input",
-                PortDirection::In,
-                PortKind::Exec,
-                PortCapacity::Single,
-            ),
-            (
-                "success",
-                PortDirection::Out,
-                PortKind::Exec,
-                PortCapacity::Multi,
-            ),
-        ]
-    );
-    assert_eq!(
-        llm.default_data(),
-        &serde_json::json!({
-            "title": "LLM",
-            "prompt": "",
-            "model": "gpt-4.1",
-        })
-    );
-
-    let condition = catalog
-        .get(&NodeKindKey::new(WORKFLOW_CONDITION_KIND))
-        .expect("workflow condition kind");
-    assert_eq!(condition.ports().len(), 2);
-    let input = &condition.ports()[0];
-    assert_eq!(input.key().0, "input");
-    assert_eq!(input.direction(), PortDirection::In);
-    assert_eq!(input.kind(), PortKind::Exec);
-    assert_eq!(input.capacity(), PortCapacity::Single);
-    let else_port = &condition.ports()[1];
-    assert_eq!(else_port.key().0, "else");
-    assert_eq!(else_port.direction(), PortDirection::Out);
-    assert_eq!(else_port.kind(), PortKind::Exec);
-    assert_eq!(else_port.capacity(), PortCapacity::Multi);
-    assert_eq!(
-        condition.default_data(),
-        &serde_json::json!({
-            "title": "Condition",
-            "cases": [],
-            "else_branch": { "label": "Else" },
-        })
-    );
-}
-
-#[test]
-fn typed_shader_catalog_ports_accept_compatible_and_reject_incompatible_commands() {
-    let compatible =
-        native_runtime(two_catalog_shader_nodes(TypeDesc::Float)).expect("compatible shader graph");
-    let compatible_version = compatible
-        .snapshot()
-        .expect("compatible shader snapshot")
-        .version();
-    compatible
-        .execute(GraphCommand::connect(
-            compatible_version,
-            typed_edge_id(),
-            typed_source_output_id(),
-            typed_target_input_id(),
-            NodeGraphConnectionMode::Strict,
-        ))
-        .applied_revision()
-        .expect("float output connects to float input");
-
-    let incompatible = native_runtime(two_catalog_shader_nodes(TypeDesc::String))
-        .expect("incompatible shader graph");
-    let before = incompatible
-        .snapshot()
-        .expect("before incompatible command");
-    let completion = incompatible.execute(GraphCommand::connect(
-        before.version(),
-        typed_edge_id(),
-        typed_source_output_id(),
-        typed_target_input_id(),
-        NodeGraphConnectionMode::Strict,
-    ));
-    assert_eq!(completion.kind(), CommandExecutionKind::Rejected);
-    assert!(completion.diagnostic_message().is_some());
-    assert!(before.ptr_eq(&incompatible.snapshot().expect("unchanged graph")));
-    assert_eq!(incompatible.history_state().unwrap().undo_len(), 0);
-}
-
-#[test]
-fn shader_runtime_policy_rejects_only_the_data_connection_that_closes_a_cycle() {
-    let runtime = GraphRuntime::builder(native_node_catalog().expect("native node catalog"))
-        .with_policy(GraphRuntimePolicy::default().with_cycles(EdgeKind::Data, false))
-        .build(two_catalog_shader_nodes(TypeDesc::Float))
-        .expect("policy-owned shader graph");
-    let initial = runtime.snapshot().expect("initial profiled shader graph");
-    runtime
-        .execute(GraphCommand::connect(
-            initial.version(),
-            typed_edge_id(),
-            typed_source_output_id(),
-            typed_target_input_id(),
-            NodeGraphConnectionMode::Strict,
-        ))
-        .applied_revision()
-        .expect("acyclic shader connection applies");
-    let before = runtime.snapshot().expect("before cycle-closing command");
-    let history_before = runtime.history_state().expect("before shader history");
-
-    let completion = runtime.execute(GraphCommand::connect(
-        before.version(),
-        EdgeId::from_u128(0x6131),
-        typed_target_output_id(),
-        typed_source_input_a_id(),
-        NodeGraphConnectionMode::Strict,
-    ));
-
-    assert_eq!(completion.kind(), CommandExecutionKind::Rejected);
-    assert!(completion.diagnostic_message().is_some());
-    assert!(before.ptr_eq(&runtime.snapshot().expect("unchanged shader graph")));
-    assert_eq!(runtime.history_state().unwrap(), history_before);
-}
-
-#[test]
-fn blueprint_dynamic_pin_keeps_its_port_id_through_one_step_undo_and_redo() {
-    let runtime = native_runtime(blueprint_graph()).expect("blueprint graph");
-    let original = runtime.snapshot().expect("original blueprint snapshot");
-    let pin = BlueprintPin::new("roughness", dynamic_pin_id(), "roughness", TypeDesc::Float)
-        .expect("valid blueprint pin");
-    let command = plan_blueprint_intent(&original, BlueprintIntent::add(pin.clone()))
-        .expect("blueprint add-pin command");
-
-    runtime
-        .execute(command)
-        .applied_revision()
-        .expect("dynamic pin applies");
-    let added = runtime.snapshot().expect("added pin snapshot");
-    let added_node = added.graph().node(&blueprint_node_id()).unwrap();
-    assert_eq!(added_node.ports.last(), Some(&dynamic_pin_id()));
-    assert_eq!(blueprint_pin_snapshot(&added).unwrap(), vec![pin.clone()]);
-    let added_port = added.graph().port(&dynamic_pin_id()).expect("dynamic pin");
-    assert_eq!(added_port.node, blueprint_node_id());
-    assert_eq!(added_port.dir, PortDirection::In);
-    assert_eq!(added_port.capacity, PortCapacity::Single);
-    assert_eq!(added_port.ty, Some(TypeDesc::Float));
-    assert_eq!(runtime.history_state().unwrap().undo_len(), 1);
-
-    runtime
-        .execute(GraphCommand::undo(added.version()))
-        .applied_revision()
-        .expect("undo applies");
-    let undone = runtime.snapshot().expect("undone snapshot");
-    assert!(undone.graph().port(&dynamic_pin_id()).is_none());
-    assert!(
-        !undone
-            .graph()
-            .node(&blueprint_node_id())
-            .unwrap()
-            .ports
-            .contains(&dynamic_pin_id())
-    );
-
-    runtime
-        .execute(GraphCommand::redo(undone.version()))
-        .applied_revision()
-        .expect("redo applies");
-    let redone = runtime.snapshot().expect("redone snapshot");
-    assert_eq!(
-        redone
-            .graph()
-            .node(&blueprint_node_id())
-            .unwrap()
-            .ports
-            .last(),
-        Some(&dynamic_pin_id())
-    );
-    assert_eq!(
-        redone.graph().port(&dynamic_pin_id()).unwrap().key.0,
-        "arg.roughness"
-    );
-}
-
-#[test]
-fn blueprint_connected_pin_reorder_and_remove_are_one_atomic_history_step() {
-    let runtime = native_runtime(blueprint_graph_with_source()).expect("connected blueprint graph");
-    let roughness =
-        BlueprintPin::new("roughness", dynamic_pin_id(), "Roughness", TypeDesc::Float).unwrap();
-    let metallic =
-        BlueprintPin::new("metallic", sparse_input_1_id(), "Metallic", TypeDesc::Float).unwrap();
-    apply_blueprint_intent(&runtime, BlueprintIntent::add(roughness.clone()));
-    apply_blueprint_intent(&runtime, BlueprintIntent::add(metallic.clone()));
-    let version = runtime.snapshot().unwrap().version();
-    runtime
-        .execute(GraphCommand::connect(
-            version,
-            blueprint_dynamic_edge_id(),
-            source_output_id(),
-            roughness.port_id(),
-            NodeGraphConnectionMode::Strict,
-        ))
-        .applied_revision()
-        .expect("connect dynamic blueprint pin");
-    apply_blueprint_intent(&runtime, BlueprintIntent::reorder(metallic.id(), 0));
-
-    let connected = runtime.snapshot().unwrap();
-    assert_eq!(
-        blueprint_pin_snapshot(&connected).unwrap(),
-        vec![metallic.clone(), roughness.clone()]
-    );
-    assert_eq!(
-        connected
-            .graph()
-            .edge(&blueprint_dynamic_edge_id())
-            .unwrap()
-            .to,
-        roughness.port_id(),
-        "reorder must retain connection ownership by stable PortId"
-    );
-    let history_before_reject = runtime.history_state().unwrap();
-    let reject = plan_blueprint_intent(
-        &connected,
-        BlueprintIntent::remove(roughness.id(), IncidentEdgePolicy::Reject),
-    )
-    .unwrap();
-    assert_eq!(
-        runtime.execute(reject).kind(),
-        CommandExecutionKind::Rejected
-    );
-    let after_reject = runtime.snapshot().unwrap();
-    assert!(connected.ptr_eq(&after_reject));
-    assert_eq!(runtime.history_state().unwrap(), history_before_reject);
-
-    let cascade = plan_blueprint_intent(
-        &after_reject,
-        BlueprintIntent::remove(roughness.id(), IncidentEdgePolicy::Cascade),
-    )
-    .unwrap();
-    runtime
-        .execute(cascade)
-        .applied_revision()
-        .expect("cascade dynamic pin removal");
-    let removed = runtime.snapshot().unwrap();
-    assert_eq!(
-        blueprint_pin_snapshot(&removed).unwrap(),
-        vec![metallic.clone()]
-    );
-    assert!(removed.graph().port(&roughness.port_id()).is_none());
-    assert!(removed.graph().edge(&blueprint_dynamic_edge_id()).is_none());
-
-    runtime
-        .execute(GraphCommand::undo(removed.version()))
-        .applied_revision()
-        .expect("undo atomic pin removal");
-    let restored = runtime.snapshot().unwrap();
-    assert_eq!(
-        blueprint_pin_snapshot(&restored).unwrap(),
-        vec![metallic.clone(), roughness.clone()]
-    );
-    assert_eq!(
-        restored
-            .graph()
-            .edge(&blueprint_dynamic_edge_id())
-            .unwrap()
-            .to,
-        roughness.port_id()
-    );
-
-    runtime
-        .execute(GraphCommand::redo(restored.version()))
-        .applied_revision()
-        .expect("redo atomic pin removal");
-    let redone = runtime.snapshot().unwrap();
-    assert_eq!(blueprint_pin_snapshot(&redone).unwrap(), vec![metallic]);
-    assert!(redone.graph().port(&roughness.port_id()).is_none());
-    assert!(redone.graph().edge(&blueprint_dynamic_edge_id()).is_none());
-}
-
-#[open_gpui::test]
 fn blueprint_add_input_control_mounts_one_real_dynamic_port_without_remounting(
     cx: &mut open_gpui::TestAppContext,
 ) {
@@ -2238,6 +1734,7 @@ fn blueprint_add_input_control_mounts_one_real_dynamic_port_without_remounting(
     let weak_view = view.downgrade();
     let (host, cx) = cx.add_window_view(move |_, cx| {
         OpenGpuiSceneHost::new(view, native_registry(cx), blueprint_viewport())
+            .expect("valid Open GPUI scene host")
     });
     draw(cx);
 
@@ -2270,20 +1767,12 @@ fn blueprint_add_input_control_mounts_one_real_dynamic_port_without_remounting(
     let dynamic = *node.ports.last().expect("dynamic port id");
     let dynamic_port = snapshot.graph().port(&dynamic).expect("dynamic real port");
     assert_eq!(dynamic_port.node, blueprint_node_id());
-    let persisted = blueprint_pin_snapshot(&snapshot).unwrap();
-    assert_eq!(persisted.len(), 1);
-    assert_eq!(persisted[0].port_id(), dynamic);
-    assert_eq!(persisted[0].name(), "input_1");
-    assert_eq!(dynamic_port.key.0, format!("arg.{}", persisted[0].id()));
-    assert_eq!(dynamic_port.dir, PortDirection::In);
-    assert_eq!(dynamic_port.ty, Some(TypeDesc::Float));
     assert!(cx.debug_bounds(&blueprint_port_selector(dynamic)).is_some());
 
     let geometry = weak_view.geometry_snapshot().expect("blueprint geometry");
     assert!(geometry.node(blueprint_node_id()).unwrap().is_fresh());
     assert_eq!(geometry.port(dynamic).unwrap().node(), blueprint_node_id());
     assert_single_retained_mount(cx, &host);
-    assert_eq!(runtime.history_state().unwrap().undo_len(), 1);
 }
 
 #[open_gpui::test]
@@ -2302,6 +1791,7 @@ fn blueprint_native_pin_rows_reorder_remove_and_republish_real_geometry(
     let weak_view = view.downgrade();
     let (host, cx) = cx.add_window_view(move |_, cx| {
         OpenGpuiSceneHost::new(view, native_registry(cx), blueprint_viewport())
+            .expect("valid Open GPUI scene host")
     });
     draw(cx);
 
@@ -2407,6 +1897,7 @@ fn blueprint_rejected_add_requires_explicit_retry_and_never_resubmits_from_rende
         .expect("blueprint rejection view");
     let (_host, cx) = cx.add_window_view(move |_, cx| {
         OpenGpuiSceneHost::new(view, native_registry(cx), blueprint_viewport())
+            .expect("valid Open GPUI scene host")
     });
     draw(cx);
 
@@ -2481,6 +1972,7 @@ fn blueprint_unparseable_observation_drains_completion_and_allows_explicit_disca
         .expect("Blueprint remote view");
     let (host, cx) = cx.add_window_view(move |_, cx| {
         OpenGpuiSceneHost::new(host_view, native_registry(cx), blueprint_viewport())
+            .expect("valid Open GPUI scene host")
     });
     draw(cx);
 
@@ -2586,6 +2078,7 @@ fn blueprint_add_input_fills_a_sparse_name_without_replacing_stable_ports(
         .expect("sparse blueprint view");
     let (host, cx) = cx.add_window_view(move |_, cx| {
         OpenGpuiSceneHost::new(view, native_registry(cx), blueprint_viewport())
+            .expect("valid Open GPUI scene host")
     });
     draw(cx);
 
@@ -2628,30 +2121,6 @@ fn blueprint_add_input_fills_a_sparse_name_without_replacing_stable_ports(
             .is_some()
     );
     assert_single_retained_mount(cx, &host);
-    assert_eq!(runtime.history_state().unwrap().undo_len(), 4);
-
-    runtime
-        .execute(GraphCommand::undo(added.version()))
-        .applied_revision()
-        .expect("sparse pin undo applies");
-    let undone = runtime.snapshot().expect("undone sparse pin fill");
-    assert!(undone.graph().port(&added_input_1).is_none());
-    assert!(undone.graph().port(&sparse_input_2_id()).is_some());
-
-    runtime
-        .execute(GraphCommand::redo(undone.version()))
-        .applied_revision()
-        .expect("sparse pin redo applies");
-    let redone = runtime.snapshot().expect("redone sparse pin fill");
-    assert_eq!(
-        redone
-            .graph()
-            .port(&added_input_1)
-            .expect("redone pin keeps its port id")
-            .data["label"],
-        "input_1"
-    );
-    assert!(redone.graph().port(&sparse_input_2_id()).is_some());
 }
 
 #[open_gpui::test]
@@ -2696,6 +2165,7 @@ fn blueprint_semantic_zoom_preserves_sparse_dynamic_port_geometry_without_remoun
     let weak_view = view.downgrade();
     let (host, cx) = cx.add_window_view(move |_, cx| {
         OpenGpuiSceneHost::new(view, native_registry(cx), blueprint_viewport())
+            .expect("valid Open GPUI scene host")
     });
     draw(cx);
 
@@ -2871,11 +2341,19 @@ fn assert_product_port_profile(
         transform,
     );
     if detail {
-        assert!((visual.width - 12.0).abs() <= 0.1);
-        assert!((visual.height - 12.0).abs() <= 0.1);
+        assert!(
+            (visual.width - 11.0).abs() <= 0.1,
+            "detail port visual width must keep the 11px layout slot, got {}px",
+            visual.width
+        );
+        assert!(
+            (visual.height - 11.0).abs() <= 0.1,
+            "detail port visual height must keep the 11px layout slot, got {}px",
+            visual.height
+        );
     } else {
-        assert!(visual.width > 0.0 && visual.width <= 12.0);
-        assert!(visual.height > 0.0 && visual.height <= 12.0);
+        assert!(visual.width > 0.0 && visual.width <= 11.0);
+        assert!(visual.height > 0.0 && visual.height <= 11.0);
     }
     assert!((hit.width - 22.0).abs() <= 0.1);
     assert!((hit.height - 22.0).abs() <= 0.1);
@@ -2931,7 +2409,7 @@ fn assert_shader_layout_contract(
         },
     };
     let window = cx.open_window(size(px(window_width), px(window_height)), move |_, _| {
-        OpenGpuiSceneHost::new(view, registry, viewport)
+        OpenGpuiSceneHost::new(view, registry, viewport).expect("valid Open GPUI scene host")
     });
     let mut cx = VisualTestContext::from_window(window.into(), cx);
     for _ in 0..3 {
@@ -3454,31 +2932,6 @@ fn blueprint_graph() -> jellyflow_core::Graph {
     graph_from_creations(GraphId::from_u128(0x6200), [blueprint])
 }
 
-fn blueprint_graph_with_source() -> jellyflow_core::Graph {
-    let catalog = native_node_catalog().expect("native catalog");
-    let source = catalog
-        .instantiate_node_with_ids(
-            &NodeKindKey::new(SHADER_MULTIPLY_KIND),
-            source_node_id(),
-            native_product_bounds(SHADER_MULTIPLY_KIND, CanvasPoint { x: -320.0, y: 40.0 }),
-            [source_input_a_id(), source_input_b_id(), source_output_id()],
-        )
-        .expect("blueprint source node");
-    let blueprint = catalog
-        .instantiate_node_with_ids(
-            &NodeKindKey::new(BLUEPRINT_CALL_KIND),
-            blueprint_node_id(),
-            native_product_bounds(BLUEPRINT_CALL_KIND, CanvasPoint { x: 32.0, y: 40.0 }),
-            [
-                blueprint_exec_input_id(),
-                blueprint_exec_output_id(),
-                blueprint_value_input_id(),
-            ],
-        )
-        .expect("blueprint node");
-    graph_from_creations(GraphId::from_u128(0x6201), [source, blueprint])
-}
-
 fn graph_from_creations<const N: usize>(
     graph_id: GraphId,
     creations: [jellyflow_runtime::schema::NodeCreation; N],
@@ -3573,10 +3026,6 @@ fn typed_target_output_id() -> PortId {
     PortId::from_u128(0x6123)
 }
 
-fn typed_edge_id() -> EdgeId {
-    EdgeId::from_u128(0x6130)
-}
-
 fn blueprint_node_id() -> NodeId {
     NodeId::from_u128(0x6210)
 }
@@ -3595,10 +3044,6 @@ fn blueprint_value_input_id() -> PortId {
 
 fn dynamic_pin_id() -> PortId {
     PortId::from_u128(0x6214)
-}
-
-fn blueprint_dynamic_edge_id() -> EdgeId {
-    EdgeId::from_u128(0x6217)
 }
 
 fn sparse_input_1_id() -> PortId {

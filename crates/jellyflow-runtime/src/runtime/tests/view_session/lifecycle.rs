@@ -63,7 +63,6 @@ fn explicit_close_publishes_one_terminal_event_after_retiring_view_facts() {
     view.subscribe(move |event| {
         if let ViewSessionEvent::Closed { reason } = event {
             assert_eq!(callback_view.close_reason(), Some(reason));
-            assert!(callback_view.retired_geometry_is_empty_for_test());
             callback_reasons.borrow_mut().push(reason);
         }
     })
@@ -109,7 +108,6 @@ fn runtime_drop_publishes_one_terminal_event_after_retiring_view_facts() {
     view.subscribe(move |event| {
         if let ViewSessionEvent::Closed { reason } = event {
             assert_eq!(callback_view.close_reason(), Some(reason));
-            assert!(callback_view.retired_geometry_is_empty_for_test());
             callback_reasons.borrow_mut().push(reason);
         }
     })
@@ -122,31 +120,47 @@ fn runtime_drop_publishes_one_terminal_event_after_retiring_view_facts() {
         &[ViewCloseReason::RuntimeDropped]
     );
     assert_eq!(Rc::strong_count(&view), 1);
-    assert!(view.retired_geometry_is_empty_for_test());
 }
 
 #[test]
-fn dropping_runtime_revokes_live_sessions_and_retires_facts() {
-    let view = {
-        let (graph, ids) = graph_with_nodes(1);
-        let graph_id = graph.graph_id();
-        let runtime = GraphRuntime::builder(Default::default())
-            .build(graph)
-            .expect("runtime");
-        let view = runtime
-            .attach_view(view_options(ViewSessionSeed::new(graph_id)))
-            .expect("view");
-        publish_graph_layouts(&view);
-        assert!(view.geometry_snapshot().unwrap().node(ids[0]).is_some());
-        view
-    };
+fn runtime_drop_installs_all_view_reasons_before_terminal_callbacks() {
+    let (graph, _) = graph_with_nodes(1);
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .expect("runtime");
+    let first = runtime.attach_view(Default::default()).expect("first view");
+    let second = runtime
+        .attach_view(Default::default())
+        .expect("second view");
+    let weak_second = second.downgrade();
+    let second_slot = Rc::new(RefCell::new(Some(second)));
+    let observed_second_reason = Rc::new(RefCell::new(None));
 
-    assert_eq!(view.close_reason(), Some(ViewCloseReason::RuntimeDropped));
-    assert!(view.retired_geometry_is_empty_for_test());
-    assert!(matches!(
-        view.graph_snapshot(),
-        Err(ViewSessionError::Closed { .. })
-    ));
+    let callback_second_slot = second_slot.clone();
+    let callback_weak_second = weak_second.clone();
+    let callback_observed_reason = observed_second_reason.clone();
+    first
+        .subscribe(move |event| {
+            if let ViewSessionEvent::Closed {
+                reason: ViewCloseReason::RuntimeDropped,
+            } = event
+            {
+                drop(callback_second_slot.borrow_mut().take());
+                let reason = match callback_weak_second.graph_snapshot() {
+                    Err(ViewSessionError::Closed { reason }) => reason,
+                    other => panic!("second view must already be terminal: {other:?}"),
+                };
+                *callback_observed_reason.borrow_mut() = Some(reason);
+            }
+        })
+        .expect("first terminal subscription");
+
+    drop(runtime);
+
+    assert_eq!(
+        *observed_second_reason.borrow(),
+        Some(ViewCloseReason::RuntimeDropped)
+    );
 }
 
 #[test]
@@ -318,7 +332,6 @@ fn close_rejects_duplicate_command_identity_before_entering_closing_state() {
     let view = runtime.attach_view(Default::default()).expect("view");
     let before = runtime.snapshot().unwrap();
     let history_before = runtime.history_state().unwrap();
-    let installed_impact_before = runtime.installed_impact_state_for_test();
     let event_count = Rc::new(Cell::new(0));
     let callback_count = event_count.clone();
     runtime
@@ -347,11 +360,6 @@ fn close_rejects_duplicate_command_identity_before_entering_closing_state() {
     assert_eq!(view.close_reason(), None);
     assert!(before.ptr_eq(&runtime.snapshot().unwrap()));
     assert_eq!(runtime.history_state().unwrap(), history_before);
-    assert_eq!(
-        runtime.installed_impact_state_for_test(),
-        installed_impact_before,
-        "invalid close requests must not update indexes or node identities"
-    );
     assert_eq!(event_count.get(), 0);
 
     let outcome = view

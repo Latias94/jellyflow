@@ -1,28 +1,35 @@
-#[cfg(test)]
-use std::cell::Cell;
 use std::cell::RefCell;
-use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::rc::Rc;
 
 use jellyflow_runtime::commands::GraphCommand;
 use jellyflow_runtime::graph::GraphRevision;
 use jellyflow_runtime::reconciliation::{
     MutationAbandonment as RuntimeMutationAbandonment, MutationAttemptId, MutationBeginError,
-    MutationCommandResult, MutationPhase, MutationReconciler,
+    MutationCommandResult, MutationCompletionError, MutationPhase, MutationReconciler,
     MutationRetry as RuntimeMutationRetry, MutationRetryReason,
 };
-use jellyflow_runtime::view::{FeedbackSubmissionError, ViewCloseReason};
+#[cfg(test)]
+use jellyflow_runtime::view::FeedbackSubmissionError;
+use jellyflow_runtime::view::ViewCloseReason;
 use open_gpui::Context;
 
-use crate::activity::{OpenGpuiActivityKind, OpenGpuiActivityLease, OpenGpuiNodeActivityRegistry};
+use crate::activity::{
+    OpenGpuiActivityAcquireError, OpenGpuiActivityKind, OpenGpuiActivityLease,
+    OpenGpuiNodeActivityRegistry,
+};
 use crate::admitted_command::{
-    AdmittedCommandEvent, AdmittedCommandTask, AdmittedCommandTaskLease, AdmittedCommandUncertainty,
+    AdmittedCommandDrive, AdmittedCommandEvent, AdmittedCommandTask, AdmittedCommandTaskLease,
+    AdmittedCommandUncertainty,
 };
 use crate::authoring::{
     OpenGpuiCommandAdmissionError, OpenGpuiNodeAuthoring, OpenGpuiNodeAuthoringError,
 };
 use crate::binding::{OpenGpuiLayoutInvalidator, OpenGpuiMountContext, OpenGpuiMountState};
-use crate::command_journal::OpenGpuiCommandTicketError;
+use crate::command_journal::OpenGpuiCommandTicketDisposition;
+#[cfg(test)]
+use crate::command_journal::{OpenGpuiCommandTicketError, OpenGpuiCommandTicketFailure};
+use crate::panic_sink::OpenGpuiPanicAccumulator;
 
 /// Origin of a managed mutation diagnostic.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -37,10 +44,32 @@ pub enum MutationDiagnosticSource {
     NativeLifecycle,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MutationDiagnosticKind {
+    Standard,
+    NativeActivityBackpressure,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct MutationDiagnosticProjection {
+    source: MutationDiagnosticSource,
+    kind: MutationDiagnosticKind,
+}
+
+impl MutationDiagnosticProjection {
+    const fn standard(source: MutationDiagnosticSource) -> Self {
+        Self {
+            source,
+            kind: MutationDiagnosticKind::Standard,
+        }
+    }
+}
+
 /// Structured diagnostic projected without exposing native command transport.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MutationDiagnostic {
     source: MutationDiagnosticSource,
+    kind: MutationDiagnosticKind,
     message: String,
 }
 
@@ -48,8 +77,49 @@ impl MutationDiagnostic {
     fn new(source: MutationDiagnosticSource, message: impl Into<String>) -> Self {
         Self {
             source,
+            kind: MutationDiagnosticKind::Standard,
             message: message.into(),
         }
+    }
+
+    fn from_projection(
+        projection: MutationDiagnosticProjection,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            source: projection.source,
+            kind: projection.kind,
+            message: message.into(),
+        }
+    }
+
+    fn native_activity(error: OpenGpuiActivityAcquireError) -> Self {
+        let kind = match error {
+            OpenGpuiActivityAcquireError::ProtectedCapacityExceeded { .. } => {
+                MutationDiagnosticKind::NativeActivityBackpressure
+            }
+            OpenGpuiActivityAcquireError::RegistryRevoked
+            | OpenGpuiActivityAcquireError::IdentityExhausted => MutationDiagnosticKind::Standard,
+        };
+        Self {
+            source: MutationDiagnosticSource::NativeActivity,
+            kind,
+            message: error.to_string(),
+        }
+    }
+
+    const fn projection(&self) -> MutationDiagnosticProjection {
+        MutationDiagnosticProjection {
+            source: self.source,
+            kind: self.kind,
+        }
+    }
+
+    pub(crate) const fn is_native_activity_backpressure(&self) -> bool {
+        matches!(
+            self.kind,
+            MutationDiagnosticKind::NativeActivityBackpressure
+        )
     }
 
     #[must_use]
@@ -113,6 +183,27 @@ pub enum MutationSettlement {
     },
 }
 
+impl MutationSettlement {
+    /// Returns the application-facing diagnostic carried by this settlement, when present.
+    ///
+    /// Native admission, runtime settlement, retirement, close, and layout failure remain owned by
+    /// the managed mutation. Product renderers can project the diagnostic without reproducing the
+    /// lifecycle variant map.
+    #[must_use]
+    pub const fn diagnostic(&self) -> Option<&MutationDiagnostic> {
+        match self {
+            Self::Retryable { diagnostic, .. }
+            | Self::Uncertain { diagnostic, .. }
+            | Self::Retired { diagnostic }
+            | Self::Closed { diagnostic, .. }
+            | Self::Satisfied {
+                layout: MutationLayoutSettlement::Failed { diagnostic },
+            } => Some(diagnostic),
+            Self::Ready | Self::Pending { .. } | Self::Satisfied { .. } => None,
+        }
+    }
+}
+
 /// Read-only capability for an application-controlled retry.
 #[derive(Debug)]
 pub struct MutationRetry<I>(RuntimeMutationRetry<I>);
@@ -160,6 +251,8 @@ impl<I> MutationRequest<I> {
 pub enum MutationDispatchError {
     #[error("another mutation is already active")]
     Busy,
+    #[error("an admitted mutation transport remains live and must settle before retry")]
+    AdmittedTransportLive,
     #[error("the mutation retry capability is no longer current")]
     RetryExpired,
     #[error(
@@ -185,11 +278,10 @@ enum MutationTerminalSignal {
     Closed(ViewCloseReason),
 }
 
-#[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ManagedMutationPostAdmissionFault {
-    TaskInstallationUnwound,
-    HostNotificationUnwound,
+enum ManagedMutationRetirementPolicy {
+    Terminal,
+    DrainAdmittedWithSurvivors,
 }
 
 enum MutationTerminal<I> {
@@ -234,15 +326,18 @@ impl<I> MutationTerminal<I> {
 /// command.
 pub struct OpenGpuiManagedMutation<I> {
     owners: Vec<OpenGpuiManagedMutationOwner>,
+    retirement_policy: ManagedMutationRetirementPolicy,
+    admitted_attempt: Option<MutationAttemptId>,
     reconciler: MutationReconciler<I>,
     terminal: Option<MutationTerminal<I>>,
     task: Rc<RefCell<Option<AdmittedCommandTask<MutationAttemptId>>>>,
+    recoverable_admitted_attempt: Option<MutationAttemptId>,
     retention_leases: Vec<OpenGpuiActivityLease>,
     layout_effect: Option<(MutationAttemptId, MutationLayoutEffect)>,
     layout_failure: Option<MutationDiagnostic>,
-    diagnostic_source: Option<(MutationAttemptId, MutationDiagnosticSource)>,
+    diagnostic_projection: Option<(MutationAttemptId, MutationDiagnosticProjection)>,
     #[cfg(test)]
-    post_admission_fault: Cell<Option<ManagedMutationPostAdmissionFault>>,
+    post_admission_fault: bool,
 }
 
 #[derive(Clone)]
@@ -319,6 +414,22 @@ impl<I> OpenGpuiManagedMutation<I> {
     }
 
     pub(crate) fn mount_set(owners: Vec<OpenGpuiManagedMutationOwner>) -> Option<Self> {
+        Self::mount_set_with_retirement(owners, ManagedMutationRetirementPolicy::Terminal)
+    }
+
+    pub(crate) fn mount_set_draining_admitted(
+        owners: Vec<OpenGpuiManagedMutationOwner>,
+    ) -> Option<Self> {
+        Self::mount_set_with_retirement(
+            owners,
+            ManagedMutationRetirementPolicy::DrainAdmittedWithSurvivors,
+        )
+    }
+
+    fn mount_set_with_retirement(
+        owners: Vec<OpenGpuiManagedMutationOwner>,
+        retirement_policy: ManagedMutationRetirementPolicy,
+    ) -> Option<Self> {
         let primary = owners.first()?;
         let provenance = primary.mount.provenance();
         let mut instances = std::collections::BTreeSet::new();
@@ -330,15 +441,18 @@ impl<I> OpenGpuiManagedMutation<I> {
         }
         Some(Self {
             owners,
+            retirement_policy,
+            admitted_attempt: None,
             reconciler: MutationReconciler::default(),
             terminal: None,
             task: Rc::new(RefCell::new(None)),
+            recoverable_admitted_attempt: None,
             retention_leases: Vec::new(),
             layout_effect: None,
             layout_failure: None,
-            diagnostic_source: None,
+            diagnostic_projection: None,
             #[cfg(test)]
-            post_admission_fault: Cell::new(None),
+            post_admission_fault: false,
         })
     }
 
@@ -366,19 +480,8 @@ impl<I> OpenGpuiManagedMutation<I> {
     }
 
     #[cfg(test)]
-    pub(crate) fn inject_post_admission_fault_for_test(
-        &self,
-        fault: ManagedMutationPostAdmissionFault,
-    ) {
-        self.post_admission_fault.set(Some(fault));
-    }
-
-    #[cfg(test)]
-    fn inject_post_admission_fault(&self, fault: ManagedMutationPostAdmissionFault) {
-        if self.post_admission_fault.get() == Some(fault) {
-            self.post_admission_fault.set(None);
-            panic!("injected managed mutation post-admission fault: {fault:?}");
-        }
+    pub(crate) fn inject_post_admission_fault_for_test(&mut self) {
+        self.post_admission_fault = true;
     }
 }
 
@@ -396,7 +499,7 @@ where
 
     #[must_use]
     pub fn retry(&self) -> Option<MutationRetry<I>> {
-        self.is_live()
+        (self.is_live() && !self.has_live_admitted_transport())
             .then(|| self.reconciler.retry(false))
             .flatten()
             .map(MutationRetry)
@@ -404,7 +507,7 @@ where
 
     #[must_use]
     pub fn confirm_uncertain_retry(&self) -> Option<MutationRetry<I>> {
-        self.is_live()
+        (self.is_live() && !self.has_live_admitted_transport())
             .then(|| self.reconciler.retry(true))
             .flatten()
             .map(MutationRetry)
@@ -412,7 +515,9 @@ where
 
     #[must_use]
     pub fn can_confirm_uncertain_retry(&self) -> bool {
-        self.is_live() && self.reconciler.can_confirm_uncertain_retry()
+        self.is_live()
+            && !self.has_live_admitted_transport()
+            && self.reconciler.can_confirm_uncertain_retry()
     }
 
     /// Returns the last layout failure until another explicit mutation starts.
@@ -421,13 +526,24 @@ where
         self.layout_failure.as_ref()
     }
 
-    /// Abandons an exact retry after the product can no longer plan its retained intent.
+    /// Rejects a product request before dispatch because current authoritative facts cannot plan it.
     ///
-    /// Pending commands cannot be abandoned through this API. A successful abandonment releases
-    /// the native mutation retention immediately and leaves the owner ready for a new intent.
-    pub fn abandon_retry(&mut self, retry: MutationRetry<I>) -> bool {
+    /// A new request owns no retained runtime capability and is simply consumed. Rejecting an exact
+    /// retry abandons that capability, releases native mutation retention immediately, and leaves
+    /// the owner ready for another intent. Pending commands cannot be abandoned through this API.
+    pub fn reject_request(&mut self, request: MutationRequest<I>) -> bool {
+        match request {
+            MutationRequest::New(_) => true,
+            MutationRequest::Retry(retry) => self.abandon_retry(retry),
+        }
+    }
+
+    fn abandon_retry(&mut self, retry: MutationRetry<I>) -> bool {
         self.synchronize_terminal();
-        if !self.is_live() || !self.reconciler.abandon_retry(retry.0) {
+        if !self.is_live()
+            || self.has_live_admitted_transport()
+            || !self.reconciler.abandon_retry(retry.0)
+        {
             return false;
         }
         self.synchronize_resources();
@@ -449,6 +565,22 @@ where
         }
         if !self.same_owner(authoring) {
             self.retire("mutation observation belongs to another native mount".to_owned());
+            return self.current_settlement();
+        }
+        self.observe_without_authority(cx)
+    }
+
+    /// Drains one admitted completion when no member of an exact mount set can currently provide
+    /// an authoritative snapshot.
+    ///
+    /// A member-local authoring failure cannot classify the whole mount set. Terminal owner signals
+    /// still win, while applied or noop completion remains awaiting a later authoritative snapshot.
+    pub(crate) fn observe_without_authority<N: 'static>(
+        &mut self,
+        cx: &mut Context<N>,
+    ) -> MutationSettlement {
+        self.synchronize_terminal();
+        if self.terminal.is_some() {
             return self.current_settlement();
         }
         if let Some(settlement) = self.drain_task_completion(cx) {
@@ -527,6 +659,9 @@ where
     ) -> Result<MutationSettlement, MutationDispatchError> {
         self.synchronize_terminal();
         self.ensure_dispatchable()?;
+        if self.has_live_admitted_transport() {
+            return Err(MutationDispatchError::AdmittedTransportLive);
+        }
         if !self.same_owner(&authoring) {
             self.retire("mutation authoring belongs to another native mount".to_owned());
             return Err(MutationDispatchError::Retired);
@@ -556,7 +691,7 @@ where
         };
         self.layout_failure = None;
         self.layout_effect = Some((attempt, layout_effect));
-        self.diagnostic_source = None;
+        self.diagnostic_projection = None;
 
         if let Err(diagnostic) = self.ensure_retention() {
             self.synchronize_terminal();
@@ -567,10 +702,7 @@ where
         let task_lease = match AdmittedCommandTaskLease::acquire(&self.primary_owner().activity) {
             Ok(lease) => lease,
             Err(error) => {
-                let diagnostic = MutationDiagnostic::new(
-                    MutationDiagnosticSource::NativeActivity,
-                    error.to_string(),
-                );
+                let diagnostic = MutationDiagnostic::native_activity(error);
                 return Err(self.fail_not_dispatched(attempt, diagnostic));
             }
         };
@@ -579,54 +711,40 @@ where
             Err(error) => return Err(self.handle_admission_failure(attempt, error)),
         };
         let (ticket, notification) = admitted.into_parts();
+        self.admitted_attempt = Some(attempt);
+        self.recoverable_admitted_attempt = None;
 
-        *self.task.borrow_mut() = Some(AdmittedCommandTask::new(attempt, ticket, task_lease));
-        let spawned = catch_unwind(AssertUnwindSafe(|| {
-            #[cfg(test)]
-            if self.post_admission_fault.get()
-                == Some(ManagedMutationPostAdmissionFault::TaskInstallationUnwound)
-            {
-                self.post_admission_fault.set(None);
-                self.task
-                    .borrow_mut()
-                    .as_mut()
-                    .expect("an admitted mutation owns its task before installation")
-                    .inject_installation_fault_for_test();
-            }
-            self.task
-                .borrow_mut()
+        *self.task.borrow_mut() = Some(AdmittedCommandTask::new(
+            attempt,
+            ticket,
+            notification,
+            task_lease,
+        ));
+        #[cfg(test)]
+        if std::mem::take(&mut self.post_admission_fault) {
+            let mut task = self.task.borrow_mut();
+            let task = task
                 .as_mut()
-                .is_some_and(|task| task.spawn(cx))
-        }));
-        match spawned {
-            Ok(true) => {
-                let notified = catch_unwind(AssertUnwindSafe(|| {
-                    #[cfg(test)]
-                    self.inject_post_admission_fault(
-                        ManagedMutationPostAdmissionFault::HostNotificationUnwound,
-                    );
-                    notification.notify(cx);
-                }));
-                if let Err(panic) = notified {
-                    self.record_post_admission_uncertainty(
-                        attempt,
-                        AdmittedCommandUncertainty::HostNotificationUnwound,
-                    );
-                    resume_unwind(panic);
-                }
-            }
-            Ok(false) => {
+                .expect("an admitted mutation owns its task before setup");
+            task.inject_setup_fault_for_test();
+        }
+        let drive = self
+            .task
+            .borrow_mut()
+            .as_mut()
+            .expect("an admitted mutation owns its task before setup")
+            .drive(cx);
+        match drive {
+            Ok(AdmittedCommandDrive::AwaitingTicket) => {}
+            Ok(AdmittedCommandDrive::Unavailable) => {
                 self.record_post_admission_uncertainty(
                     attempt,
                     AdmittedCommandUncertainty::TaskInstallationUnwound,
                 );
             }
-            Err(panic) => {
-                self.record_post_admission_uncertainty(
-                    attempt,
-                    AdmittedCommandUncertainty::TaskInstallationUnwound,
-                );
-                resume_unwind(panic);
+            Err(unwind) => {
+                self.record_post_admission_uncertainty(attempt, unwind.reason());
+                unwind.resume();
             }
         }
         self.synchronize_terminal();
@@ -719,15 +837,19 @@ where
                     .expect("retryable mutation has one reason");
                 MutationSettlement::Retryable {
                     reason,
-                    diagnostic: MutationDiagnostic::new(
+                    diagnostic: MutationDiagnostic::from_projection(
                         self.reconciler
                             .active_attempt()
                             .and_then(|attempt| {
-                                self.diagnostic_source
+                                self.diagnostic_projection
                                     .filter(|(source_attempt, _)| *source_attempt == attempt)
-                                    .map(|(_, source)| source)
+                                    .map(|(_, projection)| projection)
                             })
-                            .unwrap_or_else(|| diagnostic_source_for_retry(reason)),
+                            .unwrap_or_else(|| {
+                                MutationDiagnosticProjection::standard(diagnostic_source_for_retry(
+                                    reason,
+                                ))
+                            }),
                         self.reconciler
                             .diagnostic()
                             .expect("retryable mutation has one diagnostic"),
@@ -735,22 +857,30 @@ where
                 }
             }
             MutationPhase::Uncertain => MutationSettlement::Uncertain {
-                diagnostic: MutationDiagnostic::new(
+                diagnostic: MutationDiagnostic::from_projection(
                     self.reconciler
                         .active_attempt()
                         .and_then(|attempt| {
-                            self.diagnostic_source
+                            self.diagnostic_projection
                                 .filter(|(source_attempt, _)| *source_attempt == attempt)
-                                .map(|(_, source)| source)
+                                .map(|(_, projection)| projection)
                         })
-                        .unwrap_or(MutationDiagnosticSource::NativeTransport),
+                        .unwrap_or_else(|| {
+                            MutationDiagnosticProjection::standard(
+                                MutationDiagnosticSource::NativeTransport,
+                            )
+                        }),
                     self.reconciler
                         .diagnostic()
                         .expect("uncertain mutation has one diagnostic"),
                 ),
-                retry_confirmable: self.reconciler.can_confirm_uncertain_retry(),
+                retry_confirmable: self.can_confirm_uncertain_retry(),
             },
         }
+    }
+
+    fn has_live_admitted_transport(&self) -> bool {
+        self.task.borrow().is_some()
     }
 
     fn ensure_dispatchable(&self) -> Result<(), MutationDispatchError> {
@@ -778,22 +908,21 @@ where
         self.retention_leases.clear();
         let mut leases = Vec::with_capacity(self.owners.len());
         for owner in &self.owners {
-            let task = Rc::downgrade(&self.task);
-            let lease = owner
-                .activity
-                .acquire_with_revocation(OpenGpuiActivityKind::Mutation, move || {
-                    if let Some(task) = task.upgrade()
-                        && let Ok(mut task) = task.try_borrow_mut()
-                    {
-                        AdmittedCommandTask::shutdown(&mut task);
-                    }
-                })
-                .map_err(|error| {
-                    MutationDiagnostic::new(
-                        MutationDiagnosticSource::NativeActivity,
-                        error.to_string(),
-                    )
-                })?;
+            let lease = if self.retirement_policy == ManagedMutationRetirementPolicy::Terminal {
+                let task = Rc::downgrade(&self.task);
+                owner
+                    .activity
+                    .acquire_with_revocation(OpenGpuiActivityKind::Mutation, move || {
+                        if let Some(task) = task.upgrade()
+                            && let Ok(mut task) = task.try_borrow_mut()
+                        {
+                            AdmittedCommandTask::shutdown(&mut task);
+                        }
+                    })
+            } else {
+                owner.activity.acquire(OpenGpuiActivityKind::Mutation)
+            }
+            .map_err(MutationDiagnostic::native_activity)?;
             leases.push(lease);
         }
         self.retention_leases = leases;
@@ -805,10 +934,17 @@ where
 
     fn same_owner(&self, authoring: &OpenGpuiNodeAuthoring) -> bool {
         let stamp = authoring.stamp();
-        let primary = self.primary_owner();
-        stamp.context.instance() == primary.mount.instance()
-            && stamp.context.mount().is_same_mount(primary.mount.mount())
-            && stamp.context.provenance() == primary.mount.provenance()
+        let matches = |owner: &OpenGpuiManagedMutationOwner| {
+            stamp.context.instance() == owner.mount.instance()
+                && stamp.context.mount().is_same_mount(owner.mount.mount())
+                && stamp.context.provenance() == owner.mount.provenance()
+        };
+        match self.retirement_policy {
+            ManagedMutationRetirementPolicy::Terminal => matches(self.primary_owner()),
+            ManagedMutationRetirementPolicy::DrainAdmittedWithSurvivors => {
+                self.owners.iter().any(matches)
+            }
+        }
     }
 
     fn handle_admission_failure(
@@ -851,7 +987,7 @@ where
         attempt: MutationAttemptId,
         diagnostic: MutationDiagnostic,
     ) -> MutationDispatchError {
-        self.diagnostic_source = Some((attempt, diagnostic.source));
+        self.diagnostic_projection = Some((attempt, diagnostic.projection()));
         let _ = self.reconciler.complete(
             attempt,
             MutationCommandResult::NotDispatched {
@@ -867,24 +1003,22 @@ where
         attempt: MutationAttemptId,
         reason: AdmittedCommandUncertainty,
     ) {
-        let event = {
-            let task = self.task.borrow();
-            let Some(task) = task.as_ref().filter(|task| task.attempt() == attempt) else {
-                return;
-            };
-            task.record_uncertainty(reason);
-            task.take_event()
-        };
-        if let Some(AdmittedCommandEvent::Uncertain { reason, .. }) = event {
-            self.diagnostic_source = Some((attempt, diagnostic_source_for_uncertainty(reason)));
-            let _ = self.reconciler.complete(
-                attempt,
-                MutationCommandResult::Uncertain {
-                    diagnostic: uncertainty_diagnostic(reason),
-                },
-            );
-        }
-        AdmittedCommandTask::release_if(&mut self.task.borrow_mut(), attempt);
+        let owns_transport = self
+            .task
+            .borrow()
+            .as_ref()
+            .is_some_and(|task| task.attempt() == attempt);
+        self.recoverable_admitted_attempt = owns_transport.then_some(attempt);
+        self.diagnostic_projection = Some((
+            attempt,
+            MutationDiagnosticProjection::standard(diagnostic_source_for_uncertainty(reason)),
+        ));
+        let _ = self.reconciler.complete(
+            attempt,
+            MutationCommandResult::Uncertain {
+                diagnostic: uncertainty_diagnostic(reason),
+            },
+        );
         self.synchronize_resources();
     }
 
@@ -892,44 +1026,114 @@ where
         &mut self,
         cx: &mut Context<N>,
     ) -> Option<MutationSettlement> {
+        self.resume_recoverable_admitted_task(cx);
         let event = self
             .task
             .borrow()
             .as_ref()
-            .and_then(AdmittedCommandTask::take_event)?;
+            .and_then(AdmittedCommandTask::take_event_guard)?;
         self.synchronize_terminal();
         if self.terminal.is_some() {
             return Some(self.current_settlement());
         }
-        let attempt = event.attempt();
-        let diagnostic_source = match &event {
-            AdmittedCommandEvent::Uncertain { reason, .. } => {
-                Some(diagnostic_source_for_uncertainty(*reason))
+        let attempt = event.event().attempt();
+        let recoverable_setup = matches!(
+            event.event(),
+            AdmittedCommandEvent::Uncertain {
+                reason: AdmittedCommandUncertainty::TaskInstallationUnwound
+                    | AdmittedCommandUncertainty::HostNotificationUnwound,
+                ..
             }
+        );
+        if recoverable_setup {
+            self.recoverable_admitted_attempt = Some(attempt);
+        } else if self.recoverable_admitted_attempt == Some(attempt) {
+            self.recoverable_admitted_attempt = None;
+        }
+        let diagnostic_projection = match event.event() {
+            AdmittedCommandEvent::Uncertain { reason, .. } => Some(
+                MutationDiagnosticProjection::standard(diagnostic_source_for_uncertainty(*reason)),
+            ),
             AdmittedCommandEvent::Settled { .. } => None,
         };
-        let completion = match event {
-            AdmittedCommandEvent::Settled { result, .. } => match *result {
-                Ok(completion) => MutationCommandResult::from_runtime(&completion),
-                Err(error) => command_transport_result(error),
-            },
+        let completion = match event.event() {
+            AdmittedCommandEvent::Settled { result, .. } => command_ticket_result(result),
             AdmittedCommandEvent::Uncertain { reason, .. } => MutationCommandResult::Uncertain {
-                diagnostic: uncertainty_diagnostic(reason),
+                diagnostic: uncertainty_diagnostic(*reason),
             },
         };
-        self.diagnostic_source = diagnostic_source.map(|source| (attempt, source));
+        self.diagnostic_projection = diagnostic_projection.map(|projection| (attempt, projection));
         let active_attempt = self.reconciler.active_attempt();
         let transition = self.reconciler.complete(attempt, completion);
-        AdmittedCommandTask::release_if(&mut self.task.borrow_mut(), attempt);
-        let Ok(transition) = transition else {
-            self.synchronize_resources();
-            return Some(self.current_settlement());
+        let transition = match transition {
+            Ok(transition) => transition,
+            Err(error @ MutationCompletionError::InvalidRevision { .. }) => {
+                self.recoverable_admitted_attempt = None;
+                self.diagnostic_projection = Some((
+                    attempt,
+                    MutationDiagnosticProjection::standard(MutationDiagnosticSource::Runtime),
+                ));
+                let diagnostic = format!(
+                    "mutation completion violated the runtime revision contract: {error:?}"
+                );
+                let transition = self
+                    .reconciler
+                    .complete(attempt, MutationCommandResult::Uncertain { diagnostic });
+                let Ok(transition) = transition else {
+                    self.synchronize_resources();
+                    return Some(self.current_settlement());
+                };
+                transition
+            }
+            Err(
+                MutationCompletionError::NotPending { .. }
+                | MutationCompletionError::ForeignAttempt { .. },
+            ) => {
+                self.recoverable_admitted_attempt = None;
+                event.commit();
+                AdmittedCommandTask::release_if(&mut self.task.borrow_mut(), attempt);
+                self.synchronize_resources();
+                return Some(self.current_settlement());
+            }
         };
+        event.commit();
+        if !recoverable_setup {
+            AdmittedCommandTask::release_if(&mut self.task.borrow_mut(), attempt);
+        }
         if transition.became_satisfied() {
             return Some(self.finish_satisfied(active_attempt, cx));
         }
         self.synchronize_resources();
         Some(self.current_settlement())
+    }
+
+    fn resume_recoverable_admitted_task<N: 'static>(&mut self, cx: &mut Context<N>) {
+        let Some(attempt) = self.recoverable_admitted_attempt else {
+            return;
+        };
+        let drive = self
+            .task
+            .borrow_mut()
+            .as_mut()
+            .filter(|task| task.attempt() == attempt)
+            .map(|task| task.drive(cx));
+        match drive {
+            Some(Ok(AdmittedCommandDrive::AwaitingTicket)) => {}
+            Some(Ok(AdmittedCommandDrive::Unavailable)) | None => {
+                self.recoverable_admitted_attempt = None;
+            }
+            Some(Err(unwind)) => {
+                if let Some(task) = self
+                    .task
+                    .borrow()
+                    .as_ref()
+                    .filter(|task| task.attempt() == attempt)
+                {
+                    task.record_uncertainty(unwind.reason());
+                }
+                let _ = unwind.suppress();
+            }
+        }
     }
 
     fn finish_satisfied<N: 'static>(
@@ -939,6 +1143,9 @@ where
     ) -> MutationSettlement {
         if let Some(attempt) = attempt {
             AdmittedCommandTask::release_if(&mut self.task.borrow_mut(), attempt);
+            if self.recoverable_admitted_attempt == Some(attempt) {
+                self.recoverable_admitted_attempt = None;
+            }
         }
         self.retention_leases.clear();
         let layout_effect = attempt
@@ -963,12 +1170,17 @@ where
                             error.to_string(),
                         ),
                     },
-                    Err(_) => MutationLayoutSettlement::Failed {
-                        diagnostic: MutationDiagnostic::new(
-                            MutationDiagnosticSource::NativeLayout,
-                            "native layout invalidation panicked after mutation satisfaction",
-                        ),
-                    },
+                    Err(panic) => {
+                        let mut panics = OpenGpuiPanicAccumulator::default();
+                        panics.push(Some(panic));
+                        let _ = panics.suppress();
+                        MutationLayoutSettlement::Failed {
+                            diagnostic: MutationDiagnostic::new(
+                                MutationDiagnosticSource::NativeLayout,
+                                "native layout invalidation panicked after mutation satisfaction",
+                            ),
+                        }
+                    }
                 }
             }
         };
@@ -978,24 +1190,31 @@ where
             | MutationLayoutSettlement::Invalidated
             | MutationLayoutSettlement::NoLongerMounted => None,
         };
+        self.admitted_attempt = None;
         MutationSettlement::Satisfied { layout }
     }
 
     fn synchronize_resources(&mut self) {
-        if self.reconciler.phase() != MutationPhase::Pending {
-            let attempt = self
-                .task
-                .borrow()
-                .as_ref()
-                .map(AdmittedCommandTask::attempt);
-            if let Some(attempt) = attempt {
+        let task_attempt = self
+            .task
+            .borrow()
+            .as_ref()
+            .map(AdmittedCommandTask::attempt);
+        let retain_recoverable_transport = self.reconciler.phase() == MutationPhase::Uncertain
+            && task_attempt.is_some()
+            && task_attempt == self.recoverable_admitted_attempt;
+        if self.reconciler.phase() != MutationPhase::Pending && !retain_recoverable_transport {
+            if let Some(attempt) = task_attempt {
                 AdmittedCommandTask::release_if(&mut self.task.borrow_mut(), attempt);
             }
+            self.recoverable_admitted_attempt = None;
         }
         if self.reconciler.phase() == MutationPhase::Idle || self.terminal.is_some() {
+            self.admitted_attempt = None;
+            self.recoverable_admitted_attempt = None;
             self.retention_leases.clear();
             self.layout_effect.take();
-            self.diagnostic_source.take();
+            self.diagnostic_projection.take();
         }
     }
 
@@ -1041,10 +1260,12 @@ where
 
     fn release_native_resources(&mut self) {
         AdmittedCommandTask::shutdown(&mut self.task.borrow_mut());
+        self.admitted_attempt = None;
+        self.recoverable_admitted_attempt = None;
         self.retention_leases.clear();
         self.layout_effect.take();
         self.layout_failure.take();
-        self.diagnostic_source.take();
+        self.diagnostic_projection.take();
     }
 
     fn primary_owner(&self) -> &OpenGpuiManagedMutationOwner {
@@ -1055,16 +1276,26 @@ where
 
     fn owner_terminal_signal(&self) -> Option<MutationTerminalSignal> {
         let mut retired = false;
+        let mut live = false;
         for owner in &self.owners {
             match owner.mount.mount().state() {
-                OpenGpuiMountState::Live => {}
+                OpenGpuiMountState::Live => live = true,
                 OpenGpuiMountState::Retired => retired = true,
                 OpenGpuiMountState::Closed(reason) => {
                     return Some(MutationTerminalSignal::Closed(reason));
                 }
             }
         }
-        retired.then_some(MutationTerminalSignal::Retired)
+        if !retired {
+            return None;
+        }
+        if self.retirement_policy == ManagedMutationRetirementPolicy::DrainAdmittedWithSurvivors
+            && live
+            && self.admitted_attempt.is_some()
+        {
+            return None;
+        }
+        Some(MutationTerminalSignal::Retired)
     }
 }
 
@@ -1096,28 +1327,23 @@ fn diagnostic_source_for_retry(reason: MutationRetryReason) -> MutationDiagnosti
     }
 }
 
-fn command_transport_result(error: OpenGpuiCommandTicketError) -> MutationCommandResult {
-    let diagnostic = error.to_string();
-    match error {
-        OpenGpuiCommandTicketError::HostDropped
-        | OpenGpuiCommandTicketError::HostClosed { .. }
-        | OpenGpuiCommandTicketError::FramePreparation { .. } => {
-            MutationCommandResult::NativeDispatchFailed { diagnostic }
+fn command_ticket_result(
+    result: &crate::command_journal::OpenGpuiCommandTicketResult,
+) -> MutationCommandResult {
+    match OpenGpuiCommandTicketDisposition::classify(result) {
+        OpenGpuiCommandTicketDisposition::Completed(completion) => {
+            MutationCommandResult::from_runtime(completion)
         }
-        OpenGpuiCommandTicketError::FeedbackSubmission(error)
-            if matches!(
-                error.as_ref(),
-                FeedbackSubmissionError::AfterCommandAdmission { receipt: None, .. }
-            ) =>
-        {
-            MutationCommandResult::Uncertain { diagnostic }
+        OpenGpuiCommandTicketDisposition::DefinitelyNotExecuted(error) => {
+            MutationCommandResult::NativeDispatchFailed {
+                diagnostic: error.to_string(),
+            }
         }
-        OpenGpuiCommandTicketError::FeedbackSubmission(_) => {
-            MutationCommandResult::NativeDispatchFailed { diagnostic }
+        OpenGpuiCommandTicketDisposition::ExecutionUnknown(error) => {
+            MutationCommandResult::Uncertain {
+                diagnostic: error.to_string(),
+            }
         }
-        OpenGpuiCommandTicketError::ClosePanicked { .. }
-        | OpenGpuiCommandTicketError::FeedbackOutcomeUnknown
-        | OpenGpuiCommandTicketError::Session(_) => MutationCommandResult::Uncertain { diagnostic },
     }
 }
 
@@ -1178,23 +1404,29 @@ mod tests {
     #[test]
     fn definitive_and_ambiguous_ticket_failures_remain_distinct() {
         assert!(matches!(
-            command_transport_result(OpenGpuiCommandTicketError::FramePreparation {
-                message: "layout failed".to_owned(),
-            }),
+            command_ticket_result(&Err(OpenGpuiCommandTicketFailure::definitely_not_executed(
+                OpenGpuiCommandTicketError::FramePreparation {
+                    message: "layout failed".to_owned(),
+                },
+            ),)),
             MutationCommandResult::NativeDispatchFailed { .. }
         ));
         assert!(matches!(
-            command_transport_result(OpenGpuiCommandTicketError::FeedbackOutcomeUnknown),
+            command_ticket_result(&Err(OpenGpuiCommandTicketFailure::execution_unknown(
+                OpenGpuiCommandTicketError::FeedbackOutcomeUnknown,
+            ))),
             MutationCommandResult::Uncertain { .. }
         ));
         assert!(matches!(
-            command_transport_result(OpenGpuiCommandTicketError::FeedbackSubmission(Rc::new(
-                FeedbackSubmissionError::AfterCommandAdmission {
-                    source: jellyflow_runtime::view::ViewSessionError::Closed {
-                        reason: ViewCloseReason::HostClosed,
+            command_ticket_result(&Err(OpenGpuiCommandTicketFailure::execution_unknown(
+                OpenGpuiCommandTicketError::FeedbackSubmission(Rc::new(
+                    FeedbackSubmissionError::AfterCommandAdmission {
+                        source: jellyflow_runtime::view::ViewSessionError::Closed {
+                            reason: ViewCloseReason::HostClosed,
+                        },
+                        receipt: None,
                     },
-                    receipt: None,
-                },
+                )),
             ))),
             MutationCommandResult::Uncertain { .. }
         ));

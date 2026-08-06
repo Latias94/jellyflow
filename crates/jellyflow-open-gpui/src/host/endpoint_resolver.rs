@@ -125,6 +125,10 @@ pub(super) struct ResolvedEndpoint {
 }
 
 impl ResolvedEndpoint {
+    pub(super) const fn port(self) -> PortId {
+        self.identity.port
+    }
+
     pub(super) const fn position(self) -> EdgeEndpointPosition {
         self.position
     }

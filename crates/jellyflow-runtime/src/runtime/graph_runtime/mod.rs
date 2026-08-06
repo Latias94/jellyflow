@@ -7,7 +7,9 @@ mod impact;
 mod index;
 mod patch;
 mod port_connection_facts;
+mod profile_evaluator;
 mod subscriptions;
+mod view_registry;
 
 pub use create_from_wire::{CreateFromWireCandidates, CreateFromWireQueryError};
 pub use port_connection_facts::{
@@ -47,13 +49,14 @@ use crate::runtime::view_session::{
 pub(crate) use self::connection_admission::{
     ConnectionAdmissionCursor, ConnectionAdmissionOutcome, ConnectionAdmissionWork,
 };
-use self::execution::collect_live_sessions;
 use self::execution::{
     CommandExecution, CommandExecutionFailure, MutationGuard, NotificationDrainGuard,
     allocate_edge_incarnation, allocate_incarnation, allocate_port_incarnation,
     command_rejection_from_planning, execute_command_locked, middleware_snapshot, validate_graph,
 };
 use self::index::IncidentNodeQuery;
+use self::profile_evaluator::ProfileEvaluationGate;
+use self::view_registry::RuntimeViewRegistry;
 
 static LAST_RUNTIME_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -193,15 +196,6 @@ impl NodeLifetimeKey {
     pub const fn node(self) -> NodeId {
         self.node
     }
-
-    #[cfg(test)]
-    pub(crate) const fn unavailable(node: NodeId) -> Self {
-        Self::new(
-            RuntimeProvenance::new(RuntimeId::UNAVAILABLE),
-            node,
-            NodeIncarnation::new(0, 0),
-        )
-    }
 }
 
 /// Opaque lifetime identity for one materialized port.
@@ -266,11 +260,6 @@ impl PortInstanceKey {
 
     pub const fn port(self) -> PortId {
         self.port
-    }
-
-    #[cfg(test)]
-    pub(crate) const fn with_port_for_test(self, port: PortId) -> Self {
-        Self { port, ..self }
     }
 
     #[cfg(test)]
@@ -349,11 +338,6 @@ impl EdgeInstanceKey {
     }
 }
 
-#[cfg(test)]
-std::thread_local! {
-    static EDGE_INCARNATION_ENTRY_CLONES: Cell<u64> = const { Cell::new(0) };
-}
-
 #[derive(Debug)]
 struct EdgeIncarnationEntry(EdgeIncarnation);
 
@@ -365,8 +349,6 @@ impl EdgeIncarnationEntry {
 
 impl Clone for EdgeIncarnationEntry {
     fn clone(&self) -> Self {
-        #[cfg(test)]
-        EDGE_INCARNATION_ENTRY_CLONES.with(|clones| clones.set(clones.get().saturating_add(1)));
         Self(self.0)
     }
 }
@@ -378,22 +360,7 @@ impl EdgeIncarnation {
     }
 }
 
-#[cfg(test)]
-pub(crate) fn reset_edge_incarnation_entry_clone_count_for_test() {
-    EDGE_INCARNATION_ENTRY_CLONES.with(|clones| clones.set(0));
-}
-
-#[cfg(test)]
-pub(crate) fn edge_incarnation_entry_clone_count_for_test() -> u64 {
-    EDGE_INCARNATION_ENTRY_CLONES.with(Cell::get)
-}
-
 type EdgeIncarnationMap = RedBlackTreeMapSync<EdgeId, EdgeIncarnationEntry>;
-
-#[cfg(test)]
-std::thread_local! {
-    static PORT_INCARNATION_ENTRY_CLONES: Cell<u64> = const { Cell::new(0) };
-}
 
 #[derive(Debug)]
 struct PortIncarnationEntry(PortIncarnation);
@@ -406,23 +373,11 @@ impl PortIncarnationEntry {
 
 impl Clone for PortIncarnationEntry {
     fn clone(&self) -> Self {
-        #[cfg(test)]
-        PORT_INCARNATION_ENTRY_CLONES.with(|clones| clones.set(clones.get().saturating_add(1)));
         Self(self.0)
     }
 }
 
 type PortIncarnationMap = RedBlackTreeMapSync<PortId, PortIncarnationEntry>;
-
-#[cfg(test)]
-pub(crate) fn reset_port_incarnation_entry_clone_count_for_test() {
-    PORT_INCARNATION_ENTRY_CLONES.with(|clones| clones.set(0));
-}
-
-#[cfg(test)]
-pub(crate) fn port_incarnation_entry_clone_count_for_test() -> u64 {
-    PORT_INCARNATION_ENTRY_CLONES.with(Cell::get)
-}
 
 pub(crate) type IncidentEdgeSnapshot = Arc<BTreeSet<EdgeId>>;
 
@@ -645,10 +600,14 @@ pub enum GraphRuntimeEvent {
 
 #[derive(Debug, thiserror::Error)]
 pub enum GraphRuntimeError {
+    #[error("graph runtime is no longer available")]
+    RuntimeUnavailable,
     #[error("graph runtime state is currently borrowed")]
     Busy,
     #[error("a graph mutation cannot be started reentrantly")]
     ReentrantMutation,
+    #[error("a graph profile query cannot be started reentrantly")]
+    ReentrantProfileQuery,
     #[error("graph revision is exhausted")]
     RevisionExhausted,
     #[error("document epoch is exhausted")]
@@ -684,7 +643,6 @@ struct RuntimeState {
     edge_incarnations: EdgeIncarnationMap,
     port_incarnations: PortIncarnationMap,
     next_incarnation: u64,
-    sessions: BTreeMap<ViewId, Weak<ViewShared>>,
     next_view_id: u64,
 }
 
@@ -787,7 +745,9 @@ pub(crate) struct RuntimeShared {
     catalog: Arc<NodeCatalog>,
     pub(crate) alive: Cell<bool>,
     mutating: Cell<bool>,
+    profile_evaluation: ProfileEvaluationGate,
     state: RefCell<RuntimeState>,
+    views: RuntimeViewRegistry,
     notifications: NotificationPump,
     subscriptions: subscriptions::RuntimeEventHub,
 }
@@ -871,7 +831,7 @@ impl std::fmt::Debug for GraphRuntime {
             .field("graph_id", &state.graph.graph_id())
             .field("revision", &state.revision)
             .field("document_epoch", &state.document_epoch)
-            .field("live_views", &state.sessions.len())
+            .field("live_views", &self.shared.views.live_count())
             .finish()
     }
 }
@@ -962,6 +922,7 @@ impl GraphRuntime {
                 catalog,
                 alive: Cell::new(true),
                 mutating: Cell::new(false),
+                profile_evaluation: ProfileEvaluationGate::default(),
                 state: RefCell::new(RuntimeState {
                     provenance: RuntimeProvenance::new(runtime_id),
                     graph: Arc::new(graph),
@@ -976,9 +937,9 @@ impl GraphRuntime {
                     edge_incarnations,
                     port_incarnations,
                     next_incarnation,
-                    sessions: BTreeMap::new(),
                     next_view_id: 1,
                 }),
+                views: RuntimeViewRegistry::default(),
                 notifications: NotificationPump::default(),
                 subscriptions: subscriptions::RuntimeEventHub::new(runtime_id),
             }),
@@ -1040,11 +1001,6 @@ impl GraphRuntime {
         self.shared.history_state()
     }
 
-    #[cfg(test)]
-    pub(crate) fn clear_history(&self) -> Result<(), GraphRuntimeError> {
-        self.shared.clear_history()
-    }
-
     pub fn attach_view(&self, options: ViewSessionOptions) -> Result<ViewSession, AttachViewError> {
         self.shared.attach_view(options)
     }
@@ -1102,15 +1058,6 @@ impl GraphRuntime {
         )
     }
 
-    #[cfg(test)]
-    pub(crate) fn incident_snapshot_for_test(&self, node: NodeId) -> Option<IncidentEdgeSnapshot> {
-        self.shared
-            .state
-            .borrow()
-            .index
-            .incident_edge_snapshot(node)
-    }
-
     /// Atomically replaces the authoritative document with a canonical graph from this runtime's
     /// semantic catalog provenance.
     ///
@@ -1128,18 +1075,7 @@ impl GraphRuntime {
     }
 
     pub fn live_view_count(&self) -> usize {
-        self.shared
-            .state
-            .try_borrow()
-            .map(|state| {
-                state
-                    .sessions
-                    .values()
-                    .filter_map(Weak::upgrade)
-                    .filter(|view| view.is_open())
-                    .count()
-            })
-            .unwrap_or_default()
+        self.shared.views.live_count()
     }
 }
 
@@ -1148,18 +1084,13 @@ impl Drop for GraphRuntime {
         self.shared.alive.set(false);
         self.shared.notifications.queue.borrow_mut().clear();
         self.shared.subscriptions.clear();
-        let sessions = self
-            .shared
-            .state
-            .try_borrow_mut()
-            .map(|mut state| std::mem::take(&mut state.sessions))
-            .unwrap_or_default();
-        for session in sessions
-            .into_values()
-            .filter_map(|session| session.upgrade())
-        {
-            let (_, callback_panic) = session.terminalize(ViewCloseReason::RuntimeDropped);
-            suppress(callback_panic);
+        let sessions = self.shared.views.take_registered();
+        let terminalizations = sessions
+            .iter()
+            .map(|session| session.install_terminal(ViewCloseReason::RuntimeDropped))
+            .collect::<Vec<_>>();
+        for (session, terminalization) in sessions.iter().zip(terminalizations) {
+            suppress(session.publish_terminal(terminalization));
         }
     }
 }
@@ -1341,33 +1272,6 @@ impl RuntimeShared {
         })
     }
 
-    #[cfg(test)]
-    fn clear_history(self: &Rc<Self>) -> Result<(), GraphRuntimeError> {
-        let guard = MutationGuard::acquire(self)?;
-        let history_state = {
-            let mut state = self
-                .state
-                .try_borrow_mut()
-                .map_err(|_| GraphRuntimeError::Busy)?;
-            if !state.history.can_undo() && !state.history.can_redo() {
-                return Ok(());
-            }
-            state.history.clear();
-            HistoryState::default()
-        };
-        self.notifications
-            .queue
-            .borrow_mut()
-            .push_back(QueuedNotification::RuntimeEvent(
-                GraphRuntimeEvent::HistoryChanged {
-                    state: history_state,
-                },
-            ));
-        drop(guard);
-        resume(self.drain_notifications());
-        Ok(())
-    }
-
     fn attach_view(
         self: &Rc<Self>,
         options: ViewSessionOptions,
@@ -1403,7 +1307,7 @@ impl RuntimeShared {
             seed,
             initial_viewport_claim_available,
         );
-        state.sessions.insert(view_id, Rc::downgrade(&view));
+        self.views.register(view_id, &view);
         Ok(ViewSession::new(
             Rc::downgrade(self),
             view,
@@ -1429,6 +1333,7 @@ impl RuntimeShared {
         self: &Rc<Self>,
         command: GraphCommand,
     ) -> Result<GraphCommandOutcome, CommandExecutionFailure> {
+        self.ensure_profile_query_entry()?;
         self.ensure_command_runtime(&command)?;
         let guard = MutationGuard::acquire(self)?;
         let execution = {
@@ -1436,7 +1341,14 @@ impl RuntimeShared {
                 .state
                 .try_borrow_mut()
                 .map_err(|_| GraphRuntimeError::Busy)?;
-            execute_command_locked(&mut state, &self.catalog, &command)?
+            execute_command_locked(
+                &mut state,
+                &self.catalog,
+                &command,
+                &self.alive,
+                &self.profile_evaluation,
+                &self.views,
+            )?
         };
         let finalization = self.finalize_command_execution(execution, |patch, sessions| {
             self.apply_and_queue_patch(patch, &sessions);
@@ -1460,6 +1372,7 @@ impl RuntimeShared {
         self: &Rc<Self>,
         edit: ConnectionEdit,
     ) -> Result<ConnectionEvaluation, GraphRuntimeError> {
+        self.ensure_profile_query_entry()?;
         let guard = MutationGuard::acquire(self)?;
         let evaluation = {
             let state = self
@@ -1468,14 +1381,32 @@ impl RuntimeShared {
                 .map_err(|_| GraphRuntimeError::Busy)?;
             let version = GraphVersion::new(state.provenance, state.revision);
             let command = GraphCommand::connection(version, edit);
-            let planned = plan_graph_command(
-                &state.graph,
-                &state.index,
-                &self.catalog,
-                &command,
-                state.profile.as_deref(),
-                &state.policy,
-            );
+            let planned = match state.profile.as_deref() {
+                Some(profile) => self
+                    .profile_evaluation
+                    .evaluate(profile, &self.alive, |profile| {
+                        plan_graph_command(
+                            &state.graph,
+                            &state.index,
+                            &self.catalog,
+                            &command,
+                            Some(profile),
+                            &state.policy,
+                        )
+                    })
+                    .map_err(GraphRuntimeError::from)?,
+                None => plan_graph_command(
+                    &state.graph,
+                    &state.index,
+                    &self.catalog,
+                    &command,
+                    None,
+                    &state.policy,
+                ),
+            };
+            if !self.alive.get() {
+                return Err(GraphRuntimeError::RuntimeUnavailable);
+            }
             match planned {
                 Ok(planned) => ConnectionEvaluation::accepted(version, planned.planning_work),
                 Err(failure) => {
@@ -1499,6 +1430,7 @@ impl RuntimeShared {
     }
 
     fn replace_document(self: &Rc<Self>, graph: Graph) -> Result<RuntimePatch, GraphRuntimeError> {
+        self.ensure_profile_query_entry()?;
         let guard = MutationGuard::acquire(self)?;
         validate_graph(&graph)?;
         let (patch, sessions) = {
@@ -1507,7 +1439,14 @@ impl RuntimeShared {
                 .try_borrow_mut()
                 .map_err(|_| GraphRuntimeError::Busy)?;
             if let Some(profile) = state.profile.as_deref() {
-                validate_profile_document(profile, &graph)?;
+                self.profile_evaluation
+                    .evaluate(profile, &self.alive, |profile| {
+                        validate_profile_document(profile, &graph)
+                    })
+                    .map_err(GraphRuntimeError::from)??;
+            }
+            if !self.alive.get() {
+                return Err(GraphRuntimeError::RuntimeUnavailable);
             }
             let to_revision = state
                 .revision
@@ -1569,7 +1508,7 @@ impl RuntimeShared {
             state.edge_incarnations = edge_incarnations;
             state.port_incarnations = next_port_incarnations;
             state.next_incarnation = next_incarnation;
-            let sessions = collect_live_sessions(&mut state);
+            let sessions = self.views.collect_open_for_patch();
             (patch, sessions)
         };
         self.apply_and_queue_patch(&patch, &sessions);
@@ -1623,19 +1562,22 @@ impl RuntimeShared {
                 }
             }
         }
-        let (_, terminal_panic) = view.terminalize(ViewCloseReason::HostClosed);
+        let (terminalization, terminal_panic) = view.terminalize(ViewCloseReason::HostClosed);
         panics.record(terminal_panic);
-        self.unregister_view(view.id());
+        if terminalization.reason().is_some() {
+            self.unregister_view(view.id());
+        }
         for (patch, sessions) in notifications {
             self.apply_and_queue_patch(&patch, &sessions);
         }
         drop(guard);
         panics.record(self.drain_notifications());
         panics.resume();
-        Ok(ViewCloseOutcome::new(
-            ViewCloseReason::HostClosed,
-            completions,
-        ))
+        terminalization
+            .reason()
+            .map_or(Err(ViewSessionError::Busy), |reason| {
+                Ok(ViewCloseOutcome::new(reason, completions))
+            })
     }
 
     fn execute_command_deferred(
@@ -1643,13 +1585,21 @@ impl RuntimeShared {
         command: &GraphCommand,
         notifications: &mut Vec<(RuntimePatch, Vec<(Rc<ViewShared>, ViewGeneration)>)>,
     ) -> Result<CommandFinalization, CommandExecutionFailure> {
+        self.ensure_profile_query_entry()?;
         self.ensure_command_runtime(command)?;
         let execution = {
             let mut state = self
                 .state
                 .try_borrow_mut()
                 .map_err(|_| GraphRuntimeError::Busy)?;
-            execute_command_locked(&mut state, &self.catalog, command)?
+            execute_command_locked(
+                &mut state,
+                &self.catalog,
+                command,
+                &self.alive,
+                &self.profile_evaluation,
+                &self.views,
+            )?
         };
         Ok(
             self.finalize_command_execution(execution, |patch, sessions| {
@@ -1659,12 +1609,21 @@ impl RuntimeShared {
     }
 
     fn ensure_command_runtime(&self, command: &GraphCommand) -> Result<(), GraphRuntimeError> {
+        if !self.alive.get() {
+            return Err(GraphRuntimeError::RuntimeUnavailable);
+        }
         let runtime = RuntimeProvenance::new(self.id);
         let command = command.expected_version().provenance();
         if command != runtime {
             return Err(GraphRuntimeError::ForeignCommandRuntime { command, runtime });
         }
         Ok(())
+    }
+
+    fn ensure_profile_query_entry(&self) -> Result<(), GraphRuntimeError> {
+        self.profile_evaluation
+            .ensure_query_entry(&self.alive)
+            .map_err(Into::into)
     }
 
     fn finalize_command_execution(
@@ -1793,8 +1752,6 @@ impl RuntimeShared {
     }
 
     pub(crate) fn unregister_view(&self, view: ViewId) {
-        if let Ok(mut state) = self.state.try_borrow_mut() {
-            state.sessions.remove(&view);
-        }
+        self.views.unregister(view);
     }
 }

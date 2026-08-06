@@ -1,9 +1,16 @@
 use std::rc::Rc;
 
-use jellyflow_core::{CanvasRect, NodeId};
+use jellyflow_core::{CanvasPoint, CanvasRect, NodeId};
 use jellyflow_runtime::{
-    graph::GraphRevision, interaction::CanvasInteractionPhase, interaction::InteractionOwner,
-    view::FrameNode, view::NodeInstanceKey, view::ViewCloseReason, view::ViewSessionError,
+    geometry::{ViewRect, ViewSize},
+    graph::GraphRevision,
+    interaction::CanvasInteractionPhase,
+    interaction::InteractionOwner,
+    view::FrameNode,
+    view::NodeInstanceKey,
+    view::ViewCloseReason,
+    view::ViewSessionError,
+    viewport::ViewportTransform,
 };
 use open_gpui::{AnyView, AppContext, Context, Entity, FocusHandle, Window};
 
@@ -49,6 +56,19 @@ pub(super) struct MountedNode {
     pub(super) mount: OpenGpuiMountCapability,
 }
 
+/// One resolved placement for both compact graph geometry and the currently visible native surface.
+///
+/// A pinned detail surface intentionally remains fixed in view pixels while its runtime graph
+/// footprint stays compact. Keeping both rectangles together prevents host chrome and pointer hit
+/// testing from independently reconstructing that exception.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct NodeScenePlacement {
+    pub(super) graph_bounds: ViewRect,
+    pub(super) surface_bounds: ViewRect,
+    pub(super) interaction_bounds: CanvasRect,
+    pub(super) pinned_detail: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MountedNodeContentKind {
     Renderer,
@@ -80,9 +100,47 @@ impl MountedNode {
         }
     }
 
-    pub(super) fn has_interaction_island(&self) -> bool {
+    pub(super) fn has_pinned_detail_surface(&self) -> bool {
         self.graph_presentation() == OpenGpuiNodePresentation::Overview
-            && self.activity.requires_interaction_island()
+            && self.activity.requires_pinned_detail()
+    }
+
+    pub(super) fn scene_placement(
+        &self,
+        transform: ViewportTransform,
+        presentation_offset: CanvasPoint,
+    ) -> Option<NodeScenePlacement> {
+        let mut canvas_bounds = self.canonical_bounds();
+        canvas_bounds.origin.x += presentation_offset.x;
+        canvas_bounds.origin.y += presentation_offset.y;
+        let origin = transform.screen_point_for_canvas(canvas_bounds.origin)?;
+        let presentation = self.graph_presentation();
+        let graph_size = self.semantic_zoom.view_size(
+            transform.zoom,
+            presentation,
+            self.registration_policy.scale_policy(),
+        );
+        if !graph_size.is_positive_finite() {
+            return None;
+        }
+        let pinned_detail = self.has_pinned_detail_surface();
+        let surface_size = if pinned_detail {
+            let canonical = self.semantic_zoom.canonical_size();
+            ViewSize::new(canonical.width, canonical.height)
+        } else {
+            graph_size
+        };
+        if !surface_size.is_positive_finite() {
+            return None;
+        }
+        let graph_bounds = ViewRect::new(origin, graph_size);
+        let surface_bounds = ViewRect::new(origin, surface_size);
+        Some(NodeScenePlacement {
+            graph_bounds,
+            surface_bounds,
+            interaction_bounds: surface_bounds.to_canvas_rect(transform)?,
+            pinned_detail,
+        })
     }
 
     pub(super) fn retire(self) {
@@ -183,8 +241,8 @@ impl OpenGpuiSceneHost {
         }
         let releases = preparation.take_releases();
         let mut retired_nodes = RetainedNodeRetirementBatch::with_capacity(releases.len());
-        for release in releases {
-            retired_nodes.push(self.settle_release(release));
+        for mounted in self.settle_releases(releases) {
+            retired_nodes.push(mounted);
         }
         retired_nodes.release_pointer_capture_if_owned(window);
         let mut retirement_panics = retired_nodes.retire();
@@ -202,9 +260,7 @@ impl OpenGpuiSceneHost {
             releases,
             binding_failures,
             panic,
-        } = self
-            .retained_nodes
-            .reconcile_frame(preparation, input, &mut self.work_ledger, cx);
+        } = self.retained_nodes.reconcile_frame(preparation, input, cx);
         for failure in binding_failures {
             self.last_diagnostic = Some(binding_diagnostic(
                 &frame[failure.frame_index],
@@ -212,8 +268,8 @@ impl OpenGpuiSceneHost {
             ));
             cx.notify();
         }
-        for release in releases {
-            retired_nodes.push(self.settle_release(release));
+        for mounted in self.settle_releases(releases) {
+            retired_nodes.push(mounted);
         }
         if panic.is_none() {
             self.synchronize_content_size_mounts();
@@ -255,20 +311,14 @@ impl OpenGpuiSceneHost {
                 OpenGpuiPortDragCancelReason::PortDisabled,
             );
         }
-        let receipt = self
-            .retained_nodes
-            .apply_node_changes(changes, &mut self.work_ledger, cx);
+        let receipt = self.retained_nodes.apply_node_changes(changes, cx);
         for failure in receipt.binding_failures {
             self.record_feedback_failure(
                 Some(failure.node),
                 format!("native binding refresh failed: {}", failure.error),
             );
         }
-        receipt
-            .releases
-            .into_iter()
-            .map(|release| self.settle_release(release))
-            .collect()
+        self.settle_releases(receipt.releases)
     }
 
     fn cancel_node_drag_with_retired_member(&mut self, changes: &NodeChanges) {
@@ -334,7 +384,6 @@ impl OpenGpuiSceneHost {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> MountedNode {
-        self.work_ledger.mounts = self.work_ledger.mounts.saturating_add(1);
         let mount = OpenGpuiMountCapability::new();
         let activity = self
             .retained_nodes
@@ -346,7 +395,6 @@ impl OpenGpuiSceneHost {
             activity.clone(),
             self.interaction_owner.native_capability(),
             Self::host_port_listener(cx, mount.clone()),
-            Self::host_port_hover_listener(cx, mount.clone()),
             mount.clone(),
         );
         let command_sink = OpenGpuiCommandSink::new(Rc::downgrade(&self.commands), cx.entity_id());
@@ -368,10 +416,6 @@ impl OpenGpuiSceneHost {
 
         let (view, overview, content_kind, binding, registration_policy) = match binding_mount {
             Ok(binding_mount) => {
-                self.work_ledger.binding_mount_initializations = self
-                    .work_ledger
-                    .binding_mount_initializations
-                    .saturating_add(1);
                 let layout_invalidator = Self::layout_invalidator(cx);
                 let binding = cx.new(|cx| {
                     OpenGpuiNodeBinding::new(
@@ -528,11 +572,29 @@ impl OpenGpuiSceneHost {
         Some(self.settle_release(release))
     }
 
-    fn settle_release(&mut self, mut release: RetainedNodeRelease) -> MountedNode {
-        let effects = self
-            .content_sizes
-            .retire_mount(&release.instance, release.mount());
+    fn settle_release(&mut self, release: RetainedNodeRelease) -> MountedNode {
+        self.settle_releases(vec![release])
+            .pop()
+            .expect("one retained release settles to one mounted node")
+    }
+
+    fn settle_releases(&mut self, releases: Vec<RetainedNodeRelease>) -> Vec<MountedNode> {
+        let effects = self.content_sizes.retire_mounts(
+            releases
+                .iter()
+                .map(|release| (&release.instance, release.mount())),
+        );
         self.apply_content_size_effects(effects);
+        releases
+            .into_iter()
+            .map(|mut release| self.settle_release_after_content_size(&mut release))
+            .collect()
+    }
+
+    fn settle_release_after_content_size(
+        &mut self,
+        release: &mut RetainedNodeRelease,
+    ) -> MountedNode {
         if release.kind == RetainedNodeReleaseKind::HardRetirement {
             self.interaction_owner.cancel_scene_owner_deferred(
                 &release.instance,
@@ -581,9 +643,6 @@ impl OpenGpuiSceneHost {
                 OpenGpuiPortDragCancelReason::OwnerRetired,
             );
         }
-        releases
-            .into_iter()
-            .map(|release| self.settle_release(release))
-            .collect()
+        self.settle_releases(releases)
     }
 }

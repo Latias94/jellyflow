@@ -42,6 +42,30 @@ fn storage_validation_rejects_every_non_finite_node_geometry_field() {
 }
 
 #[test]
+fn storage_validation_rejects_finite_components_with_unrepresentable_node_bounds() {
+    let mut graph = Graph::default();
+    let node_id = NodeId::new();
+    let mut node = make_node("core.overflowing_node_bounds");
+    node.pos = CanvasPoint {
+        x: -f32::MAX,
+        y: 0.0,
+    };
+    node.origin = Some(NodeOrigin { x: 1.0, y: 0.0 });
+    node.size = Some(CanvasSize {
+        width: f32::MAX,
+        height: 10.0,
+    });
+    graph.insert_node(node_id, node);
+
+    let errors = validate_graph_storage(&graph).into_errors();
+
+    assert!(errors.iter().any(|error| matches!(
+        error,
+        GraphValidationError::NodeBoundsNotFinite { node } if *node == node_id
+    )));
+}
+
+#[test]
 fn storage_validation_rejects_non_finite_group_and_sticky_note_rects() {
     let mut graph = GraphBuilder::new(GraphId::new());
     let group_id = GroupId::new();

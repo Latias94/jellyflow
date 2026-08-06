@@ -1,53 +1,58 @@
+use std::cell::RefCell;
+use std::collections::BTreeMap;
+use std::rc::Rc;
+
 use jellyflow_core::{EdgeId, NodeId, PortId};
 use jellyflow_runtime::{
-    geometry::{ViewPoint, ViewRect},
+    geometry::{ViewPoint, ViewRect, ViewSize},
     graph::GraphRevision,
     interaction::CanvasInteractionPhase,
     viewport::ViewportTransform,
 };
+use open_gpui::{Bounds, Pixels, Point};
 
 use super::OpenGpuiSceneHost;
+use super::scene_render::reconnect_hit_center;
+
+/// Resolves the exact reconnect hit center used by the production scene renderer.
+///
+/// This helper is available only with `test-support`; native-window drivers can target the real
+/// renderer policy without copying its layout constants.
+#[doc(hidden)]
+#[must_use]
+pub fn resolve_smoke_reconnect_hit_center(
+    anchor: ViewPoint,
+    outward: jellyflow_runtime::geometry::HandlePosition,
+    port_hit_bounds: Option<ViewRect>,
+    hit_diameter: f32,
+) -> ViewPoint {
+    reconnect_hit_center(anchor, outward, port_hit_bounds, hit_diameter)
+}
 
 /// Bounds of one node surface that participated in an actual native scene render.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct OpenGpuiSmokeNodeBounds {
     node: NodeId,
     bounds: ViewRect,
+    selected: bool,
+    chrome_expected: bool,
+    chrome_bounds: Option<ViewRect>,
 }
 
 impl OpenGpuiSmokeNodeBounds {
-    pub(super) const fn new(node: NodeId, bounds: ViewRect) -> Self {
-        Self { node, bounds }
-    }
-
-    #[must_use]
-    pub const fn node(self) -> NodeId {
-        self.node
-    }
-
-    #[must_use]
-    pub const fn bounds(self) -> ViewRect {
-        self.bounds
-    }
-}
-
-/// Current semantic visual footprint of one retained node.
-///
-/// This includes parked nodes so native smoke assertions can distinguish a correctly off-screen
-/// virtualized node from a node whose visible semantic footprint was incorrectly omitted.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct OpenGpuiSmokeNodeFootprint {
-    node: NodeId,
-    bounds: ViewRect,
-    materialized: bool,
-}
-
-impl OpenGpuiSmokeNodeFootprint {
-    pub(super) const fn new(node: NodeId, bounds: ViewRect, materialized: bool) -> Self {
+    const fn new(
+        node: NodeId,
+        bounds: ViewRect,
+        selected: bool,
+        chrome_expected: bool,
+        chrome_bounds: Option<ViewRect>,
+    ) -> Self {
         Self {
             node,
             bounds,
-            materialized,
+            selected,
+            chrome_expected,
+            chrome_bounds,
         }
     }
 
@@ -62,8 +67,18 @@ impl OpenGpuiSmokeNodeFootprint {
     }
 
     #[must_use]
-    pub const fn materialized(self) -> bool {
-        self.materialized
+    pub const fn selected(self) -> bool {
+        self.selected
+    }
+
+    #[must_use]
+    pub const fn chrome_expected(self) -> bool {
+        self.chrome_expected
+    }
+
+    #[must_use]
+    pub const fn chrome_bounds(self) -> Option<ViewRect> {
+        self.chrome_bounds
     }
 }
 
@@ -146,6 +161,67 @@ impl OpenGpuiSmokePreviewTarget {
     }
 }
 
+/// Geometry of one real graph port painted by the same native scene render.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OpenGpuiSmokePortGeometry {
+    node: NodeId,
+    port: PortId,
+    visual_bounds: ViewRect,
+    hit_bounds: ViewRect,
+    interaction_bounds: Option<ViewRect>,
+    route_anchor: ViewPoint,
+}
+
+impl OpenGpuiSmokePortGeometry {
+    const fn new(
+        node: NodeId,
+        port: PortId,
+        visual_bounds: ViewRect,
+        hit_bounds: ViewRect,
+        interaction_bounds: Option<ViewRect>,
+        route_anchor: ViewPoint,
+    ) -> Self {
+        Self {
+            node,
+            port,
+            visual_bounds,
+            hit_bounds,
+            interaction_bounds,
+            route_anchor,
+        }
+    }
+
+    #[must_use]
+    pub const fn node(self) -> NodeId {
+        self.node
+    }
+
+    #[must_use]
+    pub const fn port(self) -> PortId {
+        self.port
+    }
+
+    #[must_use]
+    pub const fn visual_bounds(self) -> ViewRect {
+        self.visual_bounds
+    }
+
+    #[must_use]
+    pub const fn hit_bounds(self) -> ViewRect {
+        self.hit_bounds
+    }
+
+    #[must_use]
+    pub const fn interaction_bounds(self) -> Option<ViewRect> {
+        self.interaction_bounds
+    }
+
+    #[must_use]
+    pub const fn route_anchor(self) -> ViewPoint {
+        self.route_anchor
+    }
+}
+
 /// Scene facts assembled by the exact render pass observed by a native frame callback.
 ///
 /// This snapshot is intentionally available only through the adapter's `test-support` feature.
@@ -155,10 +231,10 @@ pub struct OpenGpuiSmokePresentedScene {
     render_sequence: u64,
     graph_revision: GraphRevision,
     phase: CanvasInteractionPhase,
-    node_drag_active: bool,
+    node_drag_nodes: Vec<NodeId>,
     viewport: ViewportTransform,
     node_bounds: Vec<OpenGpuiSmokeNodeBounds>,
-    chrome_bounds: Vec<OpenGpuiSmokeNodeBounds>,
+    port_geometries: Vec<OpenGpuiSmokePortGeometry>,
     authoritative_routes: Vec<OpenGpuiSmokeRoute>,
     preview_route: Option<OpenGpuiSmokePreviewRoute>,
     preview_target: Option<OpenGpuiSmokePreviewTarget>,
@@ -182,8 +258,8 @@ impl OpenGpuiSmokePresentedScene {
     }
 
     #[must_use]
-    pub const fn node_drag_active(&self) -> bool {
-        self.node_drag_active
+    pub fn node_drag_nodes(&self) -> &[NodeId] {
+        &self.node_drag_nodes
     }
 
     #[must_use]
@@ -197,8 +273,8 @@ impl OpenGpuiSmokePresentedScene {
     }
 
     #[must_use]
-    pub fn chrome_bounds(&self) -> &[OpenGpuiSmokeNodeBounds] {
-        &self.chrome_bounds
+    pub fn port_geometries(&self) -> &[OpenGpuiSmokePortGeometry] {
+        &self.port_geometries
     }
 
     #[must_use]
@@ -222,91 +298,296 @@ impl OpenGpuiSmokePresentedScene {
     }
 }
 
-#[derive(Debug, Default)]
-pub(super) struct OpenGpuiSmokePresentedSceneOwner {
-    next_render_sequence: u64,
-    latest: Option<OpenGpuiSmokePresentedScene>,
+#[derive(Debug, Clone, Copy)]
+struct OpenGpuiSmokeRawNodeBounds {
+    bounds: Option<Bounds<Pixels>>,
+    selected: bool,
+    chrome_expected: bool,
+    chrome_bounds: Option<Bounds<Pixels>>,
 }
 
-impl OpenGpuiSmokePresentedSceneOwner {
+#[derive(Debug, Clone, Copy)]
+struct OpenGpuiSmokeRawRoute {
+    source: Point<Pixels>,
+    target: Point<Pixels>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct OpenGpuiSmokeRawPortGeometry {
+    node: NodeId,
+    port: PortId,
+    visual_bounds: ViewRect,
+    hit_bounds: ViewRect,
+    interaction_bounds: Option<ViewRect>,
+    route_anchor: ViewPoint,
+}
+
+#[derive(Debug)]
+struct OpenGpuiSmokePresentedFrameDraftState {
+    graph_revision: GraphRevision,
+    phase: CanvasInteractionPhase,
+    node_drag_nodes: Vec<NodeId>,
+    viewport: ViewportTransform,
+    scene_origin: Option<Point<Pixels>>,
+    node_bounds: BTreeMap<NodeId, OpenGpuiSmokeRawNodeBounds>,
+    port_geometries: Vec<OpenGpuiSmokeRawPortGeometry>,
+    authoritative_routes: BTreeMap<EdgeId, OpenGpuiSmokeRawRoute>,
+    preview_route: Option<OpenGpuiSmokeRawRoute>,
+    preview_target: Option<OpenGpuiSmokePreviewTarget>,
+    suppressed_edge: Option<EdgeId>,
+}
+
+/// Facts written only by the production frame's native prepaint callbacks.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct OpenGpuiSmokePresentedFrameDraft {
+    state: Rc<RefCell<Option<OpenGpuiSmokePresentedFrameDraftState>>>,
+}
+
+impl OpenGpuiSmokePresentedFrameDraft {
     pub(super) fn begin(
-        &mut self,
+        &self,
         graph_revision: GraphRevision,
         phase: CanvasInteractionPhase,
-        node_drag_active: bool,
+        node_drag_nodes: &[NodeId],
         viewport: ViewportTransform,
-    ) -> OpenGpuiSmokePresentedSceneBuilder {
-        let render_sequence = self.next_render_sequence;
-        self.next_render_sequence = self.next_render_sequence.saturating_add(1);
-        OpenGpuiSmokePresentedSceneBuilder {
-            scene: OpenGpuiSmokePresentedScene {
-                render_sequence,
+    ) {
+        self.state
+            .replace(Some(OpenGpuiSmokePresentedFrameDraftState {
                 graph_revision,
                 phase,
-                node_drag_active,
+                node_drag_nodes: node_drag_nodes.to_vec(),
                 viewport,
-                node_bounds: Vec::new(),
-                chrome_bounds: Vec::new(),
-                authoritative_routes: Vec::new(),
+                scene_origin: None,
+                node_bounds: BTreeMap::new(),
+                port_geometries: Vec::new(),
+                authoritative_routes: BTreeMap::new(),
                 preview_route: None,
                 preview_target: None,
                 suppressed_edge: None,
-            },
+            }));
+    }
+
+    pub(super) fn record_scene_bounds(&self, bounds: Bounds<Pixels>) {
+        if let Some(state) = self.state.borrow_mut().as_mut() {
+            state.scene_origin = Some(bounds.origin);
         }
     }
 
-    pub(super) fn publish(&mut self, builder: OpenGpuiSmokePresentedSceneBuilder) {
-        self.latest = Some(builder.scene);
-    }
-
-    pub(super) fn latest(&self) -> Option<OpenGpuiSmokePresentedScene> {
-        self.latest.clone()
-    }
-}
-
-pub(super) struct OpenGpuiSmokePresentedSceneBuilder {
-    scene: OpenGpuiSmokePresentedScene,
-}
-
-impl OpenGpuiSmokePresentedSceneBuilder {
-    pub(super) fn record_node(&mut self, node: NodeId, bounds: ViewRect, chrome: bool) {
-        let bounds = OpenGpuiSmokeNodeBounds::new(node, bounds);
-        self.scene.node_bounds.push(bounds);
-        if chrome {
-            self.scene.chrome_bounds.push(bounds);
+    pub(super) fn record_node_state(&self, node: NodeId, selected: bool, chrome_expected: bool) {
+        if let Some(state) = self.state.borrow_mut().as_mut() {
+            state.node_bounds.insert(
+                node,
+                OpenGpuiSmokeRawNodeBounds {
+                    bounds: None,
+                    selected,
+                    chrome_expected,
+                    chrome_bounds: None,
+                },
+            );
         }
     }
 
-    pub(super) fn record_route(&mut self, route: OpenGpuiSmokeRoute) {
-        self.scene.authoritative_routes.push(route);
+    pub(super) fn record_node_bounds(&self, node: NodeId, bounds: Bounds<Pixels>) {
+        if let Some(node) = self
+            .state
+            .borrow_mut()
+            .as_mut()
+            .and_then(|state| state.node_bounds.get_mut(&node))
+        {
+            node.bounds = Some(bounds);
+        }
     }
 
-    pub(super) fn set_preview(
-        &mut self,
-        route: Option<OpenGpuiSmokePreviewRoute>,
+    pub(super) fn record_node_chrome_bounds(&self, node: NodeId, bounds: Bounds<Pixels>) {
+        if let Some(node) = self
+            .state
+            .borrow_mut()
+            .as_mut()
+            .and_then(|state| state.node_bounds.get_mut(&node))
+        {
+            node.chrome_bounds = Some(bounds);
+        }
+    }
+
+    pub(crate) fn record_port_geometry(
+        &self,
+        node: NodeId,
+        port: PortId,
+        visual_bounds: ViewRect,
+        hit_bounds: ViewRect,
+        interaction_bounds: Option<ViewRect>,
+        route_anchor: ViewPoint,
+    ) {
+        if let Some(state) = self.state.borrow_mut().as_mut() {
+            state.port_geometries.push(OpenGpuiSmokeRawPortGeometry {
+                node,
+                port,
+                visual_bounds,
+                hit_bounds,
+                interaction_bounds,
+                route_anchor,
+            });
+        }
+    }
+
+    pub(super) fn record_authoritative_route(
+        &self,
+        edge: EdgeId,
+        source: Point<Pixels>,
+        target: Point<Pixels>,
+    ) {
+        if let Some(state) = self.state.borrow_mut().as_mut() {
+            state
+                .authoritative_routes
+                .insert(edge, OpenGpuiSmokeRawRoute { source, target });
+        }
+    }
+
+    pub(super) fn record_preview_route(&self, source: Point<Pixels>, target: Point<Pixels>) {
+        if let Some(state) = self.state.borrow_mut().as_mut() {
+            state.preview_route = Some(OpenGpuiSmokeRawRoute { source, target });
+        }
+    }
+
+    pub(super) fn set_preview_metadata(
+        &self,
         target: Option<OpenGpuiSmokePreviewTarget>,
         suppressed_edge: Option<EdgeId>,
     ) {
-        self.scene.preview_route = route;
-        self.scene.preview_target = target;
-        self.scene.suppressed_edge = suppressed_edge;
+        if let Some(state) = self.state.borrow_mut().as_mut() {
+            state.preview_target = target;
+            state.suppressed_edge = suppressed_edge;
+        }
+    }
+
+    fn finish(&self, render_sequence: u64) -> Option<OpenGpuiSmokePresentedScene> {
+        let state = self.state.borrow_mut().take()?;
+        let scene_origin = state.scene_origin?;
+        let node_bounds = state
+            .node_bounds
+            .into_iter()
+            .map(|(node, raw)| {
+                Some(OpenGpuiSmokeNodeBounds::new(
+                    node,
+                    view_rect(raw.bounds?, scene_origin),
+                    raw.selected,
+                    raw.chrome_expected,
+                    raw.chrome_bounds
+                        .map(|bounds| view_rect(bounds, scene_origin)),
+                ))
+            })
+            .collect::<Option<Vec<_>>>()?;
+        let port_geometries = state
+            .port_geometries
+            .into_iter()
+            .map(|raw| {
+                OpenGpuiSmokePortGeometry::new(
+                    raw.node,
+                    raw.port,
+                    relative_view_rect(raw.visual_bounds, scene_origin),
+                    relative_view_rect(raw.hit_bounds, scene_origin),
+                    raw.interaction_bounds
+                        .map(|bounds| relative_view_rect(bounds, scene_origin)),
+                    relative_view_point(raw.route_anchor, scene_origin),
+                )
+            })
+            .collect();
+        let authoritative_routes = state
+            .authoritative_routes
+            .into_iter()
+            .map(|(edge, route)| {
+                OpenGpuiSmokeRoute::new(
+                    edge,
+                    view_point(route.source, scene_origin),
+                    view_point(route.target, scene_origin),
+                )
+            })
+            .collect();
+        let preview_route = state.preview_route.map(|route| {
+            OpenGpuiSmokePreviewRoute::new(
+                view_point(route.source, scene_origin),
+                view_point(route.target, scene_origin),
+            )
+        });
+        Some(OpenGpuiSmokePresentedScene {
+            render_sequence,
+            graph_revision: state.graph_revision,
+            phase: state.phase,
+            node_drag_nodes: state.node_drag_nodes,
+            viewport: state.viewport,
+            node_bounds,
+            port_geometries,
+            authoritative_routes,
+            preview_route,
+            preview_target: state.preview_target,
+            suppressed_edge: state.suppressed_edge,
+        })
+    }
+}
+
+fn view_point(point: Point<Pixels>, scene_origin: Point<Pixels>) -> ViewPoint {
+    ViewPoint::new(
+        (point.x - scene_origin.x).as_f32(),
+        (point.y - scene_origin.y).as_f32(),
+    )
+}
+
+fn view_rect(bounds: Bounds<Pixels>, scene_origin: Point<Pixels>) -> ViewRect {
+    ViewRect::new(
+        view_point(bounds.origin, scene_origin),
+        ViewSize::new(bounds.size.width.as_f32(), bounds.size.height.as_f32()),
+    )
+}
+
+fn relative_view_point(point: ViewPoint, scene_origin: Point<Pixels>) -> ViewPoint {
+    ViewPoint::new(
+        point.x - scene_origin.x.as_f32(),
+        point.y - scene_origin.y.as_f32(),
+    )
+}
+
+fn relative_view_rect(bounds: ViewRect, scene_origin: Point<Pixels>) -> ViewRect {
+    ViewRect::new(
+        relative_view_point(bounds.origin, scene_origin),
+        bounds.size,
+    )
+}
+
+#[derive(Debug, Default)]
+pub(super) struct OpenGpuiSmokePresentedSceneOwner {
+    next_render_sequence: u64,
+    presented: Option<OpenGpuiSmokePresentedScene>,
+}
+
+impl OpenGpuiSmokePresentedSceneOwner {
+    pub(super) fn present(&mut self, draft: &OpenGpuiSmokePresentedFrameDraft) {
+        let render_sequence = self
+            .presented
+            .as_ref()
+            .map_or(self.next_render_sequence, |scene| scene.render_sequence());
+        let Some(scene) = draft.finish(render_sequence) else {
+            return;
+        };
+        if self.presented.is_none() {
+            let Some(next_render_sequence) = render_sequence.checked_add(1) else {
+                return;
+            };
+            self.next_render_sequence = next_render_sequence;
+        }
+        // Open GPUI test support may evaluate several dirty render passes before one platform
+        // callback. Only the newest draft matches the framebuffer that callback exposes.
+        self.presented = Some(scene);
+    }
+
+    fn drain(&mut self) -> Vec<OpenGpuiSmokePresentedScene> {
+        self.presented.take().into_iter().collect()
     }
 }
 
 impl OpenGpuiSceneHost {
-    /// Returns facts from the most recent native scene render.
+    /// Drains native scene facts finalized after their corresponding window frames rendered.
     #[must_use]
-    pub fn smoke_presented_scene_snapshot(&self) -> Option<OpenGpuiSmokePresentedScene> {
-        self.smoke_presented_scene.latest()
-    }
-
-    /// Returns semantic visual footprints for all retained nodes at the current viewport.
-    #[must_use]
-    pub fn smoke_node_footprints(&self) -> Vec<OpenGpuiSmokeNodeFootprint> {
-        self.view
-            .viewport_transform()
-            .ok()
-            .map(|transform| self.retained_nodes.smoke_node_footprints(transform))
-            .unwrap_or_default()
+    pub fn drain_smoke_presented_scenes(&mut self) -> Vec<OpenGpuiSmokePresentedScene> {
+        self.smoke_presented_scene.drain()
     }
 }

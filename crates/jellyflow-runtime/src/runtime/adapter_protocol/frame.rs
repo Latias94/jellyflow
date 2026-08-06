@@ -156,14 +156,6 @@ impl PortLayoutTarget {
     pub(crate) fn frame_sequence(&self) -> u64 {
         self.node.frame_sequence()
     }
-
-    #[cfg(test)]
-    pub(crate) fn with_port_for_test(&self, port: PortId) -> Self {
-        Self {
-            node: Arc::clone(&self.node),
-            port_instance: self.port_instance.with_port_for_test(port),
-        }
-    }
 }
 
 impl NodeInstanceKey {
@@ -989,7 +981,7 @@ impl FrameNode {
         NodeLayoutBuilder::new(
             &self.layout_target,
             bounds,
-            self.ports.iter().map(|port| port.layout_target.clone()),
+            self.ports.iter().map(FramePort::id),
         )
     }
 }

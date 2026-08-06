@@ -9,8 +9,9 @@ const DEFAULT_MIN_ZOOM: f32 = 0.1;
 const DEFAULT_MAX_ZOOM: f32 = 4.0;
 const DEFAULT_WHEEL_ZOOM_SENSITIVITY: f32 = 0.005;
 const DEFAULT_FIT_VIEW_PADDING: f32 = 48.0;
-const DEFAULT_ALIGNMENT_TOLERANCE: f32 = 6.0;
 const DEFAULT_NATIVE_DRAG_THRESHOLD_IN_VIEW: f32 = 1.0;
+const DEFAULT_CONNECTION_ACQUIRE_RADIUS_IN_VIEW: f32 = 20.0;
+const DEFAULT_CONNECTION_RELEASE_RADIUS_IN_VIEW: f32 = 26.0;
 const DEFAULT_GRID_SIZE: CanvasSize = CanvasSize {
     width: 20.0,
     height: 20.0,
@@ -255,6 +256,8 @@ impl OpenGpuiNavigationConfig {
         let interaction = CanvasInteractionConfig {
             node_drag_threshold_in_view: DEFAULT_NATIVE_DRAG_THRESHOLD_IN_VIEW,
             connection_drag_threshold_in_view: DEFAULT_NATIVE_DRAG_THRESHOLD_IN_VIEW,
+            connection_acquire_radius_in_view: DEFAULT_CONNECTION_ACQUIRE_RADIUS_IN_VIEW,
+            connection_release_radius_in_view: DEFAULT_CONNECTION_RELEASE_RADIUS_IN_VIEW,
             ..CanvasInteractionConfig::default()
         };
         Self {
@@ -262,7 +265,7 @@ impl OpenGpuiNavigationConfig {
             interaction,
             grid_size_in_canvas: Some(DEFAULT_GRID_SIZE),
             snap_to_grid: false,
-            alignment_snap_tolerance_in_view: Some(DEFAULT_ALIGNMENT_TOLERANCE),
+            alignment_snap_tolerance_in_view: None,
             min_zoom: DEFAULT_MIN_ZOOM,
             max_zoom: DEFAULT_MAX_ZOOM,
             wheel_zoom_sensitivity: DEFAULT_WHEEL_ZOOM_SENSITIVITY,
@@ -317,6 +320,21 @@ impl OpenGpuiNavigationConfig {
         self.fit_view_padding_in_view
     }
 
+    #[must_use]
+    pub const fn connection_acquire_radius_in_view(self) -> f32 {
+        self.interaction.connection_acquire_radius_in_view
+    }
+
+    #[must_use]
+    pub const fn connection_release_radius_in_view(self) -> f32 {
+        self.interaction.connection_release_radius_in_view
+    }
+
+    #[must_use]
+    pub const fn edge_pick_radius_in_view(self) -> f32 {
+        self.interaction.edge_pick_radius_in_view
+    }
+
     /// Replaces the independent native drag thresholds, in logical screen pixels.
     #[must_use]
     pub fn with_drag_thresholds(mut self, node: f32, connection: f32, canvas: f32) -> Self {
@@ -334,6 +352,24 @@ impl OpenGpuiNavigationConfig {
     pub fn with_click_tolerances(mut self, node: f32, canvas: f32) -> Self {
         self.interaction.node_click_tolerance_in_view = node;
         self.interaction.canvas_click_tolerance_in_view = canvas;
+        self.sanitized()
+    }
+
+    /// Replaces connection target acquisition and release radii in logical screen pixels.
+    ///
+    /// The release radius must be at least the acquisition radius so an acquired target remains
+    /// stable while the pointer moves through the surrounding hysteresis band.
+    #[must_use]
+    pub fn with_connection_targeting(mut self, acquire: f32, release: f32) -> Self {
+        self.interaction.connection_acquire_radius_in_view = acquire;
+        self.interaction.connection_release_radius_in_view = release;
+        self.sanitized()
+    }
+
+    /// Replaces the selectable edge-pick radius in logical screen pixels.
+    #[must_use]
+    pub fn with_edge_pick_radius(mut self, radius: f32) -> Self {
+        self.interaction.edge_pick_radius_in_view = radius;
         self.sanitized()
     }
 
@@ -503,6 +539,40 @@ mod tests {
     }
 
     #[test]
+    fn native_connection_targeting_uses_a_forgiving_screen_pixel_corridor() {
+        let config = OpenGpuiNavigationConfig::default();
+
+        assert_eq!(
+            config.connection_acquire_radius_in_view(),
+            DEFAULT_CONNECTION_ACQUIRE_RADIUS_IN_VIEW
+        );
+        assert_eq!(
+            config.connection_release_radius_in_view(),
+            DEFAULT_CONNECTION_RELEASE_RADIUS_IN_VIEW
+        );
+        assert_eq!(
+            config.runtime_config().connection_acquire_radius_in_view,
+            DEFAULT_CONNECTION_ACQUIRE_RADIUS_IN_VIEW
+        );
+        assert_eq!(
+            config.runtime_config().connection_release_radius_in_view,
+            DEFAULT_CONNECTION_RELEASE_RADIUS_IN_VIEW
+        );
+    }
+
+    #[test]
+    fn connection_and_edge_targeting_are_publicly_configurable() {
+        let config = OpenGpuiNavigationConfig::default()
+            .with_connection_targeting(18.0, 24.0)
+            .with_edge_pick_radius(14.0);
+
+        assert_eq!(config.connection_acquire_radius_in_view(), 18.0);
+        assert_eq!(config.connection_release_radius_in_view(), 24.0);
+        assert_eq!(config.edge_pick_radius_in_view(), 14.0);
+        assert_eq!(config.runtime_config().edge_pick_radius_in_view, 14.0);
+    }
+
+    #[test]
     fn grid_visibility_and_runtime_snapping_are_independent() {
         let visible = OpenGpuiNavigationConfig::default();
         assert_eq!(visible.grid_size_in_canvas(), Some(DEFAULT_GRID_SIZE));
@@ -513,5 +583,25 @@ mod tests {
             snapping.runtime_config().grid_size_in_canvas,
             Some(DEFAULT_GRID_SIZE)
         );
+    }
+
+    #[test]
+    fn alignment_snap_is_opt_in_and_preserves_runtime_hysteresis() {
+        let default = OpenGpuiNavigationConfig::default();
+        assert_eq!(default.alignment_snap_tolerance_in_view(), None);
+        assert_eq!(default.runtime_config().alignment_snap, None);
+
+        let enabled = default.with_alignment_snap_tolerance(Some(6.0));
+        assert_eq!(enabled.alignment_snap_tolerance_in_view(), Some(6.0));
+        let runtime = enabled
+            .runtime_config()
+            .alignment_snap
+            .expect("explicit positive tolerance enables alignment snap");
+        assert_eq!(runtime.acquire_tolerance_in_view(), 6.0);
+        assert_eq!(runtime.release_tolerance_in_view(), 9.0);
+
+        let invalid = default.with_alignment_snap_tolerance(Some(f32::NAN));
+        assert_eq!(invalid.alignment_snap_tolerance_in_view(), None);
+        assert_eq!(invalid.runtime_config().alignment_snap, None);
     }
 }

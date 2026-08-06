@@ -17,9 +17,10 @@ GraphRuntime -> ViewSession -> native adapter
 - `AdapterFrame` and `FeedbackCollector` form the native adapter boundary. An adapter requests an
   owned frame, renders its own components, records complete node and real-port geometry, appends
   graph intents in host order, and submits the feedback once.
-- `NodeCatalog` and `NodeKindSpec` contain creation metadata, defaults, stable port declarations,
-  connection typing, renderer keys, and small presentation hints. They do not describe controls,
-  forms, menus, inspectors, repeatables, or widget layout.
+- `NodeCatalog` and `NodeKindSpec` contain semantic kind identity and migration, default node data,
+  and stable graph-bearing port declarations including direction, capacity, type, and defaults.
+  Product palettes own titles, search terms, creation geometry, and port presentation; adapter
+  registries independently map semantic nodes to native renderers.
 - `io` persists canonical graph files and sanitized editor-state seeds. Framework focus, IME,
   drafts, retained entities, overlays, geometry caches, and themes are not document fields.
 
@@ -98,31 +99,20 @@ native adapter owns its framework component tree, input arbitration, accessibili
 implementation, and application services. Jellyflow only supplies graph semantics, stable IDs,
 version-checked commands, and geometry facts.
 
-## Native adapter conformance
+## Native adapter verification
 
-Adapter crates can enable the non-default `adapter-conformance` feature in their test dependency:
+The runtime owns interaction phases, command settlement, graph mutation semantics, selection, and
+published geometry. Native adapters should test only the framework boundary they add: real event
+mapping, focus and capture ownership, frame feedback, command admission, and lifecycle cleanup.
+They should not reproduce the runtime state machine through a shared scenario DSL.
 
-```toml
-[dev-dependencies]
-jellyflow-runtime = { version = "0.4", features = ["adapter-conformance"] }
-```
+Use one focused native test for each distinct gesture shape, one representative test for
+pre-admission `NotDispatched` and post-admission `OutcomeUnknown`, and adapter-local tests for
+capture loss, retirement, and close. Completion classification and mutation outcome matrices remain
+runtime tests because they do not vary by UI framework.
 
-The feature exposes `adapter::conformance`: typed semantic scenarios,
-framework-independent observations, and a structured comparison function. It deliberately does not
-provide an adapter driver, raw-event abstraction, widget model, async dispatcher, or access to
-runtime internals. Each adapter must map the semantic target roles to real native controls, drive
-its own event and frame lifecycle, report observations after those paths run, and keep any failure
-injection private to its test build.
-
-Display names are diagnostic only. `ConformanceScenarioId` is the stable scenario identity, and
-`compare_observations` compares semantic phase, effect, terminal result, native ownership, pending
-ticket state, graph revision delta, and geometry availability. This lets an external adapter reuse
-the same behavioral contract without adopting another framework's lifecycle or a Jellyflow UI DSL.
-
-Run the focused runtime tests with:
+Run the runtime-owned semantic tests with:
 
 ```sh
 cargo nextest run -p jellyflow-runtime --cargo-quiet
-cargo nextest run -p jellyflow-runtime --features adapter-conformance \
-  --test canonical_interaction_trace --cargo-quiet
 ```

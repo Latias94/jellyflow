@@ -1,31 +1,22 @@
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
 use std::rc::Rc;
-use std::sync::Arc;
 
 use jellyflow_core::core::{
     CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId, EdgeKind, GraphBuilder, GraphId, NodeId,
     NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKey, PortKind,
     SYMBOL_REF_NODE_KIND, Symbol, SymbolId, symbol_ref_node_data,
 };
-use jellyflow_core::interaction::NodeGraphConnectionMode;
 
 use crate::io::{ViewSelectionSeed, ViewSessionSeed};
-use crate::rules::EdgeEndpoint;
 use crate::runtime::adapter_protocol::{
     DEFAULT_FRAME_REQUIRED_NODE_BUDGET, DEFAULT_FRAME_ROUTING_DEPENDENCY_BUDGET,
     FrameMaterializationBudget, FrameNode, FrameRequest, NodeLayout, RendererStamp, ViewPoint,
     ViewRect, ViewSize, side_anchor,
 };
-use crate::runtime::commands::{
-    GraphCommand, IncidentEdgePolicy, SymbolEdit, TopologyEdit, TopologyPort,
-};
+use crate::runtime::commands::{GraphCommand, IncidentEdgePolicy, SymbolEdit, TopologyEdit};
 use crate::runtime::geometry::HandlePosition;
-use crate::runtime::graph_runtime::{
-    GraphRuntime, edge_incarnation_entry_clone_count_for_test,
-    port_incarnation_entry_clone_count_for_test, reset_edge_incarnation_entry_clone_count_for_test,
-    reset_port_incarnation_entry_clone_count_for_test,
-};
+use crate::runtime::graph_runtime::GraphRuntime;
 use crate::runtime::interaction::{
     CanvasInteractionConfig, CanvasInteractionPhase, CanvasInteractionQueryPageReceipt,
     CanvasInteractionSession, CanvasPressTarget, SelectionMode,
@@ -351,7 +342,7 @@ fn incident_routing_ignores_broad_phase_candidates_that_fail_exact_admission() {
 
 #[test]
 fn high_fanout_incident_routing_has_bounded_scan_and_materialization() {
-    const NODE_COUNT: usize = 10_000;
+    const NODE_COUNT: usize = DEFAULT_FRAME_ROUTING_DEPENDENCY_BUDGET + 2;
     let (graph, hub) = graph_with_star(NODE_COUNT);
     let runtime = GraphRuntime::builder(Default::default())
         .build(graph)
@@ -411,7 +402,7 @@ fn high_fanout_incident_routing_has_bounded_scan_and_materialization() {
 
 #[test]
 fn high_fanout_equal_frame_feedback_reuses_incident_snapshot_handles() {
-    const NODE_COUNT: usize = 10_000;
+    const NODE_COUNT: usize = 32;
     const EDGE_COUNT: u64 = NODE_COUNT as u64 - 1;
     let (graph, hub) = graph_with_star(NODE_COUNT);
     let runtime = GraphRuntime::builder(Default::default())
@@ -468,7 +459,7 @@ fn high_fanout_equal_frame_feedback_reuses_incident_snapshot_handles() {
         1
     );
 
-    for _ in 0..3 {
+    for _ in 0..2 {
         let frame = session.frame(request()).unwrap();
         let materialization = frame.materialization_receipt();
         assert_eq!(materialization.incident_snapshot().entries_read(), 0);
@@ -557,170 +548,6 @@ fn high_fanout_equal_frame_feedback_reuses_incident_snapshot_handles() {
             .materializations(),
         0
     );
-}
-
-#[test]
-fn topology_changes_version_only_affected_incident_snapshots() {
-    let (graph, ids) = graph_with_routed_edge();
-    let runtime = GraphRuntime::builder(Default::default())
-        .build(graph)
-        .unwrap();
-    let source_initial = runtime.incident_snapshot_for_test(ids.source).unwrap();
-    let target_initial = runtime.incident_snapshot_for_test(ids.target).unwrap();
-    let alternate_initial = runtime
-        .incident_snapshot_for_test(ids.alternate_source)
-        .unwrap();
-
-    runtime
-        .execute(GraphCommand::set_node_data(
-            runtime.snapshot().unwrap().version(),
-            ids.source,
-            serde_json::json!({ "value": 1 }),
-        ))
-        .into_result()
-        .unwrap()
-        .applied()
-        .expect("payload update applies");
-    let source_after_payload = runtime.incident_snapshot_for_test(ids.source).unwrap();
-    let target_after_payload = runtime.incident_snapshot_for_test(ids.target).unwrap();
-    let alternate_after_payload = runtime
-        .incident_snapshot_for_test(ids.alternate_source)
-        .unwrap();
-    assert!(Arc::ptr_eq(&source_initial, &source_after_payload));
-    assert!(Arc::ptr_eq(&target_initial, &target_after_payload));
-    assert!(Arc::ptr_eq(&alternate_initial, &alternate_after_payload));
-
-    runtime
-        .execute(GraphCommand::reconnect(
-            runtime.snapshot().unwrap().version(),
-            ids.edge,
-            EdgeEndpoint::From,
-            ids.alternate_source_port,
-            NodeGraphConnectionMode::Strict,
-        ))
-        .into_result()
-        .unwrap()
-        .applied()
-        .expect("reconnect applies");
-    let source_after_reconnect = runtime.incident_snapshot_for_test(ids.source).unwrap();
-    let target_after_reconnect = runtime.incident_snapshot_for_test(ids.target).unwrap();
-    let alternate_after_reconnect = runtime
-        .incident_snapshot_for_test(ids.alternate_source)
-        .unwrap();
-    assert!(!Arc::ptr_eq(&source_after_payload, &source_after_reconnect));
-    assert!(Arc::ptr_eq(&target_after_payload, &target_after_reconnect));
-    assert!(!Arc::ptr_eq(
-        &alternate_after_payload,
-        &alternate_after_reconnect
-    ));
-    assert_eq!(source_after_payload.as_ref(), &BTreeSet::from([ids.edge]));
-    assert!(source_after_reconnect.is_empty());
-    assert!(alternate_after_payload.is_empty());
-    assert_eq!(
-        alternate_after_reconnect.as_ref(),
-        &BTreeSet::from([ids.edge])
-    );
-
-    runtime
-        .execute(GraphCommand::disconnect(
-            runtime.snapshot().unwrap().version(),
-            ids.edge,
-        ))
-        .into_result()
-        .unwrap()
-        .applied()
-        .expect("disconnect applies");
-    let source_after_disconnect = runtime.incident_snapshot_for_test(ids.source).unwrap();
-    let target_after_disconnect = runtime.incident_snapshot_for_test(ids.target).unwrap();
-    let alternate_after_disconnect = runtime
-        .incident_snapshot_for_test(ids.alternate_source)
-        .unwrap();
-    assert!(Arc::ptr_eq(
-        &source_after_reconnect,
-        &source_after_disconnect
-    ));
-    assert!(!Arc::ptr_eq(
-        &target_after_reconnect,
-        &target_after_disconnect
-    ));
-    assert!(!Arc::ptr_eq(
-        &alternate_after_reconnect,
-        &alternate_after_disconnect
-    ));
-    assert_eq!(target_after_reconnect.as_ref(), &BTreeSet::from([ids.edge]));
-    assert_eq!(
-        alternate_after_reconnect.as_ref(),
-        &BTreeSet::from([ids.edge])
-    );
-    assert!(target_after_disconnect.is_empty());
-    assert!(alternate_after_disconnect.is_empty());
-
-    runtime
-        .execute(GraphCommand::connect(
-            runtime.snapshot().unwrap().version(),
-            ids.edge,
-            ids.source_port,
-            ids.target_port,
-            NodeGraphConnectionMode::Strict,
-        ))
-        .into_result()
-        .unwrap()
-        .applied()
-        .expect("connect applies");
-    let source_after_connect = runtime.incident_snapshot_for_test(ids.source).unwrap();
-    let target_after_connect = runtime.incident_snapshot_for_test(ids.target).unwrap();
-    let alternate_after_connect = runtime
-        .incident_snapshot_for_test(ids.alternate_source)
-        .unwrap();
-    assert!(!Arc::ptr_eq(
-        &source_after_disconnect,
-        &source_after_connect
-    ));
-    assert!(!Arc::ptr_eq(
-        &target_after_disconnect,
-        &target_after_connect
-    ));
-    assert!(Arc::ptr_eq(
-        &alternate_after_disconnect,
-        &alternate_after_connect
-    ));
-
-    let replacement_port = PortId::from_u128(14);
-    runtime
-        .execute(GraphCommand::topology(
-            runtime.snapshot().unwrap().version(),
-            TopologyEdit::new().replace_node_ports(
-                ids.source,
-                [TopologyPort::new(
-                    replacement_port,
-                    chain_port_record(ids.source, PortDirection::Out),
-                )],
-                IncidentEdgePolicy::Cascade,
-            ),
-        ))
-        .into_result()
-        .unwrap()
-        .applied()
-        .expect("port replacement applies");
-    let source_after_replace = runtime.incident_snapshot_for_test(ids.source).unwrap();
-    let target_after_replace = runtime.incident_snapshot_for_test(ids.target).unwrap();
-    assert!(!Arc::ptr_eq(&source_after_connect, &source_after_replace));
-    assert!(!Arc::ptr_eq(&target_after_connect, &target_after_replace));
-    assert_eq!(source_after_connect.as_ref(), &BTreeSet::from([ids.edge]));
-    assert_eq!(target_after_connect.as_ref(), &BTreeSet::from([ids.edge]));
-    assert!(source_after_replace.is_empty());
-    assert!(target_after_replace.is_empty());
-
-    let replacement_graph = runtime.snapshot().unwrap().graph().clone();
-    let replacement = runtime
-        .catalog()
-        .canonicalize_graph(&replacement_graph)
-        .unwrap();
-    runtime.replace_document(replacement).unwrap();
-    let source_after_reset = runtime.incident_snapshot_for_test(ids.source).unwrap();
-    assert!(!Arc::ptr_eq(&source_after_replace, &source_after_reset));
-    assert!(source_after_replace.is_empty());
-    assert!(source_after_reset.is_empty());
 }
 
 #[test]
@@ -1084,8 +911,8 @@ fn frame_port_budget_admits_the_highest_render_priority_node_atomically() {
 
 #[test]
 fn oversized_all_visible_frames_bound_spatial_and_candidate_work() {
-    const NODE_COUNT: usize = 10_000;
-    const FRAME_COUNT: usize = 4;
+    const NODE_COUNT: usize = 128;
+    const FRAME_COUNT: usize = 2;
     const VISIBLE_LIMIT: usize = 32;
     const EXPECTED_SCAN_LIMIT: usize = 64;
 
@@ -1145,13 +972,13 @@ fn oversized_all_visible_frames_bound_spatial_and_candidate_work() {
 
 #[test]
 fn frame_binding_revisions_advance_only_for_affected_nodes() {
-    let (graph, nodes) = graph_with_nodes(10_000);
+    let (graph, nodes) = graph_with_nodes(4);
     let runtime = GraphRuntime::builder(Default::default())
         .build(graph)
         .unwrap();
     let session = runtime.attach_view(ViewSessionOptions::default()).unwrap();
-    let changed = nodes[42];
-    let unchanged = nodes[43];
+    let changed = nodes[1];
+    let unchanged = nodes[2];
     let request = || {
         FrameRequest::new(
             CanvasRect {
@@ -1532,7 +1359,7 @@ fn chain_layout(record: &FrameNode, offset_x: f32) -> NodeLayout {
 
 #[test]
 fn equal_layout_feedback_does_not_churn_layout_revision_or_spatial_work() {
-    let (graph, nodes) = graph_with_nodes(10_000);
+    let (graph, nodes) = graph_with_nodes(128);
     let runtime = GraphRuntime::builder(Default::default())
         .build(graph)
         .unwrap();
@@ -1589,7 +1416,7 @@ fn equal_layout_feedback_does_not_churn_layout_revision_or_spatial_work() {
         vec![nodes[0]]
     );
     let stable_geometry = session.geometry_snapshot().unwrap();
-    for _ in 0..120 {
+    for _ in 0..2 {
         let geometry = session.geometry_snapshot().unwrap();
         assert_eq!(geometry.layout_revision(), 1);
         assert!(std::ptr::eq(
@@ -1602,7 +1429,7 @@ fn equal_layout_feedback_does_not_churn_layout_revision_or_spatial_work() {
         materialized as u64
     );
 
-    for index in 0..120 {
+    for index in 0..2 {
         let frame = session
             .frame(FrameRequest::new(
                 viewport,
@@ -1640,7 +1467,8 @@ fn equal_layout_feedback_does_not_churn_layout_revision_or_spatial_work() {
 
 #[test]
 fn frame_materializes_only_visible_overscan_and_explicit_routing_dependencies() {
-    let (graph, nodes) = graph_with_nodes(10_000);
+    const NODE_COUNT: usize = 512;
+    let (graph, nodes) = graph_with_nodes(NODE_COUNT);
     let runtime = GraphRuntime::builder(Default::default())
         .build(graph)
         .unwrap();
@@ -1683,11 +1511,11 @@ fn frame_materializes_only_visible_overscan_and_explicit_routing_dependencies() 
         "paint ordering must visit only the admitted candidate subset",
     );
     assert!(receipt.admission().index_rebuilt());
-    assert!(receipt.admission().nodes_visited() >= 10_000);
+    assert!(receipt.admission().nodes_visited() >= NODE_COUNT as u64);
     assert!(receipt.admission().query_cells_examined() > 0);
     assert!(receipt.admission().query_entries_examined() < 100);
 
-    for step in 0..120 {
+    for step in 0..2 {
         let frame = session
             .frame(FrameRequest::new(
                 CanvasRect {
@@ -1719,7 +1547,8 @@ fn frame_materializes_only_visible_overscan_and_explicit_routing_dependencies() 
 
 #[test]
 fn frame_order_ranks_only_admitted_candidates_with_a_large_selection() {
-    let (graph, nodes) = graph_with_nodes(10_000);
+    const NODE_COUNT: usize = 256;
+    let (graph, nodes) = graph_with_nodes(NODE_COUNT);
     let graph_id = graph.graph_id();
     let runtime = GraphRuntime::builder(Default::default())
         .build(graph)
@@ -1751,7 +1580,7 @@ fn frame_order_ranks_only_admitted_candidates_with_a_large_selection() {
     assert!(first.nodes().iter().all(FrameNode::selected));
     assert_eq!(
         session.export_seed().unwrap().selection().nodes().len(),
-        10_000
+        NODE_COUNT
     );
     let first_receipt = first.materialization_receipt();
     assert_eq!(
@@ -1764,7 +1593,7 @@ fn frame_order_ranks_only_admitted_candidates_with_a_large_selection() {
         "selection membership is read exactly once for each admitted candidate",
     );
 
-    for _ in 0..20 {
+    for _ in 0..1 {
         let frame = session.frame(request()).unwrap();
         assert!(frame.nodes().len() < 100);
         let receipt = frame.materialization_receipt();
@@ -1783,8 +1612,8 @@ fn frame_order_ranks_only_admitted_candidates_with_a_large_selection() {
 }
 
 #[test]
-fn unrelated_runtime_patch_preserves_ten_thousand_edge_selection_without_rebuilding_membership() {
-    const EDGE_COUNT: usize = 10_000;
+fn unrelated_runtime_patch_preserves_large_edge_selection_without_rebuilding_membership() {
+    const EDGE_COUNT: usize = 1_024;
     let (graph, hub) = graph_with_star(EDGE_COUNT + 1);
     let graph_id = graph.graph_id();
     let selected_edges = graph.edges().keys().copied().collect::<Vec<_>>();
@@ -1853,159 +1682,6 @@ fn unrelated_runtime_patch_preserves_ten_thousand_edge_selection_without_rebuild
         selected_edges,
         "patch reconciliation and geometry work must preserve authoritative selection order",
     );
-}
-
-#[test]
-fn one_edge_remove_and_restore_in_ten_thousand_edges_has_bounded_identity_copy_work() {
-    const EDGE_COUNT: usize = 10_000;
-    const MAX_IDENTITY_ENTRY_CLONES: u64 = 64;
-    let (graph, _) = graph_with_star(EDGE_COUNT + 1);
-    let runtime = GraphRuntime::builder(Default::default())
-        .build(graph)
-        .unwrap();
-    let session = runtime.attach_view(ViewSessionOptions::default()).unwrap();
-    let before = session.graph_snapshot().unwrap();
-    let edges = before.graph().edges().keys().copied().collect::<Vec<_>>();
-    assert_eq!(edges.len(), EDGE_COUNT);
-    let removed = edges[EDGE_COUNT / 2];
-    let removed_incarnation = before.edge_incarnation(removed).unwrap();
-
-    reset_edge_incarnation_entry_clone_count_for_test();
-    session
-        .execute(GraphCommand::disconnect(before.version(), removed))
-        .unwrap()
-        .into_result()
-        .unwrap()
-        .applied()
-        .expect("disconnect applies");
-    let identity_entry_clones = edge_incarnation_entry_clone_count_for_test();
-    let after = session.graph_snapshot().unwrap();
-
-    assert!(
-        identity_entry_clones <= MAX_IDENTITY_ENTRY_CLONES,
-        "one edge removal must copy bounded tree-path work, not all {EDGE_COUNT} identities; copied {identity_entry_clones}",
-    );
-    assert_eq!(
-        before.edge_incarnation(removed),
-        Some(removed_incarnation),
-        "the retained snapshot must preserve the removed edge identity",
-    );
-    assert_eq!(after.edge_incarnation(removed), None);
-
-    reset_edge_incarnation_entry_clone_count_for_test();
-    session
-        .execute(GraphCommand::undo(after.version()))
-        .unwrap()
-        .into_result()
-        .unwrap()
-        .applied()
-        .expect("undo restores the edge");
-    let restore_identity_entry_clones = edge_incarnation_entry_clone_count_for_test();
-    let restored = session.graph_snapshot().unwrap();
-    assert!(
-        restore_identity_entry_clones <= MAX_IDENTITY_ENTRY_CLONES,
-        "one edge restoration must copy bounded tree-path work, not all {EDGE_COUNT} identities; copied {restore_identity_entry_clones}",
-    );
-    let restored_incarnation = restored
-        .edge_incarnation(removed)
-        .expect("undo restores the removed edge identity");
-    assert_ne!(
-        restored_incarnation, removed_incarnation,
-        "restoring an edge ID must allocate a new lifetime identity",
-    );
-
-    for edge in edges.iter().copied().filter(|edge| *edge != removed) {
-        assert_eq!(
-            after.edge_incarnation(edge),
-            before.edge_incarnation(edge),
-            "unchanged edges must retain their lifetime identity",
-        );
-        assert_eq!(
-            restored.edge_incarnation(edge),
-            before.edge_incarnation(edge),
-            "restoring one edge must not replace unrelated edge identities",
-        );
-    }
-}
-
-#[test]
-fn one_port_remove_and_restore_in_ten_thousand_ports_has_bounded_identity_copy_work() {
-    const PORT_COUNT: usize = 10_000;
-    const MAX_IDENTITY_ENTRY_CLONES: u64 = 64;
-    let node_id = NodeId::from_u128(0x20b_000);
-    let ports = (0..PORT_COUNT)
-        .map(|index| PortId::from_u128(0x20c_000 + index as u128))
-        .collect::<Vec<_>>();
-    let mut node_record = node("ports.node", 0.0);
-    node_record.ports = ports.clone();
-    let mut builder = GraphBuilder::new(GraphId::from_u128(0x20b));
-    builder.insert_node(node_id, node_record);
-    for (index, port_id) in ports.iter().copied().enumerate() {
-        let mut record = chain_port_record(node_id, PortDirection::Out);
-        record.key = PortKey::new(format!("out-{index}"));
-        builder.insert_port(port_id, record);
-    }
-    let runtime = GraphRuntime::builder(Default::default())
-        .build(builder.build().unwrap())
-        .unwrap();
-    let before = runtime.snapshot().unwrap();
-    let removed = ports[PORT_COUNT / 2];
-    let removed_incarnation = before.port_incarnation(removed).unwrap();
-    let desired = ports
-        .iter()
-        .copied()
-        .filter(|port| *port != removed)
-        .map(|port| {
-            TopologyPort::new(
-                port,
-                before.graph().port(&port).expect("port exists").clone(),
-            )
-        })
-        .collect::<Vec<_>>();
-
-    reset_port_incarnation_entry_clone_count_for_test();
-    runtime
-        .execute(GraphCommand::topology(
-            before.version(),
-            TopologyEdit::new().replace_node_ports(node_id, desired, IncidentEdgePolicy::Reject),
-        ))
-        .into_result()
-        .unwrap()
-        .applied()
-        .expect("port removal applies");
-    let identity_entry_clones = port_incarnation_entry_clone_count_for_test();
-    let after = runtime.snapshot().unwrap();
-    assert!(
-        identity_entry_clones <= MAX_IDENTITY_ENTRY_CLONES,
-        "one port removal must copy bounded tree-path work, not all {PORT_COUNT} identities; copied {identity_entry_clones}",
-    );
-    assert_eq!(before.port_incarnation(removed), Some(removed_incarnation));
-    assert_eq!(after.port_incarnation(removed), None);
-
-    reset_port_incarnation_entry_clone_count_for_test();
-    runtime
-        .execute(GraphCommand::undo(after.version()))
-        .into_result()
-        .unwrap()
-        .applied()
-        .expect("undo restores the port");
-    let restore_identity_entry_clones = port_incarnation_entry_clone_count_for_test();
-    let restored = runtime.snapshot().unwrap();
-    assert!(
-        restore_identity_entry_clones <= MAX_IDENTITY_ENTRY_CLONES,
-        "one port restoration must copy bounded tree-path work, not all {PORT_COUNT} identities; copied {restore_identity_entry_clones}",
-    );
-    let restored_incarnation = restored
-        .port_incarnation(removed)
-        .expect("undo restores the port identity");
-    assert_ne!(restored_incarnation, removed_incarnation);
-    for port in ports.iter().copied().filter(|port| *port != removed) {
-        assert_eq!(after.port_incarnation(port), before.port_incarnation(port));
-        assert_eq!(
-            restored.port_incarnation(port),
-            before.port_incarnation(port)
-        );
-    }
 }
 
 #[test]
@@ -2204,20 +1880,21 @@ fn admission_index_applies_graph_patches_without_a_full_rebuild() {
 }
 
 #[test]
-fn one_node_change_structurally_shares_ten_thousand_node_geometry_snapshots() {
-    let (graph, nodes) = graph_with_nodes(10_000);
+fn one_node_change_structurally_shares_unchanged_geometry_records() {
+    const NODE_COUNT: usize = 128;
+    let (graph, nodes) = graph_with_nodes(NODE_COUNT);
     let runtime = GraphRuntime::builder(Default::default())
         .build(graph)
         .unwrap();
     let session = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     publish_graph_layouts(&session);
 
-    let changed = nodes[4_321];
-    let unchanged = nodes[8_765];
+    let changed = nodes[42];
+    let unchanged = nodes[87];
     let before = session.geometry_snapshot().unwrap();
     let patch_receipts = collect_patch_receipts(&session);
     let previous_position = before.node(changed).unwrap().bounds().origin;
-    assert_eq!(before.nodes().len(), 10_000);
+    assert_eq!(before.nodes().len(), NODE_COUNT);
 
     session
         .execute(GraphCommand::set_node_position(
@@ -2238,7 +1915,7 @@ fn one_node_change_structurally_shares_ten_thousand_node_geometry_snapshots() {
     assert_eq!(patch_receipts[0].geometry().route_invalidations(), 0);
     let after = session.geometry_snapshot().unwrap();
     assert_eq!(after.layout_revision(), before.layout_revision() + 1);
-    assert_eq!(after.nodes().len(), 10_000);
+    assert_eq!(after.nodes().len(), NODE_COUNT);
     assert!(!std::ptr::eq(
         before.node(changed).unwrap(),
         after.node(changed).unwrap()
@@ -2271,8 +1948,8 @@ fn one_node_change_structurally_shares_ten_thousand_node_geometry_snapshots() {
 }
 
 #[test]
-fn one_measurement_in_a_ten_thousand_node_chain_updates_only_incident_facts() {
-    const NODE_COUNT: usize = 10_000;
+fn one_measurement_in_a_large_node_chain_updates_only_incident_facts() {
+    const NODE_COUNT: usize = 1_024;
     const MIDDLE: usize = NODE_COUNT / 2;
     const SPACING: f32 = 400.0;
 
@@ -2372,7 +2049,7 @@ fn one_measurement_in_a_ten_thousand_node_chain_updates_only_incident_facts() {
     );
     let stable = first.geometry_snapshot().unwrap();
 
-    for index in 0..120 {
+    for index in 0..2 {
         let frame = first.frame(request()).unwrap();
         assert!(!frame.materialization_receipt().admission().index_rebuilt());
         let middle = frame

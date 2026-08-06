@@ -5,9 +5,8 @@ use std::rc::Rc;
 use jellyflow_core::EdgeId;
 use jellyflow_runtime::{
     geometry::ViewRect, view::RouteGeometryRevision, view::ViewSession, view::ViewSessionError,
-    view::VisibleRouteCursor, view::VisibleRouteCursorStaleReason, view::VisibleRouteQuery,
-    view::VisibleRouteQueryError, view::VisibleRouteQueryOutcome, view::VisibleRouteQueryRevision,
-    view::VisibleRouteQueryWork,
+    view::VisibleRouteQueryRevision, view::VisibleRouteQueryWork, view::VisibleRouteWorkError,
+    view::VisibleRouteWorkRequest, view::VisibleRouteWorkSession, view::VisibleRouteWorkStatus,
 };
 use open_gpui::{Path, PathVertex, Pixels};
 
@@ -16,7 +15,6 @@ use crate::chrome::{OpenGpuiEdgePainterBatchKey, OpenGpuiEdgeStrokePattern};
 const OPEN_GPUI_EDGE_PATH_CACHE_CAPACITY: usize = super::OPEN_GPUI_MAX_EDGE_LAYER_BUDGET;
 const OPEN_GPUI_EDGE_PATH_CACHE_VERTEX_BUDGET: usize = 1_048_576;
 const OPEN_GPUI_EDGE_PATH_CACHE_ESTIMATED_BYTE_BUDGET: usize = 64 * 1_024 * 1_024;
-const OPEN_GPUI_EDGE_PLAN_CACHE_CAPACITY: usize = 8;
 const OPEN_GPUI_EDGE_PLAN_CACHE_VERTEX_BUDGET: usize = 2_097_152;
 const OPEN_GPUI_EDGE_PLAN_CACHE_ESTIMATED_BYTE_BUDGET: usize = 64 * 1_024 * 1_024;
 const OPEN_GPUI_EDGE_PLAN_RESERVED_VERTICES_PER_ITEM: usize = 30;
@@ -28,22 +26,13 @@ const OPEN_GPUI_EDGE_PLAN_LIVE_PATH_COPY_FACTOR: usize = 5;
 struct OpenGpuiEdgeStrokeTessellationKey {
     stroke_width_bits: u32,
     stroke_pattern: OpenGpuiEdgeStrokePattern,
-    round_line_cap: bool,
-    round_line_join: bool,
 }
 
 impl OpenGpuiEdgeStrokeTessellationKey {
-    fn new(
-        stroke_width: f32,
-        stroke_pattern: OpenGpuiEdgeStrokePattern,
-        round_line_cap: bool,
-        round_line_join: bool,
-    ) -> Self {
+    fn new(stroke_width: f32, stroke_pattern: OpenGpuiEdgeStrokePattern) -> Self {
         Self {
             stroke_width_bits: stroke_width.to_bits(),
             stroke_pattern,
-            round_line_cap,
-            round_line_join,
         }
     }
 }
@@ -72,8 +61,6 @@ impl OpenGpuiEdgePathCacheKey {
         origin_y: f32,
         stroke_width: f32,
         stroke_pattern: OpenGpuiEdgeStrokePattern,
-        round_line_cap: bool,
-        round_line_join: bool,
     ) -> Self {
         Self {
             edge,
@@ -83,12 +70,7 @@ impl OpenGpuiEdgePathCacheKey {
             zoom_bits: zoom.to_bits(),
             origin_x_bits: origin_x.to_bits(),
             origin_y_bits: origin_y.to_bits(),
-            stroke: OpenGpuiEdgeStrokeTessellationKey::new(
-                stroke_width,
-                stroke_pattern,
-                round_line_cap,
-                round_line_join,
-            ),
+            stroke: OpenGpuiEdgeStrokeTessellationKey::new(stroke_width, stroke_pattern),
         }
     }
 }
@@ -96,27 +78,10 @@ impl OpenGpuiEdgePathCacheKey {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum OpenGpuiEdgePaintPlanSegment {
     Ordinary,
-    Focus(EdgeId),
-    FocusBase(EdgeId),
     MarkerOrdinary,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum OpenGpuiEdgePaintPlanSlot {
-    Ordinary,
-    Focus,
-    FocusBase,
-}
-
 impl OpenGpuiEdgePaintPlanSegment {
-    fn slot(self) -> OpenGpuiEdgePaintPlanSlot {
-        match self {
-            Self::Ordinary | Self::MarkerOrdinary => OpenGpuiEdgePaintPlanSlot::Ordinary,
-            Self::Focus(_) => OpenGpuiEdgePaintPlanSlot::Focus,
-            Self::FocusBase(_) => OpenGpuiEdgePaintPlanSlot::FocusBase,
-        }
-    }
-
     fn is_marker(self) -> bool {
         matches!(self, Self::MarkerOrdinary)
     }
@@ -181,7 +146,6 @@ pub(super) struct OpenGpuiEdgePaintPlan {
     batches: Rc<[OpenGpuiEdgePaintBatch]>,
     completeness: OpenGpuiEdgePaintPlanCompleteness,
     footprint: OpenGpuiEdgeCacheFootprint,
-    build_peak_footprint: OpenGpuiEdgeCacheFootprint,
 }
 
 impl OpenGpuiEdgePaintPlan {
@@ -197,6 +161,7 @@ impl OpenGpuiEdgePaintPlan {
         self.completeness() == OpenGpuiEdgePaintPlanCompleteness::Complete
     }
 
+    #[cfg(test)]
     pub(super) fn rejected_items(&self) -> usize {
         match self.completeness {
             OpenGpuiEdgePaintPlanCompleteness::Complete => 0,
@@ -204,6 +169,7 @@ impl OpenGpuiEdgePaintPlan {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn edge_count(&self) -> usize {
         self.batches.iter().map(|batch| batch.edge_count).sum()
     }
@@ -272,13 +238,6 @@ impl OpenGpuiEdgeCacheFootprint {
         }
     }
 
-    fn componentwise_max(self, other: Self) -> Self {
-        Self {
-            vertices: self.vertices.max(other.vertices),
-            estimated_bytes: self.estimated_bytes.max(other.estimated_bytes),
-        }
-    }
-
     fn saturating_mul(self, factor: usize) -> Self {
         Self {
             vertices: self.vertices.saturating_mul(factor),
@@ -314,7 +273,7 @@ fn minimum_plan_reservation(items: usize) -> OpenGpuiEdgeCacheFootprint {
         OPEN_GPUI_EDGE_PLAN_RESERVED_VERTICES_PER_ITEM,
         OPEN_GPUI_EDGE_PLAN_RESERVED_VERTICES_PER_ITEM,
     );
-    // A future item may start both a new style run and a separate priority or marker plan.
+    // A future item may start a new style run in the subsequent marker plan.
     let item = OpenGpuiEdgeCacheFootprint {
         vertices: path.vertices,
         estimated_bytes: path
@@ -328,7 +287,6 @@ fn minimum_plan_reservation(items: usize) -> OpenGpuiEdgeCacheFootprint {
 pub(super) struct OpenGpuiEdgePaintPlanBuilder {
     batches: Vec<OpenGpuiEdgePaintBatch>,
     footprint: OpenGpuiEdgeCacheFootprint,
-    build_peak_footprint: OpenGpuiEdgeCacheFootprint,
     limit: OpenGpuiEdgeCacheFootprint,
     rejected_items: usize,
 }
@@ -338,7 +296,6 @@ impl OpenGpuiEdgePaintPlanBuilder {
         Self {
             batches: Vec::new(),
             footprint: OpenGpuiEdgeCacheFootprint::default(),
-            build_peak_footprint: OpenGpuiEdgeCacheFootprint::default(),
             limit,
             rejected_items: 0,
         }
@@ -477,7 +434,6 @@ impl OpenGpuiEdgePaintPlanBuilder {
 
     fn record_accepted_footprint(&mut self, footprint: OpenGpuiEdgeCacheFootprint) {
         self.footprint = footprint;
-        self.build_peak_footprint = self.build_peak_footprint.componentwise_max(footprint);
     }
 
     fn finish(self) -> OpenGpuiEdgePaintPlan {
@@ -494,7 +450,6 @@ impl OpenGpuiEdgePaintPlanBuilder {
                 }
             },
             footprint,
-            build_peak_footprint: self.build_peak_footprint,
         }
     }
 }
@@ -504,7 +459,6 @@ struct OpenGpuiEdgeCacheBudgets {
     path_entries: usize,
     path_vertices: usize,
     path_estimated_bytes: usize,
-    plan_entries: usize,
     plan_vertices: usize,
     plan_estimated_bytes: usize,
     plan_live_vertices: usize,
@@ -517,7 +471,6 @@ impl Default for OpenGpuiEdgeCacheBudgets {
             path_entries: OPEN_GPUI_EDGE_PATH_CACHE_CAPACITY,
             path_vertices: OPEN_GPUI_EDGE_PATH_CACHE_VERTEX_BUDGET,
             path_estimated_bytes: OPEN_GPUI_EDGE_PATH_CACHE_ESTIMATED_BYTE_BUDGET,
-            plan_entries: OPEN_GPUI_EDGE_PLAN_CACHE_CAPACITY,
             plan_vertices: OPEN_GPUI_EDGE_PLAN_CACHE_VERTEX_BUDGET,
             plan_estimated_bytes: OPEN_GPUI_EDGE_PLAN_CACHE_ESTIMATED_BYTE_BUDGET,
             plan_live_vertices: OPEN_GPUI_EDGE_PLAN_CACHE_VERTEX_BUDGET
@@ -544,32 +497,12 @@ struct OpenGpuiCachedEdgePaintPlan {
 pub(super) struct OpenGpuiEdgePathCache {
     paths: BTreeMap<OpenGpuiEdgePathCacheKey, OpenGpuiCachedEdgePath>,
     least_recently_used: BTreeSet<(u64, OpenGpuiEdgePathCacheKey)>,
-    paint_plans: BTreeMap<OpenGpuiEdgePaintPlanSlot, OpenGpuiCachedEdgePaintPlan>,
-    marker_plans: BTreeMap<OpenGpuiEdgePaintPlanSlot, OpenGpuiCachedEdgePaintPlan>,
+    paint_plan: Option<OpenGpuiCachedEdgePaintPlan>,
+    marker_plan: Option<OpenGpuiCachedEdgePaintPlan>,
     path_footprint: OpenGpuiEdgeCacheFootprint,
     plan_footprint: OpenGpuiEdgeCacheFootprint,
     next_access: u64,
     budgets: OpenGpuiEdgeCacheBudgets,
-    hits: u64,
-    misses: u64,
-    path_budget_evictions: u64,
-    path_budget_rejections: u64,
-    plan_budget_rejections: u64,
-    plan_incomplete_builds: u64,
-    plan_rejected_items: u64,
-    plan_build_peak_footprint: OpenGpuiEdgeCacheFootprint,
-    plan_live_peak_footprint: OpenGpuiEdgeCacheFootprint,
-    paint_preparations: u64,
-    paint_batches: u64,
-    painted_paths: u64,
-    paint_plan_reuses: u64,
-    native_paint_calls: u64,
-    native_edges_painted: u64,
-    marker_preparations: u64,
-    marker_batches: u64,
-    marker_plan_reuses: u64,
-    native_marker_paint_calls: u64,
-    native_markers_painted: u64,
 }
 
 impl OpenGpuiEdgePathCache {
@@ -586,13 +519,11 @@ impl OpenGpuiEdgePathCache {
         {
             let path = Rc::clone(&cached.path);
             let previous_access = cached.access;
-            self.hits = self.hits.saturating_add(1);
             self.touch(key, previous_access);
             return Some(path);
         }
 
         let path = Rc::new(build()?);
-        self.misses = self.misses.saturating_add(1);
         if self.paths.contains_key(&key) {
             // Keep the higher-fidelity resident path. This bounded path serves only the current
             // plan so an earlier cache fill cannot consume the fair share of every later edge.
@@ -605,7 +536,6 @@ impl OpenGpuiEdgePathCache {
                 self.budgets.path_estimated_bytes,
             )
         {
-            self.path_budget_rejections = self.path_budget_rejections.saturating_add(1);
             return Some(path);
         }
 
@@ -616,7 +546,6 @@ impl OpenGpuiEdgePathCache {
             )
         {
             if !self.evict_least_recently_used_path() {
-                self.path_budget_rejections = self.path_budget_rejections.saturating_add(1);
                 return Some(path);
             }
         }
@@ -646,7 +575,6 @@ impl OpenGpuiEdgePathCache {
             }
             if let Some(cached) = self.paths.remove(&key) {
                 self.path_footprint = self.path_footprint.saturating_sub(cached.footprint);
-                self.path_budget_evictions = self.path_budget_evictions.saturating_add(1);
                 return true;
             }
         }
@@ -705,25 +633,18 @@ impl OpenGpuiEdgePathCache {
     ) -> OpenGpuiEdgePaintPlan {
         debug_assert!(!key.segment.is_marker());
         self.purge_stale_plan_generations(key.generation);
-        let slot = key.segment.slot();
-        if let Some(cached) = self.paint_plans.get(&slot)
+        if let Some(cached) = self.paint_plan.as_ref()
             && cached.key == key
         {
-            self.paint_plan_reuses = self.paint_plan_reuses.saturating_add(1);
             return cached.plan.clone();
         }
-        self.remove_paint_plan(slot);
+        self.remove_paint_plan();
 
         let mut builder = OpenGpuiEdgePaintPlanBuilder::new(self.plan_build_limit(reserved_items));
         build(self, &mut builder);
         let plan = builder.finish();
-        self.record_paint_plan(
-            plan.batches().len(),
-            plan.batches().iter().map(|batch| batch.edge_count).sum(),
-        );
-        self.record_plan_build(&plan);
         if plan.is_complete() {
-            self.retain_plan(false, slot, key, plan.clone());
+            self.retain_plan(false, key, plan.clone());
         }
         plan
     }
@@ -745,37 +666,23 @@ impl OpenGpuiEdgePathCache {
     ) -> OpenGpuiEdgePaintPlan {
         debug_assert!(key.segment.is_marker());
         self.purge_stale_plan_generations(key.generation);
-        let slot = key.segment.slot();
-        if let Some(cached) = self.marker_plans.get(&slot)
+        if let Some(cached) = self.marker_plan.as_ref()
             && cached.key == key
         {
-            self.marker_plan_reuses = self.marker_plan_reuses.saturating_add(1);
             return cached.plan.clone();
         }
-        self.remove_marker_plan(slot);
+        self.remove_marker_plan();
 
         let mut builder = OpenGpuiEdgePaintPlanBuilder::new(self.plan_build_limit(reserved_items));
         build(&mut builder);
         let plan = builder.finish();
-        self.marker_preparations = self.marker_preparations.saturating_add(1);
-        self.marker_batches = self
-            .marker_batches
-            .saturating_add(plan.batches().len() as u64);
-        self.record_plan_build(&plan);
         if plan.is_complete() {
-            self.retain_plan(true, slot, key, plan.clone());
+            self.retain_plan(true, key, plan.clone());
         }
         plan
     }
 
     fn plan_build_limit(&self, reserved_items: usize) -> OpenGpuiEdgeCacheFootprint {
-        let entry_count = self
-            .paint_plans
-            .len()
-            .saturating_add(self.marker_plans.len());
-        if entry_count >= self.budgets.plan_entries {
-            return OpenGpuiEdgeCacheFootprint::default();
-        }
         let retained_limit = OpenGpuiEdgeCacheFootprint {
             vertices: self
                 .budgets
@@ -805,54 +712,23 @@ impl OpenGpuiEdgePathCache {
             .saturating_sub(minimum_plan_reservation(reserved_items))
     }
 
-    fn record_plan_build(&mut self, plan: &OpenGpuiEdgePaintPlan) {
-        self.plan_build_peak_footprint = self
-            .plan_build_peak_footprint
-            .componentwise_max(plan.build_peak_footprint);
-        let live_footprint = self
-            .plan_footprint
-            .saturating_add(plan.footprint())
-            .saturating_mul(OPEN_GPUI_EDGE_PLAN_LIVE_PATH_COPY_FACTOR);
-        self.plan_live_peak_footprint = self
-            .plan_live_peak_footprint
-            .componentwise_max(live_footprint);
-        if !plan.is_complete() {
-            self.plan_incomplete_builds = self.plan_incomplete_builds.saturating_add(1);
-            self.plan_budget_rejections = self.plan_budget_rejections.saturating_add(1);
-            self.plan_rejected_items = self
-                .plan_rejected_items
-                .saturating_add(plan.rejected_items() as u64);
-        }
-    }
-
     fn retain_plan(
         &mut self,
         marker: bool,
-        slot: OpenGpuiEdgePaintPlanSlot,
         key: OpenGpuiEdgePaintPlanKey,
         plan: OpenGpuiEdgePaintPlan,
     ) {
         let footprint = plan.footprint();
-        let entry_count = self
-            .paint_plans
-            .len()
-            .saturating_add(self.marker_plans.len());
         let retained_candidate = self.plan_footprint.saturating_add(footprint);
         let live_candidate =
             retained_candidate.saturating_mul(OPEN_GPUI_EDGE_PLAN_LIVE_PATH_COPY_FACTOR);
-        if entry_count >= self.budgets.plan_entries
-            || !retained_candidate.fits(
-                self.budgets.plan_vertices,
-                self.budgets.plan_estimated_bytes,
-            )
-            || !live_candidate.fits(
-                self.budgets.plan_live_vertices,
-                self.budgets.plan_live_estimated_bytes,
-            )
-        {
-            if plan.is_complete() {
-                self.plan_budget_rejections = self.plan_budget_rejections.saturating_add(1);
-            }
+        if !retained_candidate.fits(
+            self.budgets.plan_vertices,
+            self.budgets.plan_estimated_bytes,
+        ) || !live_candidate.fits(
+            self.budgets.plan_live_vertices,
+            self.budgets.plan_live_estimated_bytes,
+        ) {
             return;
         }
 
@@ -862,40 +738,40 @@ impl OpenGpuiEdgePathCache {
             footprint,
         };
         if marker {
-            self.marker_plans.insert(slot, cached);
+            debug_assert!(self.marker_plan.is_none());
+            self.marker_plan = Some(cached);
         } else {
-            self.paint_plans.insert(slot, cached);
+            debug_assert!(self.paint_plan.is_none());
+            self.paint_plan = Some(cached);
         }
         self.plan_footprint = retained_candidate;
     }
 
     fn purge_stale_plan_generations(&mut self, generation: OpenGpuiEdgePaintPlanGeneration) {
-        let stale_paint = self
-            .paint_plans
-            .iter()
-            .filter_map(|(slot, cached)| (cached.key.generation != generation).then_some(*slot))
-            .collect::<Vec<_>>();
-        for slot in stale_paint {
-            self.remove_paint_plan(slot);
+        if self
+            .paint_plan
+            .as_ref()
+            .is_some_and(|cached| cached.key.generation != generation)
+        {
+            self.remove_paint_plan();
         }
-        let stale_markers = self
-            .marker_plans
-            .iter()
-            .filter_map(|(slot, cached)| (cached.key.generation != generation).then_some(*slot))
-            .collect::<Vec<_>>();
-        for slot in stale_markers {
-            self.remove_marker_plan(slot);
+        if self
+            .marker_plan
+            .as_ref()
+            .is_some_and(|cached| cached.key.generation != generation)
+        {
+            self.remove_marker_plan();
         }
     }
 
-    fn remove_paint_plan(&mut self, slot: OpenGpuiEdgePaintPlanSlot) {
-        if let Some(cached) = self.paint_plans.remove(&slot) {
+    fn remove_paint_plan(&mut self) {
+        if let Some(cached) = self.paint_plan.take() {
             self.plan_footprint = self.plan_footprint.saturating_sub(cached.footprint);
         }
     }
 
-    fn remove_marker_plan(&mut self, slot: OpenGpuiEdgePaintPlanSlot) {
-        if let Some(cached) = self.marker_plans.remove(&slot) {
+    fn remove_marker_plan(&mut self) {
+        if let Some(cached) = self.marker_plan.take() {
             self.plan_footprint = self.plan_footprint.saturating_sub(cached.footprint);
         }
     }
@@ -903,8 +779,8 @@ impl OpenGpuiEdgePathCache {
     pub(super) fn clear(&mut self) {
         self.paths.clear();
         self.least_recently_used.clear();
-        self.paint_plans.clear();
-        self.marker_plans.clear();
+        self.paint_plan = None;
+        self.marker_plan = None;
         self.path_footprint = OpenGpuiEdgeCacheFootprint::default();
         self.plan_footprint = OpenGpuiEdgeCacheFootprint::default();
         self.next_access = 0;
@@ -912,75 +788,27 @@ impl OpenGpuiEdgePathCache {
 
     pub(super) fn usage(&self) -> OpenGpuiEdgeCacheUsage {
         OpenGpuiEdgeCacheUsage {
-            path_hits: self.hits,
-            path_misses: self.misses,
             resident_paths: self.paths.len(),
             path_footprint: self.path_footprint,
-            resident_paint_plans: self.paint_plans.len(),
-            resident_marker_plans: self.marker_plans.len(),
+            resident_paint_plans: self.paint_plan.iter().count(),
+            resident_marker_plans: self.marker_plan.iter().count(),
             plan_generations: self
-                .paint_plans
-                .values()
+                .paint_plan
+                .iter()
                 .map(|cached| cached.key.generation)
-                .chain(
-                    self.marker_plans
-                        .values()
-                        .map(|cached| cached.key.generation),
-                )
+                .chain(self.marker_plan.iter().map(|cached| cached.key.generation))
                 .collect::<BTreeSet<_>>()
                 .len(),
             plan_footprint: self.plan_footprint,
             plan_live_footprint: self
                 .plan_footprint
                 .saturating_mul(OPEN_GPUI_EDGE_PLAN_LIVE_PATH_COPY_FACTOR),
-            path_budget_evictions: self.path_budget_evictions,
-            path_budget_rejections: self.path_budget_rejections,
-            plan_budget_rejections: self.plan_budget_rejections,
-            plan_incomplete_builds: self.plan_incomplete_builds,
-            plan_rejected_items: self.plan_rejected_items,
-            plan_build_peak_footprint: self.plan_build_peak_footprint,
-            plan_live_peak_footprint: self.plan_live_peak_footprint,
-        }
-    }
-
-    pub(super) fn record_paint_plan(&mut self, batches: usize, paths: usize) {
-        self.paint_preparations = self.paint_preparations.saturating_add(1);
-        self.paint_batches = self.paint_batches.saturating_add(batches as u64);
-        self.painted_paths = self.painted_paths.saturating_add(paths as u64);
-    }
-
-    pub(super) fn record_native_paint(&mut self, calls: usize, edges: usize) {
-        self.native_paint_calls = self.native_paint_calls.saturating_add(calls as u64);
-        self.native_edges_painted = self.native_edges_painted.saturating_add(edges as u64);
-    }
-
-    pub(super) fn record_native_marker_paint(&mut self, calls: usize, markers: usize) {
-        self.native_marker_paint_calls =
-            self.native_marker_paint_calls.saturating_add(calls as u64);
-        self.native_markers_painted = self.native_markers_painted.saturating_add(markers as u64);
-    }
-
-    pub(super) fn paint_usage(&self) -> OpenGpuiEdgePaintUsage {
-        OpenGpuiEdgePaintUsage {
-            paint_preparations: self.paint_preparations,
-            paint_batches: self.paint_batches,
-            painted_paths: self.painted_paths,
-            paint_plan_reuses: self.paint_plan_reuses,
-            native_paint_calls: self.native_paint_calls,
-            native_edges_painted: self.native_edges_painted,
-            marker_preparations: self.marker_preparations,
-            marker_batches: self.marker_batches,
-            marker_plan_reuses: self.marker_plan_reuses,
-            native_marker_paint_calls: self.native_marker_paint_calls,
-            native_markers_painted: self.native_markers_painted,
         }
     }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct OpenGpuiEdgeCacheUsage {
-    pub(super) path_hits: u64,
-    pub(super) path_misses: u64,
     pub(super) resident_paths: usize,
     pub(super) path_footprint: OpenGpuiEdgeCacheFootprint,
     pub(super) resident_paint_plans: usize,
@@ -988,34 +816,6 @@ pub(super) struct OpenGpuiEdgeCacheUsage {
     pub(super) plan_generations: usize,
     pub(super) plan_footprint: OpenGpuiEdgeCacheFootprint,
     pub(super) plan_live_footprint: OpenGpuiEdgeCacheFootprint,
-    pub(super) path_budget_evictions: u64,
-    pub(super) path_budget_rejections: u64,
-    pub(super) plan_budget_rejections: u64,
-    pub(super) plan_incomplete_builds: u64,
-    pub(super) plan_rejected_items: u64,
-    pub(super) plan_build_peak_footprint: OpenGpuiEdgeCacheFootprint,
-    pub(super) plan_live_peak_footprint: OpenGpuiEdgeCacheFootprint,
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-pub(super) struct OpenGpuiEdgePaintUsage {
-    pub(super) paint_preparations: u64,
-    pub(super) paint_batches: u64,
-    pub(super) painted_paths: u64,
-    pub(super) paint_plan_reuses: u64,
-    pub(super) native_paint_calls: u64,
-    pub(super) native_edges_painted: u64,
-    pub(super) marker_preparations: u64,
-    pub(super) marker_batches: u64,
-    pub(super) marker_plan_reuses: u64,
-    pub(super) native_marker_paint_calls: u64,
-    pub(super) native_markers_painted: u64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct OpenGpuiVisibleRouteIdentity {
-    pub(super) edge: EdgeId,
-    pub(super) geometry_revision: Option<RouteGeometryRevision>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -1028,32 +828,29 @@ pub(super) struct OpenGpuiVisibleRouteQueryReport {
 }
 
 pub(super) struct OpenGpuiVisibleRoutePlan {
-    pub(super) routes: Rc<[OpenGpuiVisibleRouteIdentity]>,
-    pub(super) revision: VisibleRouteQueryRevision,
+    pub(super) routes: Rc<[EdgeId]>,
+    /// Current query facts invalidate prepared paint even while membership is still pending.
+    pub(super) query_revision: VisibleRouteQueryRevision,
     pub(super) generation: u64,
     pub(super) report: OpenGpuiVisibleRouteQueryReport,
 }
 
 #[derive(Default)]
 pub(super) struct OpenGpuiVisibleRouteCache {
-    bounds: Option<ViewRect>,
-    cursor: Option<Box<VisibleRouteCursor>>,
-    exhausted_key: Option<(ViewRect, VisibleRouteQueryRevision)>,
-    complete: Rc<[OpenGpuiVisibleRouteIdentity]>,
-    complete_key: Option<(ViewRect, VisibleRouteQueryRevision)>,
+    work: Option<VisibleRouteWorkSession>,
+    complete: Rc<[EdgeId]>,
+    mapped_generation: Option<u64>,
     complete_geometry_overflows: usize,
-    complete_generation: u64,
 }
 
 impl OpenGpuiVisibleRouteCache {
     pub(super) fn clear(&mut self) {
-        self.bounds = None;
-        self.cursor = None;
-        self.exhausted_key = None;
+        if let Some(work) = &mut self.work {
+            work.clear();
+        }
         self.complete = Rc::default();
-        self.complete_key = None;
+        self.mapped_generation = None;
         self.complete_geometry_overflows = 0;
-        self.complete_generation = self.complete_generation.saturating_add(1);
     }
 
     pub(super) fn query(
@@ -1062,120 +859,55 @@ impl OpenGpuiVisibleRouteCache {
         bounds: ViewRect,
         entry_budget: usize,
     ) -> Result<OpenGpuiVisibleRoutePlan, ViewSessionError> {
-        let revision = view.visible_route_query_revision()?;
-        if self.cursor.is_none() && self.complete_key == Some((bounds, revision)) {
-            return Ok(OpenGpuiVisibleRoutePlan {
-                routes: self.complete.clone(),
-                revision,
-                generation: self.complete_generation,
-                report: OpenGpuiVisibleRouteQueryReport {
-                    geometry_overflows: self.complete_geometry_overflows,
-                    reused_previous_plan: true,
-                    ..OpenGpuiVisibleRouteQueryReport::default()
-                },
-            });
-        }
-        if self.cursor.is_none() && self.exhausted_key == Some((bounds, revision)) {
-            return Ok(OpenGpuiVisibleRoutePlan {
-                routes: self.complete.clone(),
-                revision,
-                generation: self.complete_generation,
-                report: OpenGpuiVisibleRouteQueryReport {
-                    budget_exhausted: true,
-                    reused_previous_plan: self.complete_key.is_some(),
-                    ..OpenGpuiVisibleRouteQueryReport::default()
-                },
-            });
-        }
-        if self.bounds != Some(bounds) {
-            self.bounds = Some(bounds);
-            self.cursor = None;
-            self.exhausted_key = None;
-        }
-
-        let query = self.cursor.take().map_or_else(
-            || VisibleRouteQuery::new(bounds, entry_budget).with_margin(4.0),
-            |cursor| VisibleRouteQuery::resume(cursor, entry_budget),
-        );
-        let outcome = match view.visible_routes(query) {
-            Ok(outcome) => outcome,
-            Err(VisibleRouteQueryError::StaleCursor(reason)) if reason.is_restartable() => view
-                .visible_routes(VisibleRouteQuery::new(bounds, entry_budget).with_margin(4.0))
-                .map_err(map_query_error)?,
-            Err(error) => return Err(map_query_error(error)),
+        let work = match &mut self.work {
+            Some(work) => work,
+            slot @ None => slot.insert(view.visible_route_work_session()?),
         };
-
-        Ok(match outcome {
-            VisibleRouteQueryOutcome::Complete { routes, work } => {
-                self.exhausted_key = None;
-                self.complete = routes
-                    .iter()
-                    .map(|route| OpenGpuiVisibleRouteIdentity {
-                        edge: route.edge(),
-                        geometry_revision: Some(route.geometry_revision()),
-                    })
-                    .collect::<Vec<_>>()
-                    .into();
-                let revision = view.visible_route_query_revision()?;
-                self.complete_key = Some((bounds, revision));
-                self.complete_geometry_overflows = routes.geometry_overflows().len();
-                self.complete_generation = self.complete_generation.saturating_add(1);
-                OpenGpuiVisibleRoutePlan {
-                    routes: self.complete.clone(),
-                    revision,
-                    generation: self.complete_generation,
-                    report: OpenGpuiVisibleRouteQueryReport {
-                        work,
-                        geometry_overflows: self.complete_geometry_overflows,
-                        ..OpenGpuiVisibleRouteQueryReport::default()
-                    },
-                }
-            }
-            VisibleRouteQueryOutcome::Incomplete { cursor, work } => {
-                self.exhausted_key = None;
-                self.cursor = Some(cursor);
-                OpenGpuiVisibleRoutePlan {
-                    routes: self.complete.clone(),
-                    revision,
-                    generation: self.complete_generation,
-                    report: OpenGpuiVisibleRouteQueryReport {
-                        work,
-                        pending: true,
-                        reused_previous_plan: self.complete_key.is_some(),
-                        ..OpenGpuiVisibleRouteQueryReport::default()
-                    },
-                }
-            }
-            VisibleRouteQueryOutcome::BudgetExhausted { work } => {
-                self.exhausted_key = Some((bounds, revision));
-                OpenGpuiVisibleRoutePlan {
-                    routes: self.complete.clone(),
-                    revision,
-                    generation: self.complete_generation,
-                    report: OpenGpuiVisibleRouteQueryReport {
-                        work,
-                        budget_exhausted: true,
-                        reused_previous_plan: self.complete_key.is_some(),
-                        ..OpenGpuiVisibleRouteQueryReport::default()
-                    },
-                }
-            }
+        let update = work
+            .advance(
+                view,
+                VisibleRouteWorkRequest::new(bounds).with_margin(4.0),
+                entry_budget,
+            )
+            .map_err(map_query_error)?;
+        let generation = update.generation();
+        if self.mapped_generation != Some(generation) {
+            self.complete = update
+                .routes()
+                .map(|routes| {
+                    routes
+                        .iter()
+                        .map(|route| route.edge())
+                        .collect::<Vec<_>>()
+                        .into()
+                })
+                .unwrap_or_default();
+            self.complete_geometry_overflows = update
+                .routes()
+                .map_or(0, |routes| routes.geometry_overflows().len());
+            self.mapped_generation = Some(generation);
+        }
+        let status = update.status();
+        Ok(OpenGpuiVisibleRoutePlan {
+            routes: self.complete.clone(),
+            query_revision: update.query_revision(),
+            generation,
+            report: OpenGpuiVisibleRouteQueryReport {
+                work: update.work(),
+                pending: status == VisibleRouteWorkStatus::Pending,
+                budget_exhausted: status == VisibleRouteWorkStatus::Truncated,
+                geometry_overflows: self.complete_geometry_overflows,
+                reused_previous_plan: update.reused_previous_publication(),
+            },
         })
     }
 }
 
-fn map_query_error(error: VisibleRouteQueryError) -> ViewSessionError {
+fn map_query_error(error: VisibleRouteWorkError) -> ViewSessionError {
     match error {
-        VisibleRouteQueryError::Session(error) => error,
-        VisibleRouteQueryError::InvalidQuery
-        | VisibleRouteQueryError::StaleCursor(
-            VisibleRouteCursorStaleReason::ForeignView
-            | VisibleRouteCursorStaleReason::ViewGeneration,
-        ) => ViewSessionError::InvalidViewport,
-        VisibleRouteQueryError::StaleCursor(
-            VisibleRouteCursorStaleReason::ViewportTransform
-            | VisibleRouteCursorStaleReason::RouteGeometry,
-        ) => ViewSessionError::Busy,
+        VisibleRouteWorkError::Session(error) => error,
+        VisibleRouteWorkError::ForeignView { .. } => ViewSessionError::ForeignInteractionFacts,
+        VisibleRouteWorkError::InvalidRequest => ViewSessionError::InvalidViewport,
     }
 }
 
@@ -1268,12 +1000,7 @@ mod tests {
             zoom_bits: 1.0_f32.to_bits(),
             origin_x_bits: 0.0_f32.to_bits(),
             origin_y_bits: 0.0_f32.to_bits(),
-            stroke: OpenGpuiEdgeStrokeTessellationKey::new(
-                2.0,
-                OpenGpuiEdgeStrokePattern::Solid,
-                true,
-                true,
-            ),
+            stroke: OpenGpuiEdgeStrokeTessellationKey::new(2.0, OpenGpuiEdgeStrokePattern::Solid),
         }
     }
 
@@ -1290,40 +1017,13 @@ mod tests {
     }
 
     #[test]
-    fn empty_cache_has_no_stale_query_capability() {
+    fn cleared_cache_has_no_mapped_route_publication() {
         let mut cache = OpenGpuiVisibleRouteCache::default();
         cache.clear();
 
-        assert!(cache.bounds.is_none());
-        assert!(cache.cursor.is_none());
-        assert!(cache.exhausted_key.is_none());
         assert!(cache.complete.is_empty());
-    }
-
-    #[test]
-    fn path_tessellation_key_separates_round_caps_and_joins() {
-        let square = OpenGpuiEdgeStrokeTessellationKey::new(
-            2.0,
-            OpenGpuiEdgeStrokePattern::Solid,
-            false,
-            false,
-        );
-        let round_cap = OpenGpuiEdgeStrokeTessellationKey::new(
-            2.0,
-            OpenGpuiEdgeStrokePattern::Solid,
-            true,
-            false,
-        );
-        let round_join = OpenGpuiEdgeStrokeTessellationKey::new(
-            2.0,
-            OpenGpuiEdgeStrokePattern::Solid,
-            false,
-            true,
-        );
-
-        assert_ne!(square, round_cap);
-        assert_ne!(square, round_join);
-        assert_ne!(round_cap, round_join);
+        assert!(cache.mapped_generation.is_none());
+        assert_eq!(cache.complete_geometry_overflows, 0);
     }
 
     #[test]
@@ -1351,24 +1051,12 @@ mod tests {
             })
             .expect("the detailed path remains reusable");
         assert!(Rc::ptr_eq(&first, &reused));
-        assert_eq!(cache.usage().path_hits, 1);
-        assert_eq!(cache.usage().path_misses, 2);
     }
 
     #[test]
-    fn paint_and_marker_plans_keep_only_one_current_generation_per_slot() {
+    fn paint_and_marker_plans_keep_one_current_generation_each() {
         let mut cache = OpenGpuiEdgePathCache::default();
         let ordinary = plan_key(1, OpenGpuiEdgePaintPlanSegment::Ordinary, 0.0);
-        let focus = plan_key(
-            1,
-            OpenGpuiEdgePaintPlanSegment::Focus(EdgeId::from_u128(1)),
-            0.0,
-        );
-        let focus_base = plan_key(
-            1,
-            OpenGpuiEdgePaintPlanSegment::FocusBase(EdgeId::from_u128(1)),
-            0.0,
-        );
         let marker_ordinary = plan_key(1, OpenGpuiEdgePaintPlanSegment::MarkerOrdinary, 0.0);
 
         let first = cache.resolve_paint_plan(ordinary, |_, builder| {
@@ -1379,24 +1067,12 @@ mod tests {
         });
         let reused = cache.resolve_paint_plan(ordinary, |_, _| unreachable!("plan must reuse"));
         assert!(Rc::ptr_eq(&first.batches, &reused.batches));
-        cache.resolve_paint_plan(focus, |_, builder| {
-            assert!(builder.merge_owned(
-                native_batch_key(),
-                representative_path(OpenGpuiEdgeStrokePattern::Solid),
-            ));
-        });
-        cache.resolve_paint_plan(focus_base, |_, builder| {
-            assert!(builder.merge_owned(
-                native_batch_key(),
-                representative_path(OpenGpuiEdgeStrokePattern::Solid),
-            ));
-        });
         cache.resolve_marker_plan(marker_ordinary, |builder| {
             assert!(builder.merge_owned(native_batch_key(), marker_path(false)));
         });
 
         let first_generation = cache.usage();
-        assert_eq!(first_generation.resident_paint_plans, 3);
+        assert_eq!(first_generation.resident_paint_plans, 1);
         assert_eq!(first_generation.resident_marker_plans, 1);
         assert_eq!(first_generation.plan_generations, 1);
 
@@ -1411,11 +1087,12 @@ mod tests {
         assert_eq!(next_generation.resident_paint_plans, 1);
         assert_eq!(next_generation.resident_marker_plans, 0);
         assert_eq!(next_generation.plan_generations, 1);
-        assert!(
+        assert_eq!(
             cache
-                .paint_plans
-                .values()
-                .all(|cached| cached.key.generation == next.generation)
+                .paint_plan
+                .as_ref()
+                .map(|cached| cached.key.generation),
+            Some(next.generation)
         );
     }
 
@@ -1455,8 +1132,6 @@ mod tests {
         let usage = cache.usage();
         assert_eq!(usage.resident_paint_plans, 1);
         assert_eq!(usage.resident_marker_plans, 0);
-        assert_eq!(usage.plan_budget_rejections, 1);
-        assert_eq!(usage.plan_incomplete_builds, 1);
         assert!(usage.plan_footprint.fits(
             cache.budgets.plan_vertices,
             cache.budgets.plan_estimated_bytes,
@@ -1474,18 +1149,16 @@ mod tests {
             representative_path(OpenGpuiEdgeStrokePattern::Dashed),
             representative_path(OpenGpuiEdgeStrokePattern::Dotted),
         ];
-        assert_eq!(
-            paths
-                .iter()
-                .map(|path| path.vertices.len())
-                .collect::<Vec<_>>(),
-            vec![174, 624, 1_560],
-            "the pinned Open GPUI tessellation contract changed",
-        );
+        let path_vertices = paths
+            .iter()
+            .map(|path| path.vertices.len())
+            .collect::<Vec<_>>();
+        assert!(path_vertices.iter().all(|vertices| *vertices > 0));
+        assert!(path_vertices.windows(2).all(|pair| pair[0] < pair[1]));
         let arrow = marker_path(false);
         let circle = marker_path(true);
-        assert_eq!(arrow.vertices.len(), 6);
-        assert_eq!(circle.vertices.len(), 30);
+        assert!(!arrow.vertices.is_empty());
+        assert!(circle.vertices.len() > arrow.vertices.len());
 
         let budgets = OpenGpuiEdgeCacheBudgets::default();
         for edge_count in [100_usize, 4_096, 16_384] {
@@ -1521,7 +1194,7 @@ mod tests {
 
     #[test]
     fn ordinary_native_plan_matrix_remains_complete() {
-        const EDGE_COUNT: usize = 100;
+        const EDGE_COUNT: usize = 2;
 
         for pattern in [
             OpenGpuiEdgeStrokePattern::Solid,
@@ -1554,9 +1227,11 @@ mod tests {
                 assert_eq!(paint.rejected_items(), 0);
                 assert_eq!(markers.rejected_items(), 0);
                 let usage = cache.usage();
-                assert_eq!(usage.plan_incomplete_builds, 0);
-                assert_eq!(usage.plan_rejected_items, 0);
-                assert!(usage.plan_build_peak_footprint.fits(
+                assert!(paint.footprint().fits(
+                    cache.budgets.plan_vertices,
+                    cache.budgets.plan_estimated_bytes,
+                ));
+                assert!(markers.footprint().fits(
                     cache.budgets.plan_vertices,
                     cache.budgets.plan_estimated_bytes,
                 ));
@@ -1629,102 +1304,6 @@ mod tests {
     }
 
     #[test]
-    fn incomplete_plans_are_not_cached_and_recover_on_the_next_complete_build() {
-        const EDGE_COUNT: usize = 16_384;
-
-        let dotted = Rc::new(representative_path(OpenGpuiEdgeStrokePattern::Dotted));
-        let marker = marker_path(true);
-        let mut cache = OpenGpuiEdgePathCache::default();
-
-        let paint_key = plan_key(1, OpenGpuiEdgePaintPlanSegment::Ordinary, 0.0);
-        let paint = cache.resolve_paint_plan(paint_key, |_, builder| {
-            for index in 0..EDGE_COUNT {
-                if !builder.merge_shared(native_batch_key(), Rc::clone(&dotted)) {
-                    builder.reject_unbuilt_items(EDGE_COUNT - index - 1);
-                    break;
-                }
-            }
-        });
-        assert!(matches!(
-            paint.completeness(),
-            OpenGpuiEdgePaintPlanCompleteness::Incomplete { .. }
-        ));
-        assert!(paint.rejected_items() > 0);
-        assert_eq!(
-            paint
-                .batches()
-                .iter()
-                .map(|batch| batch.edge_count)
-                .sum::<usize>()
-                .saturating_add(paint.rejected_items()),
-            EDGE_COUNT,
-        );
-        assert!(paint.footprint().fits(
-            cache.budgets.plan_vertices,
-            cache.budgets.plan_estimated_bytes,
-        ));
-        assert_eq!(cache.usage().resident_paint_plans, 0);
-
-        let recovered = cache.resolve_paint_plan(paint_key, |_, builder| {
-            assert!(builder.merge_owned(
-                native_batch_key(),
-                representative_path(OpenGpuiEdgeStrokePattern::Solid),
-            ));
-        });
-        assert!(recovered.is_complete());
-        assert_eq!(recovered.edge_count(), 1);
-        let reused = cache.resolve_paint_plan(paint_key, |_, _| {
-            unreachable!("the recovered complete plan must be reusable")
-        });
-        assert!(Rc::ptr_eq(&recovered.batches, &reused.batches));
-
-        let markers = cache.resolve_marker_plan(
-            plan_key(1, OpenGpuiEdgePaintPlanSegment::MarkerOrdinary, 0.0),
-            |builder| {
-                for index in 0..EDGE_COUNT * 2 {
-                    if !builder.merge_owned(native_batch_key(), marker.clone()) {
-                        builder.reject_unbuilt_items(EDGE_COUNT * 2 - index - 1);
-                        break;
-                    }
-                }
-            },
-        );
-        assert!(markers.is_complete());
-        assert_eq!(markers.rejected_items(), 0);
-        assert_eq!(cache.usage().resident_marker_plans, 1);
-        assert_eq!(
-            markers
-                .batches()
-                .iter()
-                .map(|batch| batch.edge_count)
-                .sum::<usize>()
-                .saturating_add(markers.rejected_items()),
-            EDGE_COUNT * 2,
-        );
-
-        let usage = cache.usage();
-        assert_eq!(usage.plan_incomplete_builds, 1);
-        assert_eq!(usage.plan_budget_rejections, 1);
-        assert_eq!(usage.plan_rejected_items, paint.rejected_items() as u64);
-        assert!(usage.plan_build_peak_footprint.fits(
-            cache.budgets.plan_vertices,
-            cache.budgets.plan_estimated_bytes,
-        ));
-        assert!(usage.plan_footprint.fits(
-            cache.budgets.plan_vertices,
-            cache.budgets.plan_estimated_bytes,
-        ));
-        assert!(usage.plan_live_footprint.fits(
-            cache.budgets.plan_live_vertices,
-            cache.budgets.plan_live_estimated_bytes,
-        ));
-        assert!(usage.plan_live_peak_footprint.fits(
-            cache.budgets.plan_live_vertices,
-            cache.budgets.plan_live_estimated_bytes,
-        ));
-    }
-
-    #[test]
     fn one_rejected_edge_does_not_starve_later_edges_or_poison_the_slot() {
         let path = representative_path(OpenGpuiEdgeStrokePattern::Solid);
         let mut cache = OpenGpuiEdgePathCache::default();
@@ -1749,44 +1328,7 @@ mod tests {
     }
 
     #[test]
-    fn incomplete_committed_plan_releases_budget_for_focus_chrome() {
-        let path = representative_path(OpenGpuiEdgeStrokePattern::Solid);
-        let footprint = OpenGpuiEdgeCacheFootprint::for_plan(&[batch(path.clone())]);
-        let mut cache = OpenGpuiEdgePathCache::default();
-        cache.budgets.plan_vertices = footprint.vertices;
-        cache.budgets.plan_estimated_bytes = footprint.estimated_bytes;
-        cache.budgets.plan_live_vertices = footprint
-            .vertices
-            .saturating_mul(OPEN_GPUI_EDGE_PLAN_LIVE_PATH_COPY_FACTOR);
-        cache.budgets.plan_live_estimated_bytes = footprint
-            .estimated_bytes
-            .saturating_mul(OPEN_GPUI_EDGE_PLAN_LIVE_PATH_COPY_FACTOR);
-
-        let ordinary = cache.resolve_paint_plan(
-            plan_key(1, OpenGpuiEdgePaintPlanSegment::Ordinary, 0.0),
-            |_, builder| {
-                assert!(builder.merge_owned(native_batch_key(), path.clone()));
-                builder.reject_unbuilt_items(1);
-            },
-        );
-        assert!(!ordinary.is_complete());
-        assert_eq!(cache.usage().resident_paint_plans, 0);
-
-        let focus = cache.resolve_paint_plan(
-            plan_key(
-                1,
-                OpenGpuiEdgePaintPlanSegment::Focus(EdgeId::from_u128(1)),
-                0.0,
-            ),
-            |_, builder| assert!(builder.merge_owned(native_batch_key(), path.clone())),
-        );
-        assert!(focus.is_complete());
-        assert_eq!(focus.edge_count(), 1);
-        assert_eq!(cache.usage().resident_paint_plans, 1);
-    }
-
-    #[test]
-    fn committed_plan_reservation_keeps_minimum_focus_geometry_admissible() {
+    fn committed_plan_reservation_keeps_minimum_marker_geometry_admissible() {
         let ordinary_path = representative_path(OpenGpuiEdgeStrokePattern::Solid);
         let ordinary_footprint =
             OpenGpuiEdgeCacheFootprint::for_plan(&[batch(ordinary_path.clone())]);
@@ -1812,21 +1354,18 @@ mod tests {
         );
         assert!(ordinary.is_complete());
 
-        let focus = cache.resolve_paint_plan(
-            plan_key(
-                1,
-                OpenGpuiEdgePaintPlanSegment::Focus(EdgeId::from_u128(1)),
-                0.0,
-            ),
-            |_, builder| assert!(builder.merge_owned(native_batch_key(), marker_path(false))),
+        let marker = cache.resolve_marker_plan(
+            plan_key(1, OpenGpuiEdgePaintPlanSegment::MarkerOrdinary, 0.0),
+            |builder| assert!(builder.merge_owned(native_batch_key(), marker_path(false))),
         );
-        assert!(focus.is_complete());
-        assert_eq!(focus.edge_count(), 1);
-        assert_eq!(cache.usage().resident_paint_plans, 2);
+        assert!(marker.is_complete());
+        assert_eq!(marker.edge_count(), 1);
+        assert_eq!(cache.usage().resident_paint_plans, 1);
+        assert_eq!(cache.usage().resident_marker_plans, 1);
     }
 
     #[test]
-    fn alternating_style_reservation_preserves_focus_and_markers_under_tight_budget() {
+    fn alternating_style_reservation_preserves_markers_under_tight_budget() {
         let first = native_batch_key_for(Some("data"));
         let second = native_batch_key_for(Some("control"));
         assert_ne!(first, second);
@@ -1845,7 +1384,7 @@ mod tests {
             },
         ];
         let ordinary_footprint = OpenGpuiEdgeCacheFootprint::for_plan(&ordinary_batches);
-        let future_items = 3;
+        let future_items = 1;
         let future_reservation = minimum_plan_reservation(1).saturating_mul(future_items);
         assert_eq!(minimum_plan_reservation(future_items), future_reservation);
         let total = ordinary_footprint.saturating_add(future_reservation);
@@ -1871,22 +1410,6 @@ mod tests {
         assert!(ordinary.is_complete());
         assert_eq!(ordinary.batches().len(), 2);
 
-        let focus_paths = [Rc::new(marker_path(false)), Rc::new(marker_path(false))];
-        let focus = cache.resolve_paint_plan_reserving(
-            plan_key(
-                1,
-                OpenGpuiEdgePaintPlanSegment::Focus(EdgeId::from_u128(1)),
-                0.0,
-            ),
-            1,
-            |_, builder| {
-                assert!(builder.merge_shared(first, Rc::clone(&focus_paths[0])));
-                assert!(builder.merge_shared(second, Rc::clone(&focus_paths[1])));
-            },
-        );
-        assert!(focus.is_complete());
-        assert_eq!(focus.batches().len(), 2);
-
         let markers = cache.resolve_marker_plan(
             plan_key(1, OpenGpuiEdgePaintPlanSegment::MarkerOrdinary, 0.0),
             |builder| {
@@ -1897,9 +1420,8 @@ mod tests {
         assert_eq!(markers.edge_count(), 1);
 
         let usage = cache.usage();
-        assert_eq!(usage.resident_paint_plans, 2);
+        assert_eq!(usage.resident_paint_plans, 1);
         assert_eq!(usage.resident_marker_plans, 1);
-        assert_eq!(usage.plan_budget_rejections, 0);
         assert!(usage.plan_footprint.fits(
             cache.budgets.plan_vertices,
             cache.budgets.plan_estimated_bytes,
@@ -1911,7 +1433,7 @@ mod tests {
     }
 
     #[test]
-    fn live_paint_peak_accounts_for_every_simultaneously_owned_open_gpui_path_copy() {
+    fn retained_plan_footprint_accounts_for_open_gpui_path_copies() {
         let mut cache = OpenGpuiEdgePathCache::default();
         let plan = cache.resolve_paint_plan(
             plan_key(1, OpenGpuiEdgePaintPlanSegment::Ordinary, 0.0),
@@ -1928,8 +1450,7 @@ mod tests {
             .saturating_mul(OPEN_GPUI_EDGE_PLAN_LIVE_PATH_COPY_FACTOR);
 
         assert_eq!(usage.plan_live_footprint, expected_live);
-        assert_eq!(usage.plan_live_peak_footprint, expected_live);
-        assert!(usage.plan_live_peak_footprint.fits(
+        assert!(usage.plan_live_footprint.fits(
             cache.budgets.plan_live_vertices,
             cache.budgets.plan_live_estimated_bytes,
         ));

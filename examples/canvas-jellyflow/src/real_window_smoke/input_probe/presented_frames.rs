@@ -2,14 +2,15 @@ use std::cell::RefCell;
 use std::fmt;
 use std::rc::Rc;
 
+use super::super::presented_frame::{
+    SmokeFrameStage, SmokeNodeBounds, SmokePortGeometry, SmokePresentedFrame, SmokePreviewRoute,
+    SmokePreviewTarget, SmokeRoute, validate_port_geometries,
+};
 use jellyflow_open_gpui::host::{
-    OpenGpuiSceneHost, OpenGpuiSmokeNodeBounds, OpenGpuiSmokePresentedScene, OpenGpuiSmokeRoute,
+    OpenGpuiSceneHost, OpenGpuiSmokeNodeBounds, OpenGpuiSmokePortGeometry,
+    OpenGpuiSmokePresentedScene, OpenGpuiSmokeRoute,
 };
 use open_gpui::{App, Entity, Window};
-use open_gpui_canvas_jellyflow::smoke_receipt::{
-    SmokeFrameStageV1, SmokeNodeBoundsV1, SmokePointV1, SmokePresentedFrameV1,
-    SmokePreviewTargetV1, SmokeRectV1, SmokeRouteV1, SmokeViewportV1,
-};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PendingRouteSwap {
@@ -22,15 +23,15 @@ type PresentedFrameAction = Box<dyn FnOnce(&mut Window, &mut App)>;
 #[derive(Default)]
 struct PresentedFrameRecorderState {
     active: bool,
+    primed: bool,
     final_requested: bool,
     final_presented: bool,
     node_drag_pending: bool,
     pending_route_swap: Option<PendingRouteSwap>,
-    next_presented_sequence: u64,
     last_render_sequence: Option<u64>,
-    frames: Vec<SmokePresentedFrameV1>,
+    frames: Vec<SmokePresentedFrame>,
     failure: Option<&'static str>,
-    next_action: Option<(SmokeFrameStageV1, PresentedFrameAction)>,
+    next_action: Option<(SmokeFrameStage, PresentedFrameAction)>,
     action_completed: bool,
 }
 
@@ -45,6 +46,7 @@ impl fmt::Debug for PresentedFrameRecorder {
         formatter
             .debug_struct("PresentedFrameRecorder")
             .field("active", &state.active)
+            .field("primed", &state.primed)
             .field("frames", &state.frames.len())
             .field("failure", &state.failure)
             .field("action_pending", &state.next_action.is_some())
@@ -57,6 +59,7 @@ impl PresentedFrameRecorder {
     pub(super) fn start(
         &self,
         window: &Window,
+        cx: &mut App,
         host: Entity<OpenGpuiSceneHost>,
     ) -> Result<(), &'static str> {
         {
@@ -64,6 +67,8 @@ impl PresentedFrameRecorder {
             if state.active || !state.frames.is_empty() {
                 return Err("presented_frame_recorder_already_started");
             }
+            let baseline = host.update(cx, |host, _| host.drain_smoke_presented_scenes());
+            state.last_render_sequence = baseline.last().map(|scene| scene.render_sequence());
             state.active = true;
         }
         schedule_presented_frame(window, host, Rc::clone(&self.state));
@@ -87,15 +92,19 @@ impl PresentedFrameRecorder {
         self.state.borrow().active
     }
 
+    pub(super) fn is_primed(&self) -> bool {
+        self.state.borrow().primed
+    }
+
     pub(super) fn failure(&self) -> Option<&'static str> {
         self.state.borrow().failure
     }
 
-    pub(super) fn frames(&self) -> Vec<SmokePresentedFrameV1> {
+    pub(super) fn frames(&self) -> Vec<SmokePresentedFrame> {
         self.state.borrow().frames.clone()
     }
 
-    pub(super) fn observed_stage(&self, stage: SmokeFrameStageV1) -> bool {
+    pub(super) fn observed_stage(&self, stage: SmokeFrameStage) -> bool {
         self.state
             .borrow()
             .frames
@@ -105,7 +114,7 @@ impl PresentedFrameRecorder {
 
     pub(super) fn after_next_stage(
         &self,
-        stage: SmokeFrameStageV1,
+        stage: SmokeFrameStage,
         action: impl FnOnce(&mut Window, &mut App) + 'static,
     ) -> Result<(), &'static str> {
         let mut state = self.state.borrow_mut();
@@ -120,20 +129,37 @@ impl PresentedFrameRecorder {
         self.state.borrow().action_completed
     }
 
-    pub(super) fn record_lod_frame(
+    pub(super) fn poll_lod_frames(
         &self,
-        scene: OpenGpuiSmokePresentedScene,
-    ) -> Result<(), &'static str> {
+        mut scenes: Vec<OpenGpuiSmokePresentedScene>,
+        expected_zoom: f32,
+    ) -> Result<bool, &'static str> {
         let mut state = self.state.borrow_mut();
         if state.active || state.final_requested || state.final_presented {
             return Err("presented_frame_lod_recording_invalid");
         }
-        state.record(scene, SmokeFrameStageV1::Lod)
+        if scenes.is_empty() {
+            return Ok(false);
+        }
+        let ready = scenes
+            .last()
+            .is_some_and(|scene| (scene.viewport().zoom - expected_zoom).abs() <= 0.001);
+        if state.last_render_sequence.is_none() {
+            let scene = scenes
+                .pop()
+                .expect("a non-empty native LOD scene drain has a latest frame");
+            state.record(scene, SmokeFrameStage::Lod)?;
+            return Ok(ready);
+        }
+        for scene in scenes {
+            state.record(scene, SmokeFrameStage::Lod)?;
+        }
+        Ok(ready)
     }
 }
 
 impl PresentedFrameRecorderState {
-    fn observe(&mut self, scene: OpenGpuiSmokePresentedScene) -> Option<SmokeFrameStageV1> {
+    fn observe(&mut self, scene: OpenGpuiSmokePresentedScene) -> Option<SmokeFrameStage> {
         if !self.active || self.failure.is_some() {
             return None;
         }
@@ -142,37 +168,37 @@ impl PresentedFrameRecorderState {
             self.fail(reason);
             return None;
         }
-        if stage == SmokeFrameStageV1::Final {
+        if stage == SmokeFrameStage::Final {
             self.final_presented = true;
             self.active = false;
         }
         Some(stage)
     }
 
-    fn classify(&mut self, scene: &OpenGpuiSmokePresentedScene) -> SmokeFrameStageV1 {
+    fn classify(&mut self, scene: &OpenGpuiSmokePresentedScene) -> SmokeFrameStage {
         if self.final_requested {
-            return SmokeFrameStageV1::Final;
+            return SmokeFrameStage::Final;
         }
-        if scene.node_drag_active() {
+        if !scene.node_drag_nodes().is_empty() {
             self.node_drag_pending = true;
-            return SmokeFrameStageV1::NodeDragPending;
+            return SmokeFrameStage::NodeDragPending;
         }
         if self.node_drag_pending {
             self.node_drag_pending = false;
-            return SmokeFrameStageV1::NodeDragAuthoritative;
+            return SmokeFrameStage::NodeDragAuthoritative;
         }
 
-        if scene.preview_route().is_none() {
-            if let Some(pending) = self.pending_route_swap.take() {
-                return match pending {
-                    PendingRouteSwap::Connection => SmokeFrameStageV1::ConnectionAuthoritative,
-                    PendingRouteSwap::Reconnect => SmokeFrameStageV1::ReconnectAuthoritative,
-                };
-            }
+        if scene.preview_route().is_none()
+            && let Some(pending) = self.pending_route_swap.take()
+        {
+            return match pending {
+                PendingRouteSwap::Connection => SmokeFrameStage::ConnectionAuthoritative,
+                PendingRouteSwap::Reconnect => SmokeFrameStage::ReconnectAuthoritative,
+            };
         }
         if scene.phase() == jellyflow_runtime::interaction::CanvasInteractionPhase::ConnectionSearch
         {
-            return SmokeFrameStageV1::Search;
+            return SmokeFrameStage::Search;
         }
         if scene.preview_route().is_some() {
             let reconnect = scene.suppressed_edge().is_some();
@@ -184,44 +210,36 @@ impl PresentedFrameRecorderState {
                 };
                 self.pending_route_swap = Some(pending);
                 return match pending {
-                    PendingRouteSwap::Connection => SmokeFrameStageV1::ConnectionPending,
-                    PendingRouteSwap::Reconnect => SmokeFrameStageV1::ReconnectPending,
+                    PendingRouteSwap::Connection => SmokeFrameStage::ConnectionPending,
+                    PendingRouteSwap::Reconnect => SmokeFrameStage::ReconnectPending,
                 };
             }
             return if reconnect {
-                SmokeFrameStageV1::ReconnectExploring
+                SmokeFrameStage::ReconnectExploring
             } else {
-                SmokeFrameStageV1::ConnectionExploring
+                SmokeFrameStage::ConnectionExploring
             };
         }
-        SmokeFrameStageV1::Interaction
+        SmokeFrameStage::Interaction
     }
 
     fn record(
         &mut self,
         scene: OpenGpuiSmokePresentedScene,
-        stage: SmokeFrameStageV1,
+        stage: SmokeFrameStage,
     ) -> Result<(), &'static str> {
         let render_sequence = scene.render_sequence();
-        if self
-            .last_render_sequence
-            .is_some_and(|previous| render_sequence < previous)
-        {
-            return Err("presented_frame_render_sequence_reversed");
+        if self.last_render_sequence.is_some_and(|previous| {
+            previous
+                .checked_add(1)
+                .is_none_or(|next| render_sequence != next)
+        }) {
+            return Err("presented_frame_render_sequence_not_contiguous");
         }
-        let presented_sequence = self.take_presented_sequence()?;
-        let frame = scene_into_receipt(presented_sequence, stage, scene)?;
+        let frame = scene_into_frame(stage, scene)?;
         self.last_render_sequence = Some(render_sequence);
         self.frames.push(frame);
         Ok(())
-    }
-
-    fn take_presented_sequence(&mut self) -> Result<u64, &'static str> {
-        let presented_sequence = self.next_presented_sequence;
-        self.next_presented_sequence = presented_sequence
-            .checked_add(1)
-            .ok_or("presented_frame_sequence_exhausted")?;
-        Ok(presented_sequence)
     }
 
     fn fail(&mut self, reason: &'static str) {
@@ -231,11 +249,9 @@ impl PresentedFrameRecorderState {
 
     fn take_ready_action(
         &mut self,
-        observed_stage: Option<SmokeFrameStageV1>,
+        observed_stage: Option<SmokeFrameStage>,
     ) -> Option<PresentedFrameAction> {
-        let Some(observed_stage) = observed_stage else {
-            return None;
-        };
+        let observed_stage = observed_stage?;
         let expected = self.next_action.as_ref().map(|(expected, _)| *expected)?;
         if observed_stage != expected {
             self.fail("presented_frame_action_stage_mismatch");
@@ -251,138 +267,148 @@ fn schedule_presented_frame(
     state: Rc<RefCell<PresentedFrameRecorderState>>,
 ) {
     window.on_next_frame(move |window, cx| {
-        let scene = host.read(cx).smoke_presented_scene_snapshot();
-        let action = {
-            let mut state = state.borrow_mut();
-            let observed_stage = match scene {
-                Some(scene) => state.observe(scene),
-                None => {
-                    state.fail("presented_frame_scene_snapshot_missing");
+        let deferred_host = host.clone();
+        let deferred_state = Rc::clone(&state);
+        window.defer(cx, move |window, cx| {
+            let mut scenes =
+                deferred_host.update(cx, |host, _| host.drain_smoke_presented_scenes());
+            let action = {
+                let mut state = deferred_state.borrow_mut();
+                let observed_stage = if !state.primed {
+                    if let Some(scene) = scenes.last() {
+                        state.last_render_sequence = Some(scene.render_sequence());
+                    }
+                    state.primed = true;
                     None
-                }
+                } else if scenes.is_empty() {
+                    None
+                } else if scenes.len() == 1 {
+                    let scene = scenes.pop().expect("one drained native scene was counted");
+                    state.observe(scene)
+                } else {
+                    eprintln!(
+                        "JELLYFLOW_REAL_WINDOW_SMOKE_FRAME_DRAIN count={} sequences={:?} phases={:?}",
+                        scenes.len(),
+                        scenes
+                            .iter()
+                            .map(OpenGpuiSmokePresentedScene::render_sequence)
+                            .collect::<Vec<_>>(),
+                        scenes
+                            .iter()
+                            .map(OpenGpuiSmokePresentedScene::phase)
+                            .collect::<Vec<_>>(),
+                    );
+                    state.fail("presented_frame_sampling_gap");
+                    None
+                };
+                state.take_ready_action(observed_stage)
             };
-            state.take_ready_action(observed_stage)
-        };
-        if let Some(action) = action {
-            action(window, cx);
-            state.borrow_mut().action_completed = true;
-        }
-        if state.borrow().active {
-            schedule_presented_frame(window, host, Rc::clone(&state));
-        }
+            if let Some(action) = action {
+                action(window, cx);
+                deferred_state.borrow_mut().action_completed = true;
+            }
+            if deferred_state.borrow().active {
+                schedule_presented_frame(window, deferred_host, Rc::clone(&deferred_state));
+            }
+        });
     });
 }
 
-fn scene_into_receipt(
-    presented_sequence: u64,
-    stage: SmokeFrameStageV1,
+fn scene_into_frame(
+    stage: SmokeFrameStage,
     scene: OpenGpuiSmokePresentedScene,
-) -> Result<SmokePresentedFrameV1, &'static str> {
+) -> Result<SmokePresentedFrame, &'static str> {
     let node_bounds = scene
         .node_bounds()
         .iter()
         .copied()
-        .map(receipt_node_bounds)
-        .collect::<Result<Vec<_>, _>>()?;
-    let chrome_bounds = scene
-        .chrome_bounds()
-        .iter()
-        .copied()
-        .map(receipt_node_bounds)
+        .map(presented_node_bounds)
         .collect::<Result<Vec<_>, _>>()?;
     let authoritative_routes = scene
         .authoritative_routes()
         .iter()
         .copied()
-        .map(receipt_route)
+        .map(presented_route)
         .collect::<Result<Vec<_>, _>>()?;
+    let port_geometries = scene
+        .port_geometries()
+        .iter()
+        .copied()
+        .map(presented_port_geometry)
+        .collect::<Vec<_>>();
+    validate_port_geometries(&port_geometries)?;
     let preview_route = scene
         .preview_route()
-        .map(|preview| -> Result<SmokeRouteV1, &'static str> {
-            Ok(SmokeRouteV1 {
-                edge_id: "preview".to_owned(),
-                source: receipt_point(preview.source())?,
-                target: receipt_point(preview.target())?,
+        .map(|preview| -> Result<SmokePreviewRoute, &'static str> {
+            Ok(SmokePreviewRoute {
+                source: presented_point(preview.source())?,
+                target: presented_point(preview.target())?,
             })
         })
         .transpose()?;
     let preview_target = scene
         .preview_target()
-        .map(|target| -> Result<SmokePreviewTargetV1, &'static str> {
-            Ok(SmokePreviewTargetV1 {
-                port_id: target.port().0.to_string(),
-                anchor: receipt_point(target.anchor())?,
+        .map(|target| -> Result<SmokePreviewTarget, &'static str> {
+            Ok(SmokePreviewTarget {
+                port: target.port(),
+                anchor: presented_point(target.anchor())?,
             })
         })
         .transpose()?;
-    Ok(SmokePresentedFrameV1 {
-        presented_sequence,
+    Ok(SmokePresentedFrame {
         render_sequence: scene.render_sequence(),
         stage,
-        phase: format!("{:?}", scene.phase()),
+        phase: scene.phase(),
         graph_revision: scene.graph_revision(),
-        viewport: SmokeViewportV1 {
-            pan: SmokePointV1 {
-                x: scene.viewport().pan.x,
-                y: scene.viewport().pan.y,
-            },
-            zoom: scene.viewport().zoom,
-        },
+        viewport: scene.viewport(),
         node_bounds,
-        chrome_bounds,
+        port_geometries,
+        node_drag_nodes: scene.node_drag_nodes().to_vec(),
         preview_route,
         preview_target,
-        suppressed_edge_id: scene.suppressed_edge().map(|edge| edge.0.to_string()),
+        suppressed_edge: scene.suppressed_edge(),
         authoritative_routes,
     })
 }
 
-fn receipt_node_bounds(entry: OpenGpuiSmokeNodeBounds) -> Result<SmokeNodeBoundsV1, &'static str> {
+fn presented_port_geometry(entry: OpenGpuiSmokePortGeometry) -> SmokePortGeometry {
+    SmokePortGeometry {
+        node: entry.node(),
+        port: entry.port(),
+        visual_bounds: entry.visual_bounds(),
+        hit_bounds: entry.hit_bounds(),
+        interaction_bounds: entry.interaction_bounds(),
+        route_anchor: entry.route_anchor(),
+    }
+}
+
+fn presented_node_bounds(entry: OpenGpuiSmokeNodeBounds) -> Result<SmokeNodeBounds, &'static str> {
     let bounds = entry.bounds();
     if !bounds.is_positive_finite() {
         return Err("presented_frame_node_bounds_invalid");
     }
-    Ok(SmokeNodeBoundsV1 {
-        node_id: entry.node().0.to_string(),
-        bounds: SmokeRectV1 {
-            x: bounds.origin.x,
-            y: bounds.origin.y,
-            width: bounds.size.width,
-            height: bounds.size.height,
-        },
+    Ok(SmokeNodeBounds {
+        node: entry.node(),
+        bounds,
+        selected: entry.selected(),
+        chrome_expected: entry.chrome_expected(),
+        chrome_bounds: entry.chrome_bounds(),
     })
 }
 
-fn receipt_route(route: OpenGpuiSmokeRoute) -> Result<SmokeRouteV1, &'static str> {
-    Ok(SmokeRouteV1 {
-        edge_id: route.edge().0.to_string(),
-        source: receipt_point(route.source())?,
-        target: receipt_point(route.target())?,
+fn presented_route(route: OpenGpuiSmokeRoute) -> Result<SmokeRoute, &'static str> {
+    Ok(SmokeRoute {
+        edge: route.edge(),
+        source: presented_point(route.source())?,
+        target: presented_point(route.target())?,
     })
 }
 
-fn receipt_point(
+fn presented_point(
     point: jellyflow_runtime::geometry::ViewPoint,
-) -> Result<SmokePointV1, &'static str> {
+) -> Result<jellyflow_runtime::geometry::ViewPoint, &'static str> {
     point
         .is_finite()
-        .then_some(SmokePointV1 {
-            x: point.x,
-            y: point.y,
-        })
+        .then_some(point)
         .ok_or("presented_frame_point_invalid")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn presented_sequence_advances_at_the_native_frame_callback_boundary() {
-        let mut state = PresentedFrameRecorderState::default();
-
-        assert_eq!(state.take_presented_sequence(), Ok(0));
-        assert_eq!(state.take_presented_sequence(), Ok(1));
-        assert_eq!(state.take_presented_sequence(), Ok(2));
-    }
 }

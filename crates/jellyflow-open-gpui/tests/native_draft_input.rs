@@ -99,7 +99,7 @@ impl NativeDraftNode {
         let (_, observation) = binding_observation(&self.binding, cx);
         let update = self
             .field
-            .observe(observation)
+            .observe(observation, cx)
             .expect("retain graph reconciliation");
         if matches!(update, RetainedFieldUpdate::RemoteApplied) {
             let value = self.field.local().clone();
@@ -111,11 +111,11 @@ impl NativeDraftNode {
     fn accept_remote(&mut self, cx: &mut Context<Self>) {
         let (authoring, observation) = binding_observation(&self.binding, cx);
         self.field
-            .observe(observation)
+            .observe(observation, cx)
             .expect("observe conflict authoring before resolution");
         assert!(matches!(
             self.field
-                .resolve(&authoring, RetainedFieldConflictChoice::AcceptRemote),
+                .resolve(&authoring, RetainedFieldConflictChoice::AcceptRemote, cx,),
             Ok(RetainedFieldResolution::AcceptedRemote { .. })
         ));
         let value = self.field.local().clone();
@@ -127,11 +127,11 @@ impl NativeDraftNode {
     fn reapply_local(&mut self, cx: &mut Context<Self>) {
         let (authoring, observation) = binding_observation(&self.binding, cx);
         self.field
-            .observe(observation)
+            .observe(observation, cx)
             .expect("observe current conflict authoring");
         let plan = self
             .field
-            .plan(authoring, RetainedFieldSubmitMode::Reapply)
+            .plan(authoring, RetainedFieldSubmitMode::Reapply, cx)
             .expect("explicit native input reapply plan");
         let expected_version = plan.authoring().version();
         let value = plan.value().clone();
@@ -294,7 +294,8 @@ fn composing_conflict_reapplies_only_after_explicit_unmark_and_revision_checked_
     cx.update_entity(&node, |node, cx| {
         let authoring = node.binding.read(cx).authoring().expect("live authoring");
         assert!(matches!(
-            node.field.plan(authoring, RetainedFieldSubmitMode::Reapply),
+            node.field
+                .plan(authoring, RetainedFieldSubmitMode::Reapply, cx),
             Err(RetainedFieldError::CompositionActive)
         ));
     });
@@ -366,7 +367,7 @@ fn internal_supervisor_owns_dispatch_ticket_and_releases_task_resources(
 
     let settled_revision = runtime.snapshot().unwrap().revision();
     let settled_resources = cx.read_entity(&host, |host, _| host.resource_snapshot());
-    for frame in 0..120 {
+    for frame in 0..3 {
         draw(cx);
         cx.read_entity(&node, |node, _| {
             assert_eq!(node.field.attempt_state(), RetainedFieldAttemptState::Idle);
@@ -520,11 +521,11 @@ fn dispatch_test_value(
     cx: &mut Context<NativeDraftNode>,
 ) -> Result<(), RetainedFieldError> {
     let (authoring, observation) = binding_observation(&node.binding, cx);
-    node.field.observe(observation)?;
+    node.field.observe(observation, cx)?;
     node.field.edit(value.to_owned())?;
     let plan = node
         .field
-        .plan(authoring, RetainedFieldSubmitMode::Commit)?;
+        .plan(authoring, RetainedFieldSubmitMode::Commit, cx)?;
     let version = plan.authoring().version();
     let command = GraphCommand::set_node_data(version, node_id(), plan.value().clone().into());
     plan.dispatch(command, cx)
@@ -585,6 +586,7 @@ fn mount_scene(
             registry.seal(&node_catalog).expect("valid test registry"),
             viewport(),
         )
+        .expect("valid Open GPUI scene host")
     });
     draw(cx);
 

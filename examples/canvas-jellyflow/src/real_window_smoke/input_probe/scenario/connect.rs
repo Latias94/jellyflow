@@ -118,8 +118,6 @@ impl RealWindowSmokeProbe {
                             current.zoom,
                             target_anchor,
                         )?;
-                        let reframes = self.interaction()?.auto_pan_reframes.saturating_add(1);
-                        self.interaction_mut()?.auto_pan_reframes = reframes;
                         ViewPoint::new(surface_size.width * 0.5, surface_size.height * 0.5)
                     };
                     self.interaction_mut()?.release = Some(target);
@@ -140,16 +138,16 @@ impl RealWindowSmokeProbe {
                     eprintln!(
                         "JELLYFLOW_REAL_WINDOW_SMOKE_CONNECTION_AUTOPAN target_port={} \
                          target_point={target:?} settled_target={settled_target:?} frames={frames} \
-                         pan_x={} pan_y={} zoom={} target_outcome={:?} tick_registrations={} \
-                         tick_entries={} tick_frame_requests={}",
+                         pan_x={} pan_y={} zoom={} target_outcome={:?} tick_scheduled={} \
+                         tick_frame_requested={} pending_queries={}",
                         target_port.0,
                         current.pan.x,
                         current.pan.y,
                         current.zoom,
                         geometry.port_outcome(target_port),
-                        tick_ordinal(tick_resources.interaction_registered_tick_id()),
-                        tick_ordinal(tick_resources.interaction_entered_tick_id()),
-                        tick_ordinal(tick_resources.interaction_requested_tick_id()),
+                        tick_resources.interaction_tick_scheduled(),
+                        tick_resources.interaction_tick_frame_requested(),
+                        tick_resources.interaction_pending_queries(),
                     );
                 }
                 window.refresh();
@@ -191,8 +189,6 @@ impl RealWindowSmokeProbe {
                 } else {
                     self.capture_checkpoint(
                         window,
-                        surface,
-                        cx,
                         view,
                         surface_size,
                         SmokeCaptureState::ConnectionPreview,
@@ -208,7 +204,6 @@ impl RealWindowSmokeProbe {
                     )?;
                     let interaction = self.interaction_mut()?;
                     interaction.release_wire_path = Some(path);
-                    interaction.connection_preview_wire_painted = true;
                     self.transition(ProbePhase::ConnectRelease);
                     Ok(None)
                 }
@@ -229,7 +224,6 @@ impl RealWindowSmokeProbe {
                     &path,
                     self.paint_palette.canvas_background,
                 )?;
-                self.interaction_mut()?.connection_release_frame_painted = true;
                 let target = self
                     .interaction()?
                     .release
@@ -266,8 +260,6 @@ impl RealWindowSmokeProbe {
                     &path,
                     self.paint_palette.canvas_background,
                 )?;
-                let interaction = self.interaction_mut()?;
-                interaction.connection_release_continuous = true;
                 self.transition(ProbePhase::ConnectWaitCommitted);
                 Ok(None)
             }
@@ -290,15 +282,12 @@ impl RealWindowSmokeProbe {
                     }
                     self.capture_checkpoint(
                         window,
-                        surface,
-                        cx,
                         view,
                         surface_size,
                         SmokeCaptureState::ConnectionCommitted,
                     )?;
                     let interaction = self.interaction_mut()?;
                     interaction.created_edge = Some(created);
-                    interaction.connection_created = true;
                     self.transition(ProbePhase::SecondEdgePress);
                     Ok(None)
                 } else {

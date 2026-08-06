@@ -7,12 +7,16 @@ use jellyflow_core::{
     CanvasPoint, CanvasRect, CanvasSize, GraphBuilder, GraphId, Node, NodeId, NodeKindKey,
 };
 use jellyflow_egui::{EguiCanvasInteraction, EguiInteractionOutput, EguiNativeFrameHost};
+use jellyflow_runtime::commands::GraphCommand;
 use jellyflow_runtime::geometry::{ViewPoint, ViewRect, ViewSize};
-use jellyflow_runtime::graph::GraphRuntime;
+use jellyflow_runtime::graph::{
+    GraphRuntime, GraphRuntimeMiddleware, GraphRuntimeMiddlewareSnapshot,
+};
 use jellyflow_runtime::interaction::{
     CanvasInteractionConfig, CanvasInteractionError, CanvasInteractionPhase, CanvasPressTarget,
     InteractionTickDemand, SelectionBaseline, SelectionMode,
 };
+use jellyflow_runtime::profile::ApplyPipelineError;
 use jellyflow_runtime::view::{
     FrameRequest, RendererStamp, ViewCloseReason, ViewSession, ViewSessionEvent, ViewSessionOptions,
 };
@@ -23,13 +27,16 @@ const PARTIAL_DRAG: Pos2 = Pos2::new(115.0, 130.0);
 const DRAG: Pos2 = Pos2::new(200.0, 180.0);
 
 struct PagedMarqueeState {
-    _runtime: Rc<RefCell<Option<GraphRuntime>>>,
+    runtime: Rc<RefCell<Option<GraphRuntime>>>,
     host: EguiNativeFrameHost,
-    interaction: EguiCanvasInteraction,
+    interaction: Rc<RefCell<EguiCanvasInteraction>>,
     nodes: Vec<NodeId>,
     selection_baseline: SelectionBaseline,
     scene_size: Vec2,
     drop_runtime_on_viewport_change: Rc<Cell<bool>>,
+    delay_interaction_close: Rc<Cell<bool>>,
+    interaction_context: Rc<RefCell<Option<egui::Context>>>,
+    delayed_close_output: Rc<RefCell<Option<EguiInteractionOutput>>>,
     response_visible: bool,
     close_host_during_frame: bool,
     query_page_budget: usize,
@@ -56,15 +63,26 @@ impl PagedMarqueeState {
             .selection_baseline()
             .expect("paged marquee selection baseline");
         let host = EguiNativeFrameHost::new(view);
-        let interaction = EguiCanvasInteraction::new(
-            host.view(),
-            CanvasInteractionConfig {
-                canvas_drag_threshold_in_view: 1.0,
-                query_work_budget: 1,
-                ..CanvasInteractionConfig::default()
-            },
-        )
-        .expect("paged marquee interaction");
+        let interaction = Rc::new(RefCell::new(
+            EguiCanvasInteraction::new(
+                host.view(),
+                CanvasInteractionConfig {
+                    canvas_drag_threshold_in_view: 1.0,
+                    query_work_budget: 1,
+                    ..CanvasInteractionConfig::default()
+                },
+            )
+            .expect("paged marquee interaction"),
+        ));
+        let delay_interaction_close = Rc::new(Cell::new(false));
+        let interaction_context = Rc::new(RefCell::new(None));
+        let delayed_close_output = Rc::new(RefCell::new(None));
+        let runtime = runtime.with_middleware(DelayedInteractionCloseMiddleware {
+            trigger: Rc::clone(&delay_interaction_close),
+            interaction: Rc::clone(&interaction),
+            context: Rc::clone(&interaction_context),
+            output: Rc::clone(&delayed_close_output),
+        });
         let runtime = Rc::new(RefCell::new(Some(runtime)));
         let drop_runtime_on_viewport_change = Rc::new(Cell::new(false));
         let callback_runtime = Rc::clone(&runtime);
@@ -79,13 +97,16 @@ impl PagedMarqueeState {
             })
             .expect("subscribe runtime-drop trigger");
         Self {
-            _runtime: runtime,
+            runtime,
             host,
             interaction,
             nodes,
             selection_baseline,
             scene_size: Vec2::new(480.0, 320.0),
             drop_runtime_on_viewport_change,
+            delay_interaction_close,
+            interaction_context,
+            delayed_close_output,
             response_visible: true,
             close_host_during_frame: false,
             query_page_budget: 1,
@@ -94,11 +115,39 @@ impl PagedMarqueeState {
     }
 }
 
+struct DelayedInteractionCloseMiddleware {
+    trigger: Rc<Cell<bool>>,
+    interaction: Rc<RefCell<EguiCanvasInteraction>>,
+    context: Rc<RefCell<Option<egui::Context>>>,
+    output: Rc<RefCell<Option<EguiInteractionOutput>>>,
+}
+
+impl GraphRuntimeMiddleware for DelayedInteractionCloseMiddleware {
+    fn before_command(
+        &mut self,
+        _snapshot: GraphRuntimeMiddlewareSnapshot,
+        _command: &GraphCommand,
+    ) -> Result<(), ApplyPipelineError> {
+        if self.trigger.replace(false) {
+            let context = self
+                .context
+                .borrow()
+                .clone()
+                .expect("paged marquee frame captured an egui context");
+            let output = self.interaction.borrow_mut().close(&context);
+            self.output.replace(Some(output));
+        }
+        Ok(())
+    }
+}
+
 fn render_paged_marquee(ui: &mut Ui, state: &mut PagedMarqueeState) {
+    state.interaction_context.replace(Some(ui.ctx().clone()));
     let query_page_budget = state.query_page_budget;
     let scene_rect = Rect::from_min_size(ui.max_rect().min, state.scene_size);
     state
         .interaction
+        .borrow_mut()
         .begin_frame_with_query_page_budget(ui.ctx(), scene_rect, query_page_budget)
         .expect("begin paged marquee frame");
     if state.response_visible {
@@ -109,6 +158,7 @@ fn render_paged_marquee(ui: &mut Ui, state: &mut PagedMarqueeState) {
         );
         state
             .interaction
+            .borrow_mut()
             .handle_response(
                 &response,
                 CanvasPressTarget::Marquee {
@@ -128,6 +178,7 @@ fn render_paged_marquee(ui: &mut Ui, state: &mut PagedMarqueeState) {
     state.output = Some(
         state
             .interaction
+            .borrow_mut()
             .end_frame(ui.ctx())
             .expect("end paged marquee frame"),
     );
@@ -187,7 +238,7 @@ fn marquee_query_consumes_one_page_per_frame_and_publishes_only_the_complete_sel
     harness.step();
     harness.state_mut().output.take();
     assert_eq!(
-        harness.state().interaction.presentation().phase(),
+        harness.state().interaction.borrow().presentation().phase(),
         CanvasInteractionPhase::Armed
     );
 
@@ -222,7 +273,7 @@ fn marquee_query_consumes_one_page_per_frame_and_publishes_only_the_complete_sel
     let selection_publications =
         usize::from(released.damage().selection) + drain_marquee_queries(&mut harness);
     assert_eq!(
-        harness.state().interaction.presentation().phase(),
+        harness.state().interaction.borrow().presentation().phase(),
         CanvasInteractionPhase::Idle
     );
     assert_eq!(
@@ -264,7 +315,7 @@ fn retired_marquee_response_discards_its_pending_page_without_partial_selection(
     assert!(retired.terminal_query_error().is_none());
     assert!(retired.released_native_ownership());
     assert_eq!(
-        harness.state().interaction.presentation().phase(),
+        harness.state().interaction.borrow().presentation().phase(),
         CanvasInteractionPhase::Idle
     );
     assert!(
@@ -365,7 +416,7 @@ fn stale_marquee_cursor_restarts_from_the_latest_geometry_without_partial_select
     let selection_publications =
         usize::from(released.damage().selection) + drain_marquee_queries(&mut harness);
     assert_eq!(
-        harness.state().interaction.presentation().phase(),
+        harness.state().interaction.borrow().presentation().phase(),
         CanvasInteractionPhase::Idle
     );
     assert_eq!(
@@ -412,7 +463,7 @@ fn terminal_query_error_cleans_runtime_owned_continuation_without_an_extra_page(
     assert_eq!(terminal.tick_demand(), InteractionTickDemand::None);
     assert!(terminal.released_native_ownership());
     assert_eq!(
-        harness.state().interaction.presentation().phase(),
+        harness.state().interaction.borrow().presentation().phase(),
         CanvasInteractionPhase::Idle
     );
     assert_eq!(
@@ -431,7 +482,7 @@ fn terminal_query_error_cleans_runtime_owned_continuation_without_an_extra_page(
     assert!(!following.renderer_work_pending());
     assert_eq!(following.tick_demand(), InteractionTickDemand::None);
     assert_eq!(
-        harness.state().interaction.presentation().phase(),
+        harness.state().interaction.borrow().presentation().phase(),
         CanvasInteractionPhase::Closed
     );
 }
@@ -489,6 +540,7 @@ fn explicit_cancel_discards_pending_marquee_pages() {
     let state = harness.state_mut();
     let cancelled = state
         .interaction
+        .borrow_mut()
         .cancel(&ctx)
         .expect("explicitly cancel paged marquee");
     assert_eq!(cancelled.attempted_query_page_count(), 0);
@@ -532,10 +584,127 @@ fn host_close_during_frame_discards_pending_marquee_pages() {
     assert!(closed.terminal_query_error().is_none());
     assert!(closed.released_native_ownership());
     assert_eq!(
-        harness.state().interaction.presentation().phase(),
+        harness.state().interaction.borrow().presentation().phase(),
         CanvasInteractionPhase::Closed
     );
     assert!(harness.state().host.view().close_reason().is_some());
+}
+
+#[test]
+fn closed_frame_finishes_a_busy_delayed_close_with_its_page_budget_exactly_once() {
+    let mut harness = Harness::builder()
+        .with_size(Vec2::new(480.0, 320.0))
+        .build_ui_state(render_paged_marquee, PagedMarqueeState::new());
+    begin_marquee_drag(&mut harness, DRAG);
+    let first_page = harness
+        .state_mut()
+        .output
+        .take()
+        .expect("first marquee page output");
+    assert_query_page_continues(&first_page);
+    assert_eq!(drain_marquee_queries(&mut harness), 1);
+    assert_eq!(
+        harness.state().interaction.borrow().presentation().phase(),
+        CanvasInteractionPhase::Marquee,
+    );
+    assert_eq!(
+        harness
+            .state()
+            .host
+            .view()
+            .selection()
+            .expect("temporary marquee selection")
+            .nodes(),
+        harness.state().nodes,
+    );
+
+    let state = harness.state_mut();
+    state.delay_interaction_close.set(true);
+    let version = state
+        .runtime
+        .borrow()
+        .as_ref()
+        .expect("paged marquee runtime remains available")
+        .snapshot()
+        .expect("graph before delayed close")
+        .version();
+    state
+        .runtime
+        .borrow()
+        .as_ref()
+        .expect("paged marquee runtime remains available")
+        .execute(GraphCommand::set_node_data(
+            version,
+            state.nodes[0],
+            serde_json::json!({ "trigger": "delayed-close" }),
+        ))
+        .into_result()
+        .expect("middleware trigger command applies");
+    let delayed = state
+        .delayed_close_output
+        .borrow_mut()
+        .take()
+        .expect("middleware observes delayed interaction close");
+    assert_eq!(delayed.attempted_query_page_count(), 0);
+    assert!(delayed.renderer_work_pending());
+    assert!(delayed.released_native_ownership());
+    assert!(!delayed.damage().selection);
+    assert!(
+        state
+            .interaction_context
+            .borrow()
+            .as_ref()
+            .expect("paged marquee context")
+            .dragged_id()
+            .is_none(),
+    );
+    assert_eq!(
+        state.interaction.borrow().presentation().phase(),
+        CanvasInteractionPhase::Marquee,
+    );
+
+    state.host.close().expect("close delayed marquee host");
+    assert_eq!(
+        state.host.view().close_reason(),
+        Some(ViewCloseReason::HostClosed),
+    );
+    state.query_page_budget = 1;
+
+    harness.step();
+    let cleaned = harness
+        .state_mut()
+        .output
+        .take()
+        .expect("closed frame cleanup output");
+    assert_eq!(cleaned.attempted_query_page_count(), 0);
+    assert!(matches!(
+        cleaned.terminal_query_error(),
+        Some(CanvasInteractionError::ViewUnavailable)
+    ));
+    assert!(!cleaned.renderer_work_pending());
+    assert_eq!(cleaned.tick_demand(), InteractionTickDemand::None);
+    assert_eq!(
+        harness.state().interaction.borrow().presentation().phase(),
+        CanvasInteractionPhase::Closed,
+    );
+
+    harness.step();
+    let following = harness
+        .state_mut()
+        .output
+        .take()
+        .expect("frame after delayed close cleanup");
+    assert_eq!(following.attempted_query_page_count(), 0);
+    assert!(following.terminal_query_error().is_none());
+    assert!(!following.renderer_work_pending());
+    assert!(!following.damage().selection);
+    assert_eq!(
+        usize::from(delayed.terminal_query_error().is_some())
+            + usize::from(cleaned.terminal_query_error().is_some())
+            + usize::from(following.terminal_query_error().is_some()),
+        1,
+        "the deferred selection cleanup must report its terminal failure exactly once",
+    );
 }
 
 fn begin_marquee_drag(harness: &mut Harness<'_, PagedMarqueeState>, destination: Pos2) {
@@ -551,6 +720,13 @@ fn begin_marquee_drag(harness: &mut Harness<'_, PagedMarqueeState>, destination:
 }
 
 fn assert_query_page_continues(output: &EguiInteractionOutput) {
+    assert_eq!(
+        output.query_advances().len(),
+        1,
+        "each adapter frame must retain the exact runtime query advance"
+    );
+    assert_eq!(output.query_advances()[0].pages_granted(), 1);
+    assert_eq!(output.query_advances()[0].pages_attempted(), 1);
     assert_eq!(
         output.attempted_query_page_count(),
         1,
@@ -583,6 +759,7 @@ fn drain_marquee_queries(harness: &mut Harness<'_, PagedMarqueeState>) -> usize 
             continue;
         }
         assert_eq!(output.attempted_query_page_count(), 1);
+        assert_eq!(output.query_advances().len(), 1);
         assert!(!output.renderer_work_pending());
         assert!(output.damage().selection);
         return usize::from(output.damage().selection);
@@ -601,14 +778,14 @@ fn assert_selection_is_empty_and_marquee_is_active(state: &PagedMarqueeState) {
             .is_empty()
     );
     assert_eq!(
-        state.interaction.presentation().phase(),
+        state.interaction.borrow().presentation().phase(),
         CanvasInteractionPhase::Marquee
     );
 }
 
 fn assert_marquee_cancelled_without_selection(state: &PagedMarqueeState) {
     assert_eq!(
-        state.interaction.presentation().phase(),
+        state.interaction.borrow().presentation().phase(),
         CanvasInteractionPhase::Idle
     );
     assert!(

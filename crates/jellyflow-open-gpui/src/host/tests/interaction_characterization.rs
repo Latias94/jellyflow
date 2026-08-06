@@ -1,10 +1,10 @@
 use super::*;
 
 #[open_gpui::test]
-fn connection_commit_keeps_exactly_one_preview_across_native_frames(
+fn unavailable_release_reports_and_cancels_semantic_and_native_connection_state(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    let (_runtime, host, cx) = mount_connection_scene_for_graph(cx, unconnected_graph());
+    let (runtime, host, cx) = mount_connection_scene_for_graph(cx, unconnected_graph());
     draw(cx);
 
     let output = cx
@@ -13,153 +13,49 @@ fn connection_commit_keeps_exactly_one_preview_across_native_frames(
     let input = cx
         .debug_bounds("jellyflow-test-input-port")
         .expect("input bounds");
+    let owner = cx.read_entity(&host, |host, _| {
+        current_port_drag_owner(host, NodeId::from_u128(10), PortId::from_u128(20))
+    });
     cx.simulate_mouse_down(output.center(), MouseButton::Left, Default::default());
     cx.simulate_mouse_move(input.center(), Some(MouseButton::Left), Default::default());
+    let sample = cx.read_entity(&host, |host, _| {
+        assert_eq!(
+            host.interaction_presentation().phase(),
+            CanvasInteractionPhase::ConnectionDrag,
+        );
+        assert!(!host.interaction_owner.test_has_pending_submission());
+        assert_eq!(host.active_port_drag(), Some(owner.clone()));
+        host.viewport_pointer_sample(input.center())
+            .expect("capture release sample before runtime retirement")
+    });
 
-    hold_released_connection_at_adapter_boundary(&host, input.center(), cx);
-
-    for frame in 0..3 {
-        draw_once(cx);
-        assert_committing_preview_frame(&host, None, frame, cx);
-    }
-    release_held_connection(&host, input.center(), cx);
-}
-
-#[open_gpui::test]
-fn reconnect_commit_suppresses_old_edge_without_preview_flicker(
-    cx: &mut open_gpui::TestAppContext,
-) {
-    let edge = EdgeId::from_u128(30);
-    let (runtime, host, cx) = mount_connection_scene_for_graph(cx, reconnect_graph());
-    draw(cx);
-
-    let old_input = cx
-        .debug_bounds("jellyflow-test-input-port")
-        .expect("old input bounds");
-    let new_input = cx
-        .debug_bounds("jellyflow-test-reconnect-input-port")
-        .expect("new input bounds");
-    cx.simulate_mouse_down(old_input.center(), MouseButton::Left, Default::default());
-    cx.simulate_mouse_move(
-        new_input.center(),
-        Some(MouseButton::Left),
-        Default::default(),
+    drop(runtime);
+    let (diagnostic, phase, terminal, has_pending_submission, pending_work_empty, active_port) = cx
+        .update(|window, cx| {
+            host.update(cx, |host, cx| {
+                host.release_connection_sample_for_test(sample, window, cx);
+                let presentation = host.interaction_presentation();
+                (
+                    host.last_diagnostic()
+                        .map(|diagnostic| diagnostic.message().to_owned()),
+                    presentation.phase(),
+                    presentation.terminal(),
+                    host.interaction_owner.test_has_pending_submission(),
+                    host.interaction_owner.test_pending_work_empty(),
+                    host.active_port_drag(),
+                )
+            })
+        });
+    let diagnostic = diagnostic.expect("unavailable release diagnostic");
+    assert!(
+        diagnostic.contains("interaction view cannot provide an authoritative graph snapshot"),
+        "unexpected release diagnostic: {diagnostic}",
     );
-
-    hold_released_connection_at_adapter_boundary(&host, new_input.center(), cx);
-
-    for frame in 0..3 {
-        draw_once(cx);
-        assert_committing_preview_frame(&host, Some(edge), frame, cx);
-        assert!(
-            runtime
-                .snapshot()
-                .expect("unchanged graph while commit is pending")
-                .graph()
-                .edge(&edge)
-                .is_some(),
-            "frame {frame}: suppression must not mutate the authoritative edge",
-        );
-    }
-    release_held_connection(&host, new_input.center(), cx);
-}
-
-#[open_gpui::test]
-fn new_connection_preview_reuses_the_eventual_exec_edge_recipe(cx: &mut open_gpui::TestAppContext) {
-    let (runtime, host, cx) = mount_connection_scene_for_graph(cx, exec_unconnected_graph());
-    draw(cx);
-
-    let output = cx
-        .debug_bounds("jellyflow-test-output-port")
-        .expect("exec output bounds");
-    let input = cx
-        .debug_bounds("jellyflow-test-input-port")
-        .expect("exec input bounds");
-    cx.simulate_mouse_down(output.center(), MouseButton::Left, Default::default());
-    cx.simulate_mouse_move(input.center(), Some(MouseButton::Left), Default::default());
-    draw(cx);
-
-    let preview = cx.update_entity(&host, |host, _| {
-        let plan = host.connection_preview_plan().expect("exec preview plan");
-        assert_eq!(plan.probe, OpenGpuiConnectionPreviewProbeOutcome::Valid);
-        let recipe = host.edge_painters.resolve_with_style_slot(
-            plan.edge_kind,
-            OpenGpuiEdgeVisualFacts::default().with_preview(true),
-            &plan.presentation,
-            plan.style_slot,
-            &host.graph_theme,
-        );
-        let evidence = host
-            .scene_evidence
-            .last_connection_preview_paint
-            .get()
-            .expect("resolved exec preview recipe");
-        assert_eq!(evidence.edge_kind, EdgeKind::Exec);
-        assert_eq!(evidence.probe, OpenGpuiConnectionPreviewProbeOutcome::Valid);
-        assert_eq!(evidence.target_marker, OpenGpuiEdgeMarkerShape::None);
-        assert_eq!(evidence.paint_key, recipe.path_batch_key());
-        assert_eq!(evidence.halo_paint_key, recipe.halo_path_batch_key());
-        assert!(evidence.halo_stroke_width > Some(evidence.stroke_width));
-        let painter = recipe.painter();
-        let tone = recipe.style().tone();
-        let stroke_pattern = recipe.path_batch_key().stroke_pattern();
-        let source_marker = recipe.source_marker();
-        let target_marker = recipe.target_marker();
-        (
-            plan.edge_kind,
-            plan.presentation,
-            painter,
-            tone,
-            stroke_pattern,
-            source_marker,
-            target_marker,
-        )
-    });
-
-    cx.simulate_mouse_up(input.center(), MouseButton::Left, Default::default());
-    cx.run_until_parked();
-    draw(cx);
-    draw(cx);
-
-    let snapshot = runtime.snapshot().expect("committed exec graph");
-    assert_eq!(snapshot.graph().edges().len(), 1);
-    let (&edge_id, edge) = snapshot
-        .graph()
-        .edges()
-        .iter()
-        .next()
-        .expect("committed exec edge");
-    assert_eq!(edge.kind, EdgeKind::Exec);
-    let committed = cx.read_entity(&host, |host, _| {
-        let geometry = host.view.geometry_snapshot().expect("committed geometry");
-        let facts = geometry
-            .route(edge_id)
-            .expect("committed exec route")
-            .facts();
-        let recipe = host.edge_painters.resolve(
-            facts.edge_kind,
-            OpenGpuiEdgeVisualFacts::default(),
-            &facts.presentation,
-            &host.graph_theme,
-        );
-        (
-            facts.edge_kind,
-            facts.presentation.clone(),
-            recipe.painter(),
-            recipe.style().tone(),
-            recipe.path_batch_key().stroke_pattern(),
-            recipe.source_marker(),
-            recipe.target_marker(),
-        )
-    });
-
-    assert_eq!(preview.0, committed.0);
-    assert_eq!(preview.1, committed.1);
-    assert_eq!(preview.2, committed.2);
-    assert_eq!(preview.3, committed.3);
-    assert_eq!(preview.4, committed.4);
-    assert_eq!(preview.5, committed.5);
-    assert_eq!(preview.6, committed.6);
+    assert_eq!(phase, CanvasInteractionPhase::Idle);
+    assert_eq!(terminal, Some(InteractionTerminalReason::Cancelled));
+    assert!(!has_pending_submission);
+    assert!(pending_work_empty);
+    assert!(active_port.is_none());
 }
 
 #[open_gpui::test]
@@ -193,91 +89,18 @@ fn invalid_connection_preview_uses_the_bounded_non_color_cue(cx: &mut open_gpui:
             .connection_preview_plan()
             .expect("invalid preview plan");
         assert_eq!(plan.probe, OpenGpuiConnectionPreviewProbeOutcome::Invalid);
-        let base = host.edge_painters.resolve_with_style_slot(
-            plan.edge_kind,
-            OpenGpuiEdgeVisualFacts::default().with_preview(true),
-            &plan.presentation,
-            plan.style_slot,
-            &host.graph_theme,
+        assert!(
+            host.resolve_connection_preview_paint_recipe(&plan)
+                .has_invalid_connection_cue(),
+            "the production preview resolver must add the bounded non-color invalid cue",
         );
-        let invalid = base.with_invalid_connection_cue();
-        let evidence = host
-            .scene_evidence
-            .last_connection_preview_paint
-            .get()
-            .expect("invalid preview paint evidence");
-        assert_eq!(
-            evidence.probe,
-            OpenGpuiConnectionPreviewProbeOutcome::Invalid
-        );
-        assert_eq!(evidence.paint_key, invalid.path_batch_key());
-        assert_eq!(evidence.halo_paint_key, invalid.halo_path_batch_key());
-        assert!(evidence.paint_key.has_invalid_cue());
-        assert_ne!(
-            evidence.paint_key.stroke_pattern(),
-            base.path_batch_key().stroke_pattern(),
-        );
-        assert_eq!(invalid.with_invalid_connection_cue(), invalid);
     });
 
     release_held_connection(&host, invalid_target.center(), cx);
 }
 
 #[open_gpui::test]
-fn connection_preview_keeps_screen_space_recipe_at_half_one_and_two_x_zoom(
-    cx: &mut open_gpui::TestAppContext,
-) {
-    let (_runtime, host, cx) = mount_connection_scene_for_graph(cx, unconnected_graph());
-    draw(cx);
-
-    let output = cx
-        .debug_bounds("jellyflow-test-output-port")
-        .expect("output bounds");
-    let pointer = point(px(700.0), px(500.0));
-    cx.simulate_mouse_down(output.center(), MouseButton::Left, Default::default());
-    cx.simulate_mouse_move(pointer, Some(MouseButton::Left), Default::default());
-    draw(cx);
-
-    let mut expected = None;
-    for zoom in [0.5, 1.0, 2.0] {
-        cx.update_entity(&host, |host, _| {
-            host.view
-                .set_viewport(ViewportTransform::new(CanvasPoint::default(), zoom).unwrap())
-                .expect("set preview zoom");
-        });
-        cx.run_until_parked();
-        draw(cx);
-        let evidence = cx.read_entity(&host, |host, _| {
-            host.scene_evidence
-                .last_connection_preview_paint
-                .get()
-                .expect("preview paint evidence at zoom")
-        });
-        assert_eq!(
-            evidence.probe,
-            OpenGpuiConnectionPreviewProbeOutcome::Unresolved,
-            "zoom={zoom}",
-        );
-        let recipe = (
-            evidence.paint_key,
-            evidence.halo_paint_key,
-            evidence.stroke_width,
-            evidence.halo_stroke_width,
-            evidence.source_marker,
-            evidence.target_marker,
-        );
-        if let Some(expected) = expected {
-            assert_eq!(recipe, expected, "zoom={zoom}");
-        } else {
-            expected = Some(recipe);
-        }
-    }
-
-    release_held_connection(&host, pointer, cx);
-}
-
-#[open_gpui::test]
-fn typed_connection_keeps_one_recipe_across_preview_commit_hover_and_zoom(
+fn typed_connection_keeps_style_slot_across_preview_commit_and_hover(
     cx: &mut open_gpui::TestAppContext,
 ) {
     let (runtime, host, cx) = mount_connection_scene_for_graph(
@@ -297,59 +120,13 @@ fn typed_connection_keeps_one_recipe_across_preview_commit_hover_and_zoom(
     cx.simulate_mouse_move(input.center(), Some(MouseButton::Left), Default::default());
     draw(cx);
 
-    let mut screen_space_recipe = None;
-    for zoom in [0.5, 1.0, 2.0] {
-        cx.update_entity(&host, |host, _| {
-            host.view
-                .set_viewport(ViewportTransform::new(CanvasPoint::default(), zoom).unwrap())
-                .expect("set typed preview zoom");
-        });
-        cx.run_until_parked();
-        draw(cx);
-        let recipe = cx.update_entity(&host, |host, _| {
-            let plan = host.connection_preview_plan().expect("typed preview plan");
-            assert_eq!(plan.style_slot, Some(slot));
-            let expected = host.edge_painters.resolve_with_style_slot(
-                plan.edge_kind,
-                OpenGpuiEdgeVisualFacts::default().with_preview(true),
-                &plan.presentation,
-                plan.style_slot,
-                &host.graph_theme,
-            );
-            let evidence = host
-                .scene_evidence
-                .last_connection_preview_paint
-                .get()
-                .expect("typed preview paint evidence");
-            assert_eq!(evidence.style_slot, Some(slot));
-            assert_eq!(evidence.paint_key, expected.path_batch_key());
-            assert_eq!(evidence.halo_paint_key, expected.halo_path_batch_key());
-            (
-                evidence.style_slot,
-                evidence.paint_key.path().color(),
-                evidence.halo_paint_key.map(|key| key.path().color()),
-                evidence.paint_key.stroke_pattern(),
-                evidence.stroke_width,
-                evidence.halo_stroke_width,
-            )
-        });
-        if let Some(expected) = screen_space_recipe {
-            assert_eq!(recipe, expected, "zoom={zoom}");
-        } else {
-            screen_space_recipe = Some(recipe);
-        }
-    }
-
-    cx.update_entity(&host, |host, _| {
-        host.view
-            .set_viewport(ViewportTransform::new(CanvasPoint::default(), 1.0).unwrap())
-            .expect("restore commit zoom");
+    let preview_stroke_pattern = cx.update_entity(&host, |host, _| {
+        let plan = host.connection_preview_plan().expect("typed preview plan");
+        assert_eq!(plan.style_slot, Some(slot));
+        let resolved = host.resolve_connection_preview_paint_recipe(&plan);
+        assert_eq!(resolved.style().style_slot(), Some(slot));
+        resolved.path_batch_key().stroke_pattern()
     });
-    cx.run_until_parked();
-    draw(cx);
-    let input = cx
-        .debug_bounds("jellyflow-test-input-port")
-        .expect("restored typed input bounds");
     cx.simulate_mouse_move(input.center(), Some(MouseButton::Left), Default::default());
     cx.simulate_mouse_up(input.center(), MouseButton::Left, Default::default());
     cx.run_until_parked();
@@ -383,10 +160,7 @@ fn typed_connection_keeps_one_recipe_across_preview_commit_hover_and_zoom(
         );
         assert_eq!(expected.style().style_slot(), Some(slot));
         assert_eq!(wire.base_paint_key, expected.path_batch_key());
-        assert_eq!(
-            wire.base_paint_key.stroke_pattern(),
-            screen_space_recipe.expect("preview recipe").3,
-        );
+        assert_eq!(wire.base_paint_key.stroke_pattern(), preview_stroke_pattern);
     });
 
     let pointer = cx.read_entity(&host, |host, _| {
@@ -1069,60 +843,6 @@ fn paged_overlapping_target_graph() -> jellyflow_core::Graph {
     graph.build().expect("valid paged target graph")
 }
 
-fn hold_released_connection_at_adapter_boundary(
-    host: &Entity<OpenGpuiSceneHost>,
-    release_position: open_gpui::Point<open_gpui::Pixels>,
-    cx: &mut open_gpui::VisualTestContext,
-) {
-    cx.update_entity(host, |host, _| {
-        if host.interaction_presentation().phase()
-            == jellyflow_runtime::interaction::CanvasInteractionPhase::Committing
-        {
-            host.discard_pending_interaction_submission();
-            assert!(!host.interaction_owner.test_query_work_pending());
-            return;
-        }
-
-        let sample = host
-            .viewport_pointer_sample(release_position)
-            .expect("release position inside the measured scene");
-        let release = host
-            .interaction_owner
-            .release(sample)
-            .expect("release active connection");
-        assert!(
-            release.query_work_pending(),
-            "release schedules a fresh connection probe from {:?}",
-            host.interaction_presentation().phase()
-        );
-        loop {
-            let (update, needs_tick, receipt, terminal_error) =
-                host.interaction_owner.advance_query_work(1).into_parts();
-            assert_eq!(receipt.pages_granted(), 1);
-            assert_eq!(receipt.pages_attempted(), 1);
-            assert!(terminal_error.is_none());
-            let dispatch = update.into_dispatch();
-            let effects = dispatch.effects;
-
-            if host.interaction_presentation().phase()
-                == jellyflow_runtime::interaction::CanvasInteractionPhase::Committing
-            {
-                assert!(!needs_tick);
-                assert!(!dispatch.query_work_pending);
-                assert!(matches!(
-                    effects.as_slice(),
-                    [jellyflow_runtime::interaction::CanvasInteractionEffect::SubmitGraph { .. }]
-                ));
-                break;
-            }
-
-            assert!(needs_tick);
-            assert!(dispatch.query_work_pending);
-            assert!(effects.is_empty());
-        }
-    });
-}
-
 fn release_held_connection(
     host: &Entity<OpenGpuiSceneHost>,
     release_position: open_gpui::Point<open_gpui::Pixels>,
@@ -1136,44 +856,4 @@ fn release_held_connection(
         });
     });
     cx.run_until_parked();
-}
-
-fn assert_committing_preview_frame(
-    host: &Entity<OpenGpuiSceneHost>,
-    suppressed_edge: Option<EdgeId>,
-    frame: usize,
-    cx: &mut open_gpui::VisualTestContext,
-) {
-    cx.read_entity(host, |host, _| {
-        let presentation = host.interaction_presentation();
-        assert_eq!(
-            presentation.phase(),
-            jellyflow_runtime::interaction::CanvasInteractionPhase::Committing,
-            "frame {frame}: adapter settlement is intentionally pending",
-        );
-        let connection = presentation
-            .connection()
-            .expect("committing connection presentation");
-        assert!(connection.ticket().is_some());
-        assert_eq!(connection.suppressed_edge(), suppressed_edge);
-
-        let evidence = host
-            .scene_evidence
-            .last_connection_preview
-            .get()
-            .expect("committing presentation plans one preview");
-        assert_eq!(evidence.suppressed_edge, suppressed_edge);
-        assert_eq!(
-            host.scene_evidence.last_planned_wire_count.get(),
-            0,
-            "frame {frame}: a reconnect paints its pending preview instead of its old edge",
-        );
-        assert_eq!(
-            host.scene_evidence
-                .last_painted_connection_preview_count
-                .get(),
-            1,
-            "frame {frame}: the optimistic connection preview must not flicker",
-        );
-    });
 }

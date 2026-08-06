@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Run a command with a process-external timeout and terminate its process group."""
+"""Run a command with a timeout and terminate its process tree on expiry."""
 
 from __future__ import annotations
 
 import argparse
-import errno
-import enum
+import math
 import os
 import signal
 import subprocess
@@ -20,120 +19,98 @@ DEFAULT_KILL_GRACE_SECONDS = 5.0
 PROCESS_GROUP_POLL_SECONDS = 0.01
 
 
-class _ProcessGroupSignalResult(enum.Enum):
-    SIGNALED = enum.auto()
-    MISSING = enum.auto()
-    PERMISSION_DENIED = enum.auto()
+def _remaining_seconds(deadline: float) -> float:
+    return max(0.0, deadline - time.monotonic())
 
 
-def _try_signal_posix_process_group(
-    process_group_id: int, signal_number: int
-) -> _ProcessGroupSignalResult:
+def _posix_process_group_exists(process_group: int) -> bool:
     try:
-        os.killpg(process_group_id, signal_number)
+        os.killpg(process_group, 0)
     except ProcessLookupError:
-        return _ProcessGroupSignalResult.MISSING
+        return False
     except PermissionError:
-        return _ProcessGroupSignalResult.PERMISSION_DENIED
-    return _ProcessGroupSignalResult.SIGNALED
+        return True
+    return True
 
 
-def _wait_for_posix_process_group_exit(
-    process: subprocess.Popen[bytes], cleanup_deadline: float
-) -> bool:
+def _wait_for_posix_process_group(process: subprocess.Popen[bytes], deadline: float) -> bool:
     while True:
         process.poll()
-        probe = _try_signal_posix_process_group(process.pid, 0)
-        if probe is _ProcessGroupSignalResult.MISSING:
+        if not _posix_process_group_exists(process.pid):
             return True
-
-        # Only ESRCH proves exit; macOS can report EPERM for a zombie group leader.
-        remaining = cleanup_deadline - time.monotonic()
+        remaining = _remaining_seconds(deadline)
         if remaining <= 0:
             return False
         time.sleep(min(PROCESS_GROUP_POLL_SECONDS, remaining))
 
 
-def _remaining_cleanup_seconds(cleanup_deadline: float) -> float:
-    return max(0.0, cleanup_deadline - time.monotonic())
-
-
-def _terminate_posix_process_group(
-    process: subprocess.Popen[bytes], cleanup_deadline: float
+def _taskkill_windows_process_tree(
+    process: subprocess.Popen[bytes], *, force: bool, timeout_seconds: float
 ) -> None:
-    term_result = _try_signal_posix_process_group(process.pid, signal.SIGTERM)
-    if term_result is _ProcessGroupSignalResult.PERMISSION_DENIED:
-        raise PermissionError(
-            errno.EPERM,
-            f"could not terminate process group {process.pid}",
-        )
-    if not _wait_for_posix_process_group_exit(process, cleanup_deadline):
-        kill_result = _try_signal_posix_process_group(process.pid, signal.SIGKILL)
-        if kill_result is _ProcessGroupSignalResult.PERMISSION_DENIED:
-            raise PermissionError(
-                errno.EPERM,
-                f"could not kill process group {process.pid}",
-            )
-    process.wait(timeout=_remaining_cleanup_seconds(cleanup_deadline))
-
-
-def _terminate_single_process(
-    process: subprocess.Popen[bytes], cleanup_deadline: float
-) -> None:
-    if process.poll() is None:
-        try:
-            process.terminate()
-        except ProcessLookupError:
-            pass
-
-    try:
-        process.wait(timeout=_remaining_cleanup_seconds(cleanup_deadline))
+    if timeout_seconds <= 0:
         return
-    except subprocess.TimeoutExpired:
+    command = ["taskkill", "/PID", str(process.pid), "/T"]
+    if force:
+        command.append("/F")
+    try:
+        subprocess.run(
+            command,
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=timeout_seconds,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
-
-    if process.poll() is None:
-        try:
-            process.kill()
-        except ProcessLookupError:
-            pass
-    process.wait(timeout=_remaining_cleanup_seconds(cleanup_deadline))
 
 
 def _terminate_process_group(
-    process: subprocess.Popen[bytes], cleanup_deadline: float
-) -> None:
+    process: subprocess.Popen[bytes], kill_grace_seconds: float
+) -> float:
+    started = time.monotonic()
+    deadline = started + kill_grace_seconds
+    termination_deadline = started + kill_grace_seconds * 0.8
     if os.name == "posix":
-        _terminate_posix_process_group(process, cleanup_deadline)
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        if not _wait_for_posix_process_group(process, termination_deadline):
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
     else:
-        _terminate_single_process(process, cleanup_deadline)
-
-
-def _close_captured_pipes(process: subprocess.Popen[bytes]) -> None:
-    for pipe in (process.stdout, process.stderr):
-        if pipe is not None:
-            pipe.close()
-
-
-def _drain_captured_output(
-    process: subprocess.Popen[bytes],
-    original_error: BaseException,
-    cleanup_deadline: float,
-) -> None:
-    try:
-        stdout, stderr = process.communicate(
-            timeout=_remaining_cleanup_seconds(cleanup_deadline)
+        _taskkill_windows_process_tree(
+            process,
+            force=False,
+            timeout_seconds=_remaining_seconds(termination_deadline),
         )
-    except BaseException as drain_error:
-        _close_captured_pipes(process)
-        original_error.add_note(
-            f"captured-output cleanup failed: {drain_error!r}"
-        )
-        return
+        remaining = _remaining_seconds(termination_deadline)
+        if remaining > 0:
+            try:
+                process.wait(timeout=remaining)
+            except subprocess.TimeoutExpired:
+                pass
+        if process.poll() is None:
+            _taskkill_windows_process_tree(
+                process,
+                force=True,
+                timeout_seconds=_remaining_seconds(deadline),
+            )
+        if process.poll() is None:
+            process.kill()
 
-    if isinstance(original_error, subprocess.TimeoutExpired):
-        original_error.stdout = stdout
-        original_error.stderr = stderr
+    remaining = _remaining_seconds(deadline)
+    if remaining > 0:
+        try:
+            process.wait(timeout=remaining)
+        except subprocess.TimeoutExpired:
+            pass
+    else:
+        process.poll()
+    return deadline
 
 
 def run_process(
@@ -150,9 +127,9 @@ def run_process(
 ) -> subprocess.CompletedProcess[str] | subprocess.CompletedProcess[bytes]:
     if not command:
         raise ValueError("command must not be empty")
-    if timeout_seconds <= 0:
+    if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be positive")
-    if kill_grace_seconds <= 0:
+    if not math.isfinite(kill_grace_seconds) or kill_grace_seconds <= 0:
         raise ValueError("kill_grace_seconds must be positive")
 
     process = subprocess.Popen(
@@ -164,45 +141,43 @@ def run_process(
         stderr=subprocess.PIPE if capture_output else None,
         text=text,
         start_new_session=os.name == "posix",
+        creationflags=(
+            getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            if os.name == "nt"
+            else 0
+        ),
     )
     try:
         if capture_output or input is not None:
-            if input is None:
-                stdout, stderr = process.communicate(timeout=timeout_seconds)
-            else:
-                stdout, stderr = process.communicate(
-                    input=input,
-                    timeout=timeout_seconds,
-                )
+            stdout, stderr = process.communicate(
+                input=input,
+                timeout=timeout_seconds,
+            )
         else:
             process.wait(timeout=timeout_seconds)
             stdout = None
             stderr = None
-    except BaseException as operation_error:
-        cleanup_deadline = time.monotonic() + kill_grace_seconds
-        process_group_cleaned = False
-        try:
-            _terminate_process_group(process, cleanup_deadline)
-            process_group_cleaned = True
-        except BaseException as cleanup_error:
+    except BaseException as error:
+        cleanup_deadline = _terminate_process_group(process, kill_grace_seconds)
+        if capture_output or input is not None:
             try:
-                _terminate_single_process(process, cleanup_deadline)
-            except BaseException as fallback_error:
-                cleanup_error.add_note(
-                    f"direct-process cleanup also failed: {fallback_error!r}"
+                cleanup_stdout, cleanup_stderr = process.communicate(
+                    timeout=_remaining_seconds(cleanup_deadline)
                 )
-            operation_error.add_note(
-                f"process-group cleanup failed: {cleanup_error!r}"
-            )
-        if capture_output:
-            if process_group_cleaned:
-                _drain_captured_output(
-                    process,
-                    operation_error,
-                    cleanup_deadline,
-                )
-            else:
-                _close_captured_pipes(process)
+            except subprocess.TimeoutExpired as cleanup_error:
+                cleanup_stdout = cleanup_error.stdout
+                cleanup_stderr = cleanup_error.stderr
+                for pipe in (process.stdin, process.stdout, process.stderr):
+                    if pipe is not None:
+                        try:
+                            pipe.close()
+                        except OSError:
+                            pass
+            if isinstance(error, subprocess.TimeoutExpired):
+                if cleanup_stdout is not None:
+                    error.stdout = cleanup_stdout
+                if cleanup_stderr is not None:
+                    error.stderr = cleanup_stderr
         raise
 
     completed = subprocess.CompletedProcess(
@@ -227,14 +202,12 @@ def run_with_timeout(
             timeout_seconds=timeout_seconds,
             kill_grace_seconds=kill_grace_seconds,
         )
-    except subprocess.TimeoutExpired as error:
+    except subprocess.TimeoutExpired:
         print(
             f"command timed out after {timeout_seconds:g}s: {' '.join(command)}",
             file=sys.stderr,
             flush=True,
         )
-        for note in getattr(error, "__notes__", ()):
-            print(note, file=sys.stderr, flush=True)
         return TIMEOUT_EXIT_CODE
 
     return_code = completed.returncode

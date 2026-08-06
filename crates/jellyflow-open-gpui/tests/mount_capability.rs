@@ -225,6 +225,7 @@ fn authoring_port_occupancy_is_graph_wide_without_exposing_foreign_port_capabili
             registry.seal(&catalog).expect("valid test registry"),
             visible_viewport(),
         )
+        .expect("valid Open GPUI scene host")
     });
     draw(cx);
 
@@ -279,6 +280,7 @@ fn eligible_lru_eviction_revokes_old_binding_before_same_instance_remount(
             registry.seal(&catalog).expect("valid test registry"),
             visible_viewport(),
         )
+        .expect("valid Open GPUI scene host")
     });
     draw(cx);
 
@@ -356,6 +358,7 @@ fn retry_mount_revokes_failed_factory_binding_before_same_instance_remount(
             registry.seal(&catalog).expect("valid test registry"),
             visible_viewport(),
         )
+        .expect("valid Open GPUI scene host")
     });
     draw(cx);
 
@@ -411,6 +414,7 @@ fn authoring_rejects_mismatched_and_stale_commands_before_journal_admission(
                 .expect("valid test registry"),
             visible_viewport(),
         )
+        .expect("valid Open GPUI scene host")
     });
     draw(cx);
     let binding = captured_binding
@@ -516,6 +520,7 @@ fn host_close_reason_is_preserved_for_binding_and_captured_authoring(
             registry.seal(&catalog).expect("valid test registry"),
             visible_viewport(),
         )
+        .expect("valid Open GPUI scene host")
     });
     draw(cx);
     let binding = captured_binding
@@ -792,6 +797,7 @@ fn old_port_handle_cannot_dispatch_after_retry_or_same_instance_remount(
                 registry.seal(&catalog).expect("valid test registry"),
                 visible_viewport(),
             )
+            .expect("valid Open GPUI scene host")
         });
         *scene_host.borrow_mut() = Some(host.clone());
         ExternalPortScene {
@@ -873,6 +879,7 @@ fn old_node_drag_handle_is_inert_after_same_instance_retry_and_replacement_drag_
                 registry.seal(&catalog).expect("valid test registry"),
                 visible_viewport(),
             )
+            .expect("valid Open GPUI scene host")
         });
         *scene_host.borrow_mut() = Some(host.clone());
         ExternalDragScene {
@@ -1019,6 +1026,7 @@ fn revoked_port_prepaint_cannot_cancel_replacement_mount_drag(cx: &mut open_gpui
                 registry.seal(&catalog).expect("valid test registry"),
                 visible_viewport(),
             )
+            .expect("valid Open GPUI scene host")
             .with_navigation_config(
                 OpenGpuiNavigationConfig::default().with_input_bindings(
                     OpenGpuiInputBindings::default().with_connect_on_click(false),
@@ -1129,6 +1137,7 @@ fn mount_managed_mutation_scene(
                 .expect("valid managed-mutation registry"),
             visible_viewport(),
         )
+        .expect("valid Open GPUI scene host")
     });
     draw(cx);
     assert_eq!(attempts.get(), 1);

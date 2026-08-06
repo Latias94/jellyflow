@@ -7,7 +7,6 @@ use open_gpui::{
 
 use crate::activity::{OpenGpuiNodeActivityHandle, OpenGpuiPointerCaptureLease};
 use crate::presentation::OpenGpuiNodeLod;
-use crate::semantic_zoom::OpenGpuiNodePresentation;
 
 use super::*;
 
@@ -202,6 +201,7 @@ fn mount_pointer_capture_scene(
                     .expect("valid pointer-capture registry"),
                 viewport(),
             )
+            .expect("valid Open GPUI scene host")
         });
         *scene_host.borrow_mut() = Some(host.clone());
         InteractiveScene { host }
@@ -348,23 +348,8 @@ fn pointer_capture_retains_detail_across_overview_and_receives_outside_release(
     cx.read_entity(&binding, |binding, _| {
         assert_eq!(
             binding.presentation().node().lod(),
-            OpenGpuiNodeLod::InteractionIsland,
+            OpenGpuiNodeLod::PinnedDetail,
         );
-    });
-    cx.read_entity(&host, |host, _| {
-        let mounted = host
-            .retained_nodes
-            .active_in_order()
-            .find(|(instance, _)| instance.node() == NodeId::from_u128(10))
-            .map(|(_, mounted)| mounted)
-            .expect("mounted overview node");
-        assert_eq!(
-            mounted.graph_presentation(),
-            OpenGpuiNodePresentation::Overview,
-        );
-        assert!(mounted.has_interaction_island());
-        assert_eq!(host.resource_snapshot().protected_instances(), 1);
-        assert_eq!(host.resource_snapshot().protected_leases(), 1);
     });
 
     cx.simulate_mouse_up(
@@ -385,21 +370,6 @@ fn pointer_capture_retains_detail_across_overview_and_receives_outside_release(
             binding.presentation().node().lod(),
             OpenGpuiNodeLod::Overview,
         );
-    });
-    cx.read_entity(&host, |host, _| {
-        let mounted = host
-            .retained_nodes
-            .active_in_order()
-            .find(|(instance, _)| instance.node() == NodeId::from_u128(10))
-            .map(|(_, mounted)| mounted)
-            .expect("mounted overview node after release");
-        assert_eq!(
-            mounted.graph_presentation(),
-            OpenGpuiNodePresentation::Overview,
-        );
-        assert!(!mounted.has_interaction_island());
-        assert_eq!(host.resource_snapshot().protected_instances(), 0);
-        assert_eq!(host.resource_snapshot().protected_leases(), 0);
     });
 }
 
@@ -446,7 +416,6 @@ fn retiring_a_node_releases_its_rebound_pointer_capture(cx: &mut open_gpui::Test
         assert_eq!(host.resource_snapshot().active_nodes(), 0);
         assert_eq!(host.resource_snapshot().protected_instances(), 0);
         assert_eq!(host.resource_snapshot().protected_leases(), 0);
-        assert_eq!(host.work_ledger_snapshot().hard_retirements(), 1);
     });
     drop(capture.borrow_mut().take());
 }

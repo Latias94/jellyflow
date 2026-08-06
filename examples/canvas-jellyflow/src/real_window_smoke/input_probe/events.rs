@@ -1,7 +1,7 @@
 use jellyflow_runtime::geometry::ViewPoint;
 use open_gpui::{
     KeyDownEvent, KeyUpEvent, Keystroke, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    PlatformInput, point, px,
+    PlatformInput, ScrollDelta, ScrollWheelEvent, TouchPhase, point, px,
 };
 
 fn native_point(view_point: ViewPoint) -> open_gpui::Point<open_gpui::Pixels> {
@@ -29,6 +29,15 @@ pub(super) fn mouse_up(button: MouseButton, position: ViewPoint) -> PlatformInpu
         button,
         position: native_point(position),
         ..MouseUpEvent::default()
+    })
+}
+
+pub(super) fn scroll_lines(position: ViewPoint, vertical_lines: f32) -> PlatformInput {
+    PlatformInput::ScrollWheel(ScrollWheelEvent {
+        position: native_point(position),
+        delta: ScrollDelta::Lines(point(0.0, vertical_lines)),
+        modifiers: Default::default(),
+        touch_phase: TouchPhase::Moved,
     })
 }
 

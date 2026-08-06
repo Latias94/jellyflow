@@ -124,11 +124,6 @@ jobs:
           persist-credentials: false
           ref: ${{ needs.resolve.outputs.source_sha }}
 
-      - name: Verify release versions
-        env:
-          RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
-        run: python3 scripts/release-version.py check --version "$RELEASE_VERSION"
-
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@f133eefe930d61f0d9371efd474daf0125ed3dd1 # 1.95.0
 

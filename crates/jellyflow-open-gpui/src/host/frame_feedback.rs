@@ -10,13 +10,15 @@ use jellyflow_runtime::{
 
 use crate::command_journal::{
     OpenGpuiCommandBatch, OpenGpuiCommandBatchStateError, OpenGpuiCommandJournal,
-    OpenGpuiCommandOrigin, OpenGpuiCommandTicketError, OpenGpuiCompletedCommand,
-    OpenGpuiPendingCommandResolution, resolve_command_tickets,
+    OpenGpuiCommandOrigin, OpenGpuiCommandTicketError, OpenGpuiCommandTicketFailure,
+    OpenGpuiCompletedCommand, OpenGpuiPendingCommandResolution, resolve_command_tickets,
 };
 use crate::port_handle::{OpenGpuiMeasurementError, OpenGpuiPendingMeasurements};
 
 use super::OpenGpuiSceneHost;
 use super::interaction_session::NodeDragRouteHandoffToken;
+#[cfg(feature = "test-support")]
+use super::test_support::OpenGpuiSmokePresentedFrameDraft;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum LayoutReceiptAction {
@@ -50,6 +52,7 @@ pub(super) fn layout_receipt_action(status: LayoutNodeStatus) -> LayoutReceiptAc
 pub(super) struct OpenGpuiFrameReceiptDisposition {
     pub(super) request_next_frame: bool,
     pub(super) accepted_content_nodes: BTreeSet<jellyflow_core::NodeId>,
+    pub(super) stale_content_nodes: BTreeSet<jellyflow_core::NodeId>,
     pub(super) rejected_layouts: Vec<(NodeId, LayoutNodeStatus)>,
 }
 
@@ -59,6 +62,8 @@ pub(super) struct OpenGpuiFrameTransaction {
     commands: Rc<OpenGpuiCommandJournal>,
     scheduled: Cell<bool>,
     node_drag_route_handoff: Cell<Option<NodeDragRouteHandoffToken>>,
+    #[cfg(feature = "test-support")]
+    smoke_presented_frame: OpenGpuiSmokePresentedFrameDraft,
     #[cfg(test)]
     fault: Cell<Option<OpenGpuiFrameTransactionFault>>,
 }
@@ -75,6 +80,8 @@ impl OpenGpuiFrameTransaction {
         commands: Rc<OpenGpuiCommandJournal>,
         command_batch: Option<OpenGpuiCommandBatch>,
     ) -> Self {
+        #[cfg(feature = "test-support")]
+        let smoke_presented_frame = measurements.smoke_presented_frame();
         Self {
             state: RefCell::new(Some(OpenGpuiFrameTransactionState {
                 collector,
@@ -84,6 +91,8 @@ impl OpenGpuiFrameTransaction {
             commands,
             scheduled: Cell::new(false),
             node_drag_route_handoff: Cell::new(None),
+            #[cfg(feature = "test-support")]
+            smoke_presented_frame,
             #[cfg(test)]
             fault: Cell::new(None),
         }
@@ -107,6 +116,11 @@ impl OpenGpuiFrameTransaction {
 
     pub(super) fn node_drag_route_handoff(&self) -> Option<NodeDragRouteHandoffToken> {
         self.node_drag_route_handoff.get()
+    }
+
+    #[cfg(feature = "test-support")]
+    pub(super) fn smoke_presented_frame(&self) -> OpenGpuiSmokePresentedFrameDraft {
+        self.smoke_presented_frame.clone()
     }
 
     pub(super) fn requires_follow_up_frame(&self) -> bool {
@@ -146,9 +160,11 @@ impl OpenGpuiFrameTransaction {
             Err(error) => {
                 let message = error.to_string();
                 let commands = state.fail_commands(&self.commands, || {
-                    OpenGpuiCommandTicketError::FramePreparation {
-                        message: message.clone(),
-                    }
+                    OpenGpuiCommandTicketFailure::definitely_not_executed(
+                        OpenGpuiCommandTicketError::FramePreparation {
+                            message: message.clone(),
+                        },
+                    )
                 });
                 return OpenGpuiFrameTransactionResult {
                     submission: OpenGpuiFrameTransactionSubmission::Failed(error),
@@ -178,12 +194,22 @@ impl OpenGpuiFrameTransaction {
             }
             Ok(Err(mut error)) => {
                 let post_admission = error.take_post_admission_receipt();
+                let execution_unknown = matches!(
+                    &error,
+                    FeedbackSubmissionError::AfterCommandAdmission { .. }
+                );
                 let error = Rc::new(error);
                 let (commands, command_pairing_error) = match post_admission {
                     Some(receipt) => state.complete_commands(&self.commands, receipt),
                     None => (
                         state.fail_commands(&self.commands, || {
-                            OpenGpuiCommandTicketError::FeedbackSubmission(Rc::clone(&error))
+                            let error =
+                                OpenGpuiCommandTicketError::FeedbackSubmission(Rc::clone(&error));
+                            if execution_unknown {
+                                OpenGpuiCommandTicketFailure::execution_unknown(error)
+                            } else {
+                                OpenGpuiCommandTicketFailure::definitely_not_executed(error)
+                            }
                         }),
                         None,
                     ),
@@ -202,7 +228,9 @@ impl OpenGpuiFrameTransaction {
                 command_batch_result: retain_command_completions(
                     &self.commands,
                     state.fail_commands(&self.commands, || {
-                        OpenGpuiCommandTicketError::FeedbackOutcomeUnknown
+                        OpenGpuiCommandTicketFailure::execution_unknown(
+                            OpenGpuiCommandTicketError::FeedbackOutcomeUnknown,
+                        )
                     }),
                 ),
                 measurement_errors,
@@ -232,9 +260,11 @@ impl OpenGpuiFrameTransaction {
             return Ok(Vec::new());
         };
         state.fail_commands(&self.commands, || {
-            OpenGpuiCommandTicketError::FramePreparation {
-                message: message.clone(),
-            }
+            OpenGpuiCommandTicketFailure::definitely_not_executed(
+                OpenGpuiCommandTicketError::FramePreparation {
+                    message: message.clone(),
+                },
+            )
         })
     }
 
@@ -259,8 +289,11 @@ impl OpenGpuiFrameTransactionState {
             Ok(completed) => (Ok(completed), None),
             Err(error) => {
                 let message = format!("failed to pair native command receipts: {error}");
-                let completed = commands
-                    .fail_batch(batch, || OpenGpuiCommandTicketError::FeedbackOutcomeUnknown);
+                let completed = commands.fail_batch(batch, || {
+                    OpenGpuiCommandTicketFailure::execution_unknown(
+                        OpenGpuiCommandTicketError::FeedbackOutcomeUnknown,
+                    )
+                });
                 (completed, Some(message))
             }
         }
@@ -269,11 +302,12 @@ impl OpenGpuiFrameTransactionState {
     fn fail_commands(
         &mut self,
         commands: &OpenGpuiCommandJournal,
-        error: impl FnMut() -> OpenGpuiCommandTicketError,
+        failure: impl FnMut() -> OpenGpuiCommandTicketFailure,
     ) -> Result<Vec<OpenGpuiCompletedCommand>, OpenGpuiCommandBatchStateError> {
-        self.command_batch
-            .take()
-            .map_or_else(|| Ok(Vec::new()), |batch| commands.fail_batch(batch, error))
+        self.command_batch.take().map_or_else(
+            || Ok(Vec::new()),
+            |batch| commands.fail_batch(batch, failure),
+        )
     }
 }
 
@@ -282,8 +316,12 @@ impl Drop for OpenGpuiFrameTransaction {
         let Some(mut state) = self.state.get_mut().take() else {
             return;
         };
-        let Ok(completed) =
-            state.fail_commands(&self.commands, || OpenGpuiCommandTicketError::HostDropped)
+        let Some(batch) = state.command_batch.take() else {
+            return;
+        };
+        let Ok(completed) = self
+            .commands
+            .fail_batch_from_phase(batch, || OpenGpuiCommandTicketError::HostDropped)
         else {
             return;
         };
@@ -335,6 +373,7 @@ fn frame_receipt_disposition(receipt: &FeedbackReceipt) -> OpenGpuiFrameReceiptD
     let mut disposition = OpenGpuiFrameReceiptDisposition {
         request_next_frame: receipt.request_next_frame(),
         accepted_content_nodes: BTreeSet::new(),
+        stale_content_nodes: BTreeSet::new(),
         rejected_layouts: Vec::new(),
     };
     for layout in receipt.layout_receipts() {
@@ -345,7 +384,9 @@ fn frame_receipt_disposition(receipt: &FeedbackReceipt) -> OpenGpuiFrameReceiptD
             LayoutReceiptAction::Benign => {
                 disposition.accepted_content_nodes.insert(layout.node());
             }
-            LayoutReceiptAction::Refresh => {}
+            LayoutReceiptAction::Refresh => {
+                disposition.stale_content_nodes.insert(layout.node());
+            }
             LayoutReceiptAction::Reject => {
                 disposition.rejected_layouts.push((layout.node(), status));
             }
@@ -420,7 +461,7 @@ impl OpenGpuiSceneHost {
                         format!("failed to cancel native interaction after batch failure: {cancel_error}"),
                     );
                 }
-                self.discard_pending_interaction_submission();
+                self.discard_revocable_interaction_submission();
                 self.record_feedback_failure(
                     None,
                     format!("failed to settle native command batch: {error}"),
@@ -463,10 +504,13 @@ impl OpenGpuiSceneHost {
                             }
                             Err(error) => {
                                 self.record_command_diagnostic(error.to_string());
-                                if error.outcome_unknown() {
-                                    self.interaction_submission_outcome_unknown(ticket);
-                                } else {
-                                    self.interaction_submission_not_dispatched(ticket);
+                                match error {
+                                    OpenGpuiCommandTicketFailure::DefinitelyNotExecuted(_) => {
+                                        self.interaction_submission_not_dispatched(ticket);
+                                    }
+                                    OpenGpuiCommandTicketFailure::ExecutionUnknown(_) => {
+                                        self.interaction_submission_outcome_unknown(ticket);
+                                    }
                                 }
                             }
                         }

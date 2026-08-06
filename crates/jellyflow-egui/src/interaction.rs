@@ -1,16 +1,20 @@
 use egui::{Context, Event, Id, PointerButton, Pos2, Rect, Response};
 use jellyflow_core::{EdgeId, NodeGraphConnectionMode, PortId};
-use jellyflow_runtime::commands::{CommandExecutionCompletion, GraphCommand};
 use jellyflow_runtime::geometry::{HandlePosition, ViewPoint, ViewSize};
-use jellyflow_runtime::graph::{CreateFromWireCandidates, NodeLifetimeKey, PortInstanceKey};
+use jellyflow_runtime::graph::{
+    CreateFromWireCandidates, NodeLifetimeKey, PortConnectionQueryWork, PortInstanceKey,
+};
 use jellyflow_runtime::interaction::{
-    CanvasInteractionConfig, CanvasInteractionEffect, CanvasInteractionError,
-    CanvasInteractionPhase, CanvasInteractionPresentation, CanvasInteractionSession,
-    CanvasInteractionUpdate, CanvasPressTarget, ConnectionInteractionStart,
-    ConnectionSearchRequest, ConnectionSearchSelection, ConnectionSettlementCapability,
-    InteractionDamage, InteractionGraphSubmission, InteractionGraphSubmissionBindError,
-    InteractionOwner, InteractionTickDemand, InteractionTicketId, NodeNudgeDirection,
-    SelectionMode,
+    BoundInteractionSubmission, CanvasInteractionConfig, CanvasInteractionEffect,
+    CanvasInteractionError, CanvasInteractionPhase, CanvasInteractionPresentation,
+    CanvasInteractionQueryAdvanceReceipt, CanvasInteractionSession, CanvasInteractionUpdate,
+    CanvasPressTarget, ConnectionInteractionStart, ConnectionSearchRequest,
+    ConnectionSearchSelection, ConnectionSettlementCapability, InteractionDamage,
+    InteractionGraphSubmission, InteractionGraphSubmissionAbandonFailure,
+    InteractionGraphSubmissionBindFailure, InteractionGraphSubmissionResumeFailure,
+    InteractionOwner, InteractionSubmissionSettlementEvidence,
+    InteractionSubmissionSettlementFailure, InteractionSubmissionSettlementResult,
+    InteractionTickDemand, NodeNudgeDirection, SelectionMode,
 };
 use jellyflow_runtime::schema::NodeCreation;
 use jellyflow_runtime::view::{ViewSession, ViewSessionError, WeakViewSession};
@@ -25,10 +29,12 @@ const DEFAULT_QUERY_PAGES_PER_FRAME: usize = 1;
 /// View-owned selection and viewport changes are committed by the headless interaction session.
 /// Search and graph-submission effects remain explicit so the application can connect them to its
 /// native search UI and ordered command transport.
+#[must_use = "interaction output carries effects, query receipts, damage, and follow-up work"]
 #[derive(Debug, Default)]
 pub struct EguiInteractionOutput {
     effects: Vec<CanvasInteractionEffect>,
-    attempted_query_page_count: usize,
+    query_advances: Vec<CanvasInteractionQueryAdvanceReceipt>,
+    port_connection_queries: Vec<PortConnectionQueryWork>,
     terminal_query_error: Option<CanvasInteractionError>,
     damage: InteractionDamage,
     tick_demand: InteractionTickDemand,
@@ -45,13 +51,22 @@ impl EguiInteractionOutput {
         std::mem::take(&mut self.effects)
     }
 
-    pub fn into_effects(self) -> Vec<CanvasInteractionEffect> {
-        self.effects
+    /// Returns the exact runtime-owned query advancement receipts emitted by this output.
+    pub fn query_advances(&self) -> &[CanvasInteractionQueryAdvanceReceipt] {
+        &self.query_advances
     }
 
     /// Returns how many runtime-owned query pages were attempted during this output.
     pub fn attempted_query_page_count(&self) -> usize {
-        self.attempted_query_page_count
+        self.query_advances
+            .iter()
+            .map(CanvasInteractionQueryAdvanceReceipt::pages_attempted)
+            .sum()
+    }
+
+    /// Returns exact authoritative work emitted by non-drag port activations.
+    pub fn port_connection_queries(&self) -> &[PortConnectionQueryWork] {
+        &self.port_connection_queries
     }
 
     /// Returns a terminal query failure after immediately available cleanup has been applied.
@@ -80,7 +95,8 @@ impl EguiInteractionOutput {
 
     pub fn has_work(&self) -> bool {
         !self.effects.is_empty()
-            || self.attempted_query_page_count != 0
+            || !self.query_advances.is_empty()
+            || !self.port_connection_queries.is_empty()
             || self.terminal_query_error.is_some()
             || self.damage != InteractionDamage::default()
             || self.tick_demand != InteractionTickDemand::None
@@ -90,9 +106,9 @@ impl EguiInteractionOutput {
 
     pub fn merge(&mut self, other: Self) {
         self.effects.extend(other.effects);
-        self.attempted_query_page_count = self
-            .attempted_query_page_count
-            .saturating_add(other.attempted_query_page_count);
+        self.query_advances.extend(other.query_advances);
+        self.port_connection_queries
+            .extend(other.port_connection_queries);
         if other.terminal_query_error.is_some() {
             self.terminal_query_error = other.terminal_query_error;
         }
@@ -108,15 +124,40 @@ pub enum EguiInteractionError {
     #[error(transparent)]
     Interaction(#[from] CanvasInteractionError),
     #[error(transparent)]
-    View(#[from] ViewSessionError),
+    SubmissionAbandon(#[from] InteractionGraphSubmissionAbandonFailure),
     #[error(transparent)]
-    Submission(#[from] InteractionGraphSubmissionBindError),
+    SubmissionResume(#[from] InteractionGraphSubmissionResumeFailure),
+    #[error(transparent)]
+    View(#[from] ViewSessionError),
     #[error("an egui interaction frame is already open")]
     FrameAlreadyOpen,
     #[error("no egui interaction frame is open")]
     FrameNotOpen,
     #[error("the egui scene rectangle is invalid")]
     InvalidSceneRect,
+}
+
+#[derive(Debug)]
+#[must_use = "a still-bound egui settlement retains the only retry authority"]
+pub enum EguiInteractionSettlementResult {
+    Settled(EguiInteractionOutput),
+    Stale(EguiInteractionOutput),
+    StillBound(InteractionSubmissionSettlementFailure),
+    AdapterFailure(EguiInteractionError),
+}
+
+impl EguiInteractionSettlementResult {
+    pub fn expect(self, message: &str) -> EguiInteractionOutput {
+        match self {
+            Self::Settled(output) | Self::Stale(output) => output,
+            Self::StillBound(failure) => panic!("{message}: {}", failure.error()),
+            Self::AdapterFailure(error) => panic!("{message}: {error}"),
+        }
+    }
+
+    pub fn unwrap(self) -> EguiInteractionOutput {
+        self.expect("egui interaction settlement failed")
+    }
 }
 
 #[derive(Debug)]
@@ -406,7 +447,7 @@ impl EguiCanvasInteraction {
             .ok_or(EguiInteractionError::FrameNotOpen)?;
         if view_closed {
             let update = self.session.close();
-            collect_terminal_update(update, &mut frame.output);
+            self.process_frame_update(update, &mut frame);
             self.release_native_ownership(ctx, &mut frame.output);
             self.clear_tracked_response();
             return Ok(self.finish_output(ctx, frame.output));
@@ -520,40 +561,37 @@ impl EguiCanvasInteraction {
         Ok(self.finish_output(ctx, output))
     }
 
-    pub fn complete_submission(
+    pub fn settle_submission(
         &mut self,
         ctx: &Context,
-        ticket: InteractionTicketId,
-        completion: CommandExecutionCompletion,
-    ) -> Result<EguiInteractionOutput, EguiInteractionError> {
-        let update = self.session.complete_submission(ticket, completion)?;
-        self.finish_submission_update(ctx, update)
+        submission: BoundInteractionSubmission,
+        evidence: InteractionSubmissionSettlementEvidence,
+    ) -> EguiInteractionSettlementResult {
+        match self.session.settle_submission(submission, evidence) {
+            InteractionSubmissionSettlementResult::Settled(update) => {
+                match self.finish_submission_update(ctx, update) {
+                    Ok(output) => EguiInteractionSettlementResult::Settled(output),
+                    Err(error) => EguiInteractionSettlementResult::AdapterFailure(error),
+                }
+            }
+            InteractionSubmissionSettlementResult::Stale(update) => {
+                match self.finish_submission_update(ctx, update) {
+                    Ok(output) => EguiInteractionSettlementResult::Stale(output),
+                    Err(error) => EguiInteractionSettlementResult::AdapterFailure(error),
+                }
+            }
+            InteractionSubmissionSettlementResult::StillBound(failure) => {
+                EguiInteractionSettlementResult::StillBound(failure)
+            }
+        }
     }
 
-    pub fn complete_submission_without_command(
+    pub fn abandon_submission(
         &mut self,
         ctx: &Context,
-        ticket: InteractionTicketId,
+        submission: InteractionGraphSubmission,
     ) -> Result<EguiInteractionOutput, EguiInteractionError> {
-        let update = self.session.complete_submission_without_command(ticket)?;
-        self.finish_submission_update(ctx, update)
-    }
-
-    pub fn submission_not_dispatched(
-        &mut self,
-        ctx: &Context,
-        ticket: InteractionTicketId,
-    ) -> Result<EguiInteractionOutput, EguiInteractionError> {
-        let update = self.session.submission_not_dispatched(ticket)?;
-        self.finish_submission_update(ctx, update)
-    }
-
-    pub fn submission_outcome_unknown(
-        &mut self,
-        ctx: &Context,
-        ticket: InteractionTicketId,
-    ) -> Result<EguiInteractionOutput, EguiInteractionError> {
-        let update = self.session.submission_outcome_unknown(ticket)?;
+        let update = self.session.abandon_submission(submission)?;
         self.finish_submission_update(ctx, update)
     }
 
@@ -585,12 +623,12 @@ impl EguiCanvasInteraction {
     /// A successful return is the transport-acceptance linearization point: cancellation,
     /// closure, view retirement, or a successor ticket can revoke the submission before this
     /// call, but not after it. The caller must execute or enqueue the returned command
-    /// immediately, then report its completion through [`Self::complete_submission`].
+    /// immediately, then report its completion through [`Self::settle_submission`].
     pub fn bind_submission(
         &mut self,
         submission: InteractionGraphSubmission,
-    ) -> Result<Option<GraphCommand>, EguiInteractionError> {
-        Ok(self.session.bind_submission(submission)?)
+    ) -> Result<BoundInteractionSubmission, InteractionGraphSubmissionBindFailure> {
+        self.session.bind_submission(submission)
     }
 
     pub fn search_ready(
@@ -773,9 +811,7 @@ impl EguiCanvasInteraction {
         self.collect_update(update, output);
         debug_assert_eq!(receipt.pages_granted(), pages_granted);
         *page_budget = (*page_budget).saturating_sub(receipt.pages_attempted());
-        output.attempted_query_page_count = output
-            .attempted_query_page_count
-            .saturating_add(receipt.pages_attempted());
+        output.query_advances.push(receipt);
         if terminal_error.is_some() {
             output.terminal_query_error = terminal_error;
         }
@@ -794,6 +830,9 @@ impl EguiCanvasInteraction {
             output.tick_demand = InteractionTickDemand::WhileActive;
         }
         output.effects.extend(dispatch.effects);
+        if let Some(work) = dispatch.port_connection_query_work {
+            output.port_connection_queries.push(work);
+        }
         output.renderer_work_pending = dispatch.query_work_pending;
     }
 
@@ -900,17 +939,6 @@ fn interaction_owner(target: &CanvasPressTarget) -> Option<InteractionOwner> {
         | CanvasPressTarget::Marquee { .. }
         | CanvasPressTarget::Canvas(_) => None,
     }
-}
-
-fn collect_terminal_update(update: CanvasInteractionUpdate, output: &mut EguiInteractionOutput) {
-    let dispatch = update.into_dispatch();
-    debug_assert!(dispatch.effects.is_empty());
-    debug_assert!(!dispatch.query_work_pending);
-    merge_damage(&mut output.damage, dispatch.damage);
-    if dispatch.tick_demand == InteractionTickDemand::WhileActive {
-        output.tick_demand = InteractionTickDemand::WhileActive;
-    }
-    output.renderer_work_pending = dispatch.query_work_pending;
 }
 
 fn merge_damage(target: &mut InteractionDamage, other: InteractionDamage) {

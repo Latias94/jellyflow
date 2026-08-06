@@ -11,8 +11,7 @@ Choose direct dependencies according to the behavior the adapter owns:
 - `jellyflow-core` provides graph identities, nodes, ports, edges, and persisted graph facts.
 - `jellyflow-runtime` provides commands through `commands`, graph authority through `graph`,
   view-scoped frames and feedback through `view`, geometry and viewport facts through their owning
-  modules, interaction semantics through `interaction`, and the optional `adapter::conformance`
-  contract.
+  modules, and interaction semantics through `interaction`.
 - `jellyflow-layout` is optional. Depend on it only when the adapter or application runs a layout
   engine.
 - A native UI adapter depends on its own UI framework. Framework types must not enter the core or
@@ -48,7 +47,8 @@ For each native frame:
 5. Transfer at most one ordered native command batch into the frame transaction.
 6. Submit the collector and batch exactly once, including explicit invalid or omitted layout
    outcomes.
-7. Process command receipts and the next authoritative frame before replacing published geometry.
+7. Process identity-keyed command completions and the next authoritative frame before replacing
+   published geometry.
 
 Never retain a graph borrow, `ViewSession` borrow, adapter frame, or feedback collector across native
 frames or asynchronous task boundaries. Keep the last authoritative geometry visible while newer
@@ -92,8 +92,8 @@ Distinguish failures by evidence:
 
 - A validation or enqueue failure before journal admission means the command was not dispatched.
 - A conflict or rejection is a definite semantic terminal outcome.
-- A transport, host, callback, or missing-receipt failure may have committed the command. Treat it as
-  uncertain until a fresh authoritative observation resolves it.
+- A transport, host, callback, or missing-completion failure may have committed the command. Treat
+  it as uncertain until a fresh authoritative observation resolves it.
 
 Retirement, host close, task cancellation, and externalized native state must never replay a pending
 command.
@@ -128,21 +128,21 @@ Keep work proportional to visible or affected facts:
 - Preserve incremental updates for local graph changes and multiple independent views.
 - Ensure unchanged frames converge without recurring feedback or command work.
 
-## Conformance
+## Verification boundary
 
-Enable the non-default `jellyflow-runtime` adapter-conformance feature in the adapter's test target.
-Run the shared data-only scenarios through the adapter's real native event driver, then report the
-normalized observations expected by the contract. The native driver must exercise actual framework
-events, frames, capture, focus, geometry feedback, command receipts, retirement, and close cleanup;
-calling the semantic session directly is not adapter conformance.
+Test the boundary owned by the adapter instead of replaying a second renderer-neutral interaction
+model. Runtime tests own command outcome classification, exact settlement capabilities, graph
+mutation semantics, and geometry publication rules. Adapter tests own real framework events,
+frames, capture, focus, feedback submission, transport admission, retirement, and close cleanup.
 
-At minimum, cover new connections, both reconnect endpoints, node dragging, cancellation,
-selection, conflicts, rejections, uncertain outcomes, command-prefix waiting, capture loss, owner
-replacement, node retirement, and host close. Assertions must include optimistic presentation and
-terminal receipt/cleanup observations, not only the final graph snapshot. Add lifecycle and
-resource-bound tests specific to the framework without moving those framework details into the
-shared contract.
+Keep one focused native test for each distinct input mapping: connection, both reconnect endpoints,
+node drag, and any native search surface the adapter actually implements. Exercise
+`NotDispatched` and `OutcomeUnknown` once through the real adapter transport rather than multiplying
+them across every mutation family. Test capture loss, owner replacement, retirement, and close in
+their lifecycle owners. Assertions should use the authoritative graph, view, interaction
+presentation, and native framework state instead of a shared normalized observation model.
 
-See `jellyflow-open-gpui` and `jellyflow-egui` for production adapter implementations, and the
-external consumer fixtures under `tools/fixtures/external-consumer` for direct dependency and
-conformance examples.
+See `jellyflow-open-gpui` and `jellyflow-egui` for production adapter implementations. External
+package consumers under `tools/fixtures/external-consumer` prove the published dependency boundary;
+future adapters should use the same public runtime capabilities while keeping their framework
+lifecycle local.

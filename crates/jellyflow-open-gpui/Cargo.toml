@@ -31,7 +31,6 @@ objc = "0.2.7"
 raw-window-handle = "0.6.2"
 
 [dev-dependencies]
-jellyflow-runtime = { workspace = true, features = ["adapter-conformance"] }
 open_gpui = { package = "open-gpui", version = "=0.2.0", default-features = false, features = ["test-support"] }
 open_gpui_ui_components = { package = "open-gpui-ui-components", version = "=0.2.0" }
 serde_json.workspace = true

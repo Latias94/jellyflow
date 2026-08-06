@@ -7,9 +7,11 @@ use crate::io::ViewSessionSeed;
 use crate::runtime::commands::{GraphCommand, IncidentEdgePolicy, TopologyEdit};
 use crate::runtime::graph_runtime::GraphRuntime;
 use crate::runtime::interaction::{
-    CanvasInteractionConfig, CanvasInteractionEffect, CanvasInteractionError,
-    CanvasInteractionPhase, CanvasInteractionSession, CanvasInteractionUpdate, CanvasPressTarget,
-    FreshGraphMutationBindError, InteractionGraphSubmission, InteractionGraphSubmissionBindError,
+    BoundInteractionSubmission, CanvasInteractionConfig, CanvasInteractionEffect,
+    CanvasInteractionError, CanvasInteractionPhase, CanvasInteractionSession,
+    CanvasInteractionUpdate, CanvasPressTarget, FreshGraphMutationBindError,
+    InteractionGraphSubmission, InteractionGraphSubmissionBindError,
+    InteractionSubmissionSettlementEvidence, InteractionSubmissionSettlementResult,
     InteractionTicketId,
 };
 use crate::runtime::tests::fixtures::set_selection_by_id;
@@ -42,17 +44,14 @@ fn mixed_selection_delete_is_one_policy_filtered_topology_and_one_undo_boundary(
     let update = session.delete_selection().unwrap();
     let mut submissions = submit_effects(update);
     assert_eq!(submissions.len(), 1);
-    let (ticket, submission) = submissions.pop().unwrap();
+    let (_ticket, submission) = submissions.pop().unwrap();
 
     // The selected incident edge is non-deletable on its own, but deleting its admitted owner
     // necessarily cascades it. It must not be emitted as a duplicate explicit disconnect.
-    let command = session
-        .bind_submission(submission)
-        .unwrap()
-        .expect("non-empty selection command");
+    let (bound, command) = bind_command(&mut session, submission);
     let completion = view.execute(command).unwrap();
     assert!(completion.result().unwrap().applied().is_some());
-    session.complete_submission(ticket, completion).unwrap();
+    settle_command(&mut session, bound, completion);
 
     let applied = view.graph_snapshot().unwrap();
     assert!(applied.graph().node(&fixture.deletable_node).is_none());
@@ -144,7 +143,7 @@ fn empty_foreign_stale_and_active_selection_deletes_do_not_gain_authority() {
     let update = session.delete_selection().unwrap();
     let mut submissions = submit_effects(update);
     assert_eq!(submissions.len(), 1);
-    let (ticket, submission) = submissions.pop().unwrap();
+    let (_ticket, submission) = submissions.pop().unwrap();
     let before_retirement = runtime.snapshot().unwrap();
     runtime
         .execute(GraphCommand::topology(
@@ -162,14 +161,18 @@ fn empty_foreign_stale_and_active_selection_deletes_do_not_gain_authority() {
         .unwrap()
         .applied()
         .unwrap();
+    let failure = session
+        .bind_submission(submission)
+        .expect_err("retired selection cannot bind");
     assert!(matches!(
-        session.bind_submission(submission),
-        Err(InteractionGraphSubmissionBindError::Mutation(
+        failure.error(),
+        InteractionGraphSubmissionBindError::Mutation(
             FreshGraphMutationBindError::SelectionNodeReplaced { node, .. },
-        ))
+        )
             if node == fixture.deletable_node
     ));
-    session.submission_not_dispatched(ticket).unwrap();
+    let (submission, _) = failure.into_parts();
+    session.abandon_submission(submission).unwrap();
 
     first.close().unwrap();
     assert!(matches!(
@@ -197,22 +200,19 @@ fn selection_delete_binding_uses_the_session_runtime_even_when_graph_ids_match()
     let mut session =
         CanvasInteractionSession::attach(&first_view, CanvasInteractionConfig::default()).unwrap();
     let mut submissions = submit_effects(session.delete_selection().unwrap());
-    let (ticket, submission) = submissions.pop().expect("one admitted deletion");
+    let (_ticket, submission) = submissions.pop().expect("one admitted deletion");
     assert!(submissions.is_empty());
 
     let before = second_runtime.snapshot().unwrap();
     let before_history = second_runtime.history_state().unwrap();
-    let command = session
-        .bind_submission(submission)
-        .expect("the session obtains its own authoritative snapshot")
-        .expect("the selected node produces a deletion command");
+    let (bound, command) = bind_command(&mut session, submission);
     let completion = first_runtime.execute(command);
     completion
         .result()
         .expect("the command belongs to the session runtime")
         .applied()
         .expect("the session-owned command applies");
-    session.complete_submission(ticket, completion).unwrap();
+    settle_command(&mut session, bound, completion);
     assert!(
         first_runtime
             .snapshot()
@@ -241,6 +241,34 @@ fn submit_effects(
             CanvasInteractionEffect::Search(_) => None,
         })
         .collect()
+}
+
+fn bind_command(
+    session: &mut CanvasInteractionSession,
+    submission: InteractionGraphSubmission,
+) -> (BoundInteractionSubmission, GraphCommand) {
+    let mut bound = session
+        .bind_submission(submission)
+        .expect("the interaction submission binds");
+    let command = bound
+        .take_command()
+        .expect("the interaction submission produces a command");
+    (bound, command)
+}
+
+fn settle_command(
+    session: &mut CanvasInteractionSession,
+    bound: BoundInteractionSubmission,
+    completion: crate::runtime::commands::CommandExecutionCompletion,
+) {
+    assert!(matches!(
+        session.settle_submission(
+            bound,
+            InteractionSubmissionSettlementEvidence::Command(completion),
+        ),
+        InteractionSubmissionSettlementResult::Settled(_)
+            | InteractionSubmissionSettlementResult::Stale(_)
+    ));
 }
 
 struct DeletionFixture {

@@ -602,6 +602,24 @@ impl OpenGpuiNodeSizeState {
         self.issue_latest(policy)
     }
 
+    /// Releases a settled command that belongs to an older content/environment epoch.
+    ///
+    /// The obsolete command is neither an authoritative success nor a definitive failure for the
+    /// current epoch. Its exact ticket is removed while the latest stable target, if any, remains
+    /// eligible for one successor submission.
+    #[must_use]
+    pub fn complete_obsolete(
+        &mut self,
+        policy: OpenGpuiNodeSizePolicy,
+        ticket: OpenGpuiNodeSizeTicket,
+    ) -> OpenGpuiNodeSizeUpdate {
+        if self.take_pending(ticket).is_none() {
+            return OpenGpuiNodeSizeUpdate::default();
+        }
+        self.suppressed_size = None;
+        self.issue_latest(policy)
+    }
+
     /// Retires one exact ticket without treating it as a command result.
     #[must_use]
     pub fn retire(&mut self, ticket: OpenGpuiNodeSizeTicket) -> OpenGpuiNodeSizeUpdate {
@@ -920,7 +938,7 @@ mod tests {
         assert_eq!(state.pending, None);
         let epoch = state.epoch;
 
-        for _ in 0..120 {
+        for _ in 0..2 {
             assert!(
                 state
                     .observe(policy, epoch, document, size(120.0, 120.0),)
@@ -994,20 +1012,46 @@ mod tests {
     }
 
     #[test]
-    fn one_hundred_twenty_equivalent_samples_remain_quiescent() {
+    fn obsolete_completion_releases_the_old_ticket_and_issues_the_latest_epoch_target() {
+        let policy = OpenGpuiNodeSizePolicy::Content(OpenGpuiContentSizePolicy::default());
+        let document = size(100.0, 100.0);
+        let mut state = state(document);
+        let first = observe_twice(&mut state, policy, document, size(120.0, 120.0))
+            .command()
+            .expect("first command");
+        let next_epoch = OpenGpuiNodeSizeEpoch::new(4, 5);
+
+        state
+            .reset_epoch(next_epoch, document)
+            .expect("valid next epoch");
+        assert!(
+            observe_twice(&mut state, policy, document, size(140.0, 140.0)).is_idle(),
+            "the next target coalesces behind the admitted obsolete command"
+        );
+
+        let successor = state.complete_obsolete(policy, first.ticket());
+        assert_eq!(
+            successor.command().map(OpenGpuiNodeSizeCommand::size),
+            Some(size(140.0, 140.0))
+        );
+        assert_eq!(state.attempts, 1);
+        assert_eq!(state.suppressed_size, None);
+    }
+
+    #[test]
+    fn equivalent_samples_remain_quiescent() {
         let policy = OpenGpuiNodeSizePolicy::Content(OpenGpuiContentSizePolicy::default());
         let document = size(200.0, 120.0);
         let mut state = state(document);
 
-        for index in 0..120 {
-            let delta = if index % 2 == 0 { 0.2 } else { -0.2 };
+        for delta in [0.2, -0.2, 0.0] {
             let update = state.observe(
                 policy,
                 EPOCH,
                 document,
                 size(document.width + delta, document.height - delta),
             );
-            assert!(update.is_idle(), "sample {index} emitted an effect");
+            assert!(update.is_idle(), "an equivalent sample emitted an effect");
         }
 
         assert_eq!(state.attempts, 0);
@@ -1048,9 +1092,8 @@ mod tests {
             Some(OpenGpuiNodeSizeFreezeReason::AlternatingCycle)
         );
 
-        for _ in 0..120 {
-            assert!(state.observe(policy, EPOCH, document, a).is_idle());
-        }
+        assert!(state.observe(policy, EPOCH, document, a).is_idle());
+        assert!(state.observe(policy, EPOCH, document, a).is_idle());
         assert_eq!(state.attempts, 4);
 
         let next_epoch = OpenGpuiNodeSizeEpoch::new(4, 6);

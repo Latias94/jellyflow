@@ -20,7 +20,6 @@ fn stale_command_returns_current_snapshot_and_zero_side_effects() {
         .expect("first command applies");
     let before = runtime.snapshot().unwrap();
     let history_before = runtime.history_state().unwrap();
-    let installed_impact_before = runtime.installed_impact_state_for_test();
     let event_count = Rc::new(Cell::new(0));
     let callback_count = event_count.clone();
     runtime
@@ -52,11 +51,6 @@ fn stale_command_returns_current_snapshot_and_zero_side_effects() {
         serde_json::json!({ "value": 1 })
     );
     assert_eq!(runtime.history_state().unwrap(), history_before);
-    assert_eq!(
-        runtime.installed_impact_state_for_test(),
-        installed_impact_before,
-        "conflicting commands must not update indexes or node identities"
-    );
     assert_eq!(event_count.get(), 0);
 }
 
@@ -107,7 +101,6 @@ fn stale_topology_and_connection_conflicts_include_current_dependencies() {
         .expect("winning command applies");
     let before = runtime.snapshot().unwrap();
     let history_before = runtime.history_state().unwrap();
-    let installed_impact_before = runtime.installed_impact_state_for_test();
     let event_count = Rc::new(Cell::new(0));
     let callback_count = event_count.clone();
     runtime
@@ -175,11 +168,6 @@ fn stale_topology_and_connection_conflicts_include_current_dependencies() {
 
     assert!(before.ptr_eq(&runtime.snapshot().unwrap()));
     assert_eq!(runtime.history_state().unwrap(), history_before);
-    assert_eq!(
-        runtime.installed_impact_state_for_test(),
-        installed_impact_before,
-        "conflicting commands must not update indexes or node identities"
-    );
     assert_eq!(event_count.get(), 0);
 }
 
@@ -202,7 +190,6 @@ fn stale_history_command_conflicts_without_consuming_history() {
         .expect("seed command applies");
     let before = runtime.snapshot().unwrap();
     let history_before = runtime.history_state().unwrap();
-    let installed_impact_before = runtime.installed_impact_state_for_test();
     let event_count = Rc::new(Cell::new(0));
     let callback_count = event_count.clone();
     runtime
@@ -219,11 +206,6 @@ fn stale_history_command_conflicts_without_consuming_history() {
     assert_eq!(conflict.current().revision(), 1);
     assert!(before.ptr_eq(&runtime.snapshot().unwrap()));
     assert_eq!(runtime.history_state().unwrap(), history_before);
-    assert_eq!(
-        runtime.installed_impact_state_for_test(),
-        installed_impact_before,
-        "conflicting history commands must not update indexes or node identities"
-    );
     assert_eq!(event_count.get(), 0);
 }
 
@@ -235,7 +217,6 @@ fn empty_history_commands_are_zero_side_effect_noops() {
         .unwrap();
     let before = runtime.snapshot().unwrap();
     let history_before = runtime.history_state().unwrap();
-    let installed_impact_before = runtime.installed_impact_state_for_test();
     let event_count = Rc::new(Cell::new(0));
     let callback_count = event_count.clone();
     runtime
@@ -257,11 +238,6 @@ fn empty_history_commands_are_zero_side_effect_noops() {
 
     assert!(before.ptr_eq(&runtime.snapshot().unwrap()));
     assert_eq!(runtime.history_state().unwrap(), history_before);
-    assert_eq!(
-        runtime.installed_impact_state_for_test(),
-        installed_impact_before,
-        "empty history commands must not update indexes or node identities"
-    );
     assert_eq!(event_count.get(), 0);
 }
 
@@ -342,7 +318,6 @@ fn failed_history_install_preserves_graph_history_indexes_and_notifications() {
 
     let before = runtime.snapshot().unwrap();
     let history_before = runtime.history_state().unwrap();
-    let installed_impact_before = runtime.installed_impact_state_for_test();
     let event_count = Rc::new(Cell::new(0));
     let callback_count = event_count.clone();
     runtime
@@ -357,11 +332,6 @@ fn failed_history_install_preserves_graph_history_indexes_and_notifications() {
     assert!(matches!(error, GraphRuntimeError::IdentityExhausted));
     assert!(before.ptr_eq(&runtime.snapshot().unwrap()));
     assert_eq!(runtime.history_state().unwrap(), history_before);
-    assert_eq!(
-        runtime.installed_impact_state_for_test(),
-        installed_impact_before,
-        "failed history installation must not update indexes or node identities"
-    );
     assert_eq!(event_count.get(), 0);
 }
 

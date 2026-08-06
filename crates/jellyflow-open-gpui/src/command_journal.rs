@@ -15,6 +15,8 @@ use open_gpui::{App, EntityId};
 
 use jellyflow_runtime::interaction::InteractionTicketId;
 
+use crate::panic_sink::OpenGpuiPanicAccumulator;
+
 /// Maximum number of commands owned by one native host across its queue and in-flight batch.
 pub(crate) const OPEN_GPUI_COMMAND_JOURNAL_CAPACITY: usize = 256;
 
@@ -42,12 +44,16 @@ pub(crate) enum OpenGpuiCommandEnqueueError {
 /// Terminal result transport failure for one enqueued native command.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum OpenGpuiCommandTicketError {
-    #[error("native command host was dropped before submission")]
+    #[error("native command host was dropped")]
     HostDropped,
-    #[error("native command host closed before submission: {reason:?}")]
+    #[error("native command host closed: {reason:?}")]
     HostClosed { reason: ViewCloseReason },
     #[error("native command result is unknown because host close panicked: {reason:?}")]
     ClosePanicked { reason: ViewCloseReason },
+    #[error(
+        "native command result is unknown because the closed view returned uncorrelated command completions: {reason:?}"
+    )]
+    CloseOutcomeUnknown { reason: ViewCloseReason },
     #[error("native command frame preparation failed: {message}")]
     FramePreparation { message: String },
     #[error("native command feedback submission failed")]
@@ -60,17 +66,49 @@ pub(crate) enum OpenGpuiCommandTicketError {
     Session(#[from] ViewSessionError),
 }
 
-impl OpenGpuiCommandTicketError {
-    pub(crate) fn outcome_unknown(&self) -> bool {
-        matches!(
-            self,
-            Self::ClosePanicked { .. } | Self::FeedbackOutcomeUnknown
-        )
+/// Transport-only failure classified while the journal still owns submission-stage evidence.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum OpenGpuiCommandTicketFailure {
+    #[error("{0}")]
+    DefinitelyNotExecuted(OpenGpuiCommandTicketError),
+    #[error("{0}")]
+    ExecutionUnknown(OpenGpuiCommandTicketError),
+}
+
+impl OpenGpuiCommandTicketFailure {
+    pub(crate) fn definitely_not_executed(error: OpenGpuiCommandTicketError) -> Self {
+        Self::DefinitelyNotExecuted(error)
+    }
+
+    pub(crate) fn execution_unknown(error: OpenGpuiCommandTicketError) -> Self {
+        Self::ExecutionUnknown(error)
     }
 }
 
 pub(crate) type OpenGpuiCommandTicketResult =
-    Result<CommandExecutionCompletion, OpenGpuiCommandTicketError>;
+    Result<CommandExecutionCompletion, OpenGpuiCommandTicketFailure>;
+
+/// One centrally classified terminal command-ticket result.
+#[derive(Debug)]
+pub(crate) enum OpenGpuiCommandTicketDisposition<'a> {
+    Completed(&'a CommandExecutionCompletion),
+    DefinitelyNotExecuted(&'a OpenGpuiCommandTicketError),
+    ExecutionUnknown(&'a OpenGpuiCommandTicketError),
+}
+
+impl<'a> OpenGpuiCommandTicketDisposition<'a> {
+    pub(crate) fn classify(result: &'a OpenGpuiCommandTicketResult) -> Self {
+        match result {
+            Ok(completion) => Self::Completed(completion),
+            Err(OpenGpuiCommandTicketFailure::DefinitelyNotExecuted(error)) => {
+                Self::DefinitelyNotExecuted(error)
+            }
+            Err(OpenGpuiCommandTicketFailure::ExecutionUnknown(error)) => {
+                Self::ExecutionUnknown(error)
+            }
+        }
+    }
+}
 
 /// Terminal reason why a captured command prefix cannot be followed by another mutation.
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
@@ -209,24 +247,6 @@ impl std::fmt::Debug for OpenGpuiCommandPrefixPermit {
 }
 
 impl OpenGpuiCommandPrefixPermit {
-    #[cfg(test)]
-    pub(crate) fn enqueue(
-        mut self,
-        command: GraphCommand,
-        origin: OpenGpuiCommandOrigin,
-    ) -> Result<OpenGpuiCommandTicket, OpenGpuiCommandEnqueueError> {
-        let sequence = self
-            .sequence
-            .ok_or(OpenGpuiCommandEnqueueError::PrefixReservationInactive)?;
-        let journal = self
-            .journal
-            .upgrade()
-            .ok_or(OpenGpuiCommandEnqueueError::HostUnavailable)?;
-        let ticket = journal.enqueue_reserved(sequence, command, origin, true)?;
-        self.sequence = None;
-        ticket.ok_or(OpenGpuiCommandEnqueueError::IdentityExhausted)
-    }
-
     pub(crate) fn enqueue_detached(
         mut self,
         command: GraphCommand,
@@ -546,80 +566,51 @@ fn resolve_prefix_barriers(
     barriers: Vec<Rc<PrefixBarrierCompletion>>,
     result: PrefixBarrierCompletionResult,
 ) {
+    let mut panics = OpenGpuiPanicAccumulator::default();
     for barrier in barriers {
-        barrier.resolve(result.clone());
+        panics.capture(|| barrier.resolve(result.clone()));
     }
+    panics.resume();
 }
 
-#[cfg(test)]
-struct HeldPrefixResolution {
-    barriers: Vec<Rc<PrefixBarrierCompletion>>,
-    result: PrefixBarrierCompletionResult,
+#[derive(Debug, Clone, Copy)]
+enum CloseTerminalCertainty {
+    DefinitelyNotExecuted,
+    OutcomeUnknown,
+    Panicked,
 }
 
-#[cfg(test)]
-struct PrefixResolutionHoldState {
-    held: Cell<bool>,
-    pending: RefCell<VecDeque<HeldPrefixResolution>>,
+#[derive(Debug, Clone, Copy)]
+struct CloseTerminalSettlement {
+    reason: ViewCloseReason,
+    certainty: CloseTerminalCertainty,
 }
 
-#[cfg(test)]
-impl PrefixResolutionHoldState {
-    fn resolve(
-        &self,
-        barriers: Vec<Rc<PrefixBarrierCompletion>>,
-        result: PrefixBarrierCompletionResult,
-    ) {
-        if barriers.is_empty() {
-            return;
-        }
-        if !self.held.get() {
-            resolve_prefix_barriers(barriers, result);
-            return;
-        }
-        let mut pending = self.pending.borrow_mut();
-        assert!(
-            pending.len() < OPEN_GPUI_COMMAND_JOURNAL_CAPACITY,
-            "the test-only prefix resolution hold must remain bounded",
-        );
-        pending.push_back(HeldPrefixResolution { barriers, result });
-    }
-
-    fn release(&self) {
-        if !self.held.replace(false) {
-            return;
-        }
-        for held in std::mem::take(&mut *self.pending.borrow_mut()) {
-            resolve_prefix_barriers(held.barriers, held.result);
-        }
-    }
+#[derive(Debug, Clone, Copy)]
+enum CloseDropDisposition {
+    Rollback,
+    Terminal(CloseTerminalSettlement),
 }
 
-#[cfg(test)]
-pub(crate) struct OpenGpuiPrefixResolutionHold {
-    state: Rc<PrefixResolutionHoldState>,
+enum DeferredCloseRecovery {
+    Rollback(OpenGpuiCommandCloseEntries),
+    Terminal {
+        entries: OpenGpuiCommandCloseEntries,
+        settlement: CloseTerminalSettlement,
+    },
+    Completed(PreparedCloseCompletion),
 }
 
-#[cfg(test)]
-impl OpenGpuiPrefixResolutionHold {
-    pub(crate) fn release(self) {
-        self.state.release();
-    }
-}
-
-#[cfg(test)]
-impl Drop for OpenGpuiPrefixResolutionHold {
-    fn drop(&mut self) {
-        self.state.release();
-    }
+struct PreparedCloseCompletion {
+    completed: Vec<OpenGpuiCompletedCommand>,
+    settlement: CloseTerminalSettlement,
 }
 
 pub(crate) struct OpenGpuiCommandJournal {
     state: RefCell<JournalState>,
+    deferred_close_recoveries: RefCell<VecDeque<DeferredCloseRecovery>>,
     deferred_prefix_abandonments: RefCell<BTreeSet<u64>>,
     deferred_batch_abandonments: RefCell<BTreeSet<u64>>,
-    #[cfg(test)]
-    prefix_resolution_hold: Rc<PrefixResolutionHoldState>,
 }
 
 impl OpenGpuiCommandJournal {
@@ -638,13 +629,9 @@ impl OpenGpuiCommandJournal {
                 prefix_reservations: BTreeSet::new(),
                 prefix_barriers: Vec::new(),
             }),
+            deferred_close_recoveries: RefCell::new(VecDeque::new()),
             deferred_prefix_abandonments: RefCell::new(BTreeSet::new()),
             deferred_batch_abandonments: RefCell::new(BTreeSet::new()),
-            #[cfg(test)]
-            prefix_resolution_hold: Rc::new(PrefixResolutionHoldState {
-                held: Cell::new(false),
-                pending: RefCell::new(VecDeque::new()),
-            }),
         })
     }
 
@@ -653,25 +640,7 @@ impl OpenGpuiCommandJournal {
         barriers: Vec<Rc<PrefixBarrierCompletion>>,
         result: PrefixBarrierCompletionResult,
     ) {
-        #[cfg(test)]
-        {
-            self.prefix_resolution_hold.resolve(barriers, result);
-        }
-        #[cfg(not(test))]
-        {
-            resolve_prefix_barriers(barriers, result);
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn hold_prefix_resolutions(&self) -> OpenGpuiPrefixResolutionHold {
-        assert!(
-            !self.prefix_resolution_hold.held.replace(true),
-            "prefix resolution holds cannot be nested",
-        );
-        OpenGpuiPrefixResolutionHold {
-            state: Rc::clone(&self.prefix_resolution_hold),
-        }
+        resolve_prefix_barriers(barriers, result);
     }
 
     pub(crate) fn enqueue(
@@ -683,17 +652,11 @@ impl OpenGpuiCommandJournal {
             .ok_or(OpenGpuiCommandEnqueueError::IdentityExhausted)
     }
 
-    #[cfg(test)]
-    pub(crate) fn enqueue_detached(
-        &self,
-        command: GraphCommand,
-        origin: OpenGpuiCommandOrigin,
-    ) -> Result<(), OpenGpuiCommandEnqueueError> {
-        self.enqueue_entry(command, origin, false).map(|_| ())
-    }
-
     pub(crate) fn has_pending(&self) -> bool {
         self.drain_deferred_abandonments();
+        if !self.deferred_close_recoveries.borrow().is_empty() {
+            return true;
+        }
         self.state.try_borrow().map_or(true, |state| {
             state.in_flight.is_some()
                 || !state.queue.is_empty()
@@ -706,10 +669,11 @@ impl OpenGpuiCommandJournal {
         &self,
         completed: Vec<OpenGpuiCompletedCommand>,
     ) -> Vec<OpenGpuiPendingCommandResolution> {
+        self.drain_deferred_abandonments();
         let mut resolutions = Vec::new();
         let mut deferred = VecDeque::new();
         for command in completed {
-            if matches!(command.origin, OpenGpuiCommandOrigin::Binding) {
+            if matches!(&command.origin, OpenGpuiCommandOrigin::Binding) {
                 if let Some(resolution) = command.into_resolution() {
                     resolutions.push(resolution);
                 }
@@ -725,6 +689,7 @@ impl OpenGpuiCommandJournal {
     }
 
     pub(crate) fn retain_completions_for_host(&self, completed: Vec<OpenGpuiCompletedCommand>) {
+        self.drain_deferred_abandonments();
         self.state
             .borrow_mut()
             .deferred_completions
@@ -732,29 +697,12 @@ impl OpenGpuiCommandJournal {
     }
 
     pub(crate) fn take_deferred_completions(&self) -> Vec<OpenGpuiCompletedCommand> {
+        self.drain_deferred_abandonments();
         self.state
             .borrow_mut()
             .deferred_completions
             .drain(..)
             .collect()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn capacity_usage(&self) -> (usize, usize, usize) {
-        self.drain_deferred_abandonments();
-        self.state
-            .try_borrow()
-            .map(|state| {
-                (
-                    state.queue.len(),
-                    state
-                        .in_flight
-                        .as_ref()
-                        .map_or(0, |batch| batch.entries.len()),
-                    state.prefix_reservations.len(),
-                )
-            })
-            .expect("test capacity inspection cannot overlap a journal mutation")
     }
 
     /// Captures exactly the commands that are queued or in flight at this instant.
@@ -963,8 +911,43 @@ impl OpenGpuiCommandJournal {
     }
 
     fn drain_deferred_abandonments(&self) {
+        self.drain_deferred_close_recoveries();
         self.drain_deferred_prefix_abandonments();
         self.drain_deferred_batch_abandonments();
+    }
+
+    fn defer_close_recovery(&self, recovery: DeferredCloseRecovery) {
+        {
+            let mut recoveries = self.deferred_close_recoveries.borrow_mut();
+            recoveries.push_back(recovery);
+        }
+        let mut panics = OpenGpuiPanicAccumulator::default();
+        panics.capture(|| self.drain_deferred_abandonments());
+        let _ = panics.suppress();
+    }
+
+    fn drain_deferred_close_recoveries(&self) {
+        let mut recoveries = std::mem::take(&mut *self.deferred_close_recoveries.borrow_mut());
+        if recoveries.is_empty() {
+            return;
+        }
+        let mut prefix_resolutions = Vec::new();
+        {
+            let Ok(mut state) = self.state.try_borrow_mut() else {
+                let mut deferred = self.deferred_close_recoveries.borrow_mut();
+                recoveries.append(&mut deferred);
+                *deferred = recoveries;
+                return;
+            };
+            for recovery in recoveries {
+                if let Some(resolution) = apply_close_recovery(&mut state, recovery) {
+                    prefix_resolutions.push(resolution);
+                }
+            }
+        }
+        for (barriers, result) in prefix_resolutions {
+            self.resolve_prefix_barriers(barriers, result);
+        }
     }
 
     fn drain_deferred_prefix_abandonments(&self) {
@@ -1101,12 +1084,34 @@ impl OpenGpuiCommandJournal {
     pub(crate) fn fail_batch(
         &self,
         batch: OpenGpuiCommandBatch,
-        mut error: impl FnMut() -> OpenGpuiCommandTicketError,
+        mut failure: impl FnMut() -> OpenGpuiCommandTicketFailure,
     ) -> Result<Vec<OpenGpuiCompletedCommand>, OpenGpuiCommandBatchStateError> {
         let entries = self.take_batch(batch.id, None)?;
         Ok(entries
             .into_iter()
-            .map(|entry| OpenGpuiCompletedCommand::new(entry, Err(error())))
+            .map(|entry| OpenGpuiCompletedCommand::new(entry, Err(failure())))
+            .collect())
+    }
+
+    pub(crate) fn fail_batch_from_phase(
+        &self,
+        batch: OpenGpuiCommandBatch,
+        mut error: impl FnMut() -> OpenGpuiCommandTicketError,
+    ) -> Result<Vec<OpenGpuiCompletedCommand>, OpenGpuiCommandBatchStateError> {
+        let (phase, entries) = self.take_batch_with_phase(batch.id, None)?;
+        Ok(entries
+            .into_iter()
+            .map(|entry| {
+                let failure = match phase {
+                    InFlightPhase::Collected => {
+                        OpenGpuiCommandTicketFailure::definitely_not_executed(error())
+                    }
+                    InFlightPhase::Submitted => {
+                        OpenGpuiCommandTicketFailure::execution_unknown(error())
+                    }
+                };
+                OpenGpuiCompletedCommand::new(entry, Err(failure))
+            })
             .collect())
     }
 
@@ -1134,6 +1139,11 @@ impl OpenGpuiCommandJournal {
                 .as_ref()
                 .is_some_and(|batch| deferred.contains(&batch.id));
             if !should_abandon {
+                if state.status == JournalStatus::Closing {
+                    self.deferred_batch_abandonments
+                        .borrow_mut()
+                        .append(&mut deferred);
+                }
                 return;
             }
             let batch = state
@@ -1149,22 +1159,29 @@ impl OpenGpuiCommandJournal {
             .entries
             .into_iter()
             .map(|entry| {
-                let error = match phase {
-                    InFlightPhase::Collected => OpenGpuiCommandTicketError::FramePreparation {
-                        message: "native command batch was dropped during frame preparation"
-                            .to_owned(),
-                    },
-                    InFlightPhase::Submitted => OpenGpuiCommandTicketError::FeedbackOutcomeUnknown,
+                let failure = match phase {
+                    InFlightPhase::Collected => {
+                        OpenGpuiCommandTicketFailure::definitely_not_executed(
+                            OpenGpuiCommandTicketError::FramePreparation {
+                                message:
+                                    "native command batch was dropped during frame preparation"
+                                        .to_owned(),
+                            },
+                        )
+                    }
+                    InFlightPhase::Submitted => OpenGpuiCommandTicketFailure::execution_unknown(
+                        OpenGpuiCommandTicketError::FeedbackOutcomeUnknown,
+                    ),
                 };
-                OpenGpuiCompletedCommand::new(entry, Err(error))
+                OpenGpuiCompletedCommand::new(entry, Err(failure))
             })
             .collect();
         resolve_command_tickets(self.defer_completions(completed));
     }
 
     pub(crate) fn begin_close(
-        &self,
-    ) -> Result<OpenGpuiCommandCloseDrain, OpenGpuiCommandCloseError> {
+        self: &Rc<Self>,
+    ) -> Result<OpenGpuiCommandCloseTransaction, OpenGpuiCommandCloseError> {
         self.drain_deferred_abandonments();
         let mut state = self
             .state
@@ -1186,145 +1203,20 @@ impl OpenGpuiCommandJournal {
             return Err(OpenGpuiCommandCloseError::BatchSubmitting);
         }
         state.status = JournalStatus::Closing;
-        Ok(OpenGpuiCommandCloseDrain {
-            collected: state.in_flight.take(),
-            queued: std::mem::take(&mut state.queue),
+        Ok(OpenGpuiCommandCloseTransaction {
+            journal: Rc::clone(self),
+            entries: Some(OpenGpuiCommandCloseEntries {
+                collected: state.in_flight.take(),
+                queued: std::mem::take(&mut state.queue),
+            }),
+            prepared: None,
+            drop_disposition: CloseDropDisposition::Rollback,
         })
-    }
-
-    pub(crate) fn abort_close(
-        &self,
-        drain: OpenGpuiCommandCloseDrain,
-    ) -> Result<(), OpenGpuiCommandCloseError> {
-        self.drain_deferred_abandonments();
-        let mut state = self
-            .state
-            .try_borrow_mut()
-            .map_err(|_| OpenGpuiCommandCloseError::Busy)?;
-        if state.status != JournalStatus::Closing
-            || state.in_flight.is_some()
-            || !state.queue.is_empty()
-        {
-            return Err(OpenGpuiCommandCloseError::InvalidState);
-        }
-        state.status = JournalStatus::Open;
-        state.in_flight = drain.collected;
-        state.queue = drain.queued;
-        Ok(())
-    }
-
-    pub(crate) fn finish_close(
-        &self,
-        drain: OpenGpuiCommandCloseDrain,
-        reason: ViewCloseReason,
-        completions: Vec<CommandExecutionCompletion>,
-    ) -> Result<Vec<OpenGpuiCompletedCommand>, OpenGpuiCommandCloseError> {
-        self.drain_deferred_abandonments();
-        {
-            let state = self
-                .state
-                .try_borrow()
-                .map_err(|_| OpenGpuiCommandCloseError::Busy)?;
-            if state.status != JournalStatus::Closing {
-                return Err(OpenGpuiCommandCloseError::InvalidState);
-            }
-        }
-        let identities = drain.command_identities();
-        let mut completions = CommandExecutionCompletions::try_from_ordered(completions)?;
-        let completions = completions.take_exact(&identities)?;
-        let (entries, barriers) = {
-            let mut state = self
-                .state
-                .try_borrow_mut()
-                .map_err(|_| OpenGpuiCommandCloseError::Busy)?;
-            if state.status != JournalStatus::Closing {
-                return Err(OpenGpuiCommandCloseError::InvalidState);
-            }
-            state.status = JournalStatus::Closed(reason);
-            let barriers = state.terminate_prefixes();
-            (drain.into_entries(), barriers)
-        };
-        self.resolve_prefix_barriers(
-            barriers,
-            Err(OpenGpuiCommandPrefixBarrierError::HostClosed { reason }),
-        );
-        let completed = entries
-            .into_iter()
-            .zip(completions)
-            .map(|(entry, completion)| OpenGpuiCompletedCommand::new(entry, Ok(completion)))
-            .collect();
-        Ok(completed)
-    }
-
-    pub(crate) fn finish_close_without_execution(
-        &self,
-        drain: OpenGpuiCommandCloseDrain,
-        reason: ViewCloseReason,
-    ) -> Result<Vec<OpenGpuiCompletedCommand>, OpenGpuiCommandCloseError> {
-        self.drain_deferred_abandonments();
-        let (entries, barriers) = {
-            let mut state = self
-                .state
-                .try_borrow_mut()
-                .map_err(|_| OpenGpuiCommandCloseError::Busy)?;
-            if state.status != JournalStatus::Closing {
-                return Err(OpenGpuiCommandCloseError::InvalidState);
-            }
-            state.status = JournalStatus::Closed(reason);
-            let barriers = state.terminate_prefixes();
-            (drain.into_entries(), barriers)
-        };
-        self.resolve_prefix_barriers(
-            barriers,
-            Err(OpenGpuiCommandPrefixBarrierError::HostClosed { reason }),
-        );
-        Ok(entries
-            .into_iter()
-            .map(|entry| {
-                OpenGpuiCompletedCommand::new(
-                    entry,
-                    Err(OpenGpuiCommandTicketError::HostClosed { reason }),
-                )
-            })
-            .collect())
-    }
-
-    pub(crate) fn finish_close_after_panic(
-        &self,
-        drain: OpenGpuiCommandCloseDrain,
-        reason: ViewCloseReason,
-    ) -> Result<Vec<OpenGpuiCompletedCommand>, OpenGpuiCommandCloseError> {
-        self.drain_deferred_abandonments();
-        let (entries, barriers) = {
-            let mut state = self
-                .state
-                .try_borrow_mut()
-                .map_err(|_| OpenGpuiCommandCloseError::Busy)?;
-            if state.status != JournalStatus::Closing {
-                return Err(OpenGpuiCommandCloseError::InvalidState);
-            }
-            state.status = JournalStatus::Closed(reason);
-            let barriers = state.terminate_prefixes();
-            (drain.into_entries(), barriers)
-        };
-        self.resolve_prefix_barriers(
-            barriers,
-            Err(OpenGpuiCommandPrefixBarrierError::ClosePanicked { reason }),
-        );
-        Ok(entries
-            .into_iter()
-            .map(|entry| {
-                OpenGpuiCompletedCommand::new(
-                    entry,
-                    Err(OpenGpuiCommandTicketError::ClosePanicked { reason }),
-                )
-            })
-            .collect())
     }
 
     pub(crate) fn terminate(&self, reason: ViewCloseReason) -> Vec<OpenGpuiCompletedCommand> {
         self.drain_deferred_abandonments();
-        let (entries, barriers) = {
+        let (in_flight, queued, barriers) = {
             let mut state = self.state.borrow_mut();
             if matches!(
                 state.status,
@@ -1333,59 +1225,85 @@ impl OpenGpuiCommandJournal {
                 return Vec::new();
             }
             state.status = JournalStatus::Closed(reason);
-            let entries = state
-                .in_flight
-                .take()
-                .into_iter()
-                .flat_map(|batch| batch.entries)
-                .chain(state.queue.drain(..))
-                .collect::<Vec<_>>();
+            let in_flight = state.in_flight.take();
+            let queued = state.queue.drain(..).collect::<Vec<_>>();
             let barriers = state.terminate_prefixes();
-            (entries, barriers)
+            (in_flight, queued, barriers)
         };
         self.resolve_prefix_barriers(
             barriers,
             Err(OpenGpuiCommandPrefixBarrierError::HostClosed { reason }),
         );
-        entries
-            .into_iter()
-            .map(|entry| {
-                OpenGpuiCompletedCommand::new(
-                    entry,
-                    Err(OpenGpuiCommandTicketError::HostClosed { reason }),
-                )
-            })
-            .collect()
+        let mut completed = Vec::new();
+        if let Some(batch) = in_flight {
+            let phase = batch.phase;
+            completed.extend(batch.entries.into_iter().map(|entry| {
+                let error = OpenGpuiCommandTicketError::HostClosed { reason };
+                let failure = match phase {
+                    InFlightPhase::Collected => {
+                        OpenGpuiCommandTicketFailure::definitely_not_executed(error)
+                    }
+                    InFlightPhase::Submitted => {
+                        OpenGpuiCommandTicketFailure::execution_unknown(error)
+                    }
+                };
+                OpenGpuiCompletedCommand::new(entry, Err(failure))
+            }));
+        }
+        completed.extend(queued.into_iter().map(|entry| {
+            OpenGpuiCompletedCommand::new(
+                entry,
+                Err(OpenGpuiCommandTicketFailure::definitely_not_executed(
+                    OpenGpuiCommandTicketError::HostClosed { reason },
+                )),
+            )
+        }));
+        completed
     }
 
     pub(crate) fn terminate_dropped(&self) -> Vec<OpenGpuiCompletedCommand> {
         self.drain_deferred_abandonments();
-        let (entries, barriers) = {
+        let (in_flight, queued, barriers) = {
             let mut state = self.state.borrow_mut();
             if state.status == JournalStatus::Dropped {
                 return Vec::new();
             }
             state.status = JournalStatus::Dropped;
-            let entries = state
-                .in_flight
-                .take()
-                .into_iter()
-                .flat_map(|batch| batch.entries)
-                .chain(state.queue.drain(..))
-                .collect::<Vec<_>>();
+            let in_flight = state.in_flight.take();
+            let queued = state.queue.drain(..).collect::<Vec<_>>();
             let barriers = state.terminate_prefixes();
-            (entries, barriers)
+            (in_flight, queued, barriers)
         };
         self.resolve_prefix_barriers(
             barriers,
             Err(OpenGpuiCommandPrefixBarrierError::HostDropped),
         );
-        entries
-            .into_iter()
-            .map(|entry| {
-                OpenGpuiCompletedCommand::new(entry, Err(OpenGpuiCommandTicketError::HostDropped))
-            })
-            .collect()
+        let mut completed = Vec::new();
+        if let Some(batch) = in_flight {
+            let phase = batch.phase;
+            completed.extend(batch.entries.into_iter().map(|entry| {
+                let failure = match phase {
+                    InFlightPhase::Collected => {
+                        OpenGpuiCommandTicketFailure::definitely_not_executed(
+                            OpenGpuiCommandTicketError::HostDropped,
+                        )
+                    }
+                    InFlightPhase::Submitted => OpenGpuiCommandTicketFailure::execution_unknown(
+                        OpenGpuiCommandTicketError::HostDropped,
+                    ),
+                };
+                OpenGpuiCompletedCommand::new(entry, Err(failure))
+            }));
+        }
+        completed.extend(queued.into_iter().map(|entry| {
+            OpenGpuiCompletedCommand::new(
+                entry,
+                Err(OpenGpuiCommandTicketFailure::definitely_not_executed(
+                    OpenGpuiCommandTicketError::HostDropped,
+                )),
+            )
+        }));
+        completed
     }
 
     fn take_batch(
@@ -1393,8 +1311,17 @@ impl OpenGpuiCommandJournal {
         batch_id: u64,
         required_phase: Option<InFlightPhase>,
     ) -> Result<Vec<JournalEntry>, OpenGpuiCommandBatchStateError> {
+        self.take_batch_with_phase(batch_id, required_phase)
+            .map(|(_, entries)| entries)
+    }
+
+    fn take_batch_with_phase(
+        &self,
+        batch_id: u64,
+        required_phase: Option<InFlightPhase>,
+    ) -> Result<(InFlightPhase, Vec<JournalEntry>), OpenGpuiCommandBatchStateError> {
         self.drain_deferred_abandonments();
-        let (entries, barriers) = {
+        let (phase, entries, barriers) = {
             let mut state = self
                 .state
                 .try_borrow_mut()
@@ -1404,16 +1331,17 @@ impl OpenGpuiCommandJournal {
             }) {
                 return Err(OpenGpuiCommandBatchStateError::UnknownBatch);
             }
-            let entries = state
+            let batch = state
                 .in_flight
                 .take()
-                .map(|batch| batch.entries)
-                .unwrap_or_default();
+                .expect("a matching command batch was checked before removal");
+            let phase = batch.phase;
+            let entries = batch.entries;
             let barriers = state.advance_terminal_prefix(&entries);
-            (entries, barriers)
+            (phase, entries, barriers)
         };
         self.resolve_prefix_barriers(barriers, Ok(()));
-        Ok(entries)
+        Ok((phase, entries))
     }
 }
 
@@ -1421,30 +1349,59 @@ impl Drop for OpenGpuiCommandJournal {
     fn drop(&mut self) {
         self.deferred_prefix_abandonments.get_mut().clear();
         self.deferred_batch_abandonments.get_mut().clear();
-        let (barriers, ticket_completions) = {
+        let recoveries = std::mem::take(self.deferred_close_recoveries.get_mut());
+        let (close_prefix_resolutions, barriers, ticket_resolutions) = {
             let state = self.state.get_mut();
+            let close_prefix_resolutions = recoveries
+                .into_iter()
+                .filter_map(|recovery| apply_close_recovery(state, recovery))
+                .collect::<Vec<_>>();
             state.status = JournalStatus::Dropped;
-            let entries = state
-                .in_flight
-                .take()
-                .into_iter()
-                .flat_map(|batch| batch.entries)
-                .chain(state.queue.drain(..))
-                .collect::<Vec<_>>();
+            let in_flight = state.in_flight.take();
+            let queued = state.queue.drain(..).collect::<Vec<_>>();
             let barriers = state.terminate_prefixes();
-            let ticket_completions = entries
-                .into_iter()
-                .filter_map(|entry| entry.completion)
+            let mut ticket_resolutions = state
+                .deferred_completions
+                .drain(..)
+                .filter_map(OpenGpuiCompletedCommand::into_resolution)
                 .collect::<Vec<_>>();
-            (barriers, ticket_completions)
+            if let Some(batch) = in_flight {
+                let phase = batch.phase;
+                ticket_resolutions.extend(batch.entries.into_iter().filter_map(|entry| {
+                    let failure = match phase {
+                        InFlightPhase::Collected => {
+                            OpenGpuiCommandTicketFailure::definitely_not_executed(
+                                OpenGpuiCommandTicketError::HostDropped,
+                            )
+                        }
+                        InFlightPhase::Submitted => {
+                            OpenGpuiCommandTicketFailure::execution_unknown(
+                                OpenGpuiCommandTicketError::HostDropped,
+                            )
+                        }
+                    };
+                    OpenGpuiCompletedCommand::new(entry, Err(failure)).into_resolution()
+                }));
+            }
+            ticket_resolutions.extend(queued.into_iter().filter_map(|entry| {
+                OpenGpuiCompletedCommand::new(
+                    entry,
+                    Err(OpenGpuiCommandTicketFailure::definitely_not_executed(
+                        OpenGpuiCommandTicketError::HostDropped,
+                    )),
+                )
+                .into_resolution()
+            }));
+            (close_prefix_resolutions, barriers, ticket_resolutions)
         };
+        for (barriers, result) in close_prefix_resolutions {
+            self.resolve_prefix_barriers(barriers, result);
+        }
         self.resolve_prefix_barriers(
             barriers,
             Err(OpenGpuiCommandPrefixBarrierError::HostDropped),
         );
-        for completion in ticket_completions {
-            completion.resolve(Err(OpenGpuiCommandTicketError::HostDropped));
-        }
+        drop(ticket_resolutions);
     }
 }
 
@@ -1511,13 +1468,13 @@ pub(crate) enum OpenGpuiCommandCloseError {
     Correlation(#[from] CommandCompletionCorrelationError),
 }
 
-pub(crate) struct OpenGpuiCommandCloseDrain {
+struct OpenGpuiCommandCloseEntries {
     collected: Option<InFlightBatch>,
     queued: VecDeque<JournalEntry>,
 }
 
-impl OpenGpuiCommandCloseDrain {
-    pub(crate) fn command_identities(&self) -> Vec<GraphCommandIdentity> {
+impl OpenGpuiCommandCloseEntries {
+    fn command_identities(&self) -> Vec<GraphCommandIdentity> {
         self.collected
             .iter()
             .flat_map(|batch| batch.entries.iter())
@@ -1526,7 +1483,7 @@ impl OpenGpuiCommandCloseDrain {
             .collect()
     }
 
-    pub(crate) fn combined_request(
+    fn combined_request(
         &self,
         caller: &jellyflow_runtime::view::ViewCloseRequest,
     ) -> jellyflow_runtime::view::ViewCloseRequest {
@@ -1552,11 +1509,404 @@ impl OpenGpuiCommandCloseDrain {
             .chain(self.queued)
             .collect()
     }
+
+    fn restore_into(self, state: &mut JournalState) {
+        let Self {
+            collected,
+            mut queued,
+        } = self;
+        if state.in_flight.is_none() {
+            state.in_flight = collected;
+        } else if let Some(collected) = collected {
+            queued.extend(collected.entries);
+        }
+        queued.append(&mut state.queue);
+        if queued.len() > 1 {
+            let mut queued = queued.into_iter().collect::<Vec<_>>();
+            queued.sort_by_key(|entry| entry.sequence);
+            state.queue = queued.into();
+        } else {
+            state.queue = queued;
+        }
+    }
+}
+
+/// Owns one extracted close prefix until it is atomically rolled back or terminally settled.
+#[must_use = "native command close transactions must be finished, aborted, or dropped"]
+pub(crate) struct OpenGpuiCommandCloseTransaction {
+    journal: Rc<OpenGpuiCommandJournal>,
+    entries: Option<OpenGpuiCommandCloseEntries>,
+    prepared: Option<PreparedCloseCompletion>,
+    drop_disposition: CloseDropDisposition,
+}
+
+impl OpenGpuiCommandCloseTransaction {
+    pub(crate) fn command_identities(&self) -> Vec<GraphCommandIdentity> {
+        self.entries
+            .as_ref()
+            .expect("an active close transaction owns its extracted entries")
+            .command_identities()
+    }
+
+    pub(crate) fn combined_request(
+        &self,
+        caller: &jellyflow_runtime::view::ViewCloseRequest,
+    ) -> jellyflow_runtime::view::ViewCloseRequest {
+        self.entries
+            .as_ref()
+            .expect("an active close transaction owns its extracted entries")
+            .combined_request(caller)
+    }
+
+    /// Records that the close request reached a terminal view before completion extraction begins.
+    pub(crate) fn confirm_view_terminated(&mut self, reason: ViewCloseReason) {
+        self.drop_disposition = CloseDropDisposition::Terminal(CloseTerminalSettlement {
+            reason,
+            certainty: CloseTerminalCertainty::OutcomeUnknown,
+        });
+    }
+
+    pub(crate) fn abort(mut self) -> Result<(), OpenGpuiCommandCloseError> {
+        if matches!(self.drop_disposition, CloseDropDisposition::Terminal(_)) {
+            return Err(OpenGpuiCommandCloseError::InvalidState);
+        }
+        self.journal.drain_deferred_abandonments();
+        let journal = Rc::clone(&self.journal);
+        let mut state = journal
+            .state
+            .try_borrow_mut()
+            .map_err(|_| OpenGpuiCommandCloseError::Busy)?;
+        if state.status != JournalStatus::Closing {
+            return Err(OpenGpuiCommandCloseError::InvalidState);
+        }
+        let entries = self
+            .entries
+            .take()
+            .expect("an active close transaction owns its extracted entries");
+        entries.restore_into(&mut state);
+        state.status = JournalStatus::Open;
+        drop(state);
+        self.journal.drain_deferred_abandonments();
+        Ok(())
+    }
+
+    pub(crate) fn finish(
+        mut self,
+        reason: ViewCloseReason,
+        completions: Vec<CommandExecutionCompletion>,
+    ) -> Result<Vec<OpenGpuiCompletedCommand>, OpenGpuiCommandCloseError> {
+        self.confirm_view_terminated(reason);
+        let identities = self.command_identities();
+        let mut completions = CommandExecutionCompletions::try_from_ordered(completions)?;
+        let completions = completions.take_exact(&identities)?;
+        self.commit_with_completions(reason, completions)
+    }
+
+    pub(crate) fn finish_without_execution(
+        mut self,
+        reason: ViewCloseReason,
+    ) -> Result<Vec<OpenGpuiCompletedCommand>, OpenGpuiCommandCloseError> {
+        let settlement = CloseTerminalSettlement {
+            reason,
+            certainty: CloseTerminalCertainty::DefinitelyNotExecuted,
+        };
+        self.drop_disposition = CloseDropDisposition::Terminal(settlement);
+        self.commit_with_settlement(settlement)
+    }
+
+    pub(crate) fn finish_outcome_unknown(
+        mut self,
+        reason: ViewCloseReason,
+    ) -> Result<Vec<OpenGpuiCompletedCommand>, OpenGpuiCommandCloseError> {
+        let settlement = CloseTerminalSettlement {
+            reason,
+            certainty: CloseTerminalCertainty::OutcomeUnknown,
+        };
+        self.drop_disposition = CloseDropDisposition::Terminal(settlement);
+        self.commit_with_settlement(settlement)
+    }
+
+    pub(crate) fn finish_after_panic(
+        mut self,
+        reason: ViewCloseReason,
+    ) -> Result<Vec<OpenGpuiCompletedCommand>, OpenGpuiCommandCloseError> {
+        let settlement = CloseTerminalSettlement {
+            reason,
+            certainty: CloseTerminalCertainty::Panicked,
+        };
+        self.drop_disposition = CloseDropDisposition::Terminal(settlement);
+        self.commit_with_settlement(settlement)
+    }
+
+    fn commit_with_completions(
+        &mut self,
+        reason: ViewCloseReason,
+        completions: Vec<CommandExecutionCompletion>,
+    ) -> Result<Vec<OpenGpuiCompletedCommand>, OpenGpuiCommandCloseError> {
+        let entries = self
+            .entries
+            .take()
+            .expect("an active close transaction owns its extracted entries")
+            .into_entries();
+        let settlement = CloseTerminalSettlement {
+            reason,
+            certainty: CloseTerminalCertainty::OutcomeUnknown,
+        };
+        self.prepared = Some(PreparedCloseCompletion {
+            completed: entries
+                .into_iter()
+                .zip(completions)
+                .map(|(entry, completion)| OpenGpuiCompletedCommand::new(entry, Ok(completion)))
+                .collect(),
+            settlement,
+        });
+        let barriers = self.commit_terminal_state(reason)?;
+        self.journal.resolve_prefix_barriers(
+            barriers,
+            Err(OpenGpuiCommandPrefixBarrierError::HostClosed { reason }),
+        );
+        Ok(self
+            .prepared
+            .take()
+            .expect("a prepared close transaction owns its completed commands")
+            .completed)
+    }
+
+    fn commit_with_settlement(
+        &mut self,
+        settlement: CloseTerminalSettlement,
+    ) -> Result<Vec<OpenGpuiCompletedCommand>, OpenGpuiCommandCloseError> {
+        let entries = self
+            .entries
+            .take()
+            .expect("an active close transaction owns its extracted entries");
+        self.prepared = Some(PreparedCloseCompletion {
+            completed: complete_close_entries(entries, settlement),
+            settlement,
+        });
+        let barriers = self.commit_terminal_state(settlement.reason)?;
+        self.journal
+            .resolve_prefix_barriers(barriers, close_prefix_result(settlement));
+        Ok(self
+            .prepared
+            .take()
+            .expect("a prepared close transaction owns its completed commands")
+            .completed)
+    }
+
+    fn commit_terminal_state(
+        &self,
+        reason: ViewCloseReason,
+    ) -> Result<Vec<Rc<PrefixBarrierCompletion>>, OpenGpuiCommandCloseError> {
+        self.journal.drain_deferred_abandonments();
+        let mut state = self
+            .journal
+            .state
+            .try_borrow_mut()
+            .map_err(|_| OpenGpuiCommandCloseError::Busy)?;
+        if state.status != JournalStatus::Closing
+            || state.in_flight.is_some()
+            || !state.queue.is_empty()
+        {
+            return Err(OpenGpuiCommandCloseError::InvalidState);
+        }
+        state.status = JournalStatus::Closed(reason);
+        Ok(state.terminate_prefixes())
+    }
+}
+
+impl std::fmt::Debug for OpenGpuiCommandCloseTransaction {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("OpenGpuiCommandCloseTransaction")
+            .field("active", &self.entries.is_some())
+            .field("prepared", &self.prepared.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for OpenGpuiCommandCloseTransaction {
+    fn drop(&mut self) {
+        let recovery = if let Some(completed) = self.prepared.take() {
+            Some(DeferredCloseRecovery::Completed(completed))
+        } else {
+            self.entries
+                .take()
+                .map(|entries| match self.drop_disposition {
+                    CloseDropDisposition::Rollback => DeferredCloseRecovery::Rollback(entries),
+                    CloseDropDisposition::Terminal(settlement) => DeferredCloseRecovery::Terminal {
+                        entries,
+                        settlement,
+                    },
+                })
+        };
+        if let Some(recovery) = recovery {
+            self.journal.defer_close_recovery(recovery);
+        }
+    }
+}
+
+fn close_ticket_failure(settlement: CloseTerminalSettlement) -> OpenGpuiCommandTicketFailure {
+    match settlement.certainty {
+        CloseTerminalCertainty::DefinitelyNotExecuted => {
+            OpenGpuiCommandTicketFailure::definitely_not_executed(
+                OpenGpuiCommandTicketError::HostClosed {
+                    reason: settlement.reason,
+                },
+            )
+        }
+        CloseTerminalCertainty::OutcomeUnknown => OpenGpuiCommandTicketFailure::execution_unknown(
+            OpenGpuiCommandTicketError::CloseOutcomeUnknown {
+                reason: settlement.reason,
+            },
+        ),
+        CloseTerminalCertainty::Panicked => OpenGpuiCommandTicketFailure::execution_unknown(
+            OpenGpuiCommandTicketError::ClosePanicked {
+                reason: settlement.reason,
+            },
+        ),
+    }
+}
+
+fn complete_close_entries(
+    entries: OpenGpuiCommandCloseEntries,
+    settlement: CloseTerminalSettlement,
+) -> Vec<OpenGpuiCompletedCommand> {
+    entries
+        .into_entries()
+        .into_iter()
+        .map(|entry| OpenGpuiCompletedCommand::new(entry, Err(close_ticket_failure(settlement))))
+        .collect()
+}
+
+fn complete_current_journal_entries(
+    state: &mut JournalState,
+    settlement: CloseTerminalSettlement,
+) -> Vec<OpenGpuiCompletedCommand> {
+    let mut completed = Vec::new();
+    if let Some(batch) = state.in_flight.take() {
+        let settlement = if batch.phase == InFlightPhase::Submitted
+            && matches!(
+                settlement.certainty,
+                CloseTerminalCertainty::DefinitelyNotExecuted
+            ) {
+            CloseTerminalSettlement {
+                reason: settlement.reason,
+                certainty: CloseTerminalCertainty::OutcomeUnknown,
+            }
+        } else {
+            settlement
+        };
+        completed.extend(batch.entries.into_iter().map(|entry| {
+            OpenGpuiCompletedCommand::new(entry, Err(close_ticket_failure(settlement)))
+        }));
+    }
+    completed.extend(
+        state.queue.drain(..).map(|entry| {
+            OpenGpuiCompletedCommand::new(entry, Err(close_ticket_failure(settlement)))
+        }),
+    );
+    completed
+}
+
+fn complete_dropped_close_entries(
+    entries: OpenGpuiCommandCloseEntries,
+) -> Vec<OpenGpuiCompletedCommand> {
+    entries
+        .into_entries()
+        .into_iter()
+        .map(|entry| {
+            OpenGpuiCompletedCommand::new(
+                entry,
+                Err(OpenGpuiCommandTicketFailure::definitely_not_executed(
+                    OpenGpuiCommandTicketError::HostDropped,
+                )),
+            )
+        })
+        .collect()
+}
+
+fn close_prefix_result(settlement: CloseTerminalSettlement) -> PrefixBarrierCompletionResult {
+    match settlement.certainty {
+        CloseTerminalCertainty::Panicked => Err(OpenGpuiCommandPrefixBarrierError::ClosePanicked {
+            reason: settlement.reason,
+        }),
+        CloseTerminalCertainty::DefinitelyNotExecuted | CloseTerminalCertainty::OutcomeUnknown => {
+            Err(OpenGpuiCommandPrefixBarrierError::HostClosed {
+                reason: settlement.reason,
+            })
+        }
+    }
+}
+
+fn apply_close_recovery(
+    state: &mut JournalState,
+    recovery: DeferredCloseRecovery,
+) -> Option<(
+    Vec<Rc<PrefixBarrierCompletion>>,
+    PrefixBarrierCompletionResult,
+)> {
+    match recovery {
+        DeferredCloseRecovery::Rollback(entries) => match state.status {
+            JournalStatus::Open | JournalStatus::Closing => {
+                entries.restore_into(state);
+                state.status = JournalStatus::Open;
+                None
+            }
+            JournalStatus::Closed(reason) => {
+                state.deferred_completions.extend(complete_close_entries(
+                    entries,
+                    CloseTerminalSettlement {
+                        reason,
+                        certainty: CloseTerminalCertainty::DefinitelyNotExecuted,
+                    },
+                ));
+                None
+            }
+            JournalStatus::Dropped => {
+                state
+                    .deferred_completions
+                    .extend(complete_dropped_close_entries(entries));
+                None
+            }
+        },
+        DeferredCloseRecovery::Terminal {
+            entries,
+            settlement,
+        } => {
+            let barriers = match state.status {
+                JournalStatus::Open | JournalStatus::Closing => {
+                    let current = complete_current_journal_entries(state, settlement);
+                    state.deferred_completions.extend(current);
+                    state.status = JournalStatus::Closed(settlement.reason);
+                    state.terminate_prefixes()
+                }
+                JournalStatus::Closed(_) | JournalStatus::Dropped => Vec::new(),
+            };
+            state
+                .deferred_completions
+                .extend(complete_close_entries(entries, settlement));
+            (!barriers.is_empty()).then(|| (barriers, close_prefix_result(settlement)))
+        }
+        DeferredCloseRecovery::Completed(prepared) => {
+            let barriers = match state.status {
+                JournalStatus::Open | JournalStatus::Closing => {
+                    let current = complete_current_journal_entries(state, prepared.settlement);
+                    state.deferred_completions.extend(current);
+                    state.status = JournalStatus::Closed(prepared.settlement.reason);
+                    state.terminate_prefixes()
+                }
+                JournalStatus::Closed(_) | JournalStatus::Dropped => Vec::new(),
+            };
+            state.deferred_completions.extend(prepared.completed);
+            (!barriers.is_empty()).then(|| (barriers, close_prefix_result(prepared.settlement)))
+        }
+    }
 }
 
 pub(crate) struct OpenGpuiCompletedCommand {
     pub(crate) origin: OpenGpuiCommandOrigin,
-    pub(crate) result: OpenGpuiCommandTicketResult,
+    result: Option<OpenGpuiCommandTicketResult>,
     completion: Option<Rc<CommandCompletion>>,
 }
 
@@ -1564,26 +1914,47 @@ impl OpenGpuiCompletedCommand {
     fn new(entry: JournalEntry, result: OpenGpuiCommandTicketResult) -> Self {
         Self {
             origin: entry.origin,
-            result,
+            result: Some(result),
             completion: entry.completion,
         }
     }
 
-    pub(crate) fn into_resolution(self) -> Option<OpenGpuiPendingCommandResolution> {
-        self.completion
-            .map(|completion| OpenGpuiPendingCommandResolution {
-                completion,
-                result: Some(self.result),
-            })
+    pub(crate) fn into_resolution(mut self) -> Option<OpenGpuiPendingCommandResolution> {
+        self.take_resolution()
     }
 
     pub(crate) fn into_detached_result(
-        self,
+        mut self,
     ) -> Result<OpenGpuiCommandTicketResult, Box<OpenGpuiCompletedCommand>> {
         if self.completion.is_none() {
-            Ok(self.result)
+            match self.result.take() {
+                Some(result) => Ok(result),
+                None => Err(Box::new(self)),
+            }
         } else {
             Err(Box::new(self))
+        }
+    }
+
+    fn take_resolution(&mut self) -> Option<OpenGpuiPendingCommandResolution> {
+        let result = self.result.take()?;
+        let Some(completion) = self.completion.take() else {
+            self.result = Some(result);
+            return None;
+        };
+        Some(OpenGpuiPendingCommandResolution {
+            completion,
+            result: Some(result),
+        })
+    }
+}
+
+impl Drop for OpenGpuiCompletedCommand {
+    fn drop(&mut self) {
+        if let Some(resolution) = self.take_resolution() {
+            let mut panics = OpenGpuiPanicAccumulator::default();
+            panics.capture(|| resolution.resolve());
+            let _ = panics.suppress();
         }
     }
 }
@@ -1605,7 +1976,9 @@ impl OpenGpuiPendingCommandResolution {
 impl Drop for OpenGpuiPendingCommandResolution {
     fn drop(&mut self) {
         if let Some(result) = self.result.take() {
-            self.completion.resolve(result);
+            let mut panics = OpenGpuiPanicAccumulator::default();
+            panics.capture(|| self.completion.resolve(result));
+            let _ = panics.suppress();
         }
     }
 }
@@ -1620,7 +1993,9 @@ pub(crate) fn resolve_command_tickets(
 
 #[cfg(test)]
 mod tests {
-    use std::task::Poll;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::task::{Poll, Wake};
 
     use jellyflow_core::{
         CanvasPoint, CanvasRect, CanvasSize, GraphBuilder, GraphId, Node, NodeId, NodeKindKey,
@@ -1637,6 +2012,17 @@ mod tests {
 
     const KIND: &str = "test.open-gpui-command-journal";
     const RENDERER: &str = "test.open-gpui.command-journal";
+
+    #[derive(Default)]
+    struct CountingWake {
+        count: AtomicUsize,
+    }
+
+    impl Wake for CountingWake {
+        fn wake(self: Arc<Self>) {
+            self.count.fetch_add(1, Ordering::SeqCst);
+        }
+    }
 
     #[test]
     fn rejects_the_newest_command_when_queue_capacity_is_reached() {
@@ -1668,9 +2054,11 @@ mod tests {
         let (_runtime, view) = runtime_and_view();
         let journal = OpenGpuiCommandJournal::new();
         for index in 0..OPEN_GPUI_COMMAND_JOURNAL_CAPACITY {
-            journal
-                .enqueue_detached(command(&view, index), OpenGpuiCommandOrigin::Binding)
-                .expect("command within capacity");
+            drop(
+                journal
+                    .enqueue(command(&view, index), OpenGpuiCommandOrigin::Binding)
+                    .expect("command within capacity"),
+            );
         }
 
         assert!(matches!(
@@ -1685,9 +2073,11 @@ mod tests {
         let (_runtime, view) = runtime_and_view();
         let journal = OpenGpuiCommandJournal::new();
         for index in 0..OPEN_GPUI_COMMAND_JOURNAL_CAPACITY {
-            journal
-                .enqueue_detached(command(&view, index), OpenGpuiCommandOrigin::Binding)
-                .expect("command within capacity");
+            drop(
+                journal
+                    .enqueue(command(&view, index), OpenGpuiCommandOrigin::Binding)
+                    .expect("command within capacity"),
+            );
         }
         let first_collector = collector(&view);
         let first_batch = journal
@@ -1696,7 +2086,9 @@ mod tests {
             .expect("nonempty batch");
 
         assert!(matches!(
-            journal.enqueue_detached(command(&view, usize::MAX), OpenGpuiCommandOrigin::Binding),
+            journal
+                .enqueue(command(&view, usize::MAX), OpenGpuiCommandOrigin::Binding,)
+                .map(drop),
             Err(OpenGpuiCommandEnqueueError::QueueFull { .. })
         ));
         assert!(
@@ -1708,15 +2100,19 @@ mod tests {
 
         let completed = journal
             .fail_batch(first_batch, || {
-                OpenGpuiCommandTicketError::FramePreparation {
-                    message: "test releases the batch".to_owned(),
-                }
+                OpenGpuiCommandTicketFailure::definitely_not_executed(
+                    OpenGpuiCommandTicketError::FramePreparation {
+                        message: "test releases the batch".to_owned(),
+                    },
+                )
             })
             .expect("release collected batch");
         assert_eq!(completed.len(), OPEN_GPUI_COMMAND_JOURNAL_CAPACITY);
-        journal
-            .enqueue_detached(command(&view, usize::MAX), OpenGpuiCommandOrigin::Binding)
-            .expect("capacity is released with the batch");
+        drop(
+            journal
+                .enqueue(command(&view, usize::MAX), OpenGpuiCommandOrigin::Binding)
+                .expect("capacity is released with the batch"),
+        );
         assert!(
             journal
                 .collect_next_batch(&collector(&view))
@@ -1739,11 +2135,12 @@ mod tests {
 
         drop(batch);
 
-        assert_eq!(journal.capacity_usage(), (0, 0, 0));
         assert!(!journal.has_pending());
         assert!(matches!(
             ready_ticket(&mut abandoned_ticket),
-            Err(OpenGpuiCommandTicketError::FramePreparation { .. })
+            Err(OpenGpuiCommandTicketFailure::DefinitelyNotExecuted(
+                OpenGpuiCommandTicketError::FramePreparation { .. }
+            ))
         ));
         assert!(matches!(poll_ticket(&mut abandoned_ticket), Poll::Pending));
 
@@ -1757,7 +2154,6 @@ mod tests {
                 .applied_revision()
                 .is_some()
         );
-        assert_eq!(journal.capacity_usage(), (0, 0, 0));
     }
 
     #[test]
@@ -1778,11 +2174,12 @@ mod tests {
 
         drop(batch);
 
-        assert_eq!(journal.capacity_usage(), (0, 0, 0));
         assert!(!journal.has_pending());
         assert!(matches!(
             ready_ticket(&mut abandoned_ticket),
-            Err(OpenGpuiCommandTicketError::FeedbackOutcomeUnknown)
+            Err(OpenGpuiCommandTicketFailure::ExecutionUnknown(
+                OpenGpuiCommandTicketError::FeedbackOutcomeUnknown
+            ))
         ));
         assert!(matches!(poll_ticket(&mut abandoned_ticket), Poll::Pending));
 
@@ -1796,46 +2193,6 @@ mod tests {
                 .applied_revision()
                 .is_some()
         );
-        assert_eq!(journal.capacity_usage(), (0, 0, 0));
-    }
-
-    #[test]
-    fn dropping_batch_while_journal_is_borrowed_defers_terminal_settlement() {
-        for submitted in [false, true] {
-            let (_runtime, view) = runtime_and_view();
-            let journal = OpenGpuiCommandJournal::new();
-            let mut ticket = journal
-                .enqueue(command(&view, 1), OpenGpuiCommandOrigin::Binding)
-                .expect("abandoned batch ticket");
-            let batch = journal
-                .collect_next_batch(&collector(&view))
-                .expect("collect abandoned batch")
-                .expect("abandoned batch");
-            if submitted {
-                journal
-                    .mark_submitted(&batch)
-                    .expect("mark abandoned batch submitted");
-            }
-
-            let state_borrow = journal.state.borrow_mut();
-            drop(batch);
-            assert!(matches!(poll_ticket(&mut ticket), Poll::Pending));
-            drop(state_borrow);
-
-            assert!(!journal.has_pending());
-            assert_eq!(journal.capacity_usage(), (0, 0, 0));
-            if submitted {
-                assert!(matches!(
-                    ready_ticket(&mut ticket),
-                    Err(OpenGpuiCommandTicketError::FeedbackOutcomeUnknown)
-                ));
-            } else {
-                assert!(matches!(
-                    ready_ticket(&mut ticket),
-                    Err(OpenGpuiCommandTicketError::FramePreparation { .. })
-                ));
-            }
-        }
     }
 
     #[test]
@@ -1869,6 +2226,122 @@ mod tests {
     }
 
     #[test]
+    fn dropping_completed_command_resolves_its_ticket_exactly_once() {
+        let (_runtime, view) = runtime_and_view();
+        let journal = OpenGpuiCommandJournal::new();
+        let mut ticket = journal
+            .enqueue(command(&view, 1), OpenGpuiCommandOrigin::Binding)
+            .expect("ticket owned by completed command");
+        let completed = submit_next_batch(&journal, &view)
+            .into_iter()
+            .next()
+            .expect("completed command");
+        let waker = std::task::Waker::from(Arc::new(PanickingWake));
+        let mut context = Context::from_waker(&waker);
+
+        assert!(matches!(
+            Pin::new(&mut ticket).poll(&mut context),
+            Poll::Pending
+        ));
+        drop(completed);
+
+        assert!(
+            ready_ticket(&mut ticket)
+                .expect("completed command drop resolves the ticket")
+                .applied_revision()
+                .is_some()
+        );
+        assert!(matches!(poll_ticket(&mut ticket), Poll::Pending));
+    }
+
+    #[test]
+    fn unwinding_after_completed_command_construction_resolves_its_ticket() {
+        let (_runtime, view) = runtime_and_view();
+        let journal = OpenGpuiCommandJournal::new();
+        let mut ticket = journal
+            .enqueue(command(&view, 1), OpenGpuiCommandOrigin::Binding)
+            .expect("ticket owned by completed command");
+        let completed = submit_next_batch(&journal, &view)
+            .into_iter()
+            .next()
+            .expect("completed command");
+
+        let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _completed = completed;
+            panic!("injected unwind after completed command construction");
+        }));
+        assert!(unwind.is_err());
+        assert!(
+            ready_ticket(&mut ticket)
+                .expect("completed command survives unwind through RAII")
+                .applied_revision()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn transferring_completed_command_to_resolution_disarms_its_drop_once() {
+        let (_runtime, view) = runtime_and_view();
+        let journal = OpenGpuiCommandJournal::new();
+        let mut ticket = journal
+            .enqueue(command(&view, 1), OpenGpuiCommandOrigin::Binding)
+            .expect("ticket owned by completed command");
+        let completed = submit_next_batch(&journal, &view)
+            .into_iter()
+            .next()
+            .expect("completed command");
+        let wakes = Arc::new(CountingWake::default());
+        let waker = std::task::Waker::from(Arc::clone(&wakes));
+        let mut context = Context::from_waker(&waker);
+        assert!(matches!(
+            Pin::new(&mut ticket).poll(&mut context),
+            Poll::Pending
+        ));
+
+        let resolution = completed
+            .into_resolution()
+            .expect("ticketed command resolution");
+        assert_eq!(wakes.count.load(Ordering::SeqCst), 0);
+
+        resolution.resolve();
+        assert_eq!(wakes.count.load(Ordering::SeqCst), 1);
+        assert!(
+            ready_ticket(&mut ticket)
+                .expect("transferred resolution delivers the ticket")
+                .applied_revision()
+                .is_some()
+        );
+        assert!(matches!(poll_ticket(&mut ticket), Poll::Pending));
+    }
+
+    #[test]
+    fn detached_completed_command_returns_result_without_ticket_resolution() {
+        let (_runtime, view) = runtime_and_view();
+        let journal = OpenGpuiCommandJournal::new();
+        let mut barrier = journal
+            .capture_prefix_barrier()
+            .expect("capture empty detached prefix");
+        ready_prefix_permit(&mut barrier)
+            .enqueue_detached(command(&view, 1), OpenGpuiCommandOrigin::Binding)
+            .expect("detached command");
+        let completed = submit_next_batch(&journal, &view)
+            .into_iter()
+            .next()
+            .expect("detached completed command");
+
+        let result = match completed.into_detached_result() {
+            Ok(result) => result,
+            Err(_) => panic!("detached completed command must not retain a ticket completion"),
+        };
+        assert!(
+            result
+                .expect("detached command transport")
+                .applied_revision()
+                .is_some()
+        );
+    }
+
+    #[test]
     fn unwinding_after_resolution_extraction_delivers_its_exact_terminal_result_once() {
         let (_runtime, view) = runtime_and_view();
         let journal = OpenGpuiCommandJournal::new();
@@ -1881,8 +2354,13 @@ mod tests {
             .expect("completed command")
             .into_resolution()
             .expect("ticketed command resolution");
+        let waker = std::task::Waker::from(Arc::new(PanickingWake));
+        let mut context = Context::from_waker(&waker);
 
-        assert!(matches!(poll_ticket(&mut ticket), Poll::Pending));
+        assert!(matches!(
+            Pin::new(&mut ticket).poll(&mut context),
+            Poll::Pending
+        ));
         let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
             let _resolution = resolution;
             panic!("injected unwind after command resolution extraction");
@@ -1987,94 +2465,18 @@ mod tests {
     }
 
     #[test]
-    fn dropping_prefix_permit_while_journal_is_borrowed_does_not_block_its_suffix() {
-        let (_runtime, view) = runtime_and_view();
-        let journal = OpenGpuiCommandJournal::new();
-        let mut barrier = journal
-            .capture_prefix_barrier()
-            .expect("capture empty prefix");
-        let permit = ready_prefix_permit(&mut barrier);
-        let mut suffix = journal
-            .enqueue(command(&view, 1), OpenGpuiCommandOrigin::Binding)
-            .expect("suffix command");
-
-        let state_borrow = journal.state.borrow_mut();
-        drop(permit);
-        drop(state_borrow);
-
-        resolve_completed(submit_next_batch(&journal, &view));
-        assert!(
-            ready_ticket(&mut suffix)
-                .expect("suffix transport")
-                .applied_revision()
-                .is_some()
-        );
-        assert!(!journal.has_pending());
-    }
-
-    #[test]
-    fn dropping_prefix_barrier_while_journal_is_borrowed_does_not_block_its_suffix() {
-        let (_runtime, view) = runtime_and_view();
-        let journal = OpenGpuiCommandJournal::new();
-        let barrier = journal
-            .capture_prefix_barrier()
-            .expect("capture empty prefix");
-        let mut suffix = journal
-            .enqueue(command(&view, 1), OpenGpuiCommandOrigin::Binding)
-            .expect("suffix command");
-
-        let state_borrow = journal.state.borrow_mut();
-        drop(barrier);
-        drop(state_borrow);
-
-        resolve_completed(submit_next_batch(&journal, &view));
-        assert!(
-            ready_ticket(&mut suffix)
-                .expect("suffix transport")
-                .applied_revision()
-                .is_some()
-        );
-        assert!(!journal.has_pending());
-    }
-
-    #[test]
-    fn prefix_barrier_capture_reports_busy_closing_and_closed_states() {
-        let journal = OpenGpuiCommandJournal::new();
-        let state_borrow = journal.state.borrow_mut();
-        assert!(matches!(
-            journal.capture_prefix_barrier(),
-            Err(OpenGpuiCommandPrefixBarrierError::Busy)
-        ));
-        drop(state_borrow);
-
-        let drain = journal.begin_close().expect("begin close");
-        assert!(matches!(
-            journal.capture_prefix_barrier(),
-            Err(OpenGpuiCommandPrefixBarrierError::HostClosing)
-        ));
-        let reason = ViewCloseReason::HostClosed;
-        let _ = journal
-            .finish_close_without_execution(drain, reason)
-            .expect("finish close");
-        assert!(matches!(
-            journal.capture_prefix_barrier(),
-            Err(OpenGpuiCommandPrefixBarrierError::HostClosed {
-                reason: ViewCloseReason::HostClosed
-            })
-        ));
-    }
-
-    #[test]
-    fn prefix_permit_holds_suffix_across_collect_attempts_and_inserts_before_it() {
+    fn prefix_permit_blocks_its_suffix_and_inserts_before_it() {
         let (_runtime, view) = runtime_and_view();
         let initial_version = graph_version(&view);
         let journal = OpenGpuiCommandJournal::new();
-        journal
-            .enqueue_detached(
-                command_at(initial_version, 1),
-                OpenGpuiCommandOrigin::Binding,
-            )
-            .expect("captured detached command");
+        drop(
+            journal
+                .enqueue(
+                    command_at(initial_version, 1),
+                    OpenGpuiCommandOrigin::Binding,
+                )
+                .expect("captured command"),
+        );
         let mut barrier = journal
             .capture_prefix_barrier()
             .expect("capture queued prefix");
@@ -2101,14 +2503,12 @@ mod tests {
             serde_json::json!({ "value": 1 })
         );
 
-        for _ in 0..3 {
-            assert!(
-                journal
-                    .collect_next_batch(&collector(&view))
-                    .expect("held permit blocks suffix collection")
-                    .is_none()
-            );
-        }
+        assert!(
+            journal
+                .collect_next_batch(&collector(&view))
+                .expect("held permit blocks suffix collection")
+                .is_none()
+        );
 
         permit
             .enqueue_detached(command(&view, 2), OpenGpuiCommandOrigin::Binding)
@@ -2194,9 +2594,11 @@ mod tests {
         let permit = ready_prefix_permit(&mut barrier);
         assert!(matches!(poll_ticket(&mut suffix_ticket), Poll::Pending));
 
-        let mut priority_ticket = permit
-            .enqueue(command(&view, 3), OpenGpuiCommandOrigin::Binding)
-            .expect("priority command ticket");
+        let sink = OpenGpuiCommandSink::new(Rc::downgrade(&journal), EntityId::from(1));
+        let (mut priority_ticket, _) = sink
+            .admit_reserved(command(&view, 3), permit)
+            .expect("priority command admission")
+            .into_parts();
         resolve_completed(submit_next_batch(&journal, &view));
         assert!(
             ready_ticket(&mut priority_ticket)
@@ -2217,12 +2619,14 @@ mod tests {
         let (_runtime, view) = runtime_and_view();
         let initial_version = graph_version(&view);
         let journal = OpenGpuiCommandJournal::new();
-        journal
-            .enqueue_detached(
-                command_at(initial_version, 1),
-                OpenGpuiCommandOrigin::Binding,
-            )
-            .expect("initial prefix");
+        drop(
+            journal
+                .enqueue(
+                    command_at(initial_version, 1),
+                    OpenGpuiCommandOrigin::Binding,
+                )
+                .expect("initial prefix"),
+        );
         let mut first_barrier = journal.capture_prefix_barrier().expect("first barrier");
         let mut suffix_ticket = journal
             .enqueue(
@@ -2312,52 +2716,192 @@ mod tests {
     }
 
     #[test]
-    fn a_forged_duplicate_permit_cannot_fill_the_same_reservation_twice() {
-        let (_runtime, view) = runtime_and_view();
-        let journal = OpenGpuiCommandJournal::new();
-        let mut barrier = journal
-            .capture_prefix_barrier()
-            .expect("empty prefix barrier");
-        let permit = ready_prefix_permit(&mut barrier);
-        let duplicate = OpenGpuiCommandPrefixPermit {
-            sequence: permit.sequence,
-            journal: permit.journal.clone(),
-        };
-
-        permit
-            .enqueue_detached(command(&view, 1), OpenGpuiCommandOrigin::Binding)
-            .expect("first permit use");
-        assert!(matches!(
-            duplicate.enqueue_detached(command(&view, 2), OpenGpuiCommandOrigin::Binding),
-            Err(OpenGpuiCommandEnqueueError::PrefixReservationInactive)
-        ));
-        resolve_completed(submit_next_batch(&journal, &view));
-        assert_eq!(
-            view.graph_snapshot()
-                .expect("snapshot after one permit use")
-                .revision(),
-            1
-        );
-    }
-
-    #[test]
     fn aborting_close_restores_the_prefix_without_completing_its_barrier() {
         let (_runtime, view) = runtime_and_view();
         let journal = OpenGpuiCommandJournal::new();
-        journal
-            .enqueue_detached(command(&view, 1), OpenGpuiCommandOrigin::Binding)
-            .expect("pending command");
+        drop(
+            journal
+                .enqueue(command(&view, 1), OpenGpuiCommandOrigin::Binding)
+                .expect("pending command"),
+        );
         let mut barrier = journal
             .capture_prefix_barrier()
             .expect("capture pending prefix");
-        let drain = journal.begin_close().expect("begin close");
+        let close = journal.begin_close().expect("begin close");
 
         assert!(matches!(poll_prefix_barrier(&mut barrier), Poll::Pending));
-        journal.abort_close(drain).expect("abort close");
+        close.abort().expect("abort close");
         assert!(matches!(poll_prefix_barrier(&mut barrier), Poll::Pending));
 
         resolve_completed(submit_next_batch(&journal, &view));
         ready_prefix_permit(&mut barrier).abandon();
+    }
+
+    #[test]
+    fn dropping_close_transaction_restores_its_exact_pending_ticket() {
+        let (_runtime, view) = runtime_and_view();
+        let journal = OpenGpuiCommandJournal::new();
+        let mut ticket = journal
+            .enqueue(command(&view, 1), OpenGpuiCommandOrigin::Binding)
+            .expect("pending close ticket");
+        let collector = collector(&view);
+        let batch = journal
+            .collect_next_batch(&collector)
+            .expect("collect close batch")
+            .expect("pending close batch");
+
+        let close = journal.begin_close().expect("begin close transaction");
+        drop(close);
+        journal
+            .mark_submitted(&batch)
+            .expect("restored batch keeps its identity");
+        let receipt = view
+            .submit_feedback(collector.finish().expect("finish restored feedback"))
+            .expect("submit restored feedback");
+        resolve_completed(
+            journal
+                .complete_submitted(&batch, receipt)
+                .expect("complete restored batch"),
+        );
+        assert!(
+            ready_ticket(&mut ticket)
+                .expect("restored ticket transport")
+                .applied_revision()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn invalid_terminal_finish_preserves_the_ticket_under_existing_close_reason() {
+        let (_runtime, view) = runtime_and_view();
+        let journal = OpenGpuiCommandJournal::new();
+        let mut ticket = journal
+            .enqueue(command(&view, 1), OpenGpuiCommandOrigin::Binding)
+            .expect("pending close ticket");
+        let close = journal.begin_close().expect("begin close transaction");
+        let reason = ViewCloseReason::HostClosed;
+
+        assert!(journal.terminate(reason).is_empty());
+        assert!(matches!(
+            close.finish_without_execution(reason),
+            Err(OpenGpuiCommandCloseError::InvalidState)
+        ));
+        resolve_completed(journal.take_deferred_completions());
+
+        assert!(matches!(
+            ready_ticket(&mut ticket),
+            Err(OpenGpuiCommandTicketFailure::DefinitelyNotExecuted(
+                OpenGpuiCommandTicketError::HostClosed {
+                    reason: ViewCloseReason::HostClosed
+                }
+            ))
+        ));
+        assert!(matches!(
+            journal.begin_close(),
+            Err(OpenGpuiCommandCloseError::Closed {
+                reason: ViewCloseReason::HostClosed
+            })
+        ));
+    }
+
+    #[test]
+    fn uncorrelated_close_completion_terminally_settles_instead_of_losing_the_ticket() {
+        let (_runtime, view) = runtime_and_view();
+        let journal = OpenGpuiCommandJournal::new();
+        let mut ticket = journal
+            .enqueue(command(&view, 1), OpenGpuiCommandOrigin::Binding)
+            .expect("pending close ticket");
+        let close = journal.begin_close().expect("begin close transaction");
+        let reason = ViewCloseReason::HostClosed;
+
+        assert!(matches!(
+            close.finish(reason, Vec::new()),
+            Err(OpenGpuiCommandCloseError::Correlation(
+                CommandCompletionCorrelationError::MissingIdentity { .. }
+            ))
+        ));
+        resolve_completed(journal.take_deferred_completions());
+
+        assert!(matches!(
+            ready_ticket(&mut ticket),
+            Err(OpenGpuiCommandTicketFailure::ExecutionUnknown(
+                OpenGpuiCommandTicketError::CloseOutcomeUnknown {
+                    reason: ViewCloseReason::HostClosed
+                }
+            ))
+        ));
+        assert!(matches!(
+            journal.begin_close(),
+            Err(OpenGpuiCommandCloseError::Closed {
+                reason: ViewCloseReason::HostClosed
+            })
+        ));
+    }
+
+    struct PanickingWake;
+
+    impl Wake for PanickingWake {
+        fn wake(self: Arc<Self>) {
+            panic!("test prefix wake panics during close commit");
+        }
+    }
+
+    #[test]
+    fn finish_unwind_retains_completed_commands_after_terminal_state_commit() {
+        let (runtime, view) = runtime_and_view();
+        let journal = OpenGpuiCommandJournal::new();
+        let mut ticket = journal
+            .enqueue(command(&view, 1), OpenGpuiCommandOrigin::Binding)
+            .expect("pending close ticket");
+        let mut barrier = journal
+            .capture_prefix_barrier()
+            .expect("capture pending prefix");
+        let mut later_barrier = journal
+            .capture_prefix_barrier()
+            .expect("capture later pending prefix");
+        let waker = std::task::Waker::from(Arc::new(PanickingWake));
+        let mut context = Context::from_waker(&waker);
+        assert!(matches!(
+            Pin::new(&mut barrier).poll(&mut context),
+            Poll::Pending
+        ));
+
+        let mut close = journal.begin_close().expect("begin close transaction");
+        let identities = close.command_identities();
+        let request = close.combined_request(&ViewCloseRequest::default());
+        let mut outcome = view.close_with_request(request).expect("close view");
+        let reason = outcome.reason();
+        close.confirm_view_terminated(reason);
+        let completions = outcome
+            .take_command_completions(&identities)
+            .expect("correlated close completions");
+
+        let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = close.finish(reason, completions);
+        }));
+        assert!(unwind.is_err());
+        resolve_completed(journal.take_deferred_completions());
+
+        assert!(
+            ready_ticket(&mut ticket)
+                .expect("completion retained through finish unwind")
+                .applied_revision()
+                .is_some()
+        );
+        assert_eq!(runtime.snapshot().expect("closed graph").revision(), 1);
+        assert!(matches!(
+            poll_prefix_barrier(&mut barrier),
+            Poll::Ready(Err(OpenGpuiCommandPrefixBarrierError::HostClosed {
+                reason: ViewCloseReason::HostClosed
+            }))
+        ));
+        assert!(matches!(
+            poll_prefix_barrier(&mut later_barrier),
+            Poll::Ready(Err(OpenGpuiCommandPrefixBarrierError::HostClosed {
+                reason: ViewCloseReason::HostClosed
+            }))
+        ));
+        assert!(!journal.has_pending());
     }
 
     #[test]
@@ -2366,15 +2910,17 @@ mod tests {
         let reason = ViewCloseReason::HostClosed;
 
         let close_journal = OpenGpuiCommandJournal::new();
-        close_journal
-            .enqueue_detached(command(&view, 1), OpenGpuiCommandOrigin::Binding)
-            .expect("close command");
+        drop(
+            close_journal
+                .enqueue(command(&view, 1), OpenGpuiCommandOrigin::Binding)
+                .expect("close command"),
+        );
         let mut close_barrier = close_journal
             .capture_prefix_barrier()
             .expect("close barrier");
-        let close_drain = close_journal.begin_close().expect("begin normal close");
-        let _ = close_journal
-            .finish_close_without_execution(close_drain, reason)
+        let close = close_journal.begin_close().expect("begin normal close");
+        let _ = close
+            .finish_without_execution(reason)
             .expect("finish normal close");
         assert!(matches!(
             poll_prefix_barrier(&mut close_barrier),
@@ -2384,15 +2930,17 @@ mod tests {
         ));
 
         let panic_journal = OpenGpuiCommandJournal::new();
-        panic_journal
-            .enqueue_detached(command(&view, 1), OpenGpuiCommandOrigin::Binding)
-            .expect("panic command");
+        drop(
+            panic_journal
+                .enqueue(command(&view, 1), OpenGpuiCommandOrigin::Binding)
+                .expect("panic command"),
+        );
         let mut panic_barrier = panic_journal
             .capture_prefix_barrier()
             .expect("panic barrier");
-        let panic_drain = panic_journal.begin_close().expect("begin panic close");
-        let _ = panic_journal
-            .finish_close_after_panic(panic_drain, reason)
+        let close = panic_journal.begin_close().expect("begin panic close");
+        let _ = close
+            .finish_after_panic(reason)
             .expect("finish panic close");
         assert!(matches!(
             poll_prefix_barrier(&mut panic_barrier),
@@ -2403,9 +2951,11 @@ mod tests {
 
         let mut drop_barrier = {
             let drop_journal = OpenGpuiCommandJournal::new();
-            drop_journal
-                .enqueue_detached(command(&view, 1), OpenGpuiCommandOrigin::Binding)
-                .expect("drop command");
+            drop(
+                drop_journal
+                    .enqueue(command(&view, 1), OpenGpuiCommandOrigin::Binding)
+                    .expect("drop command"),
+            );
             drop_journal.capture_prefix_barrier().expect("drop barrier")
         };
         assert!(matches!(
@@ -2419,17 +2969,21 @@ mod tests {
         let (runtime, view) = runtime_and_view();
         let stale_version = graph_version(&view);
         let journal = OpenGpuiCommandJournal::new();
-        journal
-            .enqueue_detached(command(&view, 1), OpenGpuiCommandOrigin::Binding)
-            .expect("prefix command");
+        drop(
+            journal
+                .enqueue(command(&view, 1), OpenGpuiCommandOrigin::Binding)
+                .expect("prefix command"),
+        );
         let mut barrier = journal.capture_prefix_barrier().expect("capture prefix");
         resolve_completed(submit_next_batch(&journal, &view));
         let permit = ready_prefix_permit(&mut barrier);
         assert_eq!(runtime.snapshot().expect("fresh snapshot").revision(), 1);
 
-        let mut stale_ticket = permit
-            .enqueue(command_at(stale_version, 2), OpenGpuiCommandOrigin::Binding)
-            .expect("stale follow-up command");
+        let sink = OpenGpuiCommandSink::new(Rc::downgrade(&journal), EntityId::from(1));
+        let (mut stale_ticket, _) = sink
+            .admit_reserved(command_at(stale_version, 2), permit)
+            .expect("stale follow-up command admission")
+            .into_parts();
         resolve_completed(submit_next_batch(&journal, &view));
 
         let completion = ready_ticket(&mut stale_ticket).expect("stale command transport");
@@ -2458,16 +3012,18 @@ mod tests {
             .enqueue(command(&view, 1), OpenGpuiCommandOrigin::Binding)
             .expect("suffix command");
         let permit = ready_prefix_permit(&mut barrier);
-        let mut rejected_ticket = permit
-            .enqueue(
+        let sink = OpenGpuiCommandSink::new(Rc::downgrade(&journal), EntityId::from(1));
+        let (mut rejected_ticket, _) = sink
+            .admit_reserved(
                 GraphCommand::set_node_data(
                     graph_version(&view),
                     NodeId::from_u128(0xdead),
                     serde_json::json!({ "value": "missing" }),
                 ),
-                OpenGpuiCommandOrigin::Binding,
+                permit,
             )
-            .expect("reserved rejected command");
+            .expect("reserved rejected command admission")
+            .into_parts();
 
         resolve_completed(submit_next_batch(&journal, &view));
 
@@ -2502,20 +3058,21 @@ mod tests {
         let mut queued_ticket = journal
             .enqueue(command_at(close_version, 2), OpenGpuiCommandOrigin::Binding)
             .expect("queued ticket");
-        let drain = journal.begin_close().expect("begin close drain");
-        let journal_identities = drain.command_identities();
+        let mut close = journal.begin_close().expect("begin close transaction");
+        let journal_identities = close.command_identities();
         assert_eq!(journal_identities.len(), 2);
         let caller_command = command_at(close_version, 3);
         let caller_identity = caller_command.identity().clone();
-        let request = drain.combined_request(&ViewCloseRequest::new().with_command(caller_command));
+        let request = close.combined_request(&ViewCloseRequest::new().with_command(caller_command));
         let mut outcome = view.close_with_request(request).expect("close view");
         let reason = outcome.reason();
+        close.confirm_view_terminated(reason);
         let mut journal_completions = outcome
             .take_command_completions(&journal_identities)
             .expect("take journal completions by identity");
         journal_completions.reverse();
-        let completed = journal
-            .finish_close(drain, reason, journal_completions)
+        let completed = close
+            .finish(reason, journal_completions)
             .expect("finish journal close");
         resolve_completed(completed);
 
@@ -2558,9 +3115,11 @@ mod tests {
     fn close_rejects_a_submitted_batch_without_retrying_it() {
         let (_runtime, view) = runtime_and_view();
         let journal = OpenGpuiCommandJournal::new();
-        journal
-            .enqueue_detached(command(&view, 1), OpenGpuiCommandOrigin::Binding)
-            .expect("detached command");
+        drop(
+            journal
+                .enqueue(command(&view, 1), OpenGpuiCommandOrigin::Binding)
+                .expect("command"),
+        );
         let collector = collector(&view);
         let batch = journal
             .collect_next_batch(&collector)
@@ -2587,8 +3146,66 @@ mod tests {
         resolve_completed(journal.terminate_dropped());
         assert!(matches!(
             ready_ticket(&mut ticket),
-            Err(OpenGpuiCommandTicketError::HostDropped)
+            Err(OpenGpuiCommandTicketFailure::DefinitelyNotExecuted(
+                OpenGpuiCommandTicketError::HostDropped
+            ))
         ));
+    }
+
+    #[test]
+    fn dropping_the_host_after_submission_reports_unknown_execution() {
+        let (_runtime, view) = runtime_and_view();
+        let journal = OpenGpuiCommandJournal::new();
+        let mut ticket = journal
+            .enqueue(command(&view, 1), OpenGpuiCommandOrigin::Binding)
+            .expect("submitted ticket");
+        let collector = collector(&view);
+        let batch = journal
+            .collect_next_batch(&collector)
+            .expect("collect submitted batch")
+            .expect("submitted batch");
+        journal
+            .mark_submitted(&batch)
+            .expect("mark batch submitted");
+
+        resolve_completed(journal.terminate_dropped());
+
+        assert!(matches!(
+            ready_ticket(&mut ticket),
+            Err(OpenGpuiCommandTicketFailure::ExecutionUnknown(
+                OpenGpuiCommandTicketError::HostDropped
+            ))
+        ));
+        drop(batch);
+    }
+
+    #[test]
+    fn closing_the_host_after_submission_reports_unknown_execution() {
+        let (_runtime, view) = runtime_and_view();
+        let journal = OpenGpuiCommandJournal::new();
+        let mut ticket = journal
+            .enqueue(command(&view, 1), OpenGpuiCommandOrigin::Binding)
+            .expect("submitted ticket");
+        let collector = collector(&view);
+        let batch = journal
+            .collect_next_batch(&collector)
+            .expect("collect submitted batch")
+            .expect("submitted batch");
+        journal
+            .mark_submitted(&batch)
+            .expect("mark batch submitted");
+
+        resolve_completed(journal.terminate(ViewCloseReason::HostClosed));
+
+        assert!(matches!(
+            ready_ticket(&mut ticket),
+            Err(OpenGpuiCommandTicketFailure::ExecutionUnknown(
+                OpenGpuiCommandTicketError::HostClosed {
+                    reason: ViewCloseReason::HostClosed
+                }
+            ))
+        ));
+        drop(batch);
     }
 
     fn resolve_completed(completed: Vec<OpenGpuiCompletedCommand>) {

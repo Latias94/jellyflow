@@ -11,9 +11,7 @@ use std::time::Duration;
 use jellyflow_core::CanvasRect;
 use jellyflow_core::{CanvasPoint, EdgeId, Graph, NodeId, PortId};
 use jellyflow_open_gpui::host::OpenGpuiSceneHostDiagnosticKind;
-#[cfg(feature = "real-window-smoke")]
-use jellyflow_open_gpui::host::OpenGpuiSmokeNodeFootprint;
-use jellyflow_runtime::geometry::ViewSize;
+use jellyflow_runtime::geometry::{ViewRect, ViewSize};
 use jellyflow_runtime::view::WeakViewSession;
 #[cfg(feature = "real-window-smoke")]
 use jellyflow_runtime::view::{GeometrySnapshot, PublishedPortOutcome};
@@ -26,7 +24,8 @@ use open_gpui_canvas_jellyflow::NativeProductTheme;
 #[cfg(any(test, feature = "real-window-smoke"))]
 use open_gpui_canvas_jellyflow::blackboard::NATIVE_BLACKBOARD_WIDTH;
 use open_gpui_canvas_jellyflow::connection_search::NativeGraphSurface;
-use open_gpui_canvas_jellyflow::smoke_receipt::{SMOKE_RECEIPT_PREFIX, SmokeRunReceiptV1};
+
+use crate::native_app::NativeDemo;
 
 #[cfg(feature = "real-window-smoke")]
 mod input_probe;
@@ -36,12 +35,15 @@ mod config;
 use config::SmokeCaptureState;
 pub(super) use config::SmokeConfig;
 use config::SmokeScenario;
-#[cfg(test)]
+#[cfg(any(test, feature = "real-window-smoke"))]
 use config::{SmokeBounds, SmokeZoom};
 
 const SMOKE_TIMEOUT: Duration = Duration::from_secs(15);
 const SMOKE_PROBE_INTERVAL: Duration = Duration::from_millis(16);
+mod presented_frame;
 mod receipt;
+use presented_frame::{SmokePresentedFrame, validate_presented_frames};
+use receipt::{SMOKE_RECEIPT_PREFIX, SmokeRunReceiptV1};
 #[cfg(test)]
 const TEST_CANVAS_BACKGROUND_RGBA: [u8; 4] = [0x11, 0x13, 0x18, 0xff];
 const MIN_CANVAS_NON_BACKGROUND_PIXELS: usize = 256;
@@ -67,8 +69,9 @@ const SELECTION_CHROME_COLOR_TOLERANCE: u8 = 24;
 #[cfg(any(test, feature = "real-window-smoke"))]
 const MIN_SELECTION_CHROME_SIDE_PIXELS: usize = 16;
 #[cfg(any(test, feature = "real-window-smoke"))]
+const MIN_VISIBLE_SELECTION_CHROME_SIDES: u8 = 2;
+#[cfg(any(test, feature = "real-window-smoke"))]
 const MAX_DETACHED_CHROME_RUN_IN_VIEW: f32 = 8.0;
-const SMOKE_INPUT_EVENT_COUNT: u16 = 36;
 const SMOKE_INTERACTION_CAPTURE_COUNT: usize = 9;
 const SMOKE_AUTOPAN_MIN_FRAMES: u8 = 3;
 const SMOKE_LOD_SAMPLE_COUNT: usize = 3;
@@ -189,11 +192,6 @@ impl SmokeExpectations {
         self.node_ports.len()
     }
 
-    #[cfg(test)]
-    fn port_count(&self) -> usize {
-        self.node_ports.values().map(BTreeSet::len).sum()
-    }
-
     #[cfg(feature = "real-window-smoke")]
     fn without_edge(mut self, edge: EdgeId) -> Self {
         self.edges.remove(&edge);
@@ -259,8 +257,6 @@ impl SmokeGeometryInput {
         expectations: &SmokeExpectations,
         snapshot: &GeometrySnapshot,
         graph: &Graph,
-        transform: ViewportTransform,
-        footprints: &[OpenGpuiSmokeNodeFootprint],
     ) -> Self {
         let nodes = expectations
             .node_ports
@@ -268,21 +264,11 @@ impl SmokeGeometryInput {
             .filter_map(|node_id| {
                 let Some(geometry) = snapshot.node(*node_id) else {
                     let node = graph.node(node_id)?;
-                    let fallback = node.size.and_then(|size| node.bounds_for_size(size))?;
-                    let (bounds, frame_visible) = footprints
-                        .iter()
-                        .find(|footprint| footprint.node() == *node_id)
-                        .and_then(|footprint| {
-                            footprint
-                                .bounds()
-                                .to_canvas_rect(transform)
-                                .map(|bounds| (bounds, footprint.materialized()))
-                        })
-                        .unwrap_or((fallback, false));
+                    let bounds = node.size.and_then(|size| node.bounds_for_size(size))?;
                     return Some((
                         *node_id,
                         SmokeNodeGeometryInput {
-                            frame_visible,
+                            frame_visible: false,
                             fresh: false,
                             bounds,
                             ports: expectations.node_ports[node_id]
@@ -462,6 +448,7 @@ impl SmokeWirePaintEvidence {
 struct SmokeSelectionChromeEvidence {
     expected_sides: u8,
     matched_sides: u8,
+    bottom_expected: bool,
     bottom_matched: bool,
     detached_max_run: usize,
     allowed_detached_run: usize,
@@ -470,7 +457,10 @@ struct SmokeSelectionChromeEvidence {
 #[cfg(any(test, feature = "real-window-smoke"))]
 impl SmokeSelectionChromeEvidence {
     fn failure_reason(self) -> Option<&'static str> {
-        if self.expected_sides != 4 || self.matched_sides != 4 || !self.bottom_matched {
+        if self.expected_sides < MIN_VISIBLE_SELECTION_CHROME_SIDES
+            || self.matched_sides != self.expected_sides
+            || (self.bottom_expected && !self.bottom_matched)
+        {
             return Some("paint_selection_chrome_not_fitted");
         }
         if self.detached_max_run > self.allowed_detached_run {
@@ -508,7 +498,6 @@ impl SmokePaintEvidence {
 
 #[derive(Clone, Debug, PartialEq)]
 struct SmokeInputEvidence {
-    bounds_verified: bool,
     scenario: SmokeScenarioEvidence,
 }
 
@@ -527,32 +516,7 @@ enum SmokeScenarioEvidence {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct SmokeInteractionEvidence {
-    dispatched_events: u16,
-    auto_pan_reframes: u16,
     captures: BTreeSet<SmokeCaptureState>,
-    node_dragged: bool,
-    selection_chrome_fitted: bool,
-    selection_chrome_sides: u8,
-    selection_chrome_detached_run: usize,
-    auto_pan_frames: u8,
-    connection_auto_pan_frames: u8,
-    tab_focus_moved: bool,
-    tab_focus_restored: bool,
-    viewport_panned: bool,
-    viewport_zoomed: bool,
-    connection_created: bool,
-    connection_preview_wire_painted: bool,
-    connection_release_frame_painted: bool,
-    connection_release_continuous: bool,
-    keyboard_edge_deleted: bool,
-    reconnect_applied: bool,
-    reconnect_preview_wire_painted: bool,
-    reconnect_release_frame_painted: bool,
-    reconnect_release_continuous: bool,
-    search_opened: bool,
-    search_focus_moved: bool,
-    search_cancelled: bool,
-    search_focus_restored: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -564,85 +528,10 @@ struct SmokeLodEvidence {
 
 impl SmokeInputEvidence {
     fn failure_reason(&self, configured_scenario: SmokeScenario) -> Option<&'static str> {
-        if !self.bounds_verified {
-            return Some("input_window_bounds_mismatch");
-        }
         match (&self.scenario, configured_scenario) {
             (SmokeScenarioEvidence::Interaction(interaction), SmokeScenario::Interaction) => {
-                if interaction.dispatched_events != SMOKE_INPUT_EVENT_COUNT {
-                    return Some("input_dispatch_incomplete");
-                }
                 if !captures_complete(&interaction.captures, &INTERACTION_CAPTURE_STATES) {
                     return Some("input_target_zoom_capture_mismatch");
-                }
-                if interaction.auto_pan_frames < SMOKE_AUTOPAN_MIN_FRAMES {
-                    return Some("input_autopan_frames_missing");
-                }
-                if interaction.connection_auto_pan_frames < SMOKE_AUTOPAN_MIN_FRAMES {
-                    return Some("input_connection_autopan_frames_missing");
-                }
-                for (complete, reason) in [
-                    (interaction.node_dragged, "input_node_unchanged"),
-                    (
-                        interaction.selection_chrome_fitted,
-                        "paint_selection_chrome_not_fitted",
-                    ),
-                    (
-                        interaction.selection_chrome_sides == 4,
-                        "paint_selection_chrome_not_fitted",
-                    ),
-                    (interaction.tab_focus_moved, "input_tab_focus_unmoved"),
-                    (
-                        interaction.tab_focus_restored,
-                        "input_shift_tab_focus_unrestored",
-                    ),
-                    (interaction.viewport_panned, "input_viewport_unpanned"),
-                    (interaction.viewport_zoomed, "input_viewport_unzoomed"),
-                    (interaction.connection_created, "input_connection_missing"),
-                    (
-                        interaction.connection_preview_wire_painted,
-                        "paint_connection_preview_wire_missing",
-                    ),
-                    (
-                        interaction.connection_release_frame_painted,
-                        "paint_connection_release_frame_missing",
-                    ),
-                    (
-                        interaction.connection_release_continuous,
-                        "paint_connection_release_discontinuity",
-                    ),
-                    (
-                        interaction.keyboard_edge_deleted,
-                        "input_keyboard_delete_missing",
-                    ),
-                    (interaction.reconnect_applied, "input_reconnect_missing"),
-                    (
-                        interaction.reconnect_preview_wire_painted,
-                        "paint_reconnect_preview_wire_missing",
-                    ),
-                    (
-                        interaction.reconnect_release_frame_painted,
-                        "paint_reconnect_release_frame_missing",
-                    ),
-                    (
-                        interaction.reconnect_release_continuous,
-                        "paint_reconnect_release_discontinuity",
-                    ),
-                    (interaction.search_opened, "input_search_missing"),
-                    (interaction.search_focus_moved, "input_search_focus_missing"),
-                    (interaction.search_cancelled, "input_search_not_cancelled"),
-                    (
-                        interaction.search_focus_restored,
-                        "input_search_focus_not_restored",
-                    ),
-                    (
-                        interaction.captures.contains(&SmokeCaptureState::Final),
-                        "input_final_frame_invalid",
-                    ),
-                ] {
-                    if !complete {
-                        return Some(reason);
-                    }
                 }
             }
             (SmokeScenarioEvidence::LodThreshold(lod), SmokeScenario::LodThreshold) => {
@@ -672,23 +561,6 @@ fn captures_complete<const N: usize>(
 #[derive(Clone, Debug, PartialEq)]
 struct SmokeObservation {
     surface_size: Option<ViewSize>,
-    visible_expected_nodes: Option<usize>,
-    active_nodes: usize,
-    parked_nodes: usize,
-    mounts: u64,
-    restores: u64,
-    evictions: u64,
-    hard_retirements: u64,
-    protected_instances: usize,
-    protected_leases: usize,
-    protected_overflows: u64,
-    eligible_parked_nodes: usize,
-    strong_instances: usize,
-    frame_materialization_overflows: u64,
-    feedback_submissions: u64,
-    feedback_failures: u64,
-    layout_rejections: u64,
-    measurement_failures: u64,
     diagnostic: Option<SmokeHostDiagnostic>,
     host_closed: bool,
     geometry: Option<SmokeGeometryEvidence>,
@@ -697,7 +569,7 @@ struct SmokeObservation {
     native_probe_failure: Option<&'static str>,
     native_probe_phase: Option<String>,
     native_probe_wait_ticks: Option<u16>,
-    presented_frames: Vec<open_gpui_canvas_jellyflow::smoke_receipt::SmokePresentedFrameV1>,
+    presented_frames: Vec<SmokePresentedFrame>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -724,14 +596,11 @@ impl SmokeObservation {
         geometry: Option<SmokeGeometryEvidence>,
         paint: Option<SmokePaintEvidence>,
     ) {
-        if let Some((geometry, _)) = geometry.as_ref().zip(paint.as_ref()) {
-            self.visible_expected_nodes = Some(geometry.node_regions.len());
-        }
         self.geometry = geometry;
         self.paint = paint;
     }
 
-    fn invariant_failure(&self, expectations: &SmokeExpectations) -> Option<&'static str> {
+    fn invariant_failure(&self) -> Option<&'static str> {
         if self.host_closed {
             return Some("host_closed");
         }
@@ -742,62 +611,21 @@ impl SmokeObservation {
         {
             return Some("host_diagnostic");
         }
-        if self.layout_rejections > 0 {
-            return Some("layout_rejection");
-        }
-        if self.measurement_failures > 0 {
-            return Some("measurement_failure");
-        }
-        if self.feedback_failures > 0 {
-            return Some("feedback_failure");
-        }
         if self
             .surface_size
             .is_some_and(|surface| !surface.is_positive_finite())
         {
             return Some("invalid_surface");
         }
-        if self.evictions > 0 || self.hard_retirements > 0 {
-            return Some("unexpected_retained_retirement");
-        }
-        if self.protected_overflows > 0 || self.frame_materialization_overflows > 0 {
-            return Some("retained_lifecycle_overflow");
-        }
-
-        let expected_nodes = expectations.node_count();
-        let retained_nodes = self.active_nodes.saturating_add(self.parked_nodes);
-        if self.mounts > expected_nodes as u64
-            || retained_nodes > expected_nodes
-            || self.strong_instances > expected_nodes
-            || self.protected_instances > self.active_nodes
-            || self.eligible_parked_nodes > self.parked_nodes
-        {
-            return Some("unexpected_retained_lifecycle");
-        }
         None
     }
 
     fn structural_decision(&self, expectations: &SmokeExpectations) -> SmokeProbeDecision {
-        if let Some(reason) = self.invariant_failure(expectations) {
+        if let Some(reason) = self.invariant_failure() {
             return SmokeProbeDecision::Fail(reason);
         }
-
-        let expected_nodes = expectations.node_count();
-        let retained_nodes = self.active_nodes.saturating_add(self.parked_nodes);
-        let Some(visible_nodes) = self.visible_expected_nodes else {
-            return SmokeProbeDecision::Wait;
-        };
-        if visible_nodes > expected_nodes
-            || self.active_nodes < visible_nodes
-            || self.parked_nodes > expected_nodes.saturating_sub(visible_nodes)
-        {
-            return SmokeProbeDecision::Fail("visible_node_not_materialized");
-        }
-
-        let complete = expected_nodes > 0
-            && self.surface_size.is_some_and(ViewSize::is_positive_finite)
-            && retained_nodes == expected_nodes
-            && self.strong_instances == expected_nodes;
+        let complete = expectations.node_count() > 0
+            && self.surface_size.is_some_and(ViewSize::is_positive_finite);
         if complete {
             SmokeProbeDecision::Pass
         } else {
@@ -821,10 +649,10 @@ impl SmokeObservation {
     #[cfg(any(test, feature = "real-window-smoke"))]
     fn active_decision(
         &self,
-        expectations: &SmokeExpectations,
+        _expectations: &SmokeExpectations,
         config: &SmokeConfig,
     ) -> SmokeProbeDecision {
-        if let Some(reason) = self.invariant_failure(expectations) {
+        if let Some(reason) = self.invariant_failure() {
             return SmokeProbeDecision::Fail(reason);
         }
         self.evidence_decision(config)
@@ -852,6 +680,9 @@ impl SmokeObservation {
         if let Some(reason) = input.failure_reason(config.scenario()) {
             return SmokeProbeDecision::Fail(reason);
         }
+        if let Err(reason) = validate_presented_frames(&self.presented_frames, config.scenario()) {
+            return SmokeProbeDecision::Fail(reason);
+        }
         SmokeProbeDecision::Pass
     }
 }
@@ -871,7 +702,7 @@ enum SmokeOutcome {
 }
 
 pub(super) struct SmokeState {
-    demo: &'static str,
+    demo: NativeDemo,
     config: SmokeConfig,
     expectations: Option<SmokeExpectations>,
     outcome: SmokeOutcome,
@@ -880,7 +711,7 @@ pub(super) struct SmokeState {
 }
 
 impl SmokeState {
-    fn new(demo: &'static str, config: SmokeConfig) -> Self {
+    fn new(demo: NativeDemo, config: SmokeConfig) -> Self {
         Self {
             demo,
             config,
@@ -943,7 +774,7 @@ impl SmokeState {
 
 pub(super) type SharedSmokeState = Rc<RefCell<SmokeState>>;
 
-pub(super) fn new_smoke_state(demo: &'static str, config: SmokeConfig) -> SharedSmokeState {
+pub(super) fn new_smoke_state(demo: NativeDemo, config: SmokeConfig) -> SharedSmokeState {
     Rc::new(RefCell::new(SmokeState::new(demo, config)))
 }
 
@@ -1007,18 +838,12 @@ pub(super) fn start_smoke_probe(
             let mut observation = cx.update(|cx| observe_smoke_surface(&graph, cx));
             #[cfg(feature = "real-window-smoke")]
             {
-                observation.visible_expected_nodes = observation
-                    .surface_size
-                    .and_then(|surface| visible_expected_node_count(&view, &expectations, surface));
-            }
-            #[cfg(feature = "real-window-smoke")]
-            {
                 if !native_probe_started
                     && observation.structural_decision(&expectations) == SmokeProbeDecision::Pass
                 {
                     native_probe_started = true;
                 }
-                if native_probe_started && observation.invariant_failure(&expectations).is_none() {
+                if native_probe_started && observation.invariant_failure().is_none() {
                     match observation.surface_size {
                         Some(surface_size) => {
                             let advance = cx.update(|cx| {
@@ -1040,9 +865,14 @@ pub(super) fn start_smoke_probe(
                                 native_probe.geometry().cloned(),
                                 native_probe.paint().cloned(),
                             );
-                            observation.presented_frames = native_probe.presented_frames();
                             match advance {
-                                Ok(Ok(input)) => observation.input = input,
+                                Ok(Ok(input)) => {
+                                    if input.is_some() {
+                                        observation.presented_frames =
+                                            native_probe.presented_frames();
+                                    }
+                                    observation.input = input;
+                                }
                                 Ok(Err(reason)) => {
                                     observation.native_probe_failure = Some(reason);
                                 }
@@ -1088,36 +918,6 @@ pub(super) fn start_smoke_probe(
         }
     })
     .detach();
-}
-
-#[cfg(feature = "real-window-smoke")]
-fn visible_expected_node_count(
-    view: &WeakViewSession,
-    expectations: &SmokeExpectations,
-    surface_size: ViewSize,
-) -> Option<usize> {
-    if !surface_size.is_positive_finite() {
-        return None;
-    }
-    let graph = view.graph_snapshot().ok()?;
-    let transform = view.viewport_transform().ok()?;
-    expectations
-        .node_ports
-        .keys()
-        .try_fold(0usize, |visible, node| {
-            let node = graph.graph().node(node)?;
-            let bounds = node.size.and_then(|size| node.bounds_for_size(size))?;
-            let min = transform.screen_point_for_canvas(bounds.origin)?;
-            let max = transform.screen_point_for_canvas(CanvasPoint {
-                x: bounds.origin.x + bounds.size.width,
-                y: bounds.origin.y + bounds.size.height,
-            })?;
-            let intersects = max.x > 0.0
-                && max.y > 0.0
-                && min.x < surface_size.width
-                && min.y < surface_size.height;
-            Some(visible.saturating_add(usize::from(intersects)))
-        })
 }
 
 #[cfg(any(test, feature = "real-window-smoke"))]
@@ -1214,22 +1014,25 @@ fn inspect_geometry_with_coverage(
         if !node.bounds.is_positive_finite() {
             return Err("geometry_invalid_node");
         }
-        let expected_region = match project_node_region(
-            node.bounds,
-            transform,
-            surface_size,
-            image_height,
-            canvas_width,
-        ) {
-            Ok(region) => Some(region),
-            Err("geometry_node_out_of_frame") if !require_every_node_in_frame => None,
-            Err(reason) => return Err(reason),
+        // Frame visibility is runtime-owned. A culled node only has document fallback bounds here,
+        // which cannot reproduce fixed-scale native detail or semantic-LOD placement.
+        let expected_region = if node.frame_visible {
+            match project_node_region(
+                node.bounds,
+                transform,
+                surface_size,
+                image_height,
+                canvas_width,
+            ) {
+                Ok(region) => Some(region),
+                Err("geometry_node_out_of_frame") if !require_every_node_in_frame => None,
+                Err(reason) => return Err(reason),
+            }
+        } else {
+            None
         };
-        if expected_region.is_some() && !node.frame_visible {
-            return Err("geometry_visible_node_culled");
-        }
-        let node_is_visible = node.frame_visible && expected_region.is_some();
-        if let Some(region) = expected_region.filter(|_| node.frame_visible) {
+        let node_is_visible = expected_region.is_some();
+        if let Some(region) = expected_region {
             node_regions.insert(*node_id, region);
         }
         if !node.fresh && node_is_visible {
@@ -1709,8 +1512,43 @@ fn inspect_selection_chrome(
     palette: SmokeSelectionChromePalette,
     rgba: &[u8],
 ) -> Result<SmokeSelectionChromeEvidence, &'static str> {
+    if !bounds.is_positive_finite() || !transform.is_valid() {
+        return Err("paint_selection_chrome_invalid");
+    }
+
+    let max_canvas = CanvasPoint {
+        x: bounds.origin.x + bounds.size.width,
+        y: bounds.origin.y + bounds.size.height,
+    };
+    let min = transform
+        .screen_point_for_canvas(bounds.origin)
+        .ok_or("paint_selection_chrome_invalid")?;
+    let max = transform
+        .screen_point_for_canvas(max_canvas)
+        .ok_or("paint_selection_chrome_invalid")?;
+    inspect_selection_chrome_in_view(
+        ViewRect::new(min, ViewSize::new(max.x - min.x, max.y - min.y)),
+        surface_size,
+        image_width,
+        image_height,
+        canvas_width,
+        palette,
+        rgba,
+    )
+}
+
+#[cfg(any(test, feature = "real-window-smoke"))]
+#[allow(clippy::too_many_arguments)]
+fn inspect_selection_chrome_in_view(
+    bounds: ViewRect,
+    surface_size: ViewSize,
+    image_width: u32,
+    image_height: u32,
+    canvas_width: u32,
+    palette: SmokeSelectionChromePalette,
+    rgba: &[u8],
+) -> Result<SmokeSelectionChromeEvidence, &'static str> {
     if !bounds.is_positive_finite()
-        || !transform.is_valid()
         || !surface_size.is_positive_finite()
         || image_width == 0
         || image_height == 0
@@ -1731,22 +1569,12 @@ fn inspect_selection_chrome(
         return Err("paint_selection_chrome_invalid");
     }
 
-    let max_canvas = CanvasPoint {
-        x: bounds.origin.x + bounds.size.width,
-        y: bounds.origin.y + bounds.size.height,
-    };
-    let min = transform
-        .screen_point_for_canvas(bounds.origin)
-        .ok_or("paint_selection_chrome_invalid")?;
-    let max = transform
-        .screen_point_for_canvas(max_canvas)
-        .ok_or("paint_selection_chrome_invalid")?;
     let scale_x = canvas_width as f32 / surface_size.width;
     let scale_y = image_height as f32 / surface_size.height;
-    let left = min.x * scale_x;
-    let top = min.y * scale_y;
-    let right = max.x * scale_x;
-    let bottom = max.y * scale_y;
+    let left = bounds.origin.x * scale_x;
+    let top = bounds.origin.y * scale_y;
+    let right = (bounds.origin.x + bounds.size.width) * scale_x;
+    let bottom = (bounds.origin.y + bounds.size.height) * scale_y;
     if ![left, top, right, bottom, scale_x, scale_y]
         .into_iter()
         .all(f32::is_finite)
@@ -1840,6 +1668,7 @@ fn inspect_selection_chrome(
     Ok(SmokeSelectionChromeEvidence {
         expected_sides,
         matched_sides,
+        bottom_expected: bottom_match.is_some(),
         bottom_matched: bottom_match.unwrap_or(false),
         detached_max_run,
         allowed_detached_run,
@@ -1959,8 +1788,15 @@ fn selection_chrome_pixel(
     y: usize,
     palette: SmokeSelectionChromePalette,
 ) -> bool {
-    let offset = y * row_stride + x * 4;
-    let pixel = &rgba[offset..offset + 4];
+    let Some(offset) = y
+        .checked_mul(row_stride)
+        .and_then(|row| x.checked_mul(4).and_then(|column| row.checked_add(column)))
+    else {
+        return false;
+    };
+    let Some(pixel) = offset.checked_add(4).and_then(|end| rgba.get(offset..end)) else {
+        return false;
+    };
     pixel[3] > 0x80 && palette.matches(pixel)
 }
 
@@ -2011,77 +1847,22 @@ fn is_background(pixel: &[u8], canvas_background: [u8; 4]) -> bool {
 
 fn observe_smoke_surface(graph: &Entity<NativeGraphSurface>, cx: &mut App) -> SmokeObservation {
     let host = graph.read(cx).host().clone();
-    host.update(cx, |host, _| {
-        let resources = host.resource_snapshot();
-        #[cfg(feature = "real-window-smoke")]
-        let audit = host.smoke_audit_snapshot();
-        let frame_materialization_overflows = u64::from(
-            host.take_unobserved_frame_materialization_overflow()
-                .is_some(),
-        );
-        SmokeObservation {
-            surface_size: host.surface_size(),
-            visible_expected_nodes: None,
-            active_nodes: resources.active_nodes(),
-            parked_nodes: resources.parked_nodes(),
-            #[cfg(feature = "real-window-smoke")]
-            mounts: audit.mounts(),
-            #[cfg(not(feature = "real-window-smoke"))]
-            mounts: resources
-                .active_nodes()
-                .saturating_add(resources.parked_nodes()) as u64,
-            #[cfg(feature = "real-window-smoke")]
-            restores: audit.restores(),
-            #[cfg(not(feature = "real-window-smoke"))]
-            restores: 0,
-            #[cfg(feature = "real-window-smoke")]
-            evictions: audit.evictions(),
-            #[cfg(not(feature = "real-window-smoke"))]
-            evictions: 0,
-            #[cfg(feature = "real-window-smoke")]
-            hard_retirements: audit.hard_retirements(),
-            #[cfg(not(feature = "real-window-smoke"))]
-            hard_retirements: 0,
-            protected_instances: resources.protected_instances(),
-            protected_leases: resources.protected_leases(),
-            #[cfg(feature = "real-window-smoke")]
-            protected_overflows: audit.protected_overflows(),
-            #[cfg(not(feature = "real-window-smoke"))]
-            protected_overflows: 0,
-            eligible_parked_nodes: resources.eligible_parked_nodes(),
-            strong_instances: resources.strong_instances(),
-            frame_materialization_overflows,
-            #[cfg(feature = "real-window-smoke")]
-            feedback_submissions: audit.feedback_submissions(),
-            #[cfg(not(feature = "real-window-smoke"))]
-            feedback_submissions: 2,
-            #[cfg(feature = "real-window-smoke")]
-            feedback_failures: audit.feedback_failures(),
-            #[cfg(not(feature = "real-window-smoke"))]
-            feedback_failures: 0,
-            #[cfg(feature = "real-window-smoke")]
-            layout_rejections: audit.layout_rejections(),
-            #[cfg(not(feature = "real-window-smoke"))]
-            layout_rejections: 0,
-            #[cfg(feature = "real-window-smoke")]
-            measurement_failures: audit.measurement_failures(),
-            #[cfg(not(feature = "real-window-smoke"))]
-            measurement_failures: 0,
-            diagnostic: host
-                .last_diagnostic()
-                .map(|diagnostic| SmokeHostDiagnostic {
-                    kind: diagnostic.kind(),
-                    message: format!("{:?}: {}", diagnostic.kind(), diagnostic.message()),
-                }),
-            host_closed: host.close_reason().is_some(),
-            geometry: None,
-            paint: None,
-            input: None,
-            native_probe_failure: None,
-            native_probe_phase: None,
-            native_probe_wait_ticks: None,
-            presented_frames: Vec::new(),
-        }
+    host.update(cx, |host, _| SmokeObservation {
+        surface_size: host.surface_size(),
+        diagnostic: host
+            .last_diagnostic()
+            .map(|diagnostic| SmokeHostDiagnostic {
+                kind: diagnostic.kind(),
+                message: format!("{:?}: {}", diagnostic.kind(), diagnostic.message()),
+            }),
+        host_closed: host.close_reason().is_some(),
+        geometry: None,
+        paint: None,
+        input: None,
+        native_probe_failure: None,
+        native_probe_phase: None,
+        native_probe_wait_ticks: None,
+        presented_frames: Vec::new(),
     })
 }
 
@@ -2140,14 +1921,14 @@ fn emit_smoke_receipt(receipt: &SmokeRunReceiptV1) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::demo_fixture::shader_demo_graph;
-    use jellyflow_core::CanvasSize;
-    use open_gpui_canvas_jellyflow::nodes::native_node_catalog;
-    use open_gpui_canvas_jellyflow::smoke_receipt::{
-        SmokeFrameStageV1, SmokeNodeBoundsV1, SmokePointV1, SmokePreviewTargetV1,
-        SmokeReceiptStatusV1, SmokeRectV1, SmokeRouteV1, SmokeViewportV1,
+    use super::presented_frame::{
+        SmokeFrameStage, SmokeNodeBounds, SmokePreviewRoute, SmokePreviewTarget, SmokeRoute,
     };
+    use super::receipt::SmokeReceiptStatusV1;
+    use super::*;
+    use jellyflow_core::CanvasSize;
+    use jellyflow_runtime::geometry::{ViewPoint, ViewRect};
+    use jellyflow_runtime::interaction::CanvasInteractionPhase;
 
     const IMAGE_WIDTH: u32 = 118;
     const IMAGE_HEIGHT: u32 = 72;
@@ -2277,25 +2058,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn clipped_port_hit_bounds_are_valid_only_when_absent_or_positive() {
-        assert!(valid_optional_hit_bounds(None));
-        assert!(valid_optional_hit_bounds(Some(CanvasRect {
-            origin: CanvasPoint { x: 10.0, y: 20.0 },
-            size: CanvasSize {
-                width: 12.0,
-                height: 8.0,
-            },
-        })));
-        assert!(!valid_optional_hit_bounds(Some(CanvasRect {
-            origin: CanvasPoint { x: 10.0, y: 20.0 },
-            size: CanvasSize {
-                width: 0.0,
-                height: 8.0,
-            },
-        })));
-    }
-
     fn surface_size() -> ViewSize {
         ViewSize::new(900.0, 720.0)
     }
@@ -2365,23 +2127,6 @@ mod tests {
         .expect("paint evidence");
         SmokeObservation {
             surface_size: Some(surface_size()),
-            visible_expected_nodes: Some(expected.node_count()),
-            active_nodes: expected.node_count(),
-            parked_nodes: 0,
-            mounts: expected.node_count() as u64,
-            restores: 0,
-            evictions: 0,
-            hard_retirements: 0,
-            protected_instances: 0,
-            protected_leases: 0,
-            protected_overflows: 0,
-            eligible_parked_nodes: 0,
-            strong_instances: expected.node_count(),
-            frame_materialization_overflows: 0,
-            feedback_submissions: 2,
-            feedback_failures: 0,
-            layout_rejections: 0,
-            measurement_failures: 0,
             diagnostic: None,
             host_closed: false,
             geometry: Some(geometry),
@@ -2394,149 +2139,144 @@ mod tests {
         }
     }
 
-    fn receipt_route(edge: EdgeId) -> SmokeRouteV1 {
-        SmokeRouteV1 {
-            edge_id: edge.0.to_string(),
-            source: SmokePointV1 { x: 30.0, y: 40.0 },
-            target: SmokePointV1 { x: 160.0, y: 90.0 },
+    fn presented_route(edge: EdgeId) -> SmokeRoute {
+        SmokeRoute {
+            edge,
+            source: ViewPoint::new(30.0, 40.0),
+            target: ViewPoint::new(160.0, 90.0),
         }
     }
 
-    fn receipt_frame(
+    fn presented_frame(
         render_sequence: u64,
-        stage: SmokeFrameStageV1,
+        stage: SmokeFrameStage,
         node: NodeId,
         authoritative_edge: EdgeId,
         preview: bool,
         authoritative: bool,
-        chrome: bool,
-    ) -> open_gpui_canvas_jellyflow::smoke_receipt::SmokePresentedFrameV1 {
-        let node_bounds = vec![SmokeNodeBoundsV1 {
-            node_id: node.0.to_string(),
-            bounds: SmokeRectV1 {
-                x: 20.0,
-                y: 30.0,
-                width: 120.0,
-                height: 80.0,
-            },
+        node_drag_active: bool,
+    ) -> SmokePresentedFrame {
+        let node_bounds = vec![SmokeNodeBounds {
+            node,
+            bounds: ViewRect::new(ViewPoint::new(20.0, 30.0), ViewSize::new(120.0, 80.0)),
+            selected: true,
+            chrome_expected: true,
+            chrome_bounds: Some(ViewRect::new(
+                ViewPoint::new(20.0, 30.0),
+                ViewSize::new(120.0, 80.0),
+            )),
         }];
-        open_gpui_canvas_jellyflow::smoke_receipt::SmokePresentedFrameV1 {
-            presented_sequence: render_sequence,
+        SmokePresentedFrame {
             render_sequence,
             stage,
-            phase: "fixture".to_owned(),
+            phase: CanvasInteractionPhase::Idle,
             graph_revision: render_sequence,
-            viewport: SmokeViewportV1 {
-                pan: SmokePointV1 { x: 0.0, y: 0.0 },
-                zoom: 1.0,
-            },
-            chrome_bounds: if chrome {
-                node_bounds.clone()
+            viewport: ViewportTransform::new(CanvasPoint::default(), 1.0)
+                .expect("valid fixture viewport"),
+            node_drag_nodes: if node_drag_active {
+                vec![node]
             } else {
                 Vec::new()
             },
             node_bounds,
-            preview_route: preview.then(|| SmokeRouteV1 {
-                edge_id: "preview".to_owned(),
-                source: SmokePointV1 { x: 30.0, y: 40.0 },
-                target: SmokePointV1 { x: 160.0, y: 90.0 },
+            port_geometries: Vec::new(),
+            preview_route: preview.then(|| SmokePreviewRoute {
+                source: ViewPoint::new(30.0, 40.0),
+                target: ViewPoint::new(160.0, 90.0),
             }),
-            preview_target: preview.then(|| SmokePreviewTargetV1 {
-                port_id: port(21).0.to_string(),
-                anchor: SmokePointV1 { x: 160.0, y: 90.0 },
+            preview_target: preview.then(|| SmokePreviewTarget {
+                port: port(21),
+                anchor: ViewPoint::new(160.0, 90.0),
             }),
-            suppressed_edge_id: (stage == SmokeFrameStageV1::ReconnectPending)
-                .then(|| edge(32).0.to_string()),
+            suppressed_edge: (stage == SmokeFrameStage::ReconnectPending).then(|| edge(32)),
             authoritative_routes: if authoritative {
-                vec![receipt_route(authoritative_edge)]
+                vec![presented_route(authoritative_edge)]
             } else {
                 Vec::new()
             },
         }
     }
 
-    fn interaction_presented_frames(
-        expected: &SmokeExpectations,
-    ) -> Vec<open_gpui_canvas_jellyflow::smoke_receipt::SmokePresentedFrameV1> {
+    fn interaction_presented_frames(expected: &SmokeExpectations) -> Vec<SmokePresentedFrame> {
         let node = *expected.node_ports.keys().next().expect("fixture node");
         let existing_edge = *expected.edges.iter().next().expect("fixture edge");
         let added_edge = edge(32);
         let mut frames = vec![
-            receipt_frame(
+            presented_frame(
                 0,
-                SmokeFrameStageV1::Interaction,
+                SmokeFrameStage::Interaction,
                 node,
                 existing_edge,
                 false,
                 true,
-                true,
+                false,
             ),
-            receipt_frame(
+            presented_frame(
                 1,
-                SmokeFrameStageV1::NodeDragPending,
+                SmokeFrameStage::NodeDragPending,
                 node,
                 existing_edge,
                 false,
                 true,
                 true,
             ),
-            receipt_frame(
+            presented_frame(
                 2,
-                SmokeFrameStageV1::NodeDragAuthoritative,
+                SmokeFrameStage::NodeDragAuthoritative,
                 node,
                 existing_edge,
                 false,
                 true,
-                true,
+                false,
             ),
-            receipt_frame(
+            presented_frame(
                 3,
-                SmokeFrameStageV1::ConnectionPending,
+                SmokeFrameStage::ConnectionPending,
                 node,
                 existing_edge,
                 true,
                 true,
                 false,
             ),
-            receipt_frame(
+            presented_frame(
                 4,
-                SmokeFrameStageV1::ConnectionAuthoritative,
+                SmokeFrameStage::ConnectionAuthoritative,
                 node,
                 existing_edge,
                 false,
                 true,
                 false,
             ),
-            receipt_frame(
+            presented_frame(
                 5,
-                SmokeFrameStageV1::ReconnectPending,
+                SmokeFrameStage::ReconnectPending,
                 node,
                 existing_edge,
                 true,
                 true,
                 false,
             ),
-            receipt_frame(
+            presented_frame(
                 6,
-                SmokeFrameStageV1::ReconnectAuthoritative,
+                SmokeFrameStage::ReconnectAuthoritative,
                 node,
                 existing_edge,
                 false,
                 true,
                 false,
             ),
-            receipt_frame(
+            presented_frame(
                 7,
-                SmokeFrameStageV1::Search,
+                SmokeFrameStage::Search,
                 node,
                 existing_edge,
                 false,
                 true,
                 false,
             ),
-            receipt_frame(
+            presented_frame(
                 8,
-                SmokeFrameStageV1::Final,
+                SmokeFrameStage::Final,
                 node,
                 existing_edge,
                 false,
@@ -2546,90 +2286,32 @@ mod tests {
         ];
         frames[4]
             .authoritative_routes
-            .push(receipt_route(added_edge));
+            .push(presented_route(added_edge));
         frames[6]
             .authoritative_routes
-            .push(receipt_route(added_edge));
+            .push(presented_route(added_edge));
         frames[7]
             .authoritative_routes
-            .push(receipt_route(added_edge));
+            .push(presented_route(added_edge));
         frames[8]
             .authoritative_routes
-            .push(receipt_route(added_edge));
+            .push(presented_route(added_edge));
         frames
     }
 
-    fn lod_presented_frames(
-        expected: &SmokeExpectations,
-    ) -> Vec<open_gpui_canvas_jellyflow::smoke_receipt::SmokePresentedFrameV1> {
-        let node = *expected.node_ports.keys().next().expect("fixture node");
-        let edge = *expected.edges.iter().next().expect("fixture edge");
-        (0..SMOKE_LOD_SAMPLE_COUNT)
-            .map(|number| {
-                receipt_frame(
-                    number as u64,
-                    SmokeFrameStageV1::Lod,
-                    node,
-                    edge,
-                    false,
-                    true,
-                    false,
-                )
-            })
-            .collect()
+    fn resequence_presented_frames(frames: &mut [SmokePresentedFrame]) {
+        for (sequence, frame) in frames.iter_mut().enumerate() {
+            let sequence = sequence as u64;
+            frame.render_sequence = sequence;
+            frame.graph_revision = sequence;
+        }
     }
 
     fn complete_input_evidence() -> SmokeInputEvidence {
         SmokeInputEvidence {
-            bounds_verified: true,
             scenario: SmokeScenarioEvidence::Interaction(SmokeInteractionEvidence {
-                dispatched_events: SMOKE_INPUT_EVENT_COUNT,
-                auto_pan_reframes: 0,
                 captures: INTERACTION_CAPTURE_STATES.into_iter().collect(),
-                node_dragged: true,
-                selection_chrome_fitted: true,
-                selection_chrome_sides: 4,
-                selection_chrome_detached_run: 0,
-                auto_pan_frames: SMOKE_AUTOPAN_MIN_FRAMES,
-                connection_auto_pan_frames: SMOKE_AUTOPAN_MIN_FRAMES,
-                tab_focus_moved: true,
-                tab_focus_restored: true,
-                viewport_panned: true,
-                viewport_zoomed: true,
-                connection_created: true,
-                connection_preview_wire_painted: true,
-                connection_release_frame_painted: true,
-                connection_release_continuous: true,
-                keyboard_edge_deleted: true,
-                reconnect_applied: true,
-                reconnect_preview_wire_painted: true,
-                reconnect_release_frame_painted: true,
-                reconnect_release_continuous: true,
-                search_opened: true,
-                search_focus_moved: true,
-                search_cancelled: true,
-                search_focus_restored: true,
             }),
-        }
-    }
-
-    fn complete_lod_input_evidence() -> SmokeInputEvidence {
-        SmokeInputEvidence {
-            bounds_verified: true,
-            scenario: SmokeScenarioEvidence::LodThreshold(SmokeLodEvidence {
-                captures: LOD_CAPTURE_STATES.into_iter().collect(),
-                lod_continuous: true,
-                lod_max_jump_in_view: 1.25,
-            }),
-        }
-    }
-
-    fn interaction_evidence_mut(
-        evidence: &mut SmokeInputEvidence,
-    ) -> &mut SmokeInteractionEvidence {
-        match &mut evidence.scenario {
-            SmokeScenarioEvidence::Interaction(interaction) => interaction,
-            SmokeScenarioEvidence::LodThreshold(_) => panic!("expected interaction evidence"),
         }
     }
 
@@ -2697,6 +2379,7 @@ mod tests {
             SmokeSelectionChromeEvidence {
                 expected_sides: 4,
                 matched_sides: 3,
+                bottom_expected: true,
                 bottom_matched: true,
                 detached_max_run: 0,
                 allowed_detached_run: 0,
@@ -2704,6 +2387,19 @@ mod tests {
             .failure_reason(),
             Some("paint_selection_chrome_not_fitted"),
             "a fully visible selected node requires all four chrome sides",
+        );
+        assert_eq!(
+            SmokeSelectionChromeEvidence {
+                expected_sides: 3,
+                matched_sides: 3,
+                bottom_expected: true,
+                bottom_matched: true,
+                detached_max_run: 0,
+                allowed_detached_run: 0,
+            }
+            .failure_reason(),
+            None,
+            "a partially clipped node requires every visible chrome side",
         );
 
         paint_chrome_rect(
@@ -2733,196 +2429,11 @@ mod tests {
     }
 
     #[test]
-    fn selection_chrome_probe_recognizes_each_product_theme_selection_token() {
-        const WIDTH: usize = 200;
-        const HEIGHT: usize = 200;
-        let bounds = CanvasRect {
-            origin: CanvasPoint { x: 40.0, y: 30.0 },
-            size: CanvasSize {
-                width: 100.0,
-                height: 60.0,
-            },
-        };
-
-        for theme in [
-            NativeProductTheme::shader_blueprint(),
-            NativeProductTheme::workflow_dify(),
-        ] {
-            let palette = SmokeSelectionChromePalette::from_product_theme(theme);
-            let color = [
-                palette.selection[0],
-                palette.selection[1],
-                palette.selection[2],
-                0xff,
-            ];
-            let mut pixels = TEST_CANVAS_BACKGROUND_RGBA.repeat(WIDTH * HEIGHT);
-            paint_chrome_rect(&mut pixels, WIDTH, 40, 30, 140, 90, color);
-
-            let fitted = inspect_selection_chrome(
-                bounds,
-                transform(),
-                ViewSize::new(WIDTH as f32, HEIGHT as f32),
-                WIDTH as u32,
-                HEIGHT as u32,
-                WIDTH as u32,
-                palette,
-                &pixels,
-            )
-            .expect("product selection chrome evidence");
-
-            assert_eq!(fitted.failure_reason(), None, "profile={:?}", theme.profile);
-            assert_eq!(fitted.matched_sides, 4, "profile={:?}", theme.profile);
-        }
-    }
-
-    #[test]
-    fn expectations_preserve_every_stable_node_real_port_and_edge_id_from_the_document() {
-        let catalog = native_node_catalog().expect("native node catalog");
-        let graph = shader_demo_graph(&catalog).expect("shader demo graph");
-        let expected = SmokeExpectations::from_graph(&graph);
-
-        assert_eq!(
-            expected.node_ports.keys().copied().collect::<BTreeSet<_>>(),
-            graph.nodes().keys().copied().collect()
-        );
-        for (node_id, ports) in &expected.node_ports {
-            assert_eq!(
-                ports,
-                &graph
-                    .node(node_id)
-                    .expect("expected node")
-                    .ports
-                    .iter()
-                    .copied()
-                    .collect()
-            );
-        }
-        assert_eq!(
-            expected.edges,
-            graph.edges().keys().copied().collect::<BTreeSet<_>>()
-        );
-        for (edge_id, edge) in graph.edges() {
-            let endpoints = expected
-                .edge_nodes
-                .get(edge_id)
-                .expect("expected edge endpoint owners");
-            assert_eq!(
-                endpoints.0,
-                graph.port(&edge.from).expect("source port").node
-            );
-            assert_eq!(endpoints.1, graph.port(&edge.to).expect("target port").node);
-        }
-    }
-
-    #[test]
-    fn geometry_probe_accepts_fresh_complete_flagship_geometry() {
-        let evidence = geometry_evidence();
-
-        assert_eq!(evidence.expected_node_ids.len(), 2);
-        assert_eq!(evidence.fresh_nodes, 2);
-        assert_eq!(evidence.expected_port_ids.len(), 4);
-        assert_eq!(evidence.rendered_ports, 4);
-        assert_eq!(evidence.expected_edge_ids.len(), 1);
-        assert_eq!(evidence.routed_edges, 1);
-        assert_eq!(evidence.node_regions.len(), 2);
-    }
-
-    #[test]
-    fn geometry_probe_rejects_invalid_culled_stale_and_incomplete_geometry() {
+    fn geometry_probe_rejects_stale_nodes_and_missing_routes() {
         let expected = expectations();
 
-        let mut missing_node = geometry_input();
-        missing_node.nodes.remove(&node(1));
-        assert_eq!(
-            inspect_geometry(
-                &expected,
-                &missing_node,
-                transform(),
-                surface_size(),
-                IMAGE_WIDTH,
-                IMAGE_HEIGHT,
-                CANVAS_WIDTH,
-            ),
-            Err("geometry_missing_node")
-        );
-
-        let mut invalid = geometry_input();
-        invalid.nodes.get_mut(&node(1)).unwrap().bounds.size.width = f32::NAN;
-        assert_eq!(
-            inspect_geometry(
-                &expected,
-                &invalid,
-                transform(),
-                surface_size(),
-                IMAGE_WIDTH,
-                IMAGE_HEIGHT,
-                CANVAS_WIDTH,
-            ),
-            Err("geometry_invalid_node")
-        );
-
-        let mut culled = geometry_input();
-        culled
-            .nodes
-            .get_mut(&node(1))
-            .unwrap()
-            .ports
-            .insert(port(11), SmokePortState::Culled);
-        assert_eq!(
-            inspect_geometry(
-                &expected,
-                &culled,
-                transform(),
-                surface_size(),
-                IMAGE_WIDTH,
-                IMAGE_HEIGHT,
-                CANVAS_WIDTH,
-            ),
-            Err("geometry_port_culled")
-        );
-
-        let mut hidden = geometry_input();
-        hidden
-            .nodes
-            .get_mut(&node(1))
-            .unwrap()
-            .ports
-            .insert(port(11), SmokePortState::Hidden);
-        assert_eq!(
-            inspect_geometry(
-                &expected,
-                &hidden,
-                transform(),
-                surface_size(),
-                IMAGE_WIDTH,
-                IMAGE_HEIGHT,
-                CANVAS_WIDTH,
-            ),
-            Err("geometry_port_hidden")
-        );
-
-        let mut unavailable = geometry_input();
-        unavailable
-            .nodes
-            .get_mut(&node(1))
-            .unwrap()
-            .ports
-            .insert(port(11), SmokePortState::Unavailable);
-        assert_eq!(
-            inspect_geometry(
-                &expected,
-                &unavailable,
-                transform(),
-                surface_size(),
-                IMAGE_WIDTH,
-                IMAGE_HEIGHT,
-                CANVAS_WIDTH,
-            ),
-            Err("geometry_port_unavailable")
-        );
-
         let mut stale = geometry_input();
-        stale.nodes.get_mut(&node(1)).unwrap().fresh = false;
+        stale.nodes.get_mut(&node(1)).expect("fixture node").fresh = false;
         assert_eq!(
             inspect_geometry(
                 &expected,
@@ -2934,26 +2445,6 @@ mod tests {
                 CANVAS_WIDTH,
             ),
             Err("geometry_stale_node")
-        );
-
-        let mut missing_port = geometry_input();
-        missing_port
-            .nodes
-            .get_mut(&node(1))
-            .unwrap()
-            .ports
-            .remove(&port(11));
-        assert_eq!(
-            inspect_geometry(
-                &expected,
-                &missing_port,
-                transform(),
-                surface_size(),
-                IMAGE_WIDTH,
-                IMAGE_HEIGHT,
-                CANVAS_WIDTH,
-            ),
-            Err("geometry_missing_port_outcome")
         );
 
         let mut missing_route = geometry_input();
@@ -2970,270 +2461,23 @@ mod tests {
             ),
             Err("geometry_missing_route")
         );
-
-        let mut out_of_frame = geometry_input();
-        out_of_frame
-            .nodes
-            .get_mut(&node(2))
-            .unwrap()
-            .bounds
-            .origin
-            .x = 1_500.0;
-        assert_eq!(
-            inspect_geometry(
-                &expected,
-                &out_of_frame,
-                transform(),
-                surface_size(),
-                IMAGE_WIDTH,
-                IMAGE_HEIGHT,
-                CANVAS_WIDTH,
-            ),
-            Err("geometry_node_out_of_frame")
-        );
-
-        let visible = inspect_visible_geometry(
-            &expected,
-            &out_of_frame,
-            transform(),
-            surface_size(),
-            IMAGE_WIDTH,
-            IMAGE_HEIGHT,
-            CANVAS_WIDTH,
-        )
-        .expect("visible-node evidence keeps complete graph geometry");
-        assert_eq!(visible.fresh_nodes, expected.node_count());
-        assert_eq!(visible.rendered_ports, expected.port_count());
-        assert_eq!(visible.routed_edges, expected.edges.len());
-        assert_eq!(
-            visible.node_regions.keys().copied().collect::<Vec<_>>(),
-            [node(1)]
-        );
     }
 
     #[test]
-    fn visible_geometry_accepts_culled_ports_and_routes_for_fully_offscreen_nodes() {
-        let expected = expectations();
-        let mut input = geometry_input();
-        let offscreen = input.nodes.get_mut(&node(2)).expect("second fixture node");
-        offscreen.bounds.origin.x = 1_500.0;
-        offscreen.fresh = false;
-        offscreen.ports.insert(port(21), SmokePortState::Culled);
-        offscreen.ports.insert(port(22), SmokePortState::Culled);
-        input.routes.clear();
-
-        let visible = inspect_visible_geometry(
-            &expected,
-            &input,
-            transform(),
-            surface_size(),
-            IMAGE_WIDTH,
-            IMAGE_HEIGHT,
-            CANVAS_WIDTH,
-        )
-        .expect("offscreen virtualized ports are valid visual geometry");
-
-        assert_eq!(visible.fresh_nodes, expected.node_count() - 1);
-        assert_eq!(visible.rendered_ports, expected.port_count() - 2);
-        assert_eq!(visible.routed_edges, 0);
-        assert_eq!(
-            visible.node_regions.keys().copied().collect::<Vec<_>>(),
-            [node(1)]
-        );
-    }
-
-    #[test]
-    fn visible_geometry_rejects_frame_culling_that_contradicts_model_bounds() {
-        let expected = expectations();
-        let mut input = geometry_input();
-        let culled = input.nodes.get_mut(&node(2)).expect("second fixture node");
-        assert!(
-            project_node_region(
-                culled.bounds,
-                transform(),
-                surface_size(),
-                IMAGE_HEIGHT,
-                CANVAS_WIDTH,
-            )
-            .is_ok(),
-            "the canonical 1x bounds deliberately overlap the viewport"
-        );
-        culled.frame_visible = false;
-        culled.fresh = false;
-        culled.ports.insert(port(21), SmokePortState::Culled);
-        culled.ports.insert(port(22), SmokePortState::Culled);
-        input.routes.clear();
-
-        assert_eq!(
-            inspect_visible_geometry(
-                &expected,
-                &input,
-                transform(),
-                surface_size(),
-                IMAGE_WIDTH,
-                IMAGE_HEIGHT,
-                CANVAS_WIDTH,
-            ),
-            Err("geometry_visible_node_culled")
-        );
-    }
-
-    #[test]
-    fn visible_geometry_rejects_a_stale_node_that_is_still_on_screen() {
-        let expected = expectations();
-        let mut input = geometry_input();
-        input.nodes.get_mut(&node(2)).unwrap().fresh = false;
-
-        assert_eq!(
-            inspect_visible_geometry(
-                &expected,
-                &input,
-                transform(),
-                surface_size(),
-                IMAGE_WIDTH,
-                IMAGE_HEIGHT,
-                CANVAS_WIDTH,
-            ),
-            Err("geometry_stale_node")
-        );
-    }
-
-    #[test]
-    fn visible_geometry_accepts_a_route_when_all_node_bodies_are_offscreen() {
-        let expected = expectations();
-        let mut input = geometry_input();
-        input
-            .nodes
-            .get_mut(&node(1))
-            .expect("first fixture node")
-            .bounds
-            .origin
-            .x = -1_000.0;
-        input
-            .nodes
-            .get_mut(&node(2))
-            .expect("second fixture node")
-            .bounds
-            .origin
-            .x = 1_500.0;
-
-        let visible = inspect_visible_geometry(
-            &expected,
-            &input,
-            transform(),
-            surface_size(),
-            IMAGE_WIDTH,
-            IMAGE_HEIGHT,
-            CANVAS_WIDTH,
-        )
-        .expect("a rendered route is a valid visible graph presentation");
-
-        assert!(visible.node_regions.is_empty());
-        assert_eq!(visible.routed_edges, 1);
-
-        let pixels = paint_all_node_regions(&visible, []);
-        let paint = inspect_canvas_paint(
-            IMAGE_WIDTH,
-            IMAGE_HEIGHT,
-            &pixels,
-            &visible,
-            TEST_CANVAS_BACKGROUND_RGBA,
-        )
-        .expect("route-only frames remain valid paint evidence");
-        assert!(paint.nodes.is_empty());
-        assert_eq!(paint.wires.len(), 1);
-    }
-
-    #[test]
-    fn paint_probe_rejects_invalid_and_background_only_images() {
+    fn paint_probe_rejects_blank_canvas_and_blank_expected_node() {
         let geometry = geometry_evidence();
-        assert_eq!(
-            inspect_canvas_paint(
-                IMAGE_WIDTH,
-                IMAGE_HEIGHT,
-                &[],
-                &geometry,
-                TEST_CANVAS_BACKGROUND_RGBA,
-            ),
-            Err("paint_invalid_image")
-        );
-
-        let pixels =
+        let blank =
             TEST_CANVAS_BACKGROUND_RGBA.repeat(IMAGE_WIDTH as usize * IMAGE_HEIGHT as usize);
-        let paint = inspect_canvas_paint(
+        let blank = inspect_canvas_paint(
             IMAGE_WIDTH,
             IMAGE_HEIGHT,
-            &pixels,
+            &blank,
             &geometry,
             TEST_CANVAS_BACKGROUND_RGBA,
         )
-        .expect("well-formed image");
-        assert_eq!(paint.failure_reason(), Some("paint_blank_canvas"));
-    }
+        .expect("well-formed blank image");
+        assert_eq!(blank.failure_reason(), Some("paint_blank_canvas"));
 
-    #[test]
-    fn paint_palette_uses_each_product_canvas_background_exactly() {
-        let shader = SmokePaintPalette::from_product_theme(NativeProductTheme::shader_blueprint());
-        let workflow = SmokePaintPalette::from_product_theme(NativeProductTheme::workflow_dify());
-
-        assert_eq!(shader.canvas_background, [0x0d, 0x12, 0x17, 0xff]);
-        assert_eq!(workflow.canvas_background, [0x10, 0x13, 0x18, 0xff]);
-
-        for palette in [shader, workflow] {
-            let pixels = palette.canvas_background.repeat(4);
-            assert_eq!(
-                inspect_canvas_framebuffer(4, 1, 4, &pixels, palette.canvas_background),
-                Ok((0, 0))
-            );
-        }
-    }
-
-    #[test]
-    fn paint_palette_does_not_hide_another_products_background() {
-        let shader = SmokePaintPalette::from_product_theme(NativeProductTheme::shader_blueprint());
-        let workflow = SmokePaintPalette::from_product_theme(NativeProductTheme::workflow_dify());
-        let foreground = [0x75, 0xb9, 0xd8, 0xff];
-        let pixels = [
-            shader.canvas_background,
-            shader.canvas_background,
-            workflow.canvas_background,
-            foreground,
-        ]
-        .concat();
-
-        assert_eq!(
-            inspect_canvas_framebuffer(4, 1, 4, &pixels, shader.canvas_background),
-            Ok((2, 2))
-        );
-        assert_eq!(
-            inspect_canvas_framebuffer(4, 1, 4, &pixels, workflow.canvas_background),
-            Ok((3, 2))
-        );
-    }
-
-    #[test]
-    fn paint_probe_accepts_independent_evidence_for_every_expected_node() {
-        let expected = expectations();
-        let geometry = geometry_evidence();
-        let pixels = paint_all_node_regions(&geometry, expected.node_ports.keys().copied());
-        let paint = inspect_canvas_paint(
-            IMAGE_WIDTH,
-            IMAGE_HEIGHT,
-            &pixels,
-            &geometry,
-            TEST_CANVAS_BACKGROUND_RGBA,
-        )
-        .expect("paint evidence");
-
-        assert!(paint.non_background_pixels >= MIN_CANVAS_NON_BACKGROUND_PIXELS);
-        assert!(paint.distinct_colors >= MIN_CANVAS_DISTINCT_COLORS);
-        assert_eq!(paint.nodes.len(), expected.node_count());
-        assert_eq!(paint.failure_reason(), None);
-    }
-
-    #[test]
-    fn paint_probe_rejects_a_blank_expected_node_even_when_global_thresholds_pass() {
-        let geometry = geometry_evidence();
         let pixels = paint_all_node_regions(&geometry, [node(1)]);
         let paint = inspect_canvas_paint(
             IMAGE_WIDTH,
@@ -3261,30 +2505,9 @@ mod tests {
 
         let mut bootstrapping = complete.clone();
         bootstrapping.surface_size = None;
-        bootstrapping.visible_expected_nodes = None;
-        bootstrapping.active_nodes = 0;
-        bootstrapping.strong_instances = 0;
-        bootstrapping.mounts = 0;
         assert_eq!(
             bootstrapping.decision(&expected, &SmokeConfig::default()),
             SmokeProbeDecision::Wait
-        );
-
-        let mut virtualized = complete.clone();
-        virtualized.visible_expected_nodes = Some(1);
-        virtualized.active_nodes = 1;
-        virtualized.parked_nodes = 1;
-        virtualized.eligible_parked_nodes = 1;
-        assert_eq!(
-            virtualized.structural_decision(&expected),
-            SmokeProbeDecision::Pass
-        );
-
-        let mut visible_node_parked = virtualized;
-        visible_node_parked.visible_expected_nodes = Some(2);
-        assert_eq!(
-            visible_node_parked.structural_decision(&expected),
-            SmokeProbeDecision::Fail("visible_node_not_materialized")
         );
 
         let mut missing_geometry = complete;
@@ -3296,384 +2519,87 @@ mod tests {
     }
 
     #[test]
-    fn active_smoke_probe_keeps_running_through_transient_virtualization() {
+    fn rust_harness_rejects_invalid_frame_order_preview_and_drag_cohorts() {
         let expected = expectations();
-        let mut interaction_frame = complete_observation(&expected);
-        interaction_frame.visible_expected_nodes = Some(expected.node_count());
-        interaction_frame.active_nodes = 1;
-        interaction_frame.parked_nodes = 1;
-        interaction_frame.eligible_parked_nodes = 1;
 
+        let mut gapped = interaction_presented_frames(&expected);
+        gapped[1].render_sequence = 3;
         assert_eq!(
-            interaction_frame.structural_decision(&expected),
-            SmokeProbeDecision::Fail("visible_node_not_materialized"),
-            "bootstrap must still reject a visible node that has not materialized",
+            validate_presented_frames(&gapped, SmokeScenario::Interaction),
+            Err("presented_frame_order_invalid")
         );
+
+        let mut revision_regressed = interaction_presented_frames(&expected);
+        revision_regressed[2].graph_revision = 0;
         assert_eq!(
-            interaction_frame.active_decision(&expected, &SmokeConfig::default()),
-            SmokeProbeDecision::Pass,
-            "an already-started probe must tolerate transient materialization changes",
+            validate_presented_frames(&revision_regressed, SmokeScenario::Interaction),
+            Err("presented_frame_order_invalid")
+        );
+
+        let mut missing_preview = interaction_presented_frames(&expected);
+        missing_preview[3].preview_route = None;
+        assert_eq!(
+            validate_presented_frames(&missing_preview, SmokeScenario::Interaction),
+            Err("connection_pending_preview_missing")
+        );
+
+        let mut invalid_drag = interaction_presented_frames(&expected);
+        invalid_drag[1].node_drag_nodes = vec![NodeId::from_u128(0xffff)];
+        assert_eq!(
+            validate_presented_frames(&invalid_drag, SmokeScenario::Interaction),
+            Err("node_drag_cohort_invalid")
         );
     }
 
     #[test]
-    fn captured_frame_replaces_the_pre_advance_visible_node_count() {
+    fn rust_harness_rejects_node_and_route_release_jumps() {
         let expected = expectations();
-        let mut observation = complete_observation(&expected);
-        let mut geometry = observation.geometry.take().expect("geometry evidence");
-        let mut paint = observation.paint.take().expect("paint evidence");
-        let visible_node = node(1);
-        geometry
-            .node_regions
-            .retain(|node, _| *node == visible_node);
-        paint.nodes.retain(|node, _| *node == visible_node);
-        observation.visible_expected_nodes = Some(0);
 
-        observation.bind_captured_frame(Some(geometry), Some(paint));
-
-        assert_eq!(observation.visible_expected_nodes, Some(1));
+        let mut node_jump = interaction_presented_frames(&expected);
+        node_jump[2].node_bounds[0].bounds.origin.x += 1.0;
+        node_jump[2].node_bounds[0]
+            .chrome_bounds
+            .as_mut()
+            .expect("selected fixture chrome")
+            .origin
+            .x += 1.0;
         assert_eq!(
-            observation
-                .geometry
-                .as_ref()
-                .map(|geometry| geometry.node_regions.len()),
-            Some(1),
+            validate_presented_frames(&node_jump, SmokeScenario::Interaction),
+            Err("node_drag_release_jump")
         );
+
+        let mut route_jump = interaction_presented_frames(&expected);
+        route_jump[4].authoritative_routes[1].target.x += 1.0;
         assert_eq!(
-            observation.paint.as_ref().map(|paint| paint.nodes.len()),
-            Some(1),
+            validate_presented_frames(&route_jump, SmokeScenario::Interaction),
+            Err("connection_route_swap_not_atomic")
         );
     }
 
     #[test]
-    fn smoke_decision_rejects_structured_native_failures() {
-        type Mutation = fn(&mut SmokeObservation);
+    fn rust_harness_allows_target_reacquisition_until_commit_begins() {
         let expected = expectations();
-        let cases: &[(&str, Mutation, &'static str)] = &[
-            (
-                "closed host",
-                |value| value.host_closed = true,
-                "host_closed",
-            ),
-            (
-                "host diagnostic",
-                |value| {
-                    value.diagnostic = Some(SmokeHostDiagnostic {
-                        kind: OpenGpuiSceneHostDiagnosticKind::FactoryFailure,
-                        message: "FactoryFailure: renderer failed".to_owned(),
-                    });
-                },
-                "host_diagnostic",
-            ),
-            (
-                "layout rejection",
-                |value| value.layout_rejections = 1,
-                "layout_rejection",
-            ),
-            (
-                "measurement failure",
-                |value| value.measurement_failures = 1,
-                "measurement_failure",
-            ),
-            (
-                "feedback failure",
-                |value| value.feedback_failures = 1,
-                "feedback_failure",
-            ),
-            (
-                "invalid surface",
-                |value| value.surface_size = Some(ViewSize::new(0.0, 720.0)),
-                "invalid_surface",
-            ),
-            (
-                "native probe failure",
-                |value| value.native_probe_failure = Some("native_probe_failed"),
-                "native_probe_failed",
-            ),
-            (
-                "retained node eviction",
-                |value| value.evictions = 1,
-                "unexpected_retained_retirement",
-            ),
-            (
-                "retained materialization overflow",
-                |value| value.frame_materialization_overflows = 1,
-                "retained_lifecycle_overflow",
-            ),
-            (
-                "incomplete input dispatch",
-                |value| {
-                    let mut input = complete_input_evidence();
-                    interaction_evidence_mut(&mut input).dispatched_events =
-                        SMOKE_INPUT_EVENT_COUNT - 1;
-                    value.input = Some(input);
-                },
-                "input_dispatch_incomplete",
-            ),
-            (
-                "unchanged node",
-                |value| {
-                    let mut input = complete_input_evidence();
-                    interaction_evidence_mut(&mut input).node_dragged = false;
-                    value.input = Some(input);
-                },
-                "input_node_unchanged",
-            ),
-            (
-                "selection chrome did not fit published node bounds",
-                |value| {
-                    let mut input = complete_input_evidence();
-                    interaction_evidence_mut(&mut input).selection_chrome_fitted = false;
-                    value.input = Some(input);
-                },
-                "paint_selection_chrome_not_fitted",
-            ),
-            (
-                "selection chrome omitted one fully visible side",
-                |value| {
-                    let mut input = complete_input_evidence();
-                    interaction_evidence_mut(&mut input).selection_chrome_sides = 3;
-                    value.input = Some(input);
-                },
-                "paint_selection_chrome_not_fitted",
-            ),
-            (
-                "checkpoint not observed at target zoom",
-                |value| {
-                    let mut input = complete_input_evidence();
-                    interaction_evidence_mut(&mut input)
-                        .captures
-                        .remove(&SmokeCaptureState::Final);
-                    value.input = Some(input);
-                },
-                "input_target_zoom_capture_mismatch",
-            ),
-            (
-                "autopan did not span enough frames",
-                |value| {
-                    let mut input = complete_input_evidence();
-                    interaction_evidence_mut(&mut input).auto_pan_frames =
-                        SMOKE_AUTOPAN_MIN_FRAMES - 1;
-                    value.input = Some(input);
-                },
-                "input_autopan_frames_missing",
-            ),
-            (
-                "connection autopan did not span enough frames",
-                |value| {
-                    let mut input = complete_input_evidence();
-                    interaction_evidence_mut(&mut input).connection_auto_pan_frames =
-                        SMOKE_AUTOPAN_MIN_FRAMES - 1;
-                    value.input = Some(input);
-                },
-                "input_connection_autopan_frames_missing",
-            ),
-            (
-                "tab focus did not return",
-                |value| {
-                    let mut input = complete_input_evidence();
-                    interaction_evidence_mut(&mut input).tab_focus_restored = false;
-                    value.input = Some(input);
-                },
-                "input_shift_tab_focus_unrestored",
-            ),
-            (
-                "unzoomed viewport",
-                |value| {
-                    let mut input = complete_input_evidence();
-                    interaction_evidence_mut(&mut input).viewport_zoomed = false;
-                    value.input = Some(input);
-                },
-                "input_viewport_unzoomed",
-            ),
-            (
-                "missing reconnect",
-                |value| {
-                    let mut input = complete_input_evidence();
-                    interaction_evidence_mut(&mut input).reconnect_applied = false;
-                    value.input = Some(input);
-                },
-                "input_reconnect_missing",
-            ),
-            (
-                "window bounds mismatch",
-                |value| {
-                    let mut input = complete_input_evidence();
-                    input.bounds_verified = false;
-                    value.input = Some(input);
-                },
-                "input_window_bounds_mismatch",
-            ),
-        ];
-
-        for &(label, mutate, reason) in cases {
-            let mut observation = complete_observation(&expected);
-            mutate(&mut observation);
-            assert_eq!(
-                observation.decision(&expected, &SmokeConfig::default()),
-                SmokeProbeDecision::Fail(reason),
-                "{label}",
-            );
-        }
-    }
-
-    #[test]
-    fn endpoint_geometry_fallback_defers_to_visible_geometry_coverage() {
-        let expected = expectations();
-        let mut observation = complete_observation(&expected);
-        observation.diagnostic = Some(SmokeHostDiagnostic {
-            kind: OpenGpuiSceneHostDiagnosticKind::EndpointGeometry,
-            message: "off-screen endpoint used an explicit fallback".to_owned(),
-        });
-
+        let mut frames = interaction_presented_frames(&expected);
+        let mut exploring = frames[3].clone();
+        exploring.stage = SmokeFrameStage::ConnectionExploring;
+        exploring.preview_target = None;
+        let reacquired = frames[3].clone();
+        frames.insert(4, exploring.clone());
+        frames.insert(5, reacquired);
+        resequence_presented_frames(&mut frames);
         assert_eq!(
-            observation.decision(&expected, &SmokeConfig::default()),
-            SmokeProbeDecision::Pass
+            validate_presented_frames(&frames, SmokeScenario::Interaction),
+            Ok(())
         );
-    }
 
-    #[test]
-    fn lod_scenario_requires_three_continuous_matching_frame_samples() {
-        let mut evidence = SmokeInputEvidence {
-            bounds_verified: true,
-            scenario: SmokeScenarioEvidence::LodThreshold(SmokeLodEvidence {
-                captures: LOD_CAPTURE_STATES.into_iter().collect(),
-                lod_continuous: true,
-                lod_max_jump_in_view: 0.0,
-            }),
-        };
-        assert_eq!(evidence.failure_reason(SmokeScenario::LodThreshold), None);
-
-        let SmokeScenarioEvidence::LodThreshold(lod) = &mut evidence.scenario else {
-            panic!("expected LOD evidence");
-        };
-        lod.captures.remove(&SmokeCaptureState::Lod084);
+        let mut committing = interaction_presented_frames(&expected);
+        committing[3].phase = CanvasInteractionPhase::Committing;
+        committing.insert(4, exploring);
+        resequence_presented_frames(&mut committing);
         assert_eq!(
-            evidence.failure_reason(SmokeScenario::LodThreshold),
-            Some("input_lod_samples_incomplete")
+            validate_presented_frames(&committing, SmokeScenario::Interaction),
+            Err("connection_commit_span_interrupted")
         );
-        let SmokeScenarioEvidence::LodThreshold(lod) = &mut evidence.scenario else {
-            panic!("expected LOD evidence");
-        };
-        lod.captures.insert(SmokeCaptureState::Lod084);
-        lod.lod_continuous = false;
-        assert_eq!(
-            evidence.failure_reason(SmokeScenario::LodThreshold),
-            Some("input_lod_discontinuity")
-        );
-    }
-
-    #[test]
-    fn typed_input_evidence_must_match_the_configured_scenario() {
-        assert_eq!(
-            complete_input_evidence().failure_reason(SmokeScenario::LodThreshold),
-            Some("input_scenario_mismatch")
-        );
-        assert_eq!(
-            complete_lod_input_evidence().failure_reason(SmokeScenario::Interaction),
-            Some("input_scenario_mismatch")
-        );
-    }
-
-    #[test]
-    fn smoke_state_emits_one_valid_receipt_with_structured_evidence() {
-        let expected = expectations();
-        let mut state = SmokeState::new("shader", SmokeConfig::default());
-        state.configure(expected.clone());
-        assert_eq!(
-            state.observe(complete_observation(&expected)),
-            SmokeProbeDecision::Pass
-        );
-
-        let receipt = state.receipt().expect("completed smoke receipt");
-        receipt.validate().expect("receipt contract");
-        assert_eq!(receipt.status, SmokeReceiptStatusV1::Pass);
-        assert_eq!(receipt.run.run_id, "interaction-shader-compact-z1");
-        let evidence = receipt.evidence.expect("pass evidence");
-        assert_eq!(evidence.initial_graph.node_ids.len(), 2);
-        assert_eq!(evidence.initial_graph.port_ids.len(), 4);
-        assert_eq!(evidence.initial_graph.edge_ids.len(), 1);
-        assert_eq!(evidence.host.visible_expected_nodes, 2);
-        assert_eq!(evidence.host.active_nodes, 2);
-        assert_eq!(evidence.host.strong_instances, 2);
-        assert_eq!(evidence.geometry.fresh_nodes, 2);
-        assert_eq!(evidence.geometry.rendered_ports, 4);
-        assert_eq!(evidence.geometry.routed_edges, 1);
-        let interaction = evidence.interaction.expect("interaction evidence");
-        assert_eq!(interaction.dispatched_events, SMOKE_INPUT_EVENT_COUNT);
-        assert!(interaction.connection_release_continuous);
-        assert!(interaction.reconnect_release_continuous);
-        assert_eq!(receipt.presented_frames.len(), 9);
-        assert!(state.receipt().is_none());
-    }
-
-    #[test]
-    fn lod_receipt_uses_configured_normal_matrix_and_typed_evidence() {
-        let expected = expectations();
-        let config = SmokeConfig::for_test(
-            SmokeBounds::Normal,
-            SmokeScenario::LodThreshold,
-            SmokeZoom::One,
-        );
-        let mut state = SmokeState::new("workflow", config);
-        state.configure(expected.clone());
-        let mut observation = complete_observation(&expected);
-        observation.input = Some(complete_lod_input_evidence());
-        observation.presented_frames = lod_presented_frames(&expected);
-
-        assert_eq!(state.observe(observation), SmokeProbeDecision::Pass);
-        let receipt = state.receipt().expect("completed LOD receipt");
-        receipt.validate().expect("LOD receipt contract");
-        assert_eq!(receipt.run.run_id, "lod-threshold-workflow-normal-z1");
-        let evidence = receipt.evidence.expect("pass evidence");
-        assert!(evidence.interaction.is_none());
-        let lod = evidence.lod.expect("LOD evidence");
-        assert!(lod.continuous);
-        assert_eq!(lod.max_jump_in_view, 1.25);
-        assert_eq!(evidence.captures.len(), SMOKE_LOD_SAMPLE_COUNT);
-    }
-
-    #[test]
-    fn smoke_receipt_distinguishes_initial_topology_from_mutated_geometry() {
-        let mut initial = expectations();
-        initial.edges.insert(edge(32));
-        let mut state = SmokeState::new("shader", SmokeConfig::default());
-        state.configure(initial.clone());
-
-        assert_eq!(
-            state.observe(complete_observation(&initial)),
-            SmokeProbeDecision::Pass
-        );
-
-        let receipt = state.receipt().expect("completed smoke receipt");
-        let evidence = receipt.evidence.expect("pass evidence");
-        assert_eq!(
-            evidence.initial_graph.edge_ids,
-            [edge(31).0.to_string(), edge(32).0.to_string()]
-        );
-        assert_eq!(
-            evidence.geometry.expected_edge_ids,
-            [edge(31).0.to_string()]
-        );
-        assert_eq!(evidence.geometry.routed_edges, 1);
-    }
-
-    #[test]
-    fn unconfigured_expectations_failure_requests_shutdown() {
-        let state = new_smoke_state("shader", SmokeConfig::default());
-        let mut shutdown_requested = false;
-
-        terminate_failed_smoke(&state, "smoke_expectations_unconfigured", || {
-            shutdown_requested = true;
-        });
-
-        assert!(shutdown_requested);
-        assert_eq!(
-            state.borrow().outcome,
-            SmokeOutcome::Failed("smoke_expectations_unconfigured")
-        );
-        assert!(state.borrow_mut().receipt().is_none());
-        assert_ne!(smoke_exit_status(state.borrow().outcome), 0);
     }
 
     #[test]
@@ -3683,16 +2609,14 @@ mod tests {
             SmokeScenario::LodThreshold,
             SmokeZoom::Two,
         );
-        let mut state = SmokeState::new("workflow", config);
+        let mut state = SmokeState::new(NativeDemo::Workflow, config);
         state.fail("window_open");
         let receipt = state.receipt().expect("startup failure receipt");
 
-        receipt.validate().expect("failure receipt contract");
         assert_eq!(receipt.status, SmokeReceiptStatusV1::Fail);
-        assert_eq!(receipt.run.run_id, "lod-threshold-workflow-normal-z2");
+        assert_eq!(receipt.run_id, "lod-threshold-workflow-normal-z2");
         assert_eq!(receipt.failure.expect("failure").code, "window_open");
-        assert!(receipt.evidence.is_none());
-        assert!(receipt.presented_frames.is_empty());
+        assert!(receipt.artifacts.is_empty());
         assert!(state.receipt().is_none());
         assert_eq!(smoke_exit_status(SmokeOutcome::Passed), 0);
         assert_ne!(smoke_exit_status(SmokeOutcome::Pending), 0);

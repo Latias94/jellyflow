@@ -536,6 +536,16 @@ impl ViewSpatialIndex {
         }
     }
 
+    #[cfg(test)]
+    pub(super) fn is_empty(&self) -> bool {
+        self.cells.is_empty()
+            && self.intersection.is_empty()
+            && self.alignment_x.is_empty()
+            && self.alignment_y.is_empty()
+            && self.nodes.is_empty()
+            && self.overflow_nodes.is_empty()
+    }
+
     pub(super) fn index_epoch(&self) -> u128 {
         self.index_epoch
     }
@@ -801,14 +811,6 @@ impl ViewSpatialIndex {
             entries_examined,
             truncated,
         }
-    }
-
-    #[cfg(test)]
-    pub(super) fn indexed_bounds_for_test(&self) -> BTreeMap<NodeId, CanvasRect> {
-        self.nodes
-            .iter()
-            .map(|(node, indexed)| (*node, indexed.bounds))
-            .collect()
     }
 }
 

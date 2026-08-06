@@ -8,7 +8,7 @@ use jellyflow_egui::{EguiCanvasInteraction, EguiInteractionOutput, EguiNativeFra
 use jellyflow_runtime::graph::GraphRuntime;
 use jellyflow_runtime::interaction::{
     CanvasInteractionConfig, CanvasInteractionEffect, CanvasInteractionPhase, CanvasPressTarget,
-    InteractionGraphSubmission,
+    InteractionGraphSubmission, InteractionSubmissionSettlementEvidence,
 };
 use jellyflow_runtime::view::ViewSessionOptions;
 
@@ -292,30 +292,37 @@ fn execute_submission(
     submission: InteractionGraphSubmission,
 ) {
     let ctx = harness.ctx.clone();
-    let ticket = submission.ticket();
     let state = harness.state_mut();
-    let command = state
+    let mut bound = state
         .interaction
         .bind_submission(submission)
-        .expect("fresh nudge submission binds")
+        .expect("fresh nudge submission binds");
+    let command = bound
+        .take_command()
         .expect("nudge submission creates a graph command");
     let completion = state.runtime.execute(command);
     assert!(completion.applied_revision().is_some());
-    state
+    let settled = state
         .interaction
-        .complete_submission(&ctx, ticket, completion)
+        .settle_submission(
+            &ctx,
+            bound,
+            InteractionSubmissionSettlementEvidence::Command(completion),
+        )
         .expect("nudge completion returns the session to idle");
+    assert!(!settled.renderer_work_pending());
+    assert!(settled.terminal_query_error().is_none());
 }
 
 fn take_effects(
     harness: &mut Harness<'static, NativeKeyboardState>,
 ) -> Vec<CanvasInteractionEffect> {
-    harness
+    let mut output = harness
         .state_mut()
         .last_output
         .take()
-        .expect("each frame emits interaction output")
-        .into_effects()
+        .expect("each frame emits interaction output");
+    output.take_effects()
 }
 
 fn assert_selected_node_unchanged(harness: &Harness<'static, NativeKeyboardState>) {

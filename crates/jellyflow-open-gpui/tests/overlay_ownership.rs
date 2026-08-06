@@ -669,6 +669,7 @@ fn mount_scene(
                 registry.seal(&node_catalog).expect("valid test registry"),
                 viewport(),
             )
+            .expect("valid Open GPUI scene host")
             .with_connection_options(OpenGpuiConnectionOptions {
                 allow_create_from_wire: false,
                 ..OpenGpuiConnectionOptions::default()

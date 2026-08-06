@@ -1,6 +1,7 @@
 use jellyflow_core::core::{PortDirection, PortId};
 use jellyflow_core::interaction::NodeGraphConnectionMode;
 
+use super::profile_evaluator::ProfileEvaluationError;
 use super::{
     GraphRevision, GraphRuntime, GraphVersion, PortInstanceKey, RuntimeProvenance, RuntimeShared,
     port_instance_key_from_state,
@@ -47,8 +48,12 @@ impl CreateFromWireCandidates {
 /// Failure to query create-from-wire candidates from the current authoritative graph.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum CreateFromWireQueryError {
+    #[error("graph runtime is no longer available")]
+    RuntimeUnavailable,
     #[error("graph runtime state is currently borrowed")]
     Busy,
+    #[error("a graph profile query cannot be started reentrantly")]
+    ReentrantProfileQuery,
     #[error("source port does not exist in the current graph: {port:?}")]
     MissingSourcePort { port: PortId },
     #[error("source port belongs to another graph runtime: {port:?}")]
@@ -77,11 +82,20 @@ impl GraphRuntime {
 }
 
 impl RuntimeShared {
+    pub(crate) fn ensure_create_from_wire_query_entry(
+        &self,
+    ) -> Result<(), CreateFromWireQueryError> {
+        self.profile_evaluation
+            .ensure_query_entry(&self.alive)
+            .map_err(map_profile_evaluation_error)
+    }
+
     pub(crate) fn create_from_wire_candidates(
         &self,
         source: PortInstanceKey,
         mode: NodeGraphConnectionMode,
     ) -> Result<CreateFromWireCandidates, CreateFromWireQueryError> {
+        self.ensure_create_from_wire_query_entry()?;
         let state = self
             .state
             .try_borrow()
@@ -117,18 +131,48 @@ impl RuntimeShared {
             });
         }
 
-        let profile = state.profile.as_deref();
-        let resolved_type = resolved_port_type(profile, &state.graph, source.port());
-        let candidates = self.catalog.create_from_wire_candidates_from_facts(
-            ConnectionPortFacts::new(source_port.dir, source_port.kind, resolved_type.as_ref()),
-            mode,
-            type_compatibility_or_default(profile),
-        );
+        let candidates = match state.profile.as_deref() {
+            Some(profile) => self
+                .profile_evaluation
+                .evaluate(profile, &self.alive, |profile| {
+                    let resolved_type =
+                        resolved_port_type(Some(profile), &state.graph, source.port());
+                    self.catalog.create_from_wire_candidates_from_facts(
+                        ConnectionPortFacts::new(
+                            source_port.dir,
+                            source_port.kind,
+                            resolved_type.as_ref(),
+                        ),
+                        mode,
+                        type_compatibility_or_default(Some(profile)),
+                    )
+                })
+                .map_err(map_profile_evaluation_error)?,
+            None => {
+                let resolved_type = resolved_port_type(None, &state.graph, source.port());
+                self.catalog.create_from_wire_candidates_from_facts(
+                    ConnectionPortFacts::new(
+                        source_port.dir,
+                        source_port.kind,
+                        resolved_type.as_ref(),
+                    ),
+                    mode,
+                    type_compatibility_or_default(None),
+                )
+            }
+        };
 
         Ok(CreateFromWireCandidates {
             version: GraphVersion::new(state.provenance, state.revision),
             source,
             candidates,
         })
+    }
+}
+
+fn map_profile_evaluation_error(error: ProfileEvaluationError) -> CreateFromWireQueryError {
+    match error {
+        ProfileEvaluationError::RuntimeUnavailable => CreateFromWireQueryError::RuntimeUnavailable,
+        ProfileEvaluationError::ReentrantQuery => CreateFromWireQueryError::ReentrantProfileQuery,
     }
 }

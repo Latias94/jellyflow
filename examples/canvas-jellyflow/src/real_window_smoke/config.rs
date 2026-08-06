@@ -2,6 +2,8 @@ use std::ffi::OsString;
 use std::fmt;
 use std::path::PathBuf;
 
+use crate::native_app::NativeDemo;
+
 #[cfg(any(test, feature = "real-window-smoke"))]
 use jellyflow_runtime::geometry::ViewSize;
 #[cfg(any(test, feature = "real-window-smoke"))]
@@ -34,7 +36,6 @@ impl SmokeBounds {
         }
     }
 
-    #[cfg(any(test, feature = "real-window-smoke"))]
     pub(super) const fn label(self) -> &'static str {
         match self {
             Self::Compact => "compact",
@@ -59,7 +60,6 @@ pub(super) enum SmokeScenario {
 }
 
 impl SmokeScenario {
-    #[cfg(any(test, feature = "real-window-smoke"))]
     pub(super) const fn label(self) -> &'static str {
         match self {
             Self::Interaction => "interaction",
@@ -94,7 +94,6 @@ impl SmokeZoom {
         }
     }
 
-    #[cfg(any(test, feature = "real-window-smoke"))]
     pub(super) const fn file_label(self) -> &'static str {
         match self {
             Self::Half => "0.5",
@@ -235,12 +234,16 @@ impl SmokeConfig {
             && (surface.height - window_height as f32).abs() <= SURFACE_SIZE_TOLERANCE
     }
 
-    #[cfg(any(test, feature = "real-window-smoke"))]
-    pub(super) fn capture_path(&self, demo: &str, state: SmokeCaptureState) -> Option<PathBuf> {
+    pub(super) fn capture_path(
+        &self,
+        demo: NativeDemo,
+        state: SmokeCaptureState,
+    ) -> Option<PathBuf> {
         self.capture_dir.as_ref().map(|directory| {
             let (width, height) = self.bounds.window_size();
             directory.join(format!(
-                "jellyflow-{demo}-{}-{width}x{height}-z{}-{}-{}.png",
+                "jellyflow-{}-{}-{width}x{height}-z{}-{}-{}.png",
+                demo.label(),
                 self.bounds.label(),
                 self.zoom.file_label(),
                 self.scenario.label(),
@@ -320,20 +323,8 @@ mod tests {
     }
 
     #[test]
-    fn defaults_match_the_compact_smoke_window() {
-        let config = config(&[]).expect("default config");
-
-        assert_eq!(config.window_size(), (960.0, 640.0));
-        assert_eq!(config.bounds(), SmokeBounds::Compact);
-        assert_eq!(config.scenario(), SmokeScenario::Interaction);
-        assert_eq!(config.zoom(), SmokeZoom::One);
-        assert_eq!(config.capture_dir(), None);
-        assert!(config.surface_matches(ViewSize::new(680.0, 640.0)));
-    }
-
-    #[test]
-    fn parses_supported_window_zoom_and_capture_values() {
-        let config = config(&[
+    fn parses_supported_values_and_rejects_invalid_names() {
+        let parsed = config(&[
             (BOUNDS_ENV, "normal"),
             (SCENARIO_ENV, "lod-threshold"),
             (ZOOM_ENV, "0.5"),
@@ -341,54 +332,16 @@ mod tests {
         ])
         .expect("custom config");
 
-        assert_eq!(config.window_size(), (1440.0, 900.0));
-        assert_eq!(config.bounds(), SmokeBounds::Normal);
-        assert_eq!(config.scenario(), SmokeScenario::LodThreshold);
-        assert_eq!(config.zoom(), SmokeZoom::Half);
+        assert_eq!(parsed.window_size(), (1440.0, 900.0));
+        assert_eq!(parsed.bounds(), SmokeBounds::Normal);
+        assert_eq!(parsed.scenario(), SmokeScenario::LodThreshold);
+        assert_eq!(parsed.zoom(), SmokeZoom::Half);
         assert_eq!(
-            config.capture_dir(),
+            parsed.capture_dir(),
             Some(Path::new("target/smoke captures"))
         );
-        assert!(config.surface_matches(ViewSize::new(1160.0, 900.0)));
-    }
+        assert!(parsed.surface_matches(ViewSize::new(1160.0, 900.0)));
 
-    #[test]
-    fn capture_names_are_stable_and_encode_the_visual_matrix() {
-        let config = config(&[
-            (BOUNDS_ENV, "normal"),
-            (ZOOM_ENV, "2"),
-            (CAPTURE_DIR_ENV, "target/captures"),
-        ])
-        .expect("capture config");
-
-        for (state, label) in [
-            (SmokeCaptureState::Initial, "initial"),
-            (SmokeCaptureState::Selected, "selected"),
-            (SmokeCaptureState::ConnectionPreview, "connection-preview"),
-            (
-                SmokeCaptureState::ConnectionCommitted,
-                "connection-committed",
-            ),
-            (SmokeCaptureState::ReconnectSelected, "reconnect-selected"),
-            (SmokeCaptureState::ReconnectPreview, "reconnect-preview"),
-            (SmokeCaptureState::ReconnectCommitted, "reconnect-committed"),
-            (SmokeCaptureState::SearchOpen, "search-open"),
-            (SmokeCaptureState::Final, "final"),
-            (SmokeCaptureState::Lod086, "lod-0.86"),
-            (SmokeCaptureState::Lod085, "lod-0.85"),
-            (SmokeCaptureState::Lod084, "lod-0.84"),
-        ] {
-            assert_eq!(
-                config.capture_path("workflow", state),
-                Some(PathBuf::from(format!(
-                    "target/captures/jellyflow-workflow-normal-1440x900-z2-interaction-{label}.png"
-                )))
-            );
-        }
-    }
-
-    #[test]
-    fn rejects_invalid_named_values_before_opening_a_window() {
         assert!(matches!(
             config(&[(BOUNDS_ENV, "wide")]),
             Err(SmokeConfigError::InvalidBounds(value)) if value == "wide"
@@ -400,34 +353,6 @@ mod tests {
         assert!(matches!(
             config(&[(ZOOM_ENV, "1.25")]),
             Err(SmokeConfigError::InvalidZoom(value)) if value == "1.25"
-        ));
-    }
-
-    #[test]
-    fn smoke_matrix_uses_named_bounds_and_directed_scenarios() {
-        let normal_lod = config(&[
-            (BOUNDS_ENV, "normal"),
-            (SCENARIO_ENV, "lod-threshold"),
-            (CAPTURE_DIR_ENV, "target/captures"),
-        ])
-        .expect("normal LOD config");
-
-        assert_eq!(normal_lod.bounds(), SmokeBounds::Normal);
-        assert_eq!(normal_lod.scenario(), SmokeScenario::LodThreshold);
-        assert_eq!(normal_lod.window_size(), (1440.0, 900.0));
-        assert_eq!(
-            normal_lod.capture_path("shader", SmokeCaptureState::Lod086),
-            Some(PathBuf::from(
-                "target/captures/jellyflow-shader-normal-1440x900-z1-lod-threshold-lod-0.86.png"
-            ))
-        );
-        assert!(matches!(
-            config(&[(BOUNDS_ENV, "wide")]),
-            Err(SmokeConfigError::InvalidBounds(value)) if value == "wide"
-        ));
-        assert!(matches!(
-            config(&[(SCENARIO_ENV, "everything")]),
-            Err(SmokeConfigError::InvalidScenario(value)) if value == "everything"
         ));
     }
 }

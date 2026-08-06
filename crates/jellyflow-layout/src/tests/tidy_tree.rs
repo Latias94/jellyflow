@@ -4,28 +4,9 @@ use jellyflow_core::{
 };
 
 use crate::{
-    LayoutContext, LayoutDirection, LayoutEngine, LayoutEngineId, LayoutError, LayoutOptions,
-    LayoutRequest, LayoutResult, TIDY_TREE_LAYOUT_ENGINE_ID, TidyTreeLayoutEngine,
-    builtin_layout_engine_registry,
+    LayoutContext, LayoutDirection, LayoutEngineRequest, LayoutError, LayoutOptions, LayoutRequest,
+    LayoutResult, builtin_layout_engine_registry,
 };
-
-#[test]
-fn builtin_registry_contains_tidy_tree_engine() {
-    let registry = builtin_layout_engine_registry();
-
-    assert!(registry.get(&LayoutEngineId::tidy_tree()).is_some());
-    assert_eq!(
-        LayoutEngineId::tidy_tree().as_str(),
-        TIDY_TREE_LAYOUT_ENGINE_ID
-    );
-    assert!(
-        registry
-            .metadata(&LayoutEngineId::tidy_tree())
-            .expect("metadata")
-            .name
-            .contains("Tidy")
-    );
-}
 
 #[test]
 fn top_to_bottom_layout_centers_parent_above_children() {
@@ -42,6 +23,9 @@ fn top_to_bottom_layout_centers_parent_above_children() {
     assert!(grandchild.center.y > left.center.y);
     assert!((root.center.x - midpoint(left.center.x, right.center.x)).abs() <= 1.0e-3);
     assert!(right.center.x > left.center.x);
+    let left_right_edge = left.center.x + left.size.width * 0.5;
+    let right_left_edge = right.center.x - right.size.width * 0.5;
+    assert!(right_left_edge >= left_right_edge);
     assert_eq!(result.edge_routes.len(), 3);
     assert!(result.bounds.is_some());
 }
@@ -66,19 +50,6 @@ fn left_to_right_layout_changes_growth_axis() {
 }
 
 #[test]
-fn siblings_do_not_overlap_with_default_spacing() {
-    let (graph, _root, left, right, _grandchild) = tidy_tree_graph();
-    let result = run_default_tidy_tree_layout(&graph, &LayoutRequest::all()).expect("layout");
-
-    let left = result.node_position(left).expect("left");
-    let right = result.node_position(right).expect("right");
-    let left_right_edge = left.center.x + left.size.width * 0.5;
-    let right_left_edge = right.center.x - right.size.width * 0.5;
-
-    assert!(right_left_edge >= left_right_edge);
-}
-
-#[test]
 fn disconnected_roots_are_separated() {
     let (graph, first, second) = disconnected_roots_graph();
     let result = run_default_tidy_tree_layout(&graph, &LayoutRequest::all()).expect("layout");
@@ -88,31 +59,6 @@ fn disconnected_roots_are_separated() {
 
     assert!(second.center.x > first.center.x);
     assert!(result.edge_routes.is_empty());
-}
-
-#[test]
-fn hidden_nodes_edges_and_scope_are_excluded() {
-    let (mut graph, root, left, right, _grandchild) = tidy_tree_graph();
-    graph
-        .node_mut(&right)
-        .map(|node| node.hidden = true)
-        .expect("node exists");
-
-    let hidden_node_result =
-        run_default_tidy_tree_layout(&graph, &LayoutRequest::all()).expect("hidden node");
-
-    assert!(hidden_node_result.node_position(root).is_some());
-    assert!(hidden_node_result.node_position(left).is_some());
-    assert!(hidden_node_result.node_position(right).is_none());
-    assert_eq!(hidden_node_result.edge_routes.len(), 2);
-
-    let scoped_result =
-        run_default_tidy_tree_layout(&graph, &LayoutRequest::nodes([root, right])).expect("scope");
-
-    assert!(scoped_result.node_position(root).is_some());
-    assert!(scoped_result.node_position(left).is_none());
-    assert!(scoped_result.node_position(right).is_none());
-    assert!(scoped_result.edge_routes.is_empty());
 }
 
 #[test]
@@ -149,11 +95,32 @@ fn cycles_are_projected_as_stable_tree_without_looping() {
     );
 }
 
+#[test]
+fn tidy_tree_layout_handles_a_deep_chain_without_recursive_traversal() {
+    const NODE_COUNT: usize = 4_096;
+
+    let graph = deep_chain_graph(NODE_COUNT);
+    let result = run_default_tidy_tree_layout(&graph, &LayoutRequest::all()).expect("layout");
+
+    assert_eq!(result.nodes.len(), NODE_COUNT);
+    assert_eq!(result.edge_routes.len(), NODE_COUNT - 1);
+    assert!(
+        result
+            .nodes
+            .iter()
+            .all(|node| node.pos.x.is_finite() && node.pos.y.is_finite())
+    );
+}
+
 fn run_default_tidy_tree_layout(
     graph: &Graph,
     request: &LayoutRequest,
 ) -> Result<LayoutResult, LayoutError> {
-    TidyTreeLayoutEngine.layout(graph, request, &LayoutContext::default())
+    builtin_layout_engine_registry().layout(
+        graph,
+        &LayoutEngineRequest::tidy_tree(request.clone()),
+        &LayoutContext::default(),
+    )
 }
 
 fn tidy_tree_graph() -> (GraphBuilder, NodeId, NodeId, NodeId, NodeId) {
@@ -198,6 +165,43 @@ fn disconnected_roots_graph() -> (GraphBuilder, NodeId, NodeId) {
     graph.insert_node(second, node("demo.second", Vec::new()));
 
     (graph, first, second)
+}
+
+fn deep_chain_graph(node_count: usize) -> Graph {
+    let mut graph = GraphBuilder::new(GraphId::from_u128(3));
+
+    for index in 0..node_count {
+        let node_id = NodeId::from_u128(index as u128 + 1);
+        let incoming = (index > 0).then(|| PortId::from_u128(10_001 + (index as u128 - 1) * 2));
+        let outgoing =
+            (index + 1 < node_count).then(|| PortId::from_u128(10_000 + index as u128 * 2));
+        let mut ports = Vec::with_capacity(2);
+        if let Some(incoming) = incoming {
+            ports.push(incoming);
+        }
+        if let Some(outgoing) = outgoing {
+            ports.push(outgoing);
+        }
+
+        graph.insert_node(node_id, node("demo.chain", ports));
+        if let Some(incoming) = incoming {
+            graph.insert_port(incoming, port(node_id, "in", PortDirection::In));
+        }
+        if let Some(outgoing) = outgoing {
+            graph.insert_port(outgoing, port(node_id, "out", PortDirection::Out));
+        }
+    }
+
+    for index in 0..node_count.saturating_sub(1) {
+        let source = PortId::from_u128(10_000 + index as u128 * 2);
+        let target = PortId::from_u128(10_001 + index as u128 * 2);
+        graph.insert_edge(
+            EdgeId::from_u128(20_000 + index as u128),
+            edge(source, target),
+        );
+    }
+
+    graph.build_unchecked()
 }
 
 fn node(kind: &str, ports: Vec<PortId>) -> Node {

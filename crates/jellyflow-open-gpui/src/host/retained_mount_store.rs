@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use jellyflow_core::NodeId;
 use jellyflow_runtime::view::NodeInstanceKey;
@@ -12,15 +12,7 @@ pub(super) struct RetainedMountStore<T> {
     eligible_parked_count: usize,
     next_park_sequence: u64,
     eligible_parked_capacity: usize,
-    restores: u64,
-    evictions: u64,
-    hard_retirements: u64,
-    strong_instance_high_water: usize,
     reconcile_epoch: u64,
-    #[cfg(test)]
-    active_insertions: u64,
-    #[cfg(test)]
-    active_detachments: u64,
 }
 
 struct ActiveMount<T> {
@@ -47,13 +39,9 @@ pub(super) struct EvictedMount<T> {
 pub(super) struct RetainedMountSnapshot {
     pub(super) active_nodes: usize,
     pub(super) parked_nodes: usize,
-    pub(super) restores: u64,
-    pub(super) evictions: u64,
-    pub(super) hard_retirements: u64,
     pub(super) eligible_parked_nodes: usize,
     pub(super) eligible_lru_entries: usize,
     pub(super) strong_instances: usize,
-    pub(super) strong_instance_high_water: usize,
 }
 
 impl<T> RetainedMountStore<T> {
@@ -67,15 +55,7 @@ impl<T> RetainedMountStore<T> {
             eligible_parked_count: 0,
             next_park_sequence: 1,
             eligible_parked_capacity,
-            restores: 0,
-            evictions: 0,
-            hard_retirements: 0,
-            strong_instance_high_water: 0,
             reconcile_epoch: 0,
-            #[cfg(test)]
-            active_insertions: 0,
-            #[cfg(test)]
-            active_detachments: 0,
         }
     }
 
@@ -111,18 +91,6 @@ impl<T> RetainedMountStore<T> {
                 self.parked
                     .iter()
                     .map(|(instance, parked)| (instance, &parked.value)),
-            )
-    }
-
-    #[cfg(feature = "test-support")]
-    pub(super) fn iter_with_activity(&self) -> impl Iterator<Item = (&NodeInstanceKey, &T, bool)> {
-        self.active
-            .iter()
-            .map(|(instance, active)| (instance, &active.value, true))
-            .chain(
-                self.parked
-                    .iter()
-                    .map(|(instance, parked)| (instance, &parked.value, false)),
             )
     }
 
@@ -167,7 +135,6 @@ impl<T> RetainedMountStore<T> {
         if parked.eligible_sequence.take().is_some() {
             self.eligible_parked_count = self.eligible_parked_count.saturating_sub(1);
         }
-        self.restores = self.restores.saturating_add(1);
         self.active.insert(
             instance.clone(),
             ActiveMount {
@@ -176,10 +143,6 @@ impl<T> RetainedMountStore<T> {
             },
         );
         self.active_order.push(instance.clone());
-        #[cfg(test)]
-        {
-            self.active_insertions = self.active_insertions.saturating_add(1);
-        }
         true
     }
 
@@ -202,34 +165,19 @@ impl<T> RetainedMountStore<T> {
         if !was_seen {
             self.active_order.push(instance.clone());
         }
-        #[cfg(test)]
-        {
-            self.active_insertions = self.active_insertions.saturating_add(1);
-        }
         self.track_instance(&instance);
-        replaced.map(|active| {
-            self.evictions = self.evictions.saturating_add(1);
-            EvictedMount {
-                instance,
-                value: active.value,
-            }
+        replaced.map(|active| EvictedMount {
+            instance,
+            value: active.value,
         })
     }
 
     pub(super) fn take_unseen_active(&mut self) -> Vec<(NodeInstanceKey, T)> {
         let reconcile_epoch = self.reconcile_epoch;
-        let detached = self
-            .active
+        self.active
             .extract_if(.., |_, active| active.seen_epoch != reconcile_epoch)
             .map(|(instance, active)| (instance, active.value))
-            .collect::<Vec<_>>();
-        #[cfg(test)]
-        {
-            self.active_detachments = self
-                .active_detachments
-                .saturating_add(u64::try_from(detached.len()).unwrap_or(u64::MAX));
-        }
-        detached
+            .collect::<Vec<_>>()
     }
 
     pub(super) fn park(
@@ -249,7 +197,6 @@ impl<T> RetainedMountStore<T> {
             if parked.eligible_sequence.is_some() {
                 self.eligible_parked_count = self.eligible_parked_count.saturating_sub(1);
             }
-            self.evictions = self.evictions.saturating_add(1);
             EvictedMount {
                 instance: instance.clone(),
                 value: parked.value,
@@ -309,7 +256,6 @@ impl<T> RetainedMountStore<T> {
             if let Some(parked) = self.parked.remove(&instance) {
                 self.eligible_parked_count = self.eligible_parked_count.saturating_sub(1);
                 self.untrack_instance(&instance);
-                self.evictions = self.evictions.saturating_add(1);
                 evicted.push(EvictedMount {
                     instance,
                     value: parked.value,
@@ -321,7 +267,6 @@ impl<T> RetainedMountStore<T> {
 
     pub(super) fn finish_reconcile(&mut self) {
         debug_assert_eq!(self.active_order.len(), self.active.len());
-        self.refresh_high_water();
     }
 
     pub(super) fn retire(&mut self, instance: &NodeInstanceKey) -> Option<RetiredMount<T>> {
@@ -339,18 +284,49 @@ impl<T> RetainedMountStore<T> {
         Some(self.retire_detached(instance.clone(), value))
     }
 
+    pub(super) fn retire_many(
+        &mut self,
+        instances: impl IntoIterator<Item = NodeInstanceKey>,
+    ) -> Vec<RetiredMount<T>> {
+        let mut retiring = BTreeSet::new();
+        let mut retired = Vec::new();
+        let mut removed_active = false;
+        for instance in instances {
+            if !retiring.insert(instance.clone()) {
+                continue;
+            }
+            let value = if let Some(active) = self.active.remove(&instance) {
+                removed_active = true;
+                Some(active.value)
+            } else {
+                self.parked.remove(&instance).map(|mut parked| {
+                    if parked.eligible_sequence.take().is_some() {
+                        self.eligible_parked_count = self.eligible_parked_count.saturating_sub(1);
+                    }
+                    parked.value
+                })
+            };
+            if let Some(value) = value {
+                retired.push(self.retire_detached(instance, value));
+            }
+        }
+        if removed_active {
+            self.active_order
+                .retain(|instance| !retiring.contains(instance));
+        }
+        retired
+    }
+
     pub(super) fn retire_detached(
         &mut self,
         instance: NodeInstanceKey,
         value: T,
     ) -> RetiredMount<T> {
         self.untrack_instance(&instance);
-        self.hard_retirements = self.hard_retirements.saturating_add(1);
         RetiredMount { instance, value }
     }
 
     pub(super) fn retire_all(&mut self) -> Vec<RetiredMount<T>> {
-        let retired_count = self.active.len().saturating_add(self.parked.len());
         let active = std::mem::take(&mut self.active)
             .into_iter()
             .map(|(instance, active)| RetiredMount {
@@ -369,9 +345,6 @@ impl<T> RetainedMountStore<T> {
         self.eligible_lru.clear();
         self.eligible_parked_count = 0;
         self.next_park_sequence = 1;
-        self.hard_retirements = self
-            .hard_retirements
-            .saturating_add(u64::try_from(retired_count).unwrap_or(u64::MAX));
         retired
     }
 
@@ -380,13 +353,9 @@ impl<T> RetainedMountStore<T> {
         RetainedMountSnapshot {
             active_nodes: self.active.len(),
             parked_nodes: self.parked.len(),
-            restores: self.restores,
-            evictions: self.evictions,
-            hard_retirements: self.hard_retirements,
             eligible_parked_nodes: self.eligible_parked_count,
             eligible_lru_entries: self.eligible_lru.len(),
             strong_instances,
-            strong_instance_high_water: self.strong_instance_high_water,
         }
     }
 
@@ -459,15 +428,5 @@ impl<T> RetainedMountStore<T> {
         if self.retained_instances.get(&instance.node()) == Some(instance) {
             self.retained_instances.remove(&instance.node());
         }
-    }
-
-    fn refresh_high_water(&mut self) {
-        let strong_instances = self.active.len().saturating_add(self.parked.len());
-        self.strong_instance_high_water = self.strong_instance_high_water.max(strong_instances);
-    }
-
-    #[cfg(test)]
-    pub(super) fn active_reconcile_usage(&self) -> (u64, u64) {
-        (self.active_insertions, self.active_detachments)
     }
 }

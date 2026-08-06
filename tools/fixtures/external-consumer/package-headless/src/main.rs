@@ -15,7 +15,7 @@ fn readme_commands_compile(runtime: &GraphRuntime) {
 
 fn main() {
     let registry = builtin_layout_engine_registry();
-    assert!(registry.get(&LayoutEngineId::dugong()).is_some());
+    assert!(registry.contains(&LayoutEngineId::dugong()));
 
     let _runtime_builder = GraphRuntime::builder(Default::default());
     let _view_options = ViewSessionOptions::default();

@@ -8,7 +8,7 @@ use crate::profile::ApplyPipelineError;
 use crate::rules::{Diagnostic, DiagnosticTarget};
 use crate::runtime::adapter_protocol::{FrameRequest, RendererStamp};
 use crate::runtime::commands::GraphCommand;
-use crate::runtime::graph_runtime::{GraphRuntime, GraphRuntimeEvent};
+use crate::runtime::graph_runtime::{GraphRuntime, GraphRuntimeError, GraphRuntimeEvent};
 use crate::runtime::middleware::{GraphRuntimeMiddleware, GraphRuntimeMiddlewareSnapshot};
 use crate::runtime::view_session::{
     ViewCloseReason, ViewCloseRequest, ViewSessionError, ViewSessionEvent,
@@ -64,6 +64,167 @@ impl GraphRuntimeMiddleware for PanicBeforeMiddleware {
         assert_ne!(calls, self.panic_on_call, "before middleware panic");
         Ok(())
     }
+}
+
+struct DropRuntimeBeforeCloseCommand {
+    runtime: Rc<RefCell<Option<GraphRuntime>>>,
+    calls: Rc<Cell<usize>>,
+}
+
+impl GraphRuntimeMiddleware for DropRuntimeBeforeCloseCommand {
+    fn before_command(
+        &mut self,
+        _snapshot: GraphRuntimeMiddlewareSnapshot,
+        _command: &GraphCommand,
+    ) -> Result<(), ApplyPipelineError> {
+        self.calls.set(self.calls.get().saturating_add(1));
+        drop(
+            self.runtime
+                .borrow_mut()
+                .take()
+                .expect("runtime handle is installed before close"),
+        );
+        Ok(())
+    }
+}
+
+struct DropRuntimeAfterCloseCommand {
+    runtime: Rc<RefCell<Option<GraphRuntime>>>,
+    calls: Rc<Cell<usize>>,
+}
+
+impl GraphRuntimeMiddleware for DropRuntimeAfterCloseCommand {
+    fn after_command(
+        &mut self,
+        _snapshot: GraphRuntimeMiddlewareSnapshot,
+        _patch: &crate::runtime::graph_runtime::RuntimePatch,
+    ) {
+        self.calls.set(self.calls.get().saturating_add(1));
+        drop(
+            self.runtime
+                .borrow_mut()
+                .take()
+                .expect("runtime handle is installed before close"),
+        );
+    }
+}
+
+#[test]
+fn runtime_drop_during_close_reports_the_installed_terminal_reason() {
+    let (graph, ids) = graph_with_nodes(1);
+    let runtime_slot = Rc::new(RefCell::new(None));
+    let calls = Rc::new(Cell::new(0));
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .unwrap()
+        .with_middleware(DropRuntimeBeforeCloseCommand {
+            runtime: runtime_slot.clone(),
+            calls: calls.clone(),
+        });
+    let closing_view = runtime.attach_view(Default::default()).unwrap();
+    let terminal_reasons = Rc::new(RefCell::new(Vec::new()));
+    let observed_terminal_reasons = terminal_reasons.clone();
+    closing_view
+        .subscribe(move |event| {
+            if let ViewSessionEvent::Closed { reason } = event {
+                observed_terminal_reasons.borrow_mut().push(reason);
+            }
+        })
+        .unwrap();
+    let version = runtime.snapshot().unwrap().version();
+    let first =
+        GraphCommand::set_node_data(version, ids[0], serde_json::json!({ "must_not_apply": 1 }));
+    let second =
+        GraphCommand::set_node_data(version, ids[0], serde_json::json!({ "must_not_apply": 2 }));
+    let first_identity = first.identity().clone();
+    let second_identity = second.identity().clone();
+    *runtime_slot.borrow_mut() = Some(runtime);
+
+    let outcome = closing_view
+        .close_with_request(
+            ViewCloseRequest::new()
+                .with_command(first)
+                .with_command(second),
+        )
+        .expect("close returns the operation-scoped command completion");
+
+    assert_eq!(outcome.reason(), ViewCloseReason::RuntimeDropped);
+    assert!(matches!(
+        outcome
+            .command_completion(&first_identity)
+            .unwrap()
+            .result(),
+        Err(GraphRuntimeError::RuntimeUnavailable)
+    ));
+    assert!(matches!(
+        outcome
+            .command_completion(&second_identity)
+            .unwrap()
+            .result(),
+        Err(GraphRuntimeError::RuntimeUnavailable)
+    ));
+    assert_eq!(calls.get(), 1);
+    assert_eq!(
+        closing_view.close_reason(),
+        Some(ViewCloseReason::RuntimeDropped)
+    );
+    assert_eq!(
+        terminal_reasons.borrow().as_slice(),
+        &[ViewCloseReason::RuntimeDropped]
+    );
+}
+
+#[test]
+fn runtime_drop_after_committed_close_prefix_preserves_runtime_dropped_reason() {
+    let (graph, ids) = graph_with_nodes(1);
+    let runtime_slot = Rc::new(RefCell::new(None));
+    let calls = Rc::new(Cell::new(0));
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .unwrap()
+        .with_middleware(DropRuntimeAfterCloseCommand {
+            runtime: runtime_slot.clone(),
+            calls: calls.clone(),
+        });
+    let closing_view = runtime.attach_view(Default::default()).unwrap();
+    let terminal_reasons = Rc::new(RefCell::new(Vec::new()));
+    let observed_terminal_reasons = terminal_reasons.clone();
+    closing_view
+        .subscribe(move |event| {
+            if let ViewSessionEvent::Closed { reason } = event {
+                observed_terminal_reasons.borrow_mut().push(reason);
+            }
+        })
+        .unwrap();
+    let command = GraphCommand::set_node_data(
+        runtime.snapshot().unwrap().version(),
+        ids[0],
+        serde_json::json!({ "committed": true }),
+    );
+    let identity = command.identity().clone();
+    *runtime_slot.borrow_mut() = Some(runtime);
+
+    let outcome = closing_view
+        .close_with_request(ViewCloseRequest::new().with_command(command))
+        .expect("close returns the committed command completion");
+
+    assert_eq!(outcome.reason(), ViewCloseReason::RuntimeDropped);
+    assert!(
+        outcome
+            .command_completion(&identity)
+            .expect("committed command completion")
+            .result()
+            .is_ok()
+    );
+    assert_eq!(calls.get(), 1);
+    assert_eq!(
+        closing_view.close_reason(),
+        Some(ViewCloseReason::RuntimeDropped)
+    );
+    assert_eq!(
+        terminal_reasons.borrow().as_slice(),
+        &[ViewCloseReason::RuntimeDropped]
+    );
 }
 
 #[test]

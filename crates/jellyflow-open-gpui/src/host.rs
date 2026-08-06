@@ -18,11 +18,9 @@ mod retained_node_owner;
 mod scene_gesture;
 mod scene_render;
 #[cfg(feature = "test-support")]
-mod test_support;
+pub(crate) mod test_support;
 
 pub use self::connection::{OpenGpuiConnectionSearchError, OpenGpuiConnectionSearchSubmission};
-#[cfg(feature = "test-support")]
-pub use self::diagnostics::OpenGpuiSmokeAuditSnapshot;
 pub use self::diagnostics::{
     OpenGpuiEdgeLayerOverflow, OpenGpuiSceneHostDiagnostic, OpenGpuiSceneHostDiagnosticKind,
     OpenGpuiSceneHostResourceSnapshot,
@@ -30,13 +28,14 @@ pub use self::diagnostics::{
 pub use self::lifecycle::OpenGpuiSceneHostCloseError;
 #[cfg(feature = "test-support")]
 pub use self::test_support::{
-    OpenGpuiSmokeNodeBounds, OpenGpuiSmokeNodeFootprint, OpenGpuiSmokePresentedScene,
+    OpenGpuiSmokeNodeBounds, OpenGpuiSmokePortGeometry, OpenGpuiSmokePresentedScene,
     OpenGpuiSmokePreviewRoute, OpenGpuiSmokePreviewTarget, OpenGpuiSmokeRoute,
+    resolve_smoke_reconnect_hit_center,
 };
 
 use self::content_size_submission_owner::ContentSizeSubmissionOwner;
-use self::diagnostics::OpenGpuiSceneHostWorkLedger;
 use self::edge_layer::{OpenGpuiEdgePathCache, OpenGpuiVisibleRouteCache};
+use self::focus_navigation::OpenGpuiGraphFocusTarget;
 use self::frame_feedback::OpenGpuiFrameTransaction;
 #[cfg(test)]
 use self::frame_feedback::{LayoutReceiptAction, layout_receipt_action};
@@ -45,17 +44,15 @@ use self::lifecycle::HostLifecycleSignal;
 use self::native_input::NativeInputOwner;
 use self::retained_node_owner::RetainedNodeOwner;
 #[cfg(test)]
-use self::scene_render::{
-    OPEN_GPUI_SCENE_LAYER_ORDER, OPEN_GPUI_SELECTION_RECTANGLE_SELECTOR,
-    OpenGpuiConnectionPreviewEvidence, OpenGpuiSceneEvidence, OpenGpuiSceneLayer,
-};
+use self::scene_render::OPEN_GPUI_SELECTION_RECTANGLE_SELECTOR;
 
 use std::cell::RefCell;
+use std::collections::BTreeSet;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use jellyflow_core::{CanvasPoint, CanvasRect, CanvasSize, NodeGraphConnectionMode};
-use jellyflow_runtime::viewport::ViewportTransform;
+use jellyflow_runtime::viewport::{ViewportPointerSample, ViewportTransform};
 use jellyflow_runtime::{
     geometry::ViewPoint, geometry::ViewRect, geometry::ViewSize,
     interaction::CanvasInteractionError, interaction::CanvasInteractionPhase,
@@ -83,13 +80,10 @@ use crate::port_handle::OpenGpuiPendingMeasurements;
 use crate::registry::OpenGpuiNodeRegistry;
 use crate::theme::OpenGpuiGraphTheme;
 
-/// Requests one platform-backed frame for an externally driven native frame clock.
-///
-/// Open GPUI's animation-frame request is view-oriented. External frame drivers need a window-level
-/// redraw even when there is no current view, so macOS uses the same delayed AppKit wake as
-/// continuous interaction. The wake only starts a platform frame; callbacks registered through
-/// [`Window::on_next_frame`] remain the sole place where frame-dependent semantics advance.
-pub fn request_native_frame(window: &mut Window) {
+/// Requests a platform-backed redraw for test-support real-window drivers.
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub fn request_native_test_frame(window: &mut Window) {
     #[cfg(target_os = "macos")]
     {
         if let Some(wake) = native_frame_wake::prepare(window) {
@@ -100,19 +94,12 @@ pub fn request_native_frame(window: &mut Window) {
     window.refresh();
 }
 
-/// Compatibility wrapper for existing test-support real-window drivers.
-#[cfg(feature = "test-support")]
-#[doc(hidden)]
-pub fn request_native_test_frame(window: &mut Window) {
-    request_native_frame(window);
-}
-
 #[cfg(test)]
 use crate::binding::OpenGpuiNodeBinding;
 #[cfg(test)]
 use crate::command_journal::OpenGpuiCommandOrigin;
 #[cfg(test)]
-use crate::interaction::{OpenGpuiSceneGestureCancelReason, OpenGpuiSceneGesturePhase};
+use crate::interaction::OpenGpuiSceneGestureCancelReason;
 
 /// Maximum number of inactive, unprotected retained nodes kept by a scene host.
 pub const OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY: usize = 256;
@@ -124,6 +111,14 @@ pub const OPEN_GPUI_DEFAULT_EDGE_LAYER_BUDGET: usize = 4_096;
 pub const OPEN_GPUI_MAX_EDGE_LAYER_BUDGET: usize = 16_384;
 /// Maximum indexed route entries examined by one visible-route query page.
 pub const OPEN_GPUI_DEFAULT_VISIBLE_ROUTE_QUERY_BUDGET: usize = 4_096;
+
+/// Failure to bind a native host to its exact view and renderer configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum OpenGpuiSceneHostInitError {
+    /// The renderer-neutral interaction session could not attach to the supplied view.
+    #[error(transparent)]
+    Interaction(#[from] CanvasInteractionError),
+}
 
 /// Adapter-local policy for native connection and reconnect gestures.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -166,6 +161,8 @@ pub type OpenGpuiBlankCanvasContextHandler =
 struct PendingBlankCanvasContext {
     handler: OpenGpuiBlankCanvasContextHandler,
     request: OpenGpuiBlankCanvasContextRequest,
+    sample: ViewportPointerSample,
+    waits_for_scene_release: bool,
 }
 
 impl Default for OpenGpuiConnectionOptions {
@@ -199,6 +196,7 @@ pub struct OpenGpuiSceneHost {
     view: ViewSession,
     commands: Rc<OpenGpuiCommandJournal>,
     frame_transaction: Option<Rc<OpenGpuiFrameTransaction>>,
+    materialized_frame_instances: BTreeSet<jellyflow_runtime::view::NodeInstanceKey>,
     registry: OpenGpuiNodeRegistry,
     frame_request_template: FrameRequest,
     viewport: CanvasRect,
@@ -228,14 +226,11 @@ pub struct OpenGpuiSceneHost {
     window_owner: Option<OpenGpuiSceneHostWindowOwner>,
     lifecycle_bridge: Option<HostLifecycleBridge>,
     #[cfg(test)]
-    scene_evidence: Rc<OpenGpuiSceneEvidence>,
-    #[cfg(test)]
     scene_wires_fault: Option<ViewSessionError>,
     #[cfg(test)]
     frame_submission_fault: bool,
     #[cfg(test)]
     prepaint_close_fault: bool,
-    work_ledger: OpenGpuiSceneHostWorkLedger,
     last_diagnostic: Option<OpenGpuiSceneHostDiagnostic>,
     last_frame_materialization_overflow: Option<FrameMaterializationOverflow>,
     unobserved_frame_materialization_overflow: Option<FrameMaterializationOverflow>,
@@ -278,7 +273,11 @@ fn effective_frame_materialization_budget(
         configured.routing_dependency_nodes(),
     )
     .with_visible_node_scan_limit(configured.visible_node_scan_limit())
-    .with_required_node_scan_limit(configured.required_node_scan_limit())
+    .with_required_node_scan_limit(
+        configured
+            .required_node_scan_limit()
+            .max(protected_required_nodes),
+    )
     .with_routing_dependency_scan_limit(configured.routing_dependency_scan_limit())
     .with_port_scan_limit(configured.port_scan_limit())
 }
@@ -300,16 +299,20 @@ impl OpenGpuiSceneHost {
         self
     }
 
-    #[must_use]
-    pub fn new(view: ViewSession, registry: OpenGpuiNodeRegistry, viewport: CanvasRect) -> Self {
+    pub fn new(
+        view: ViewSession,
+        registry: OpenGpuiNodeRegistry,
+        viewport: CanvasRect,
+    ) -> Result<Self, OpenGpuiSceneHostInitError> {
         let frame_request_template = registry_frame_request(&registry, viewport);
         let navigation = OpenGpuiNavigationConfig::default();
-        let canvas_interaction = CanvasInteractionSession::attach(&view, navigation.runtime_config())
-            .expect("a newly constructed native host owns an open view with valid interaction configuration");
-        Self {
+        let canvas_interaction =
+            CanvasInteractionSession::attach(&view, navigation.runtime_config())?;
+        Ok(Self {
             view,
             commands: OpenGpuiCommandJournal::new(),
             frame_transaction: None,
+            materialized_frame_instances: BTreeSet::new(),
             registry,
             frame_request_template,
             viewport,
@@ -344,26 +347,25 @@ impl OpenGpuiSceneHost {
             window_owner: None,
             lifecycle_bridge: None,
             #[cfg(test)]
-            scene_evidence: Rc::new(OpenGpuiSceneEvidence::new()),
-            #[cfg(test)]
             scene_wires_fault: None,
             #[cfg(test)]
             frame_submission_fault: false,
             #[cfg(test)]
             prepaint_close_fault: false,
-            work_ledger: OpenGpuiSceneHostWorkLedger::default(),
             last_diagnostic: None,
             last_frame_materialization_overflow: None,
             unobserved_frame_materialization_overflow: None,
             last_edge_layer_overflow: OpenGpuiEdgeLayerOverflow::default(),
             #[cfg(feature = "test-support")]
             smoke_presented_scene: OpenGpuiSmokePresentedSceneOwner::default(),
-        }
+        })
     }
 
     /// Creates a host whose first frame only bootstraps native surface measurement.
-    #[must_use]
-    pub fn new_measured_surface(view: ViewSession, registry: OpenGpuiNodeRegistry) -> Self {
+    pub fn new_measured_surface(
+        view: ViewSession,
+        registry: OpenGpuiNodeRegistry,
+    ) -> Result<Self, OpenGpuiSceneHostInitError> {
         let mut host = Self::new(
             view,
             registry,
@@ -374,9 +376,9 @@ impl OpenGpuiSceneHost {
                     height: 1.0,
                 },
             },
-        );
+        )?;
         host.tracks_surface_viewport = true;
-        host
+        Ok(host)
     }
 
     /// Overrides native frame materialization limits before the host is mounted.
@@ -761,19 +763,22 @@ impl OpenGpuiSceneHost {
         self.surface_size
     }
 
+    fn current_scene_viewport(&self) -> Result<OpenGpuiCurrentSceneViewport, ViewSessionError> {
+        let transform = self.view.viewport_transform()?;
+        resolve_current_scene_viewport(
+            self.surface_size,
+            self.viewport,
+            self.tracks_surface_viewport,
+            transform,
+        )
+        .ok_or(ViewSessionError::InvalidViewport)
+    }
+
     fn frame_request(&self) -> FrameRequest {
-        let viewport = if self.tracks_surface_viewport {
-            self.surface_size
-                .and_then(|size| {
-                    self.view
-                        .viewport_transform()
-                        .ok()
-                        .and_then(|transform| canvas_viewport_for_surface(size, transform))
-                })
-                .unwrap_or(self.viewport)
-        } else {
-            self.viewport
-        };
+        let viewport = self
+            .current_scene_viewport()
+            .map(|current| current.canvas_bounds)
+            .unwrap_or(self.viewport);
         let mut protected_required_nodes = self.retained_nodes.protected_required_nodes();
         protected_required_nodes.extend(self.content_sizes.awaiting_publication_nodes());
         if let Ok(snapshot) = self.view.graph_snapshot()
@@ -813,6 +818,55 @@ impl OpenGpuiSceneHost {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct OpenGpuiCurrentSceneViewport {
+    transform: ViewportTransform,
+    canvas_bounds: CanvasRect,
+    query_bounds: ViewRect,
+}
+
+fn resolve_current_scene_viewport(
+    surface_size: Option<ViewSize>,
+    configured_bounds: CanvasRect,
+    tracks_surface_viewport: bool,
+    transform: ViewportTransform,
+) -> Option<OpenGpuiCurrentSceneViewport> {
+    if tracks_surface_viewport
+        && let Some(size) = surface_size.filter(|size| size.is_positive_finite())
+    {
+        let query_bounds = ViewRect::new(ViewPoint::default(), size);
+        return Some(OpenGpuiCurrentSceneViewport {
+            transform,
+            canvas_bounds: query_bounds.to_canvas_rect(transform)?,
+            query_bounds,
+        });
+    }
+
+    Some(OpenGpuiCurrentSceneViewport {
+        transform,
+        canvas_bounds: configured_bounds,
+        query_bounds: view_bounds_for_canvas(configured_bounds, transform)?,
+    })
+}
+
+fn view_bounds_for_canvas(
+    canvas_bounds: CanvasRect,
+    transform: ViewportTransform,
+) -> Option<ViewRect> {
+    if !canvas_bounds.is_positive_finite() || !transform.is_valid() {
+        return None;
+    }
+    let origin = transform.screen_point_for_canvas(canvas_bounds.origin)?;
+    let bounds = ViewRect::new(
+        ViewPoint::new(origin.x, origin.y),
+        ViewSize::new(
+            canvas_bounds.size.width * transform.zoom,
+            canvas_bounds.size.height * transform.zoom,
+        ),
+    );
+    bounds.is_positive_finite().then_some(bounds)
+}
+
 fn union_canvas_rects(left: CanvasRect, right: CanvasRect) -> CanvasRect {
     let min_x = left.origin.x.min(right.origin.x);
     let min_y = left.origin.y.min(right.origin.y);
@@ -844,6 +898,7 @@ impl Render for OpenGpuiSceneHost {
             self.finish_terminal_render_cleanup(reason, window, cx);
             return self.terminal_scene(host_id);
         }
+        self.advance_ready_interaction_tick(window, cx);
         if self.interaction_owner.prepare_animation_frame_request() {
             window.request_animation_frame();
         }
@@ -858,15 +913,25 @@ impl Render for OpenGpuiSceneHost {
             .set_focus_handle(focus_handle.clone());
         self.interaction_owner
             .schedule_pending_native_drain(window, cx);
-        self.observe_content_size_mutation(cx);
+        if self.observe_content_size_mutation(cx) {
+            window.request_animation_frame();
+        }
         let superseded = self.abort_frame_transaction(
             "native frame was superseded before prepaint submission".to_owned(),
         );
         let resolutions = self.settle_command_batch(superseded);
         cx.defer(move |_| resolve_command_tickets(resolutions));
+        self.retry_pending_interaction_settlement();
+        // Retained completion evidence must make progress even when frame materialization below
+        // fails. Request the successor before entering the fallible frame path; GPUI coalesces
+        // requests for the same window frame.
+        if self.interaction_owner.has_pending_settlement() {
+            window.request_animation_frame();
+        }
         self.process_one_ready_interaction_prefix(window, cx);
         self.process_one_interaction_query(window, cx);
         self.sync_native_connection_state(window, cx);
+        self.materialized_frame_instances.clear();
         let frame = match self.view.frame(self.frame_request()) {
             Ok(frame) => frame,
             Err(FrameMaterializationError::Session(ViewSessionError::Closed { reason })) => {
@@ -875,6 +940,8 @@ impl Render for OpenGpuiSceneHost {
             }
             Err(error) => return self.frame_failure(error.to_string(), cx),
         };
+        self.materialized_frame_instances
+            .extend(frame.nodes().iter().map(|node| node.instance().clone()));
         self.record_frame_materialization_overflow(frame.materialization_receipt().overflow());
         let collector = frame.collector();
         let presentation_offsets = self.interaction_node_drag_offsets();
@@ -918,7 +985,13 @@ impl Render for OpenGpuiSceneHost {
         }
         self.interaction_owner
             .schedule_pending_native_drain(window, cx);
-        let wires = match self.scene_wires_with_offsets(measurements.presentation_offsets()) {
+        let focused_edge = match self.interaction_owner.exact_focused_graph_target(window) {
+            Some(OpenGpuiGraphFocusTarget::Edge(edge)) => Some(edge),
+            _ => None,
+        };
+        let wires = match self
+            .scene_wires_with_offsets(measurements.presentation_offsets(), focused_edge)
+        {
             Ok(wires) => wires,
             Err(ViewSessionError::Closed { reason }) => {
                 self.finish_terminal_render_cleanup(reason, window, cx);

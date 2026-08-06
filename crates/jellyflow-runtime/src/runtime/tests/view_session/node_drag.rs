@@ -7,8 +7,9 @@ use crate::runtime::commands::{GraphCommand, IncidentEdgePolicy, TopologyEdit};
 use crate::runtime::graph_runtime::GraphRuntime;
 use crate::runtime::interaction::{
     CanvasInteractionConfig, CanvasInteractionEffect, CanvasInteractionError,
-    CanvasInteractionPhase, CanvasInteractionSession, CanvasPressTarget, MAX_NODE_MOVE_COHORT_SIZE,
-    NodeDragStart, NodeNudgeDirection, SelectionMode,
+    CanvasInteractionPhase, CanvasInteractionSession, CanvasPressTarget,
+    InteractionSubmissionSettlementEvidence, InteractionSubmissionSettlementResult,
+    MAX_NODE_MOVE_COHORT_SIZE, NodeDragStart, NodeNudgeDirection, SelectionMode,
 };
 use crate::runtime::tests::fixtures::{node_drag_start_by_id, set_selection_by_id};
 use crate::runtime::view_session::{ViewSessionError, ViewSessionOptions};
@@ -323,7 +324,7 @@ fn keyboard_nudge_uses_one_shared_extent_feasible_delta_and_one_command() {
     let update = session
         .nudge_selection(NodeNudgeDirection::Right, true)
         .expect("nudge is admitted");
-    let (ticket, submission) = update
+    let (_ticket, submission) = update
         .into_dispatch()
         .effects
         .into_iter()
@@ -334,13 +335,19 @@ fn keyboard_nudge_uses_one_shared_extent_feasible_delta_and_one_command() {
             _ => None,
         })
         .expect("one atomic node move");
-    let command = session
-        .bind_submission(submission)
-        .unwrap()
+    let mut bound = session.bind_submission(submission).unwrap();
+    let command = bound
+        .take_command()
         .expect("shared feasible move remains non-zero");
     let completion = runtime.execute(command);
     assert!(completion.result().unwrap().applied().is_some());
-    session.complete_submission(ticket, completion).unwrap();
+    assert!(matches!(
+        session.settle_submission(
+            bound,
+            InteractionSubmissionSettlementEvidence::Command(completion),
+        ),
+        InteractionSubmissionSettlementResult::Settled(_)
+    ));
 
     let moved = runtime.snapshot().unwrap();
     assert_eq!(moved.graph().node(&first).unwrap().pos.x, 110.0);
@@ -403,14 +410,17 @@ fn pointer_drag_presentation_and_commit_share_the_extent_feasible_delta() {
         panic!("bounded drag must emit exactly one graph mutation");
     };
     assert!(effects.next().is_none());
-    let ticket = submission.ticket();
-    let command = session
-        .bind_submission(submission)
-        .unwrap()
-        .expect("bounded drag command");
+    let mut bound = session.bind_submission(submission).unwrap();
+    let command = bound.take_command().expect("bounded drag command");
     let completion = runtime.execute(command);
     assert!(completion.result().unwrap().applied().is_some());
-    session.complete_submission(ticket, completion).unwrap();
+    assert!(matches!(
+        session.settle_submission(
+            bound,
+            InteractionSubmissionSettlementEvidence::Command(completion),
+        ),
+        InteractionSubmissionSettlementResult::Settled(_)
+    ));
 
     assert_eq!(
         runtime
@@ -564,15 +574,18 @@ fn apply_nudge(runtime: &GraphRuntime, session: &mut CanvasInteractionSession, a
     let Some(CanvasInteractionEffect::SubmitGraph { submission }) = effects.next() else {
         panic!("nudge must emit exactly one graph mutation");
     };
-    let ticket = submission.ticket();
     assert!(effects.next().is_none());
-    let command = session
-        .bind_submission(submission)
-        .unwrap()
-        .expect("nudge command");
+    let mut bound = session.bind_submission(submission).unwrap();
+    let command = bound.take_command().expect("nudge command");
     let completion = runtime.execute(command);
     assert!(completion.result().unwrap().applied().is_some());
-    session.complete_submission(ticket, completion).unwrap();
+    assert!(matches!(
+        session.settle_submission(
+            bound,
+            InteractionSubmissionSettlementEvidence::Command(completion),
+        ),
+        InteractionSubmissionSettlementResult::Settled(_)
+    ));
 }
 
 fn pointer_sample(

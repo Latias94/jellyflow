@@ -64,6 +64,7 @@ pub(super) enum ProbePhase {
     SearchWaitOpen,
     SearchEscape,
     SearchWaitClosed,
+    WorkflowAuthoring,
     FinalWait,
     LodSet,
     LodWait,
@@ -103,6 +104,7 @@ impl ProbePhase {
             Self::SearchWaitDrag => "input_search_drag_timeout",
             Self::SearchWaitOpen => "input_search_open_timeout",
             Self::SearchWaitClosed => "input_search_close_timeout",
+            Self::WorkflowAuthoring => "input_workflow_authoring_timeout",
             Self::FinalWait => "input_final_frame_timeout",
             Self::LodWait => "input_lod_sample_timeout",
             Self::CaptureZoom

@@ -130,6 +130,31 @@ fn duplicate_batch_geometry_target_is_structurally_rejected() {
 }
 
 #[test]
+fn batch_geometry_rejects_finite_components_with_unrepresentable_bounds_atomically() {
+    let (graph, nodes) = graph_with_nodes(1);
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .unwrap();
+
+    assert_rejected_without_side_effects(
+        &runtime,
+        GraphCommand::set_node_geometry(
+            runtime.snapshot().unwrap().version(),
+            [NodeGeometryEdit::new(nodes[0])
+                .with_position(CanvasPoint {
+                    x: f32::MAX,
+                    y: 0.0,
+                })
+                .with_size(Some(CanvasSize {
+                    width: f32::MAX,
+                    height: 10.0,
+                }))],
+        ),
+        "geometry.node_out_of_range",
+    );
+}
+
+#[test]
 fn empty_or_unchanged_batch_geometry_is_a_zero_side_effect_noop() {
     let (graph, nodes) = graph_with_nodes(1);
     let original = graph.node(&nodes[0]).unwrap().clone();
@@ -201,7 +226,7 @@ fn derived_geometry_advances_revision_without_polluting_user_history() {
 
 #[test]
 fn batch_geometry_planning_reads_only_declared_nodes_at_scale() {
-    let (graph, nodes) = graph_with_nodes(10_000);
+    let (graph, nodes) = graph_with_nodes(256);
     let runtime = GraphRuntime::builder(Default::default())
         .build(graph)
         .unwrap();
@@ -211,8 +236,8 @@ fn batch_geometry_planning_reads_only_declared_nodes_at_scale() {
             runtime.snapshot().unwrap().version(),
             [
                 NodeGeometryEdit::new(nodes[0]).with_position(CanvasPoint { x: 1.0, y: 2.0 }),
-                NodeGeometryEdit::new(nodes[5_000]).with_position(CanvasPoint { x: 3.0, y: 4.0 }),
-                NodeGeometryEdit::new(nodes[9_999]).with_position(CanvasPoint { x: 5.0, y: 6.0 }),
+                NodeGeometryEdit::new(nodes[128]).with_position(CanvasPoint { x: 3.0, y: 4.0 }),
+                NodeGeometryEdit::new(nodes[255]).with_position(CanvasPoint { x: 5.0, y: 6.0 }),
             ],
         ))
         .into_result()

@@ -79,6 +79,12 @@ pub(crate) enum GraphCommandPlanningError {
     MissingNode(NodeId),
     #[error("node appears more than once in one geometry command: {0:?}")]
     DuplicateNodeGeometry(NodeId),
+    #[error("node geometry contains a non-finite component: {0:?}")]
+    NonFiniteNodeGeometry(NodeId),
+    #[error("node size must be positive: {0:?}")]
+    InvalidNodeSize(NodeId),
+    #[error("node geometry exceeds the finite canvas domain: {0:?}")]
+    InvalidNodeGeometry(NodeId),
     #[error("port is missing: {0:?}")]
     MissingPort(PortId),
     #[error("duplicate port in replacement topology: {0:?}")]
@@ -187,6 +193,32 @@ pub(crate) fn plan_graph_command(
                         .graph()
                         .node(&edit.node())
                         .ok_or(GraphCommandPlanningError::MissingNode(edit.node()))?;
+                    let mut candidate = current.clone();
+                    if let Some(position) = edit.position() {
+                        candidate.pos = position;
+                    }
+                    if let Some(size) = edit.size() {
+                        candidate.size = size;
+                    }
+                    if !candidate.pos.is_finite()
+                        || candidate.size.is_some_and(|size| !size.is_finite())
+                    {
+                        return Err(GraphCommandPlanningError::NonFiniteNodeGeometry(
+                            edit.node(),
+                        ));
+                    }
+                    if candidate
+                        .size
+                        .is_some_and(|size| !size.is_positive_finite())
+                    {
+                        return Err(GraphCommandPlanningError::InvalidNodeSize(edit.node()));
+                    }
+                    if candidate
+                        .size
+                        .is_some_and(|size| candidate.bounds_for_size(size).is_none())
+                    {
+                        return Err(GraphCommandPlanningError::InvalidNodeGeometry(edit.node()));
+                    }
                     if let Some(position) = edit.position()
                         && current.pos != position
                     {

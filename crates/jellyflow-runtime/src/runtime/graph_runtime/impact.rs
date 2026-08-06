@@ -2001,9 +2001,14 @@ mod tests {
         transaction
             .apply_to(&mut graph)
             .expect("valid installed impact transaction");
-        let (patch, sessions) =
-            super::super::execution::install_incremental(&mut state, graph, transaction, true)
-                .expect("install transaction");
+        let (patch, sessions) = super::super::execution::install_incremental(
+            &mut state,
+            graph,
+            transaction,
+            true,
+            &runtime.shared.views,
+        )
+        .expect("install transaction");
         assert!(sessions.is_empty());
         patch
     }

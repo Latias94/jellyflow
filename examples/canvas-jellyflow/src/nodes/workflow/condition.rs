@@ -10,8 +10,8 @@ use jellyflow_open_gpui::activity::{
     OpenGpuiActivityKind, OpenGpuiActivityLease, OpenGpuiNodeActivityHandle,
 };
 use jellyflow_open_gpui::authoring::{
-    MutationLayoutEffect, MutationLayoutSettlement, MutationRequest, MutationSettlement,
-    OpenGpuiManagedMutation, OpenGpuiNodeAuthoring, OpenGpuiNodeBinding, OpenGpuiPortHandle,
+    MutationLayoutEffect, MutationRequest, MutationSettlement, OpenGpuiManagedMutation,
+    OpenGpuiNodeAuthoring, OpenGpuiNodeBinding, OpenGpuiPortHandle,
 };
 use jellyflow_open_gpui::chrome::OpenGpuiPortTone;
 use jellyflow_open_gpui::registry::{
@@ -24,8 +24,8 @@ use jellyflow_runtime::schema::{NodeKindSpec, NodePortSpec};
 use jellyflow_runtime::view::NodeInstanceKey;
 use jellyflow_runtime::view::RendererStamp;
 use open_gpui::{
-    App, AppContext, Context, Entity, Focusable, InteractiveElement, ParentElement, Render,
-    StatefulInteractiveElement, Styled, Task, Window, div, px,
+    App, AppContext, Context, Entity, Focusable, InteractiveElement, IntoElement, ParentElement,
+    Render, StatefulInteractiveElement, Styled, Task, Window, div, px,
 };
 use open_gpui_ui_components::{
     Button, ButtonVariant, ListboxOption, Select, TextInput, gpui_adapter::TextInputController,
@@ -264,7 +264,7 @@ impl WorkflowConditionNode {
         let observation = match condition_observation(&authoring) {
             Ok(observation) => observation,
             Err(error) => {
-                self.mutation_diagnostic = Some(error.to_string());
+                self.reject_request(request, error.to_string());
                 return;
             }
         };
@@ -299,9 +299,7 @@ impl WorkflowConditionNode {
     }
 
     fn reject_request(&mut self, request: MutationRequest<ConditionIntent>, diagnostic: String) {
-        if let MutationRequest::Retry(retry) = request
-            && !self.mutation.abandon_retry(retry)
-        {
+        if !self.mutation.reject_request(request) {
             self.mutation_diagnostic = Some(diagnostic);
             return;
         }
@@ -319,18 +317,7 @@ impl WorkflowConditionNode {
     }
 
     fn apply_mutation_settlement(&mut self, settlement: &MutationSettlement) {
-        self.mutation_diagnostic = match settlement {
-            MutationSettlement::Retryable { diagnostic, .. }
-            | MutationSettlement::Uncertain { diagnostic, .. }
-            | MutationSettlement::Retired { diagnostic }
-            | MutationSettlement::Closed { diagnostic, .. } => Some(diagnostic.to_string()),
-            MutationSettlement::Satisfied {
-                layout: MutationLayoutSettlement::Failed { diagnostic },
-            } => Some(diagnostic.to_string()),
-            MutationSettlement::Ready
-            | MutationSettlement::Pending { .. }
-            | MutationSettlement::Satisfied { .. } => None,
-        };
+        self.mutation_diagnostic = settlement.diagnostic().map(ToString::to_string);
     }
 
     fn current_diagnostic(&self) -> Option<&str> {
@@ -620,74 +607,78 @@ impl Render for WorkflowConditionNode {
             ConditionOperandStatus::Failed(message) => Some(message.clone()),
             ConditionOperandStatus::Loading | ConditionOperandStatus::Ready(_) => None,
         };
+        let field_enabled = !commands_locked
+            && !provider_loading
+            && provider_failed.is_none()
+            && !operand_options.is_empty();
+        let add_enabled = field_enabled && !self.case_value.trim().is_empty();
         let edit_node = cx.weak_entity();
         let select_node = cx.weak_entity();
         let open_node = cx.weak_entity();
         let add_node = cx.weak_entity();
+        let field = Select::new(workflow_condition_field_id(node_id), "Field")
+            .options(operand_options)
+            .placeholder(if provider_loading {
+                "Loading fields..."
+            } else {
+                "Select a field"
+            })
+            .selected(self.selected_operand.clone())
+            .open(self.operand_menu_open.get())
+            .full_width(true)
+            .disabled(!field_enabled)
+            .on_open_change(move |open, window, cx| {
+                let _ = open_node.update(cx, |node, cx| node.set_operand_menu_open(open, cx));
+                window.refresh();
+            })
+            .on_select(move |selection, window, cx| {
+                let value = selection.value().to_owned();
+                let _ = select_node.update(cx, |node, cx| node.select_operand(value, cx));
+                window.refresh();
+            });
+        #[cfg(feature = "real-window-smoke")]
+        let field = super::smoke_probe::measure_field(node_id, field_enabled, field);
+
+        let value = TextInput::new(workflow_condition_value_id(node_id), "Case value")
+            .controller(self.case_value_controller.clone())
+            .value(self.case_value.clone())
+            .placeholder("Comparison value")
+            .disabled(commands_locked || provider_loading || provider_failed.is_some())
+            .invalid(self.control_diagnostic.as_ref().is_some_and(|diagnostic| {
+                diagnostic.source == ConditionControlDiagnosticSource::Literal
+            }))
+            .on_change(move |value, window, cx| {
+                let edit_node = edit_node.clone();
+                window.defer(cx, move |window, cx| {
+                    let _ = edit_node.update(cx, |node, cx| node.edit_case_value(value, cx));
+                    window.refresh();
+                });
+            });
+        #[cfg(feature = "real-window-smoke")]
+        let value = super::smoke_probe::measure_value(node_id, value);
+
+        let add = div()
+            .debug_selector(move || workflow_condition_add_selector(node_id))
+            .child(
+                Button::new(workflow_condition_add_id(node_id), "Add case")
+                    .variant(ButtonVariant::Secondary)
+                    .disabled(!add_enabled)
+                    .on_click(move |_, window, cx| {
+                        let _ = add_node.update(cx, |node, cx| node.add_case(cx));
+                        window.refresh();
+                    }),
+            );
+        #[cfg(feature = "real-window-smoke")]
+        let add = super::smoke_probe::measure_add(node_id, add_enabled, add);
+
         let composer = div()
             .px(px(CONDITION_BODY_HORIZONTAL_PADDING))
             .flex()
             .flex_col()
             .gap(px(8.0))
-            .child(
-                Select::new(workflow_condition_field_id(node_id), "Field")
-                    .options(operand_options)
-                    .placeholder(if provider_loading {
-                        "Loading fields..."
-                    } else {
-                        "Select a field"
-                    })
-                    .selected(self.selected_operand.clone())
-                    .open(self.operand_menu_open.get())
-                    .full_width(true)
-                    .disabled(commands_locked || provider_loading || provider_failed.is_some())
-                    .on_open_change(move |open, window, cx| {
-                        let _ =
-                            open_node.update(cx, |node, cx| node.set_operand_menu_open(open, cx));
-                        window.refresh();
-                    })
-                    .on_select(move |selection, window, cx| {
-                        let value = selection.value().to_owned();
-                        let _ = select_node.update(cx, |node, cx| node.select_operand(value, cx));
-                        window.refresh();
-                    }),
-            )
-            .child(
-                TextInput::new(workflow_condition_value_id(node_id), "Case value")
-                    .controller(self.case_value_controller.clone())
-                    .value(self.case_value.clone())
-                    .placeholder("Comparison value")
-                    .disabled(commands_locked || provider_loading || provider_failed.is_some())
-                    .invalid(self.control_diagnostic.as_ref().is_some_and(|diagnostic| {
-                        diagnostic.source == ConditionControlDiagnosticSource::Literal
-                    }))
-                    .on_change(move |value, window, cx| {
-                        let edit_node = edit_node.clone();
-                        window.defer(cx, move |window, cx| {
-                            let _ =
-                                edit_node.update(cx, |node, cx| node.edit_case_value(value, cx));
-                            window.refresh();
-                        });
-                    }),
-            )
-            .child(
-                div()
-                    .debug_selector(move || workflow_condition_add_selector(node_id))
-                    .child(
-                        Button::new(workflow_condition_add_id(node_id), "Add case")
-                            .variant(ButtonVariant::Secondary)
-                            .disabled(
-                                commands_locked
-                                    || provider_loading
-                                    || provider_failed.is_some()
-                                    || self.case_value.trim().is_empty(),
-                            )
-                            .on_click(move |_, window, cx| {
-                                let _ = add_node.update(cx, |node, cx| node.add_case(cx));
-                                window.refresh();
-                            }),
-                    ),
-            );
+            .child(field)
+            .child(value)
+            .child(add);
 
         let mut rows = div()
             .px(px(CONDITION_BODY_HORIZONTAL_PADDING))
@@ -785,45 +776,52 @@ impl Render for WorkflowConditionNode {
             );
             let label_selector = workflow_condition_case_label_selector(node_id, port_id);
             let value_type = condition_type_label(case.value_type());
-            rows = rows.child(
-                div()
-                    .relative()
-                    .h(px(CONDITION_CASE_ROW_HEIGHT))
-                    .px(px(CONDITION_CASE_HORIZONTAL_PADDING))
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap(px(theme.spacing.md))
-                    .rounded(px(theme.radius.control))
-                    .bg(theme.control.surface)
-                    .child(
-                        div()
-                            .min_w(px(0.0))
-                            .flex_1()
-                            .flex()
-                            .items_center()
-                            .gap(px(theme.spacing.sm))
-                            .child(
-                                div()
-                                    .debug_selector(move || label_selector.clone())
-                                    .min_w(px(0.0))
-                                    .flex_1()
-                                    .truncate()
-                                    .text_sm()
-                                    .child(case.label().to_owned()),
-                            )
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .text_xs()
-                                    .text_color(theme.text.muted)
-                                    .child(value_type),
-                            ),
-                    )
-                    .child(actions)
-                    .child(value_marker)
-                    .child(route_marker),
-            );
+            let row = div()
+                .relative()
+                .h(px(CONDITION_CASE_ROW_HEIGHT))
+                .px(px(CONDITION_CASE_HORIZONTAL_PADDING))
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(px(theme.spacing.md))
+                .rounded(px(theme.radius.control))
+                .bg(theme.control.surface)
+                .child(
+                    div()
+                        .min_w(px(0.0))
+                        .flex_1()
+                        .flex()
+                        .items_center()
+                        .gap(px(theme.spacing.sm))
+                        .child(
+                            div()
+                                .debug_selector(move || label_selector.clone())
+                                .min_w(px(0.0))
+                                .flex_1()
+                                .truncate()
+                                .text_sm()
+                                .child(case.label().to_owned()),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_xs()
+                                .text_color(theme.text.muted)
+                                .child(value_type),
+                        ),
+                )
+                .child(actions)
+                .child(value_marker)
+                .child(route_marker);
+            #[cfg(feature = "real-window-smoke")]
+            let row = if index == 0 {
+                super::smoke_probe::measure_first_case(node_id, row).into_any_element()
+            } else {
+                row.into_any_element()
+            };
+            #[cfg(not(feature = "real-window-smoke"))]
+            let row = row.into_any_element();
+            rows = rows.child(row);
         }
         if let Some(label) = pending_label {
             let pending_selector = workflow_condition_pending_selector(node_id);
@@ -905,6 +903,8 @@ impl Render for WorkflowConditionNode {
             .overflow_y_scroll()
             .scrollbar_width(px(7.0))
             .child(rows);
+        #[cfg(feature = "real-window-smoke")]
+        let rows = super::smoke_probe::measure_scroll(node_id, rows);
 
         let retry_allowed = binding_valid
             && matches!(
@@ -1001,6 +1001,16 @@ impl Render for WorkflowConditionNode {
             });
 
         let node_selector = workflow_condition_node_selector(node_id);
+        let header = drag_handle.wrap(workflow_header(
+            node_id,
+            data.title,
+            "CONDITION",
+            status,
+            data.inputs,
+            theme,
+        ));
+        #[cfg(feature = "real-window-smoke")]
+        let header = super::smoke_probe::measure_header(node_id, header);
         let content = div()
             .debug_selector(move || node_selector.clone())
             .relative()
@@ -1010,16 +1020,11 @@ impl Render for WorkflowConditionNode {
             .border_color(theme.node.alternate_border)
             .bg(theme.node.alternate_surface)
             .text_color(theme.text.primary)
-            .child(drag_handle.wrap(workflow_header(
-                node_id,
-                data.title,
-                "CONDITION",
-                status,
-                data.inputs,
-                theme,
-            )))
+            .child(header)
             .child(controls)
             .children(diagnostic);
+        #[cfg(feature = "real-window-smoke")]
+        let content = super::smoke_probe::measure_root(node_id, content);
         self.binding.read(cx).measure_content(content)
     }
 }

@@ -71,10 +71,10 @@ The user-visible result is also weaker than the semantic core: port markers can 
 
 **Adoption and conformance**
 
-- R8. Source and candidate `.crate` consumers compile the same real custom-node recipe: retained `Entity<V: Render>`, normal controls, interaction guards, real port wrappers, content measurement, registry sealing, and managed authoring.
+- R8. Candidate `.crate` consumers compile a real custom-node recipe using retained `Entity<V: Render>`, normal controls, interaction guards, real port wrappers, content measurement, registry sealing, and managed authoring; workspace Open GPUI integration tests execute the same public capability against source crates.
 - R9. The candidate archive recipe uses production features and never enables Open GPUI or Jellyflow test-support.
-- R10. Source mode adds real mount, geometry, dynamic topology, and command behavior on top of the shared recipe.
-- R11. Runtime, Open GPUI, and egui conformance share data-only scenarios, graph fixtures, normalized observations, and an oracle while each adapter keeps an independent native event driver.
+- R10. Package tooling proves archive assembly, extraction, dependency provenance, and consumer construction only; framework behavior remains in owner-level source tests.
+- R11. Runtime owns semantic state and settlement tests. Open GPUI and egui each keep focused native event/layout tests without a shared executable scenario DSL, normalized observation oracle, or pseudo-adapter driver.
 
 **Runtime completion and feedback**
 
@@ -112,16 +112,16 @@ The user-visible result is also weaker than the semantic core: port markers can 
 - R31. Node drag and connection projection follow the explicit terminal table: optimistic geometry remains continuous through release, prefix wait, keyed completion, authoritative snapshot, and atomic geometry replacement, while cancel/reject/conflict/uncertain/retire restore the correct prior projection.
 - R32. Embedded input, select, button, scroll, and overlay controls isolate canvas gestures, focus, IME, and shortcuts through native Open GPUI guards and the explicit keyboard-precedence table.
 - R33. Content-driven size changes use validated convergence controls, coalesce, submit atomically, and preserve the previous complete node/port/route geometry until the new complete publication replaces it; default convergence remains two samples within `0.5` canvas unit and eight attempts per epoch.
-- R34. Real-window evidence uses a versioned structured run receipt with contiguous presented-frame identities and explicit view-space tolerances to reject sampling gaps, detached chrome, release snap, missing preview, and one-frame route disappearance.
-- R35. The existing atomic matrix results, exact PNG set, pixel validation, manifest hashes, and nine-run matrix remain authoritative and are not replaced by structured state alone.
+- R34. The real-window Rust harness directly validates contiguous presented frames and explicit view-space tolerances to reject sampling gaps, detached chrome, release snap, missing preview, and one-frame route disappearance; these semantic checks are not reimplemented in receipt tooling.
+- R35. A minimal versioned run receipt plus atomic matrix results and a representative five-run matrix remain authoritative process and visual evidence. Python validates only process transport, exact run identity, exit/status agreement, artifact existence, and atomic results without decoding pixels or rebuilding UI semantics.
 
 ### Key Flows
 
 - F1. External custom-node adoption
-  - **Trigger:** A4 consumes source crates or candidate package archives.
+  - **Trigger:** A4 consumes candidate package archives.
   - **Actors:** A1, A4, A5.
-  - **Steps:** Compile the shared component recipe; register it through the public descriptor; seal the registry; source mode mounts and exercises real ports, controls, measurement, and managed mutation.
-  - **Outcome:** Both dependency sources prove the same public capability without package test-support.
+  - **Steps:** Compile the archive-backed component recipe through the public descriptor and production dependency closure; workspace integration tests mount and exercise real ports, controls, measurement, and managed mutation through the same public contracts.
+  - **Outcome:** Candidate packages prove adoptability without test-support while the owning crate's native tests prove behavior without a duplicate source-path harness.
   - **Covered by:** R7-R10, R26-R27.
 - F2. Managed authoring mutation
   - **Trigger:** A1 adds/removes/reorders a dynamic case, pin, symbol, or changes node size.
@@ -150,7 +150,7 @@ The user-visible result is also weaker than the semantic core: port markers can 
 - F6. Real-window evidence publication
   - **Trigger:** A5 runs the flagship smoke matrix.
   - **Actors:** A3, A5.
-  - **Steps:** Rust emits one typed run receipt covering every contiguous presented frame; the runner wraps process evidence into a matrix receipt; the checker validates the Rust contract, frame continuity, captures, pixels, hashes, and cross-frame semantic invariants.
+  - **Steps:** The Rust harness validates semantic continuity against the live host, emits one minimal typed run receipt, and captures review artifacts; the runner validates transport, exact run identity, exit-status agreement, artifact existence, and atomic matrix results.
   - **Outcome:** Malformed or contradictory transport/state evidence fails even when the process exits successfully.
   - **Covered by:** R29-R35.
 
@@ -167,7 +167,7 @@ The user-visible result is also weaker than the semantic core: port markers can 
 - AE9. Given IME, overlay, editable control, read-only/disabled control, or canvas focus, when Escape, Delete/Backspace, arrows, Tab, clipboard, or undo/redo input arrives, then exactly the keyboard-precedence owner handles it and no second graph action runs. Covers R32.
 - AE10. Given intrinsic content size changes twice while one geometry command is in flight, when two samples within `0.5` canvas unit stabilize the latest target, then only that target submits next; old complete geometry remains visible, and the epoch freezes after at most eight attempts. Covers R20-R22, R28, R33.
 - AE11. Given a graph contains an unknown renderer mapping but valid semantic nodes, when it is opened, then the graph remains readable and the adapter may use its fallback; a missing semantic kind only rejects new creation. Covers R25-R27.
-- AE12. Given a zero exit with malformed, duplicate, unknown-version, or fail-state run receipt, when the matrix runner validates it, then the run fails and no pass result is atomically published. Covers R34-R35.
+- AE12. Given a zero exit with a missing, duplicate, malformed, unknown-version, wrong-run, or fail-state receipt, when the matrix runner validates transport, then the run fails and no pass result is atomically published. Covers R34-R35.
 - AE13. Given one flagship retained Workflow node, when a real user edits it, then the same node exercises native input, select, button, scrolling, asynchronous data, dynamic typed ports, managed mutation, and content-size convergence through public contracts while selection, connection, and resizing remain continuous in a real window. Covers R8-R10, R20-R24, R29-R33.
 
 ### Scope Boundaries
@@ -194,11 +194,11 @@ The user-visible result is also weaker than the semantic core: port markers can 
 
 - Product renderer code contains no raw command ticket, ticket future, panic/retirement supervisor, or adapter-independent revision reducer.
 - Open GPUI and egui contain no opaque interaction-query payload queue or independent runtime outcome mapping.
-- A single custom-node recipe builds from source and candidate archives, and source mode exercises a real retained mount.
+- A real custom-node recipe builds from candidate archives, while workspace native integration executes the same public capability against source crates.
 - `TopologyAttempt`, Open GPUI's pure draft reducer, registry overload combinations, query-related public mega-stats, name-only public-surface tests, and the smoke `key=value` parser are gone.
 - Condition, Blueprint, and Blackboard domain tests run without constructing Open GPUI entities or windows.
 - One flagship Workflow node satisfies AE13 as an integrated complex-node profile; isolated fixtures cannot substitute for this end-to-end proof.
-- Real-window receipts and pixels prove stable release, selection chrome, ports, and routes across the required zoom matrix.
+- Real-window Rust assertions and pixels prove stable release, selection chrome, ports, and routes across the required zoom matrix; receipts only transport run outcome and artifact identity.
 
 ---
 
@@ -206,7 +206,7 @@ The user-visible result is also weaker than the semantic core: port markers can 
 
 ### Key Technical Decisions
 
-- KTD1. **Establish real external adoption before public breaks.** The source and archive fixtures share one consumer source, but only source mode uses test-support to run native behavior. Archive mode proves the production dependency closure and public compile contract. Governs R7-R10.
+- KTD1. **Establish real external adoption before public breaks.** Archive consumers prove the production dependency closure and public compile contract. Native source behavior stays in Open GPUI integration tests, which are the lower-cost authority for retained mounts and framework events; tooling does not maintain a second source-path test harness. Governs R7-R10.
 - KTD2. **Close coordinate types in one breaking migration.** Canvas-to-view returns `ViewPoint`, view-to-canvas accepts `ViewPoint`, viewport extents use `ViewSize`, and zoom anchors use `ViewPoint`; `ViewportTransform.pan` remains canvas-space. Partial aliases would preserve the defect. Governs R5-R6.
 - KTD3. **Runtime completion is the sole execution-outcome authority.** Every command and outcome already carries `GraphCommandIdentity`; feedback reuses it rather than inventing another identity. `CommandExecutionCompletion { identity, result }` encloses every applied, noop, rejected, conflict, and runtime execution error after runtime admission. Native journals alone add admission and mount evidence for not-dispatched, uncertain, retired, and closed settlement. Governs R12-R15.
 - KTD4. **Runtime owns pending paged work; adapters own scheduling opportunities.** `CanvasInteractionSession` keeps continuation and stale policy, while an adapter grants a bounded budget and receives damage/effects/needs-tick plus a work receipt. A shared scheduler would incorrectly absorb native clocks. Governs R11, R16-R18.
@@ -219,7 +219,8 @@ The user-visible result is also weaker than the semantic core: port markers can 
 - KTD11. **Keep curated public facades but reject duplicate authorities.** Runtime `view` and `interaction` remain navigation seams. They are protected by external behavior, not forced to contain all implementation or mirrored through broad root re-exports. Governs R7, R27.
 - KTD12. **Deepen three Open GPUI owners around native authority.** The existing native interaction owner retains wake/capture/focus/callback authority. `RetainedNodeOwner` contains the existing `RetainedMountStore` and never mirrors its instance map, epoch, LRU, or retirement state. Content-size submission owns measurement policy and consumes shared mutation settlement rather than classifying commands. Frame transaction, path cache, binding, and focus coordinator remain internal collaborators. Governs R28, R31-R33.
 - KTD13. **Tune visual hit and paint independently.** Runtime keeps render order, gesture thresholds, hysteresis, snap, and target lock. Open GPUI profiles tune marker shape/size, invisible hit area, state treatment, wire paint, and one aligned selection chrome. No adapter z-index or gesture semantics are added. Governs R29-R32.
-- KTD14. **Replace only the unstructured inner smoke marker.** Rust emits a versioned JSON run receipt covering every contiguous presented frame and exposes the sole machine-readable schema/validation authority through a small contract binary consumed by Python. Python adds process transport evidence and retains the existing atomic matrix receipt, exact PNG checks, pixel oracle, manifest hashes, and nine-run matrix. No handwritten parallel field table, frame-sampling gap, or legacy parser fallback remains. Governs R34-R35.
+- KTD14. **Keep smoke tooling as orchestration, not a second UI engine.** The real-window Rust harness is the sole semantic behavior authority and emits only a minimal versioned JSON receipt containing run identity, status/failure, and artifact paths. Python adds process transport, the exact five-run set, exit/status agreement, artifact existence, atomic results, and capture-directory propagation. There is no schema/validator binary, duplicate frame model, pixel decoder, or generated contract to test. Governs R34-R35.
+- KTD15. **Give each invariant one authoritative test layer.** Pure reducers own branch matrices; runtime owners cover lifecycle and protocol boundaries; native adapter tests cover framework event ownership; real windows cover final presentation; archive consumers cover packaging. Higher layers keep only boundary integration and do not repeat lower-layer error Cartesian products, private phase layouts, shadow render evidence, or validator self-tests. Test count is never a completion metric. Governs R1-R35.
 
 ### High-Level Technical Design
 
@@ -304,20 +305,22 @@ The adapter never handles query identity, cursor, target lock, or stale restart.
 
 ```mermaid
 flowchart TB
-  AR[Shared custom-node recipe] --> SC[Source consumer behavior]
+  AR[Real custom-node recipe] --> SC[Owner-level source behavior]
   AR --> PC[Candidate archive compile and construct]
-  CO[Shared headless conformance oracle] --> OD[Open GPUI real native driver]
-  CO --> ED[egui real native driver]
-  OD --> RR[Versioned Rust run receipt]
+  RO[Runtime semantic owner tests] --> OD[Open GPUI focused native tests]
+  RO --> ED[egui focused native tests]
+  OD --> RH[Rust-owned semantic smoke assertions]
+  RH --> RR[Minimal versioned run receipt]
   RR --> MR[Atomic matrix receipt plus process evidence]
-  MR --> PX[PNG pixel and semantic checker]
+  RH --> CP[Named capture artifacts]
   PC --> RG[Release gate]
   SC --> RG
   ED --> RG
-  PX --> RG
+  MR --> RG
+  CP --> RG
 ```
 
-State evidence and pixel evidence are complementary. A valid structured receipt cannot compensate for a blank or geometrically inconsistent capture.
+Live Rust assertions are the semantic authority, while named captures remain compact visual-review artifacts. A passing receipt proves only that the expected Rust run completed and identifies its artifacts; Python does not grow a parallel frame model, schema engine, or pixel-analysis subsystem.
 
 #### Implementation dependency graph
 
@@ -341,7 +344,7 @@ flowchart TB
   U12 --> U13
   U13 --> U14[U14 content size owner]
   U14 --> U15[U15 native graph UX]
-  U15 --> U16[U16 structured smoke and cleanup]
+  U15 --> U16[U16 minimal smoke transport and cleanup]
 ```
 
 ### Output Structure
@@ -371,7 +374,7 @@ examples/canvas-jellyflow/src/
   real_window_smoke/
     receipt.rs
   bin/
-    smoke_receipt_contract.rs
+    real_window_smoke.rs
 tools/fixtures/external-consumer/
   open-gpui-adoption/
 ```
@@ -391,10 +394,12 @@ tools/fixtures/external-consumer/
 - Do not add UI dependencies to headless manifests.
 - Do not create compatibility re-export modules after moving a public type.
 - Every public break updates the shared external consumer in the same unit.
-- Shared conformance code contains no raw Open GPUI or egui event.
+- Do not introduce shared executable conformance scenarios, normalized observation DSLs, or pseudo-native drivers. Share only ordinary production value types already owned by runtime.
 - Preserve renderer order from runtime frames; Open GPUI must not derive a second z-order.
 - Preserve complete old geometry until complete replacement geometry is published.
 - Use proof-first or characterization-first tests for behavior-bearing changes. Capture receipt-first, snapshot-first, panic, close, stale, and budget baselines before deleting their old implementations.
+- Give each invariant one lowest-cost authoritative test layer: pure reducers test branch logic, runtime owner tests cover lifecycle boundaries, native tests use real framework events, and a small real-window matrix covers final presentation. Do not retain test-only production forks, shadow render models, Cartesian lifecycle matrices, or exact private phase/counter assertions merely to increase coverage.
+- Test counts and line counts are diagnostics, not acceptance targets. Preserve distinct failure semantics and public behavior; merge or delete repetitions that only re-prove the same invariant through a more expensive layer.
 - Run Cargo verification serially and reuse the repository target directory.
 
 ### System-Wide Impact
@@ -411,14 +416,14 @@ tools/fixtures/external-consumer/
 
 | Risk | Mitigation |
 |---|---|
-| Completion ownership changes a terminal interaction or size behavior | Characterize every existing outcome mapping first, define a runtime execution matrix and a separate native settlement matrix, and run canonical traces across runtime plus both adapters. |
+| Completion ownership changes a terminal interaction or size behavior | Characterize every existing outcome mapping first, keep the classification matrix in the runtime owner, and retain one focused adapter transport test per native failure boundary. |
 | Runtime-owned query advancement starves a native frame or loops after stale work | Keep adapter-controlled budgets, return explicit `needs_tick`, cap restarts, and test zero/small/large budgets plus close and supersession. |
 | Authoring abstraction hides product policy or retries automatically | Require explicit command and satisfaction callbacks; expose retryable/uncertain state without automatic dispatch. |
 | Product-domain extraction becomes a new portable UI DSL | Domain modules contain only typed product facts and command planning; widgets, labels, focus, layout, and visual state remain in renderers. |
 | Catalog split makes old graphs unreadable | Graph loading uses persisted facts without requiring a current palette or renderer; test unknown renderer and missing creation spec separately. |
 | Content-size ownership creates a measurement feedback loop | Preserve epoch, stable-sample, in-flight, coalescing, prefix, and attempt-bound policies with exact-once diagnostics. |
-| Visual tuning improves one zoom while harming another | Keep view/canvas types closed and validate marker/hit/chrome/route geometry at zoom `0.5`, `1`, and `2` with state plus pixel evidence. |
-| Structured receipts duplicate schema in Rust and Python again | Rust's receipt contract binary is the one machine authority; Python consumes canonical validation output and owns no parallel field/type table. |
+| Visual tuning improves one zoom while harming another | Keep view/canvas types closed and validate marker/hit/chrome/route geometry at zoom `0.5`, `1`, and `2` with relationship tests plus representative real-window captures. |
+| Smoke tooling becomes a second interaction engine | Keep semantic frame and pixel assertions inside the real-window Rust harness; receipts carry only outcome/artifact transport and Python performs no semantic revalidation. |
 | Large breaking diff obscures dead code | Land one verified unit per commit, run simplification after each architectural cluster, and require deletion audits in U7, U12, and U16. |
 
 ### Sources and Research
@@ -439,11 +444,11 @@ tools/fixtures/external-consumer/
 
 | Unit | Outcome | Primary files | Depends on |
 |---|---|---|---|
-| U1 | Real source/archive adoption guardrail | `tools/fixtures/external-consumer/`, public behavior tests | None |
+| U1 | Real archive adoption guardrail | `tools/fixtures/external-consumer/`, public behavior tests | None |
 | U2 | Type-closed view/canvas coordinates | runtime coordinates and viewport, adapter callers | U1 |
 | U3 | Runtime command completion and feedback correlation | runtime feedback/interaction, adapter settlement | U1 |
 | U4 | Runtime-owned paged query lifecycle | runtime interaction session, adapter query queues | U3 |
-| U5 | Operation receipts, conformance normalization, and stats deletion | runtime operation evidence, adapter conformance/performance tests | U4 |
+| U5 | Operation receipts, shared conformance deletion, and stats cleanup | runtime operation evidence, adapter-local native/performance tests | U4 |
 | U6 | Separate mutation and field reconciliation reducers | runtime reconciliation, existing attempt/draft characterization | U3 |
 | U7 | Managed Open GPUI authoring | Open GPUI authoring, command journal, retained field | U6 |
 | U8 | Pure Condition domain and thin renderer | flagship Condition modules/tests | U7 |
@@ -454,7 +459,7 @@ tools/fixtures/external-consumer/
 | U13 | Native interaction and retained-node lifecycle owners | Open GPUI host lifecycle and interaction tests | U2, U5, U7, U12 |
 | U14 | Content-size submission owner | Open GPUI measurement and geometry tests | U13 |
 | U15 | Native graph visual and interaction polish | Open GPUI chrome, ports, wires, flagship native tests | U14 |
-| U16 | Structured real-window evidence and final deletion | flagship smoke, Python matrix/checker, docs | U15 |
+| U16 | Minimal real-window transport and final deletion | flagship smoke, Python matrix, docs | U15 |
 
 ### U1. Establish the real external adoption guardrail
 
@@ -462,26 +467,24 @@ tools/fixtures/external-consumer/
 - **Requirements:** R7-R10, R26-R27; F1; AE1.
 - **Dependencies:** None.
 - **Files:**
-  - `tools/fixtures/external-consumer/open-gpui-adoption/` (new shared consumer source)
-  - `tools/fixtures/external-consumer/open-gpui-source/src/main.rs`
-  - `tools/fixtures/external-consumer/package-open-gpui/src/main.rs`
+  - `tools/fixtures/external-consumer/open-gpui-adoption/src/main.rs`
   - `tools/check_external_consumer_smoke.py`
   - `tools/tests/test_check_external_consumer_smoke.py`
   - `crates/jellyflow-open-gpui/tests/public_surface.rs`
   - `crates/jellyflow-runtime/tests/public_surface.rs`
 - **Approach:**
-  1. Extract one public custom-node consumer source that defines a real retained component tree, stable port wrappers, interaction guards, measurement, registry registration, and the current authoring entry.
-  2. Compile that source against path crates and staged candidate archives; keep archive features production-only.
-  3. Let source mode add Open GPUI test-support and execute retained mount, geometry, dynamic topology, and command behavior.
-  4. Replace Open GPUI name-only public-surface inventory with consumer behavior. Retain runtime facade tests that already exercise behavior and add compile-fail coverage for forbidden import authorities when practical.
-- **Execution note:** Establish the current source behavior as a characterization baseline, then make the package fixture fail until the same real recipe compiles from candidate archives.
-- **Patterns to follow:** `tools/fixtures/external-consumer/open-gpui-source/src/main.rs`; `crates/jellyflow-runtime/src/runtime/adapter_protocol/conformance.rs`; `tools/check_external_consumer_smoke.py` package checksum and feature checks.
+  1. Keep one public archive-consumer source that defines a real retained component tree, stable port wrappers, interaction guards, measurement, registry registration, and the current authoring entry.
+  2. Assemble candidate archives, safely extract them, compile headless, egui, and Open GPUI consumers against the extracted sources, and verify Cargo metadata resolves the exact expected Jellyflow closure from those archives.
+  3. Reject any production dependency closure that enables `test-support`; do not add a path-mode CLI, source fixture, or adapter-conformance fixture to the packaging tool.
+  4. Replace Open GPUI name-only public-surface inventory with native behavior tests inside the owning crate. Retain runtime facade tests that already exercise behavior.
+- **Execution note:** Package tooling proves packaging; Open GPUI integration proves native behavior. Neither layer reproduces the other.
+- **Patterns to follow:** `tools/fixtures/external-consumer/open-gpui-adoption/src/main.rs`; archive extraction/source verification; focused owner-level runtime and native adapter tests.
 - **Test scenarios:**
-  - The shared recipe compiles from path dependencies and registers one real retained node with normal controls and a real port.
-  - Candidate archives compile and link the same source without `test-support`; package dependency closure and checksums remain validated.
-  - Source mode mounts the node, publishes complete port geometry, performs dynamic topology mutation, and observes authoritative settlement.
+  - Candidate archives compile and link the real Open GPUI recipe without `test-support`; package dependency closure and extracted source provenance remain validated.
+  - Headless and egui archive consumers compile from the same candidate release set.
+  - Open GPUI crate integration mounts a node, publishes complete port geometry, performs dynamic topology mutation, and observes authoritative settlement through public APIs.
   - Registry seal rejects duplicate or invalid registration through a behavioral error assertion rather than symbol presence.
-- **Verification:** External source and package consumers pass from a clean staged registry; the archive build proves the production dependency closure while source mode proves behavior; `size_of`-only Open GPUI public tests are gone.
+- **Verification:** Candidate package consumers pass from clean extracted archives; Open GPUI integration proves retained behavior; obsolete path/source and adapter-conformance fixture modes plus `size_of`-only public tests are gone.
 
 ### U2. Close view and canvas coordinate types
 
@@ -532,7 +535,7 @@ tools/fixtures/external-consumer/
   - `crates/jellyflow-open-gpui/src/host/interaction_session.rs`
   - `crates/jellyflow-egui/src/native_host.rs`
   - `crates/jellyflow-egui/src/interaction.rs`
-  - `crates/jellyflow-egui/tests/canonical_interaction_trace.rs`
+  - focused runtime/Open GPUI/egui settlement tests
 - **Approach:**
   1. Carry each command's existing `GraphCommandIdentity` through every feedback operation, including execution paths that return `Err`; do not allocate a second operation identity.
   2. Define `CommandExecutionCompletion { identity, result }`, where `result` preserves applied/noop/rejected/conflict outcomes or the associated runtime execution error. Change direct `GraphRuntime::execute` to return this envelope rather than an unkeyed outer `Result`.
@@ -541,7 +544,7 @@ tools/fixtures/external-consumer/
   5. Expose keyed feedback lookup independent of vector position and make interaction plus later authoring/size consumers use it.
   6. Delete Open GPUI and egui positional pairing and duplicate runtime-outcome matches. Keep not-dispatched, uncertain, retired, and closed out of runtime; U7's native journal derives those only from admission, task, and mount evidence.
 - **Execution note:** Characterize every existing outcome branch before replacing it, including the current inconsistent size and interaction transport mappings.
-- **Patterns to follow:** Opaque `GraphCommandIdentity`; ordered frame transaction ownership; canonical interaction traces.
+- **Patterns to follow:** Opaque `GraphCommandIdentity`; ordered frame transaction ownership; focused runtime settlement and adapter transport tests.
 - **Test scenarios:**
   - Applied and noop commands correlate by identity even when layout operations are interleaved.
   - Rejected and conflict completions retain their message/version data and project the same terminal semantics in runtime, Open GPUI, and egui.
@@ -582,40 +585,40 @@ tools/fixtures/external-consumer/
   - Budgets of zero, one, and many pages make bounded progress and report exact work without exceeding the grant.
   - A restartable stale query restarts within its cap; a non-restartable stale query terminates with no leaked continuation.
   - Superseded late pages are ignored, foreign receipts fail deterministically, and close/retire cleans pending work exactly once.
-  - Open GPUI and egui produce the same normalized trace under different page budgets and native tick schedules.
+  - Runtime query outcomes stay identical under different page budgets; each adapter independently proves its native wake/tick integration.
   - Close, cancel, supersession, and terminal completion release the continuation exactly once.
 - **Verification:** Adapters expose no query payload/cursor queue; focused runtime and both adapter budget tests pass without requiring the U5 stats migration.
 
-### U5. Replace aggregate evidence and normalize conformance support
+### U5. Replace aggregate evidence and delete shared conformance support
 
-- **Goal:** Make performance assertions operation-scoped after query lifecycle ownership is stable, while retaining independent native drivers.
+- **Goal:** Make performance assertions operation-scoped after query lifecycle ownership is stable, while deleting the shared executable conformance DSL and retaining focused native drivers.
 - **Requirements:** R7, R11, R18-R19; F4; AE4.
 - **Dependencies:** U4.
 - **Files:**
-  - `crates/jellyflow-runtime/src/runtime/adapter_protocol/conformance.rs`
   - `crates/jellyflow-runtime/src/runtime/view_session/mod.rs`
   - `crates/jellyflow-runtime/src/runtime/graph_runtime/mod.rs`
   - `crates/jellyflow-runtime/src/runtime/tests/view_session/performance_contract.rs`
   - `crates/jellyflow-runtime/src/runtime/tests/view_session/geometry_publication.rs`
   - `crates/jellyflow-runtime/tests/canonical_interaction_trace.rs`
   - `crates/jellyflow-open-gpui/src/host/diagnostics.rs`
-  - `crates/jellyflow-open-gpui/tests/adapter_conformance.rs`
-  - `crates/jellyflow-egui/tests/adapter_conformance.rs`
-  - `tools/fixtures/external-consumer/adapter-conformance/src/main.rs`
+  - `crates/jellyflow-open-gpui/src/host/tests/canonical_conformance.rs`
+  - `crates/jellyflow-egui/tests/canonical_interaction_trace.rs`
+  - focused runtime/Open GPUI/egui owner tests that replace any unique coverage
 - **Approach:**
   1. Reuse and deepen existing query receipts, then add operation receipts for frame materialization, feedback publication, and reconciliation where tests currently subtract aggregate counters.
-  2. Remove public `GraphRuntimeStats` and `ViewSessionStats` mega-stat exports. Retain only current resource snapshots required by users and private cumulative diagnostics.
-  3. Extract repeated data-only fixtures, normalized observation construction, and outcome injection into conformance support after the U3/U4 semantic migrations settle.
-  4. Keep Open GPUI and egui native event, capture, focus, frame, and scheduling drivers independent; shared code may compare normalized observations but cannot dispatch native input.
+  2. Remove public `GraphRuntimeStats` and `ViewSessionStats` mega-stat exports. Retain current resource snapshots only where they describe user-relevant live ownership; prefer operation receipts over cumulative test ledgers.
+  3. Delete the public `adapter-conformance` feature/module, runtime pseudo-adapter, shared scenario/action/observation DSL, and the three canonical drivers.
+  4. Extract only genuinely unique native behaviors into small focused tests before deletion: source/target reconnect mapping, release-position accuracy, capability replacement, and adapter-specific capture/layout behavior.
+  5. Keep Open GPUI and egui native event, capture, focus, frame, and scheduling drivers independent. Runtime result classification is tested once in runtime and is not multiplied by mutation family in each adapter.
 - **Execution note:** Migrate one operation family at a time and delete its before/after assertion in the same change. Do not modify query continuation ownership established by U4.
-- **Patterns to follow:** Existing `InteractionQueryReceiptCore`; visible-route work reports; canonical interaction traces and shared normalized oracle.
+- **Patterns to follow:** Existing `InteractionQueryReceiptCore`; visible-route work reports; focused real `egui_kittest` and Open GPUI event tests; runtime settlement owner tests.
 - **Test scenarios:**
   - Edge pick, connection probe, node intersection, and alignment receipts report exact local cells/entries/pages examined.
   - Frame materialization, feedback publication, and reconciliation tests assert their own receipts without before/after global subtraction.
   - Current cache or mount counts remain observable only where they represent a current resource snapshot, not cumulative work.
-  - Open GPUI and egui execute the same normalized connect/reconnect/cancel/selection scenarios through different native drivers and match the shared oracle.
-  - A deliberately wrong normalized observation reports scenario, phase, and semantic mismatch without exposing native event types.
-- **Verification:** Operation receipts replace aggregate-delta assertions; public mega-stats are removed or reduced per R19; both independent adapter conformance suites remain green.
+  - Runtime proves applied/noop/rejected/conflict/failed and uncertain capability semantics once.
+  - Each adapter proves connect, source reconnect, target reconnect, node release position, capture, and native layout only where its framework mapping is distinct.
+- **Verification:** Operation receipts replace aggregate-delta assertions; public mega-stats are removed or reduced per R19; the shared conformance feature/module and canonical drivers are gone; focused runtime and adapter-local tests remain green.
 
 ### U6. Separate mutation and field reconciliation reducers
 
@@ -770,7 +773,7 @@ tools/fixtures/external-consumer/
   3. Change `OpenGpuiSceneHost` frame-request construction to resolve per-kind stamps from the sealed registry rather than `NodeKindSpec::renderer_key()`; leave the now-unused catalog field for U12's immediate breaking deletion.
   4. Preserve opaque `RendererStamp` in the adapter frame protocol and `NodeInstanceKey`, because it is adapter-supplied retained-mount identity rather than a semantic catalog fact.
   5. Seal against the semantic catalog to reject descriptor kinds/versions that cannot exist. Missing mappings remain deterministic fallback for already persisted nodes.
-  6. Update the U1 source/archive recipe in the same breaking change and delete old registration overloads rather than forwarding them.
+  6. Update the U1 archive recipe in the same breaking change and delete old registration overloads rather than forwarding them.
 - **Execution note:** Treat the external recipe as the public behavior specification. This commit must be green while the legacy catalog renderer field is inert but not yet removed; archive mode remains free of test-support.
 - **Patterns to follow:** Current immutable sealed registry; `FrameRequest` opaque renderer stamps; `NodeInstanceKey` retained identity; U1 behavior-bearing consumer.
 - **Test scenarios:**
@@ -924,41 +927,41 @@ tools/fixtures/external-consumer/
 - **Dependencies:** U15.
 - **Files:**
   - `examples/canvas-jellyflow/Cargo.toml`
+  - `examples/canvas-jellyflow/src/main.rs`
+  - `examples/canvas-jellyflow/src/bin/real_window_smoke.rs` (new)
   - `examples/canvas-jellyflow/src/real_window_smoke.rs`
   - `examples/canvas-jellyflow/src/real_window_smoke/receipt.rs` (new)
-  - `examples/canvas-jellyflow/src/bin/smoke_receipt_contract.rs` (new)
   - `examples/canvas-jellyflow/src/real_window_smoke/input_probe/evidence.rs`
   - `examples/canvas-jellyflow/src/real_window_smoke/input_probe/planning.rs`
   - `tools/run_real_window_smoke_matrix.py`
-  - `tools/check_real_window_smoke_evidence.py`
   - `tools/tests/test_run_real_window_smoke_matrix.py`
-  - `tools/tests/test_check_real_window_smoke_evidence.py`
+  - `.github/workflows/ci.yml`
+  - `.github/workflows/release-preflight.yml`
   - `README.md`
   - `CONTEXT.md`
   - `docs/guides/native-adapter-authoring.md`
   - `docs/testing/node-ui-authoring-regression.md`
   - `docs/releasing/CRATES_IO.md`
 - **Approach:**
-  1. Define versioned `SmokeRunReceiptV1` Rust types plus semantic `validate()` rules for required run/scenario/zoom, interaction and geometry evidence, named captures, revisions, status, and failure codes.
-  2. Provide one small Rust contract binary with `schema` and `validate` operations. Python pipes every receipt through it and consumes canonical validated JSON; it does not maintain a parallel field/type table.
-  3. Emit exactly one prefixed JSON receipt from the native run. Let the runner create transport-failure envelopes for timeout, nonzero exit, missing/duplicate/malformed receipt, validator failure, and contradictory exit/status.
-  4. Embed canonical run receipts into the existing atomic matrix results. Keep PNG, pixel, hash, manifest, and exact matrix validation unchanged.
-  5. Delete `marker_value`, giant format strings, `MARKER_FIELDS`, shlex parsing, substring assertions, and compatibility fallback.
-  6. From interaction press through authoritative terminal publication, record every presented frame with a contiguous monotonic frame number, phase, node/chrome bounds, preview/target state, route endpoints, and graph revision. Reject gaps and duplicates.
-  7. Measure node/chrome alignment and release continuity in logical view space with a `0.5`-pixel tolerance; require preview and complete routes on every applicable pending frame, nondecreasing revisions, and one atomic switch to authoritative geometry.
-  8. Sweep for old tickets, query queues, outcome mappings, stats imports, catalog/presentation fields, registry overloads, topology attempts, duplicate reducers, duplicate retained state, and stale docs/examples. Delete instead of forwarding.
-- **Execution note:** Treat the receipt migration as a clean break. The Rust contract is the sole schema authority; Python tests may use generated fixtures but cannot infer validity from one golden sample.
-- **Patterns to follow:** Existing atomic `results.json` write, exact-key validation, PNG pixel oracle, sorted manifest, and nine-run matrix.
+  1. Move all smoke-only state, probes, and receipt code behind a dedicated `real-window-smoke` binary with `required-features = ["real-window-smoke"]`; the ordinary Shader/Workflow example must not compile or fabricate smoke evidence.
+  2. Keep contiguous frame, geometry, route, preview, selection-chrome, and nonblank-paint assertions inside the Rust harness that observes the real host. Do not serialize that internal model merely so another validator can reconstruct it.
+  3. Emit exactly one minimal prefixed `SmokeRunReceiptV1 { schema_version, run_id, status, failure, artifacts }`. Let the runner create transport-failure envelopes for timeout, nonzero exit, missing/duplicate/malformed receipt, wrong identity, missing artifacts, and contradictory exit/status.
+  4. Embed receipts into atomic matrix results and require the representative five-run set: Shader compact at zoom `0.5` and `2`, Workflow compact at zoom `1`, Shader normal at zoom `1`, and one directed Shader LOD-threshold run.
+  5. Delete the receipt contract binary, JSON Schema generation, strict semantic receipt visitor, `schemars`, old marker/parser compatibility, and tests that only test those validators.
+  6. Keep ordinary CI as the engineering-quality authority. Release preflight trusts the exact successful CI source SHA and runs only release-specific version/changelog/package/archive-consumer/crates.io checks instead of rerunning the entire workspace and real-window matrix.
+  7. Sweep for old tickets, query queues, outcome mappings, stats imports, catalog/presentation fields, registry overloads, topology attempts, duplicate reducers, duplicate retained state, source-string dependency tests, and stale docs/examples. Delete instead of forwarding.
+- **Execution note:** Treat this as a clean break. The Rust harness owns behavior, the receipt owns transport, and Python owns process orchestration; no layer revalidates another layer's internal state model.
+- **Patterns to follow:** Atomic `results.json` replacement, exact run identity, explicit transport failures, listed artifact existence, and a representative five-run matrix.
 - **Test scenarios:**
-  - Rust receipt round-trips, schema output is deterministic, and contract validation accepts all valid variants while rejecting unknown versions, fields, invalid types, invalid cross-field combinations, duplicate/gapped frame numbers, and missing applicable frame facts.
-  - Missing/duplicate receipt, malformed JSON, duplicate key, validator failure, zero-exit fail receipt, and nonzero-exit pass receipt fail deterministically.
+  - Rust harness assertions reject frame gaps, detached chrome, release snap, missing preview/routes, inconsistent revisions, and blank paint while observing the actual native host.
+  - Minimal receipt serialization is deterministic; missing/duplicate receipt, malformed JSON, duplicate key, unknown version, wrong run id, missing artifact, zero-exit fail receipt, and nonzero-exit pass receipt fail deterministically.
   - Timeout and nonzero exit create transport-failure matrix entries without pretending a semantic receipt existed.
-  - Every presented press/drag/release/settlement frame is accounted for; node/chrome bounds stay within `0.5` logical view pixel, preview/routes stay present while applicable, and authoritative revision is nondecreasing.
+  - Every presented press/drag/release/settlement frame is accounted for inside the Rust harness; node/chrome bounds stay within `0.5` logical view pixel, preview/routes stay present while applicable, and authoritative revision is nondecreasing.
   - Selected nodes never produce a detached second border; content-size settlement never produces one blank route frame.
-  - Exact PNG names/count, nine matrix runs, three zooms, pixel semantics, hashes, and manifest remain authoritative.
+  - Exactly five matrix runs produce their scenario-owned PNG artifacts plus one canonical `results.json`; Shader covers zoom `0.5`, `1`, and `2`, while Workflow proves the full complex-node flow once at zoom `1`.
   - Documentation examples use descriptor registration, managed authoring, semantic ports, interaction guards, and content-size measurement without mentioning removed APIs.
   - The AE13 flagship complex-node flow executes in the real-window matrix rather than being inferred from separate unit tests.
-- **Verification:** Rust receipt-contract tests, Python tool tests, exact real-window matrix, package/source consumers, documentation contracts, and all workspace gates pass; repository search finds no obsolete surface named by this unit.
+- **Verification:** Rust real-window harness tests, minimal Python transport tests, exact real-window matrix, package consumers, documentation examples, and all workspace gates pass; repository search finds no obsolete surface named by this unit.
 
 ---
 
@@ -971,9 +974,10 @@ tools/fixtures/external-consumer/
 | `cargo nextest run -p jellyflow-runtime --locked` | U2-U6, U12 | Runtime coordinate, completion, query, receipts, reducers, catalog, and public behavior pass. |
 | `cargo nextest run -p jellyflow-open-gpui --locked` | U1, U3, U5, U7, U11-U15 | Native registry, authoring, lifecycle, interaction, geometry, control, and size behavior pass. |
 | `cargo nextest run -p jellyflow-egui --locked` | U2-U5, U12 | Independent egui native driver remains conformant after runtime breaks. |
-| `cargo nextest run --manifest-path examples/canvas-jellyflow/Cargo.toml --workspace --locked` | U7-U16 | Product-domain, native flagship integration, and receipt-contract tests pass. |
-| `python3 -m unittest discover -s tools/tests -p "test_*.py"` | U1, U16 | Package and evidence tooling reject all malformed/failure cases. |
-| `python3 tools/check_external_consumer_smoke.py` | U1-U16 | Path and candidate archive consumers use the same real recipe and pass. |
+| `cargo nextest run --manifest-path examples/canvas-jellyflow/Cargo.toml --workspace --locked` | U7-U15 | Product-domain and ordinary native flagship integration pass without compiling smoke-only state. |
+| `cargo nextest run --manifest-path examples/canvas-jellyflow/Cargo.toml -p open-gpui-canvas-jellyflow --bin open-gpui-real-window-smoke --features real-window-smoke --locked` | U16 | Rust-owned smoke receipt, frame-continuity, geometry, and paint behavior pass behind the dedicated binary. |
+| `python3 -m unittest discover -s tools/tests -p "test_*.py"` | U1, U16 | Package and process-transport tooling reject representative malformed/failure cases without reproducing product semantics. |
+| `python3 tools/check_external_consumer_smoke.py` | U1-U16 | Candidate archive consumers compile against unpacked crates with production features and no test-support. |
 
 ### Structural Gates
 
@@ -990,21 +994,20 @@ tools/fixtures/external-consumer/
 
 | Gate | Done signal |
 |---|---|
-| Shader smoke at zoom `0.5`, `1`, and `2` | Ports, routes, selected chrome, drag release, preview, and size convergence remain geometrically and visually continuous. |
-| Workflow smoke at zoom `0.5`, `1`, and `2` | Complex controls, dynamic cases, scrolling, focus, and connections remain native and isolated. |
-| Normal-bounds interaction runs | Selection, reconnect, cancel, control islands, and size replacement have no release-frame regression. |
+| Shader compact at zoom `0.5` and `2` | PinnedDetail, low/high zoom ports, routes, selected chrome, drag release, preview, and size convergence remain continuous. |
+| Workflow compact at zoom `1` | Complex controls, dynamic cases, scrolling, focus, and connections remain native and isolated. |
+| Shader normal at zoom `1` | Selection, reconnect, cancel, control islands, and size replacement have no release-frame regression under normal bounds. |
 | Directed LOD-threshold run | Retained-node lifecycle and complete geometry stay correct across LOD transitions. |
-| Structured receipt checker | Typed receipt, process envelope, PNG pixels, hashes, manifest, and matrix agree; any contradiction fails. |
+| Minimal receipt matrix | Rust validates live semantic behavior and captures artifacts; Python validates process transport, exact run identity, exit-status agreement, artifact existence, and atomic results. |
 
 The sole formal matrix entry is:
 
 ```text
-cargo build --manifest-path examples/canvas-jellyflow/Cargo.toml -p open-gpui-canvas-jellyflow --bins --locked --features real-window-smoke
-python3 tools/run_real_window_smoke_matrix.py --binary examples/canvas-jellyflow/target/debug/open-gpui-canvas-jellyflow --receipt-validator examples/canvas-jellyflow/target/debug/smoke_receipt_contract --capture-root target/real-window-smoke-final --timeout-seconds 60 --capture-dir-output target/real-window-smoke-final.output
-python3 tools/check_real_window_smoke_evidence.py --capture-dir-from-output target/real-window-smoke-final.output --receipt-validator examples/canvas-jellyflow/target/debug/smoke_receipt_contract
+cargo build --manifest-path examples/canvas-jellyflow/Cargo.toml -p open-gpui-canvas-jellyflow --bin open-gpui-real-window-smoke --locked --features real-window-smoke
+python3 tools/run_real_window_smoke_matrix.py --binary examples/canvas-jellyflow/target/debug/open-gpui-real-window-smoke --capture-root target/real-window-smoke-final --timeout-seconds 60 --capture-dir-output target/real-window-smoke-final.output
 ```
 
-The gate fails on any nonzero command, any missing/duplicate/malformed/contract-invalid or exit-status-contradictory run receipt, any run set other than the exact nine-run matrix, or any PNG, pixel, hash, manifest, capture-name, cross-frame geometry, or semantic mismatch. All artifacts remain under `target/real-window-smoke-final`; the output pointer is `target/real-window-smoke-final.output`.
+The gate fails on any nonzero command, any missing/duplicate/malformed/wrong-identity or exit-status-contradictory run receipt, any run set other than the exact five-run matrix, any missing listed artifact, or any Rust-owned cross-frame geometry and semantic assertion. The five native processes produce scenario-owned PNG review artifacts and one canonical `results.json` under `target/real-window-smoke-final`; the output pointer is `target/real-window-smoke-final.output`.
 
 ### Final Quality Gates
 
@@ -1017,7 +1020,9 @@ cargo nextest run --workspace --locked --cargo-quiet
 cargo test --workspace --doc --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo nextest run --manifest-path examples/canvas-jellyflow/Cargo.toml --workspace --locked --cargo-quiet
+cargo nextest run --manifest-path examples/canvas-jellyflow/Cargo.toml -p open-gpui-canvas-jellyflow --bin open-gpui-real-window-smoke --features real-window-smoke --locked --cargo-quiet
 cargo test --manifest-path examples/canvas-jellyflow/Cargo.toml --workspace --doc --locked
+cargo clippy --manifest-path examples/canvas-jellyflow/Cargo.toml -p open-gpui-canvas-jellyflow --bin open-gpui-real-window-smoke --features real-window-smoke --locked -- -D warnings
 python3 tools/check_no_fret_dependencies.py
 python3 -m unittest discover -s tools/tests -p "test_*.py"
 python3 tools/check_external_consumer_smoke.py
@@ -1049,13 +1054,13 @@ The formal real-window matrix is additionally required after U15/U16 and before 
 
 - Every R-ID is implemented, explicitly proven by its cited U-IDs and verification gates, or blocked by invalidating evidence surfaced to the user.
 - U1-U16 are complete in dependency order with focused behavior evidence and canonical commits.
-- Source and candidate package consumers exercise one real custom-node recipe using only supported public APIs.
+- Candidate package consumers compile one real custom-node recipe using only supported public APIs, and workspace Open GPUI integration exercises the corresponding retained behavior.
 - Runtime owns execution completion, identity-correlated feedback, pending paged work, operation receipts, and separate pure mutation/field reconciliation.
 - Open GPUI owns admission and native settlement, tasks, mounts, capture/focus, measurement, size submission, and visual projection through deep internal owners.
 - Condition, Blueprint, and Blackboard domain logic has no Open GPUI dependency, and their renderers contain no generic mutation supervisor.
 - One real flagship retained node proves the full complex-node profile in a single authoring and editing flow.
 - Semantic catalog, product palette, and adapter registry facts have distinct owners; old registry overloads and duplicate import authorities are gone.
-- Selection chrome, ports, wires, drag release, controls, and content-size convergence pass geometry, native behavior, structured receipt, and pixel evidence at required zooms.
+- Selection chrome, ports, wires, drag release, controls, and content-size convergence pass Rust-owned geometry/native assertions plus representative named-capture review at required zooms; the minimal receipt transports only run outcome and artifact identity.
 - The old `TopologyAttempt`, pure Open GPUI draft reducer, adapter query queues, repeated outcome classifiers, public mega-stats, `size_of` inventory, mixed catalog fields, registry combination APIs, and `key=value` smoke parser are deleted without compatibility tombstones.
 - Documentation describes the new public adoption and authoring contracts and contains no stale command, registry, catalog, or evidence examples.
 - Formatting, check, nextest, doc tests, clippy, dependency checks, Python tests, external consumers, real-window matrix, and `git diff --check` all pass.
@@ -1075,10 +1080,10 @@ The formal real-window matrix is additionally required after U15/U16 and before 
 | C4 Feedback correlation and command outcome classification | U3 |
 | C5 Open GPUI native ownership modules | U13-U15 |
 | C6 Headless revision reconciliation reducers | U6, U10 |
-| C7 Shared conformance fixture with independent native drivers | U5 |
+| C7 Shared conformance fixture with independent native drivers | Rejected and deleted in U5; it became a portable interaction test DSL. Runtime and adapter-local owner tests replace it. |
 | C8 Source/archive real custom-node adoption | U1 |
 | C9 Operation-scoped performance evidence | U5 |
 | C10 Type-closed coordinates | U2 |
 | C11 Public owning modules and behavioral surface tests | U1, U11-U12 |
 | C12 Graph semantics versus product presentation/search facts | U11-U12 |
-| C13 Versioned structured real-window evidence receipt | U16 |
+| C13 Minimal versioned real-window run receipt | U16 |

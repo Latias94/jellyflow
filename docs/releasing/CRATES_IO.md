@@ -12,9 +12,11 @@ Jellyflow is a Cargo workspace with five publishable crates:
 adapters depend directly on `jellyflow-core` and `jellyflow-runtime`; neither adapter depends on
 the other or on the optional layout package. Publish and dry-run checks use the order above.
 
-## Release Gates
+## Full Local CI Reproduction
 
-Run these before any publish attempt:
+Use this sequence to reproduce every CI gate locally before promoting a release candidate. The
+automated publishing workflow does not run this whole sequence again: it requires a successful CI
+push run for the exact release SHA.
 
 ```sh
 set -euo pipefail
@@ -30,35 +32,47 @@ python3 tools/check_external_consumer_smoke.py
 cargo check --manifest-path examples/canvas-jellyflow/Cargo.toml --workspace --locked
 cargo fmt --manifest-path examples/canvas-jellyflow/Cargo.toml --all -- --check
 cargo nextest run --manifest-path examples/canvas-jellyflow/Cargo.toml -p open-gpui-canvas-jellyflow --locked --no-fail-fast
+cargo nextest run --manifest-path examples/canvas-jellyflow/Cargo.toml \
+  -p open-gpui-canvas-jellyflow --bin open-gpui-real-window-smoke \
+  --features real-window-smoke --locked --no-fail-fast
 cargo test --manifest-path examples/canvas-jellyflow/Cargo.toml --workspace --doc --locked
 cargo clippy --manifest-path examples/canvas-jellyflow/Cargo.toml --workspace --all-targets --locked -- -D warnings
-cargo build --manifest-path examples/canvas-jellyflow/Cargo.toml -p open-gpui-canvas-jellyflow --bins --locked --features real-window-smoke
-capture_output="$(mktemp)"
-trap 'rm -f "$capture_output"' EXIT
+cargo clippy --manifest-path examples/canvas-jellyflow/Cargo.toml \
+  -p open-gpui-canvas-jellyflow --bin open-gpui-real-window-smoke \
+  --features real-window-smoke --locked -- -D warnings
+cargo build --manifest-path examples/canvas-jellyflow/Cargo.toml -p open-gpui-canvas-jellyflow --bin open-gpui-real-window-smoke --locked --features real-window-smoke
 python3 tools/run_real_window_smoke_matrix.py \
-  --binary examples/canvas-jellyflow/target/debug/open-gpui-canvas-jellyflow \
-  --receipt-validator examples/canvas-jellyflow/target/debug/smoke_receipt_contract \
+  --binary examples/canvas-jellyflow/target/debug/open-gpui-real-window-smoke \
   --capture-root target/real-window-smoke \
-  --timeout-seconds 60 \
-  --capture-dir-output "$capture_output"
-python3 tools/check_real_window_smoke_evidence.py \
-  --capture-dir-from-output "$capture_output" \
-  --receipt-validator examples/canvas-jellyflow/target/debug/smoke_receipt_contract
+  --timeout-seconds 60
 git diff --check
 ```
 
-The CI workflow runs common gates on pull requests and pushes. The reusable
-release preflight workflow additionally verifies versions, runs eight Open GPUI interaction
-processes plus one semantic-LOD process, and writes package lists plus 75 state screenshots and a
-sorted screenshot manifest as artifacts for release review. The packaged-consumer smoke assembles
-all five `.crate` archives once, serves them from a temporary sparse registry, then compiles three
+## Release-Specific Preflight
+
+After exact-SHA CI succeeds, reusable release preflight checks only the requested version,
+changelog and manifest consistency, candidate package archives, and real archive-backed consumers:
+
+```sh
+python3 scripts/release-version.py check --version "$RELEASE_VERSION"
+python3 tools/check_external_consumer_smoke.py
+```
+
+The CI workflow runs common gates on pull requests and pushes. Its macOS lane runs four Open GPUI
+interaction processes plus one semantic-LOD process. Semantic assertions remain in the Rust
+real-window harness; the minimal receipt transports only pass/fail, run identity, failure, and
+artifact paths. CI uploads the matrix's PNG captures and atomic `results.json` for review. The
+reusable release preflight trusts a successful CI run for the exact release SHA and performs
+release-specific archive checks instead of rerunning this product matrix. The packaged-consumer
+smoke assembles all five `.crate` archives once, extracts them into a temporary package source, then
+compiles three
 locked consumers for the headless, egui, and Open GPUI boundaries. Each consumer
-declares only the package roots its source uses. Exact `cargo tree` assertions
-reject layout or cross-framework leakage, while the three closure sets together
-must cover all five candidate archives at their expected versions and checksums.
+declares only the package roots its source uses. Cargo metadata assertions require every Jellyflow
+package to resolve from the extracted candidate archive at the expected version, reject
+cross-framework leakage, and require the three closure sets together to cover all five release
+packages.
 The production Open GPUI dependency disables default features and does not enable
-`test-support`; the additional source smoke owns framework test-support interaction
-coverage.
+`test-support`; adapter-local and real-window tests own framework behavior coverage.
 
 The crates publishing workflow exists only on the default branch and accepts a
 fixed `release-crates` repository-dispatch event. Its `release_tag` payload is
@@ -108,11 +122,12 @@ and the files needed to build that crate from crates.io.
 Do not use a successful `cargo package --no-verify` invocation as build
 evidence. The external consumer smoke uses `--no-verify` only to assemble the
 candidate archives because Cargo's built-in verification resolves same-version
-workspace dependencies from crates.io. It then verifies the actual archives by
-checksum, resolves them through the temporary registry, generates a consumer
-lockfile, and runs that consumer with `--locked`. A missing file, invalid
-normalized manifest, stale public API, or cross-crate mismatch fails that later
-compile.
+workspace dependencies from crates.io. It safely extracts each candidate,
+checks its licenses and normalized manifest, patches consumers to those
+extracted sources, and uses Cargo metadata to verify the exact versions,
+dependency closure, and extracted-source provenance before compiling with
+`--locked`. A missing file, invalid normalized manifest, stale public API, or
+cross-crate mismatch fails that later compile.
 
 ## Dry Runs
 
@@ -165,9 +180,9 @@ cargo metadata --locked --format-version 1
 cargo metadata --manifest-path examples/canvas-jellyflow/Cargo.toml --locked --format-version 1
 ```
 
-A candidate archive smoke can validate an uncommitted working tree and can
-intentionally shadow an already-published version in its temporary registry;
-crates.io cannot. The release workflow therefore still requires workspace and
-product versions to match the tag and skips only versions already present on
-crates.io with a byte-identical archive. A same-version archive with different
-contents fails the release rather than mixing commits.
+A candidate archive smoke can validate an uncommitted working tree by patching
+consumers to safely extracted candidate sources; crates.io cannot provide that
+local provenance. The release workflow therefore still requires workspace and
+product versions to match the tag and separately skips only versions already
+present on crates.io with a byte-identical archive. A same-version archive with
+different contents fails the release rather than mixing commits.

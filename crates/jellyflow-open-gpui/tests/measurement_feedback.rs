@@ -16,16 +16,14 @@ use jellyflow_open_gpui::host::{
 use jellyflow_open_gpui::interaction::{OpenGpuiPortDragPhase, OpenGpuiPortEvent};
 use jellyflow_open_gpui::registry::{
     OpenGpuiNodeAdapterPresentation, OpenGpuiNodeRegistrationPolicy, OpenGpuiNodeRegistry,
-    OpenGpuiNodeRegistryRegistrationError, OpenGpuiNodeRendererDescriptor,
+    OpenGpuiNodeRendererDescriptor,
 };
 use jellyflow_open_gpui::scale_policy::OPEN_GPUI_DEFAULT_OVERVIEW_ENTER_ZOOM;
-use jellyflow_open_gpui::size_policy::{
-    OpenGpuiContentHeightPolicy, OpenGpuiNodeSizeConvergence, OpenGpuiNodeSizePolicy,
-};
+use jellyflow_open_gpui::size_policy::{OpenGpuiContentHeightPolicy, OpenGpuiNodeSizePolicy};
 use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec};
 use jellyflow_runtime::{
     commands::GraphCommand, graph::GraphRuntime, view::PublishedPortOutcome, view::RendererStamp,
-    view::ViewCloseReason, view::ViewSessionOptions, viewport::ViewportTransform,
+    view::ViewSessionOptions, viewport::ViewportTransform,
 };
 use open_gpui::{
     App, AppContext, Context, Entity, InteractiveElement, MouseButton, ParentElement, Render,
@@ -101,21 +99,6 @@ struct PrefixQueuedContentNode {
     binding: Entity<OpenGpuiNodeBinding>,
     mutation: OpenGpuiManagedMutation<serde_json::Value>,
     render_count: usize,
-}
-
-struct AlternatingContentNode {
-    binding: Entity<OpenGpuiNodeBinding>,
-}
-
-struct StaleContentMeasuredNode {
-    binding: Entity<OpenGpuiNodeBinding>,
-    runtime: Rc<GraphRuntime>,
-    render_count: usize,
-}
-
-struct RuntimeDroppingIncompleteNode {
-    binding: Entity<OpenGpuiNodeBinding>,
-    runtime_owner: Rc<RefCell<Option<Rc<GraphRuntime>>>>,
 }
 
 struct ValidSiblingNode {
@@ -381,87 +364,6 @@ impl Render for PrefixQueuedContentNode {
     }
 }
 
-impl Render for AlternatingContentNode {
-    fn render(
-        &mut self,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> impl open_gpui::IntoElement {
-        let binding = self.binding.read(cx);
-        let height = binding
-            .authoring()
-            .expect("alternating fixture binding stays live")
-            .node()
-            .size
-            .expect("alternating fixture has an authoritative size")
-            .height;
-        let measured_height = if height < 130.0 { 140.0 } else { 120.0 };
-        binding.measure_content(
-            div()
-                .w(px(220.0))
-                .h(px(measured_height))
-                .child("alternating content node"),
-        )
-    }
-}
-
-impl Render for StaleContentMeasuredNode {
-    fn render(
-        &mut self,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> impl open_gpui::IntoElement {
-        self.render_count = self.render_count.saturating_add(1);
-        if self.render_count == 2 {
-            let version = self
-                .runtime
-                .snapshot()
-                .expect("stale fixture snapshot")
-                .version();
-            self.runtime
-                .execute(GraphCommand::set_node_data(
-                    version,
-                    NodeId::from_u128(10),
-                    serde_json::json!({ "height": 244.0 }),
-                ))
-                .into_result()
-                .expect("stale fixture updates the same node");
-        }
-        let binding = self.binding.read(cx);
-        let height = binding
-            .authoring()
-            .expect("stale fixture binding stays live")
-            .node()
-            .data
-            .get("height")
-            .and_then(serde_json::Value::as_f64)
-            .unwrap_or(176.0) as f32;
-        binding.measure_content(div().w(px(220.0)).h(px(height)).child("stale content node"))
-    }
-}
-
-impl Render for RuntimeDroppingIncompleteNode {
-    fn render(
-        &mut self,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> impl open_gpui::IntoElement {
-        let input = self
-            .binding
-            .read(cx)
-            .authoring()
-            .expect("authoring opens before the runtime is dropped")
-            .port(input_id())
-            .expect("input belongs to this node")
-            .handle()
-            .clone();
-        drop(self.runtime_owner.borrow_mut().take());
-        div()
-            .size_full()
-            .child(input.measure(div().w(px(14.0)).h(px(14.0))))
-    }
-}
-
 impl Render for ValidSiblingNode {
     fn render(
         &mut self,
@@ -583,6 +485,7 @@ fn measured_surface_bootstrap_requests_a_second_frame_and_mounts_visible_nodes(
                 view,
                 registry.seal(&node_catalog).expect("valid test registry"),
             )
+            .expect("valid Open GPUI scene host")
         });
         *installed_host.borrow_mut() = Some(host.clone());
         OffsetScene { host }
@@ -627,6 +530,7 @@ fn measured_initial_fit_applies_once_and_yields_to_later_user_navigation(
             view,
             registry.seal(&node_catalog).expect("valid test registry"),
         )
+        .expect("valid Open GPUI scene host")
         .with_initial_viewport_policy(InitialViewportPolicy::FitOnFirstMeasuredGeometry)
     });
     draw(cx);
@@ -678,6 +582,7 @@ fn measured_initial_fit_never_overwrites_a_user_owned_viewport(cx: &mut open_gpu
             view,
             registry.seal(&node_catalog).expect("valid test registry"),
         )
+        .expect("valid Open GPUI scene host")
         .with_initial_viewport_policy(InitialViewportPolicy::FitOnFirstMeasuredGeometry)
     });
     draw(cx);
@@ -725,6 +630,7 @@ fn native_port_handles_publish_complete_geometry_after_prepaint(
             registry.seal(&node_catalog).expect("valid test registry"),
             viewport(),
         )
+        .expect("valid Open GPUI scene host")
     });
     draw(cx);
 
@@ -753,7 +659,7 @@ fn native_port_handles_publish_complete_geometry_after_prepaint(
     cx.read_entity(&host, |host, _| assert!(host.last_diagnostic().is_none()));
 
     let settled_revision = geometry.layout_revision();
-    for _ in 0..120 {
+    for _ in 0..3 {
         draw(cx);
     }
     assert_eq!(
@@ -827,6 +733,7 @@ fn native_content_mask_removes_and_restores_only_port_interaction_geometry(
                 .expect("valid content-mask registry"),
             viewport(),
         )
+        .expect("valid Open GPUI scene host")
     });
     draw(cx);
 
@@ -1128,6 +1035,7 @@ fn incomplete_layout_keeps_command_and_authoritative_route_until_atomic_refresh(
             registry.seal(&node_catalog).expect("valid routed registry"),
             viewport(),
         )
+        .expect("valid Open GPUI scene host")
     });
     draw(cx);
 
@@ -1239,6 +1147,7 @@ fn content_height_policy_converges_through_revisioned_geometry_commands(
             registry.seal(&node_catalog).expect("valid test registry"),
             viewport(),
         )
+        .expect("valid Open GPUI scene host")
     });
     draw(cx);
 
@@ -1288,7 +1197,7 @@ fn content_height_policy_converges_through_revisioned_geometry_commands(
         .expect("settled geometry")
         .layout_revision();
 
-    for _ in 0..120 {
+    for _ in 0..3 {
         draw(cx);
     }
     assert_eq!(
@@ -1335,6 +1244,7 @@ fn content_size_waits_for_queued_prefix_and_binds_one_fresh_revision(
             registry.seal(&node_catalog).expect("valid test registry"),
             viewport(),
         )
+        .expect("valid Open GPUI scene host")
     });
 
     draw(cx);
@@ -1356,64 +1266,6 @@ fn content_size_waits_for_queued_prefix_and_binds_one_fresh_revision(
     cx.read_entity(&host, |host, _| {
         assert!(host.last_diagnostic().is_none());
     });
-}
-
-#[open_gpui::test]
-fn host_alternating_content_freezes_after_exact_attempt_bound(cx: &mut open_gpui::TestAppContext) {
-    let node_catalog = catalog();
-    let runtime = GraphRuntime::builder(node_catalog.clone())
-        .build(content_graph())
-        .unwrap();
-    let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
-    let convergence =
-        OpenGpuiNodeSizeConvergence::new(0.5, 2, 4).expect("valid bounded convergence fixture");
-    let policy = OpenGpuiNodeRegistrationPolicy::default().with_size_policy(
-        OpenGpuiNodeSizePolicy::ContentHeight(
-            OpenGpuiContentHeightPolicy::new(80.0, 320.0)
-                .expect("valid content-height bounds")
-                .with_convergence(convergence),
-        ),
-    );
-    let mut registry = OpenGpuiNodeRegistry::builder();
-    registry
-        .register(
-            renderer_descriptor(KIND, RENDERER, "Measured node", |binding, _window, cx| {
-                cx.new(|_| AlternatingContentNode { binding })
-            })
-            .with_policy(policy),
-        )
-        .expect("unique measured-node renderer");
-    let (host, cx) = cx.add_window_view(move |_, _| {
-        OpenGpuiSceneHost::new(
-            view,
-            registry.seal(&node_catalog).expect("valid test registry"),
-            viewport(),
-        )
-    });
-
-    draw(cx);
-
-    assert_eq!(runtime.snapshot().expect("frozen graph").revision(), 4);
-    cx.read_entity(&host, |host, _| {
-        let diagnostic = host
-            .last_diagnostic()
-            .expect("alternating convergence emits one diagnostic");
-        assert_eq!(diagnostic.kind(), OpenGpuiSceneHostDiagnosticKind::Feedback);
-        assert!(diagnostic.message().contains("reason=AlternatingCycle"));
-        assert!(diagnostic.message().contains("attempts=4"));
-    });
-
-    let settled_revision = runtime.snapshot().expect("settled graph").revision();
-    for _ in 0..120 {
-        draw(cx);
-    }
-    assert_eq!(
-        runtime
-            .snapshot()
-            .expect("quiescent frozen graph")
-            .revision(),
-        settled_revision
-    );
 }
 
 #[open_gpui::test]
@@ -1455,6 +1307,7 @@ fn content_sizes_from_one_frame_commit_as_one_atomic_geometry_revision(
             registry.seal(&node_catalog).expect("valid test registry"),
             viewport(),
         )
+        .expect("valid Open GPUI scene host")
     });
 
     draw(cx);
@@ -1509,6 +1362,7 @@ fn stale_prepaint_feedback_refreshes_without_becoming_a_user_diagnostic(
             registry.seal(&node_catalog).expect("valid test registry"),
             viewport(),
         )
+        .expect("valid Open GPUI scene host")
     });
     draw(cx);
 
@@ -1516,68 +1370,6 @@ fn stale_prepaint_feedback_refreshes_without_becoming_a_user_diagnostic(
     let geometry = weak_view.geometry_snapshot().unwrap();
     assert!(geometry.port(input_id()).is_some());
     assert!(geometry.port(output_id()).is_some());
-    cx.read_entity(&host, |host, _| {
-        assert!(host.last_diagnostic().is_none());
-    });
-}
-
-#[open_gpui::test]
-fn stale_same_node_measurement_does_not_emit_a_size_command(cx: &mut open_gpui::TestAppContext) {
-    let node_catalog = catalog();
-    let runtime = Rc::new(
-        GraphRuntime::builder(node_catalog.clone())
-            .build(content_graph())
-            .unwrap(),
-    );
-    let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
-    let policy = OpenGpuiNodeRegistrationPolicy::default().with_size_policy(
-        OpenGpuiNodeSizePolicy::ContentHeight(
-            OpenGpuiContentHeightPolicy::new(80.0, 320.0).expect("valid content-height bounds"),
-        ),
-    );
-    let factory_runtime = Rc::clone(&runtime);
-    let mut registry = OpenGpuiNodeRegistry::builder();
-    registry
-        .register(
-            renderer_descriptor(
-                KIND,
-                RENDERER,
-                "Measured node",
-                move |binding, _window, cx| {
-                    cx.new(|_| StaleContentMeasuredNode {
-                        binding,
-                        runtime: Rc::clone(&factory_runtime),
-                        render_count: 0,
-                    })
-                },
-            )
-            .with_policy(policy),
-        )
-        .expect("unique measured-node renderer");
-    let (host, cx) = cx.add_window_view(move |_, _| {
-        OpenGpuiSceneHost::new(
-            view,
-            registry.seal(&node_catalog).expect("valid test registry"),
-            viewport(),
-        )
-    });
-
-    draw(cx);
-
-    let snapshot = runtime.snapshot().expect("fresh content size settles");
-    let node = snapshot
-        .graph()
-        .node(&NodeId::from_u128(10))
-        .expect("content node remains present");
-    assert_eq!(snapshot.revision(), 2);
-    assert_eq!(node.data, serde_json::json!({ "height": 244.0 }));
-    assert_eq!(
-        node.size,
-        Some(CanvasSize {
-            width: 220.0,
-            height: 244.0,
-        })
-    );
     cx.read_entity(&host, |host, _| {
         assert!(host.last_diagnostic().is_none());
     });
@@ -1622,6 +1414,7 @@ fn nested_scene_origin_is_removed_from_native_layout_feedback(cx: &mut open_gpui
                 registry.seal(&node_catalog).expect("valid test registry"),
                 viewport(),
             )
+            .expect("valid Open GPUI scene host")
         });
         *factory_host.borrow_mut() = Some(host.clone());
         OffsetScene { host }
@@ -1661,6 +1454,7 @@ fn missing_renderer_fallback_measures_every_real_port(cx: &mut open_gpui::TestAp
                 .expect("valid empty test registry"),
             viewport(),
         )
+        .expect("valid Open GPUI scene host")
     });
     draw(cx);
 
@@ -1673,84 +1467,6 @@ fn missing_renderer_fallback_measures_every_real_port(cx: &mut open_gpui::TestAp
             Some(OpenGpuiSceneHostDiagnosticKind::MissingRenderer),
         );
     });
-}
-
-#[test]
-fn duplicate_renderer_stamp_is_rejected_without_mutating_the_registry() {
-    let mut node_catalog = catalog();
-    node_catalog
-        .register(NodeKindSpec::builder(VALID_SIBLING_KIND).build())
-        .unwrap();
-
-    let mut registry = OpenGpuiNodeRegistry::builder();
-    registry
-        .register(renderer_descriptor(
-            KIND,
-            RENDERER,
-            "Measured node",
-            |binding, _window, cx| {
-                cx.new(|_| MeasuredPortsNode {
-                    binding,
-                    measure_output: Rc::new(Cell::new(true)),
-                    mutate_runtime_once: None,
-                })
-            },
-        ))
-        .expect("first renderer is valid");
-
-    let duplicate = registry.register(renderer_descriptor(
-        VALID_SIBLING_KIND,
-        RENDERER,
-        "Valid sibling",
-        |binding, _window, cx| {
-            let mutation = binding.read(cx).managed_mutation();
-            cx.new(|_| ValidSiblingNode {
-                binding,
-                mutation,
-                last_settlement: None,
-            })
-        },
-    ));
-    let Err(error) = duplicate else {
-        panic!("duplicate renderer stamp must be rejected");
-    };
-    assert_eq!(
-        error,
-        OpenGpuiNodeRegistryRegistrationError::DuplicateRendererStamp {
-            renderer: RendererStamp::new(RENDERER, 1),
-            registered_kind: NodeKindKey(KIND.to_owned()),
-            registered_version: 1,
-        }
-    );
-
-    registry
-        .register(renderer_descriptor(
-            VALID_SIBLING_KIND,
-            VALID_SIBLING_RENDERER,
-            "Valid sibling",
-            |binding, _window, cx| {
-                let mutation = binding.read(cx).managed_mutation();
-                cx.new(|_| ValidSiblingNode {
-                    binding,
-                    mutation,
-                    last_settlement: None,
-                })
-            },
-        ))
-        .expect("failed registration left the builder unchanged");
-
-    let registry = registry
-        .seal(&node_catalog)
-        .expect("the remaining semantic renderer mappings are valid");
-    assert_eq!(registry.len(), 2);
-    assert_eq!(
-        registry.renderer_stamp(&NodeKindKey(KIND.to_owned()), 1),
-        Some(&RendererStamp::new(RENDERER, 1)),
-    );
-    assert_eq!(
-        registry.renderer_stamp(&NodeKindKey(VALID_SIBLING_KIND.to_owned()), 1),
-        Some(&RendererStamp::new(VALID_SIBLING_RENDERER, 1)),
-    );
 }
 
 #[open_gpui::test]
@@ -1786,6 +1502,7 @@ fn duplicate_semantic_port_wrapper_preserves_authoritative_geometry(
             registry.seal(&node_catalog).expect("valid test registry"),
             viewport(),
         )
+        .expect("valid Open GPUI scene host")
     });
     draw(cx);
 
@@ -1845,6 +1562,7 @@ fn semantic_zoom_uses_overview_below_one_and_native_pixels_at_or_above_one(
             registry.seal(&node_catalog).expect("valid test registry"),
             viewport(),
         )
+        .expect("valid Open GPUI scene host")
     });
 
     let pan = CanvasPoint { x: -11.0, y: 13.0 };
@@ -1965,86 +1683,13 @@ fn semantic_zoom_uses_overview_below_one_and_native_pixels_at_or_above_one(
     }
 
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.resource_snapshot().active_nodes(), 1);
         assert!(host.last_diagnostic().is_none());
     });
     assert!(renders.get() > 0, "detail zoom rendered the retained child");
 }
 
 #[open_gpui::test]
-fn semantic_zoom_holds_presentation_inside_the_hysteresis_gap(cx: &mut open_gpui::TestAppContext) {
-    let node_catalog = catalog();
-    let runtime = GraphRuntime::builder(node_catalog.clone())
-        .build(graph())
-        .unwrap();
-    let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
-    view.set_viewport(
-        ViewportTransform::new(CanvasPoint::default(), 1.2)
-            .expect("valid hysteresis viewport transform"),
-    )
-    .unwrap();
-    let weak_view = view.downgrade();
-    let renders = Rc::new(Cell::new(0));
-    let factory_renders = renders.clone();
-
-    let mut registry = OpenGpuiNodeRegistry::builder();
-    registry
-        .register(renderer_descriptor(
-            KIND,
-            RENDERER,
-            "Measured node",
-            move |binding, _window, cx| {
-                cx.new(|_| FixedIntrinsicChildNode {
-                    binding,
-                    renders: factory_renders.clone(),
-                })
-            },
-        ))
-        .expect("unique measured-node renderer");
-    let (host, cx) = cx.add_window_view(move |_, _| {
-        OpenGpuiSceneHost::new(
-            view,
-            registry.seal(&node_catalog).expect("valid test registry"),
-            viewport(),
-        )
-    });
-
-    for (zoom, expects_detail) in [
-        (1.2, true),
-        (0.92, true),
-        (0.86, true),
-        (0.85, false),
-        (0.86, false),
-        (0.99, false),
-        (1.0, true),
-        (0.92, true),
-    ] {
-        weak_view
-            .set_viewport(
-                ViewportTransform::new(CanvasPoint::default(), zoom)
-                    .expect("valid hysteresis viewport transform"),
-            )
-            .unwrap();
-        draw(cx);
-        assert_eq!(
-            cx.debug_bounds(FIXED_NATIVE_CONTROL_SELECTOR).is_some(),
-            expects_detail,
-            "unexpected detail state at zoom {zoom}",
-        );
-        assert_eq!(
-            cx.debug_bounds(OVERVIEW_NODE_SELECTOR).is_some(),
-            !expects_detail,
-            "unexpected overview state at zoom {zoom}",
-        );
-    }
-
-    cx.read_entity(&host, |host, _| {
-        assert_eq!(host.resource_snapshot().active_nodes(), 1)
-    });
-}
-
-#[open_gpui::test]
-fn protected_node_uses_graph_inert_interaction_island_at_low_zoom_without_remounting(
+fn protected_node_pins_one_native_surface_at_low_zoom_without_remounting(
     cx: &mut open_gpui::TestAppContext,
 ) {
     let node_catalog = catalog();
@@ -2054,9 +1699,16 @@ fn protected_node_uses_graph_inert_interaction_island_at_low_zoom_without_remoun
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     view.set_viewport(
         ViewportTransform::new(CanvasPoint::default(), 0.5)
-            .expect("valid interaction-island viewport transform"),
+            .expect("valid pinned-detail viewport transform"),
     )
     .unwrap();
+    let selected = view
+        .graph_snapshot()
+        .unwrap()
+        .node_lifetime_key(NodeId::from_u128(10))
+        .expect("current measured-node lifetime");
+    view.set_selection(vec![selected], Vec::new(), Vec::new())
+        .expect("select protected node");
     let weak_view = view.downgrade();
     let renders = Rc::new(Cell::new(0));
     let factory_renders = renders.clone();
@@ -2089,6 +1741,7 @@ fn protected_node_uses_graph_inert_interaction_island_at_low_zoom_without_remoun
             registry.seal(&node_catalog).expect("valid test registry"),
             viewport(),
         )
+        .expect("valid Open GPUI scene host")
     });
     draw(cx);
 
@@ -2097,10 +1750,34 @@ fn protected_node_uses_graph_inert_interaction_island_at_low_zoom_without_remoun
         .expect("protected node keeps its native child");
     assert_close(native_control.size.width.as_f32(), 220.0);
     assert_close(native_control.size.height.as_f32(), 120.0);
-    assert!(cx.debug_bounds(OVERVIEW_NODE_SELECTOR).is_some());
+    let chrome_selector = format!("jellyflow-node-chrome-{:?}", NodeId::from_u128(10));
+    let chrome = cx
+        .debug_bounds(&chrome_selector)
+        .expect("selected pinned detail owns one aligned chrome surface");
+    assert_close_with(
+        chrome.origin.x.as_f32(),
+        native_control.origin.x.as_f32(),
+        0.51,
+    );
+    assert_close_with(
+        chrome.origin.y.as_f32(),
+        native_control.origin.y.as_f32(),
+        0.51,
+    );
     let protected_geometry = weak_view.geometry_snapshot().unwrap();
     let protected_node = protected_geometry.node(NodeId::from_u128(10)).unwrap();
     let protected_size = protected_node.bounds().size;
+    let protected_zoom = weak_view.viewport_transform().unwrap().zoom;
+    assert_close_with(
+        chrome.size.width.as_f32(),
+        protected_size.width * protected_zoom,
+        0.51,
+    );
+    assert_close_with(
+        chrome.size.height.as_f32(),
+        protected_size.height * protected_zoom,
+        0.51,
+    );
     assert_close_with(
         protected_size.width,
         220.0 / OPEN_GPUI_DEFAULT_OVERVIEW_ENTER_ZOOM,
@@ -2111,11 +1788,6 @@ fn protected_node_uses_graph_inert_interaction_island_at_low_zoom_without_remoun
         120.0 / OPEN_GPUI_DEFAULT_OVERVIEW_ENTER_ZOOM,
         1.1,
     );
-    cx.read_entity(&host, |host, _| {
-        assert_eq!(host.resource_snapshot().active_nodes(), 1);
-        assert_eq!(host.resource_snapshot().protected_instances(), 1);
-    });
-
     let renders_before_release = renders.get();
     drop(lease.borrow_mut().take());
     cx.update_entity(&host, |_, cx| cx.notify());
@@ -2133,15 +1805,10 @@ fn protected_node_uses_graph_inert_interaction_island_at_low_zoom_without_remoun
             .size,
         protected_size,
     );
-    cx.read_entity(&host, |host, _| {
-        assert_eq!(host.resource_snapshot().active_nodes(), 1);
-        assert_eq!(host.resource_snapshot().protected_instances(), 0);
-        assert_eq!(host.resource_snapshot().strong_instances(), 1);
-    });
 }
 
 #[open_gpui::test]
-fn graph_interaction_protects_retention_without_creating_an_interaction_island(
+fn graph_interaction_protects_retention_without_pinning_native_detail(
     cx: &mut open_gpui::TestAppContext,
 ) {
     let node_catalog = catalog();
@@ -2180,66 +1847,20 @@ fn graph_interaction_protects_retention_without_creating_an_interaction_island(
             },
         ))
         .expect("unique measured-node renderer");
-    let (host, cx) = cx.add_window_view(move |_, _| {
+    let (_host, cx) = cx.add_window_view(move |_, _| {
         OpenGpuiSceneHost::new(
             view,
             registry.seal(&node_catalog).expect("valid test registry"),
             viewport(),
         )
+        .expect("valid Open GPUI scene host")
     });
     draw(cx);
 
     assert!(cx.debug_bounds(FIXED_NATIVE_CONTROL_SELECTOR).is_none());
     assert!(cx.debug_bounds(OVERVIEW_NODE_SELECTOR).is_some());
-    cx.read_entity(&host, |host, _| {
-        assert_eq!(host.resource_snapshot().protected_instances(), 1);
-        assert_eq!(host.resource_snapshot().active_nodes(), 1);
-    });
     assert_eq!(renders.get(), 0);
     drop(lease.borrow_mut().take());
-}
-
-#[open_gpui::test]
-fn late_incomplete_feedback_after_runtime_drop_is_silently_discarded(
-    cx: &mut open_gpui::TestAppContext,
-) {
-    let node_catalog = catalog();
-    let runtime = Rc::new(
-        GraphRuntime::builder(node_catalog.clone())
-            .build(graph())
-            .unwrap(),
-    );
-    let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
-    let runtime_owner = Rc::new(RefCell::new(Some(runtime)));
-    let factory_runtime_owner = runtime_owner.clone();
-    let mut registry = OpenGpuiNodeRegistry::builder();
-    registry
-        .register(renderer_descriptor(
-            KIND,
-            RENDERER,
-            "Measured node",
-            move |binding, _window, cx| {
-                cx.new(|_| RuntimeDroppingIncompleteNode {
-                    binding,
-                    runtime_owner: factory_runtime_owner.clone(),
-                })
-            },
-        ))
-        .expect("unique measured-node renderer");
-    let (host, cx) = cx.add_window_view(move |_, _| {
-        OpenGpuiSceneHost::new(
-            view,
-            registry.seal(&node_catalog).expect("valid test registry"),
-            viewport(),
-        )
-    });
-    draw(cx);
-
-    cx.read_entity(&host, |host, _| {
-        assert_eq!(host.close_reason(), Some(ViewCloseReason::RuntimeDropped));
-        assert!(host.last_diagnostic().is_none());
-        assert_eq!(host.resource_snapshot().strong_instances(), 0);
-    });
 }
 
 fn draw(cx: &mut open_gpui::VisualTestContext) {

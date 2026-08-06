@@ -91,6 +91,9 @@ pub fn resolve_edge_route_path(edge: &Edge, endpoints: EdgePosition) -> Option<E
             },
         ),
     }?;
+    if !path.is_finite() {
+        return None;
+    }
 
     Some(EdgeRouteFacts {
         edge_kind: edge.kind,
@@ -239,6 +242,33 @@ mod tests {
         assert!(route.path.commands.iter().any(|command| {
             matches!(command, crate::runtime::geometry::PathCommand::LineTo(point) if point.y == center.y)
         }));
+    }
+
+    #[test]
+    fn resolved_routes_reject_finite_endpoints_that_overflow_path_arithmetic() {
+        let endpoints = EdgePosition {
+            source: EdgeEndpointPosition {
+                point: CanvasPoint {
+                    x: f32::MAX,
+                    y: 0.0,
+                },
+                position: HandlePosition::Right,
+            },
+            target: EdgeEndpointPosition {
+                point: CanvasPoint {
+                    x: -f32::MAX,
+                    y: 0.0,
+                },
+                position: HandlePosition::Left,
+            },
+        };
+        let mut edge = Edge::new(EdgeKind::Data, PortId::from_u128(1), PortId::from_u128(2));
+        edge.view = jellyflow_core::core::EdgeViewDescriptor::new().with_route(
+            jellyflow_core::core::EdgeRouteSpec::orthogonal(20.0, 0.5, None)
+                .expect("valid route specification"),
+        );
+
+        assert_eq!(resolve_edge_route_path(&edge, endpoints), None);
     }
 
     #[test]

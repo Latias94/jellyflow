@@ -108,8 +108,10 @@ fn scene_host_parks_and_restores_the_same_retained_node(cx: &mut open_gpui::Test
         .expect("unique workflow-node renderer");
     let registry = registry.seal(&node_catalog).expect("valid test registry");
 
-    let (host, cx) =
-        cx.add_window_view(move |_, _| OpenGpuiSceneHost::new(view, registry, visible_viewport()));
+    let (host, cx) = cx.add_window_view(move |_, _| {
+        OpenGpuiSceneHost::new(view, registry, visible_viewport())
+            .expect("valid Open GPUI scene host")
+    });
     draw(cx);
     assert_eq!(mounts.get(), 1);
     assert!(renders.get() > 0);
@@ -178,6 +180,7 @@ fn factory_failure_recovers_only_after_an_explicit_mount_retry(cx: &mut open_gpu
             registry.seal(&node_catalog).expect("valid test registry"),
             visible_viewport(),
         )
+        .expect("valid Open GPUI scene host")
     });
     draw(cx);
     assert_eq!(mount_attempts.get(), 1);
@@ -258,6 +261,7 @@ fn panicking_factory_fallback_retirement_is_diagnosed_and_the_retry_continues(
             registry.seal(&node_catalog).expect("valid test registry"),
             visible_viewport(),
         )
+        .expect("valid Open GPUI scene host")
     });
     draw(cx);
     assert_eq!(mount_attempts.get(), 1);
@@ -293,8 +297,10 @@ fn missing_renderer_fallback_is_not_mount_retryable(cx: &mut open_gpui::TestAppC
     let registry = OpenGpuiNodeRegistry::builder()
         .seal(&node_catalog)
         .expect("valid empty test registry");
-    let (host, cx) =
-        cx.add_window_view(move |_, _| OpenGpuiSceneHost::new(view, registry, visible_viewport()));
+    let (host, cx) = cx.add_window_view(move |_, _| {
+        OpenGpuiSceneHost::new(view, registry, visible_viewport())
+            .expect("valid Open GPUI scene host")
+    });
     draw(cx);
 
     assert!(
@@ -346,6 +352,7 @@ fn explicit_close_drains_final_command_once_then_retires_native_state(
             registry.seal(&node_catalog).expect("valid test registry"),
             visible_viewport(),
         )
+        .expect("valid Open GPUI scene host")
     });
     draw(cx);
     let close_version = runtime.snapshot().expect("close snapshot").version();
@@ -422,6 +429,7 @@ fn runtime_drop_retires_native_state_on_the_next_host_tick(cx: &mut open_gpui::T
             registry.seal(&node_catalog).expect("valid test registry"),
             visible_viewport(),
         )
+        .expect("valid Open GPUI scene host")
     });
     draw(cx);
     cx.read_entity(&host, |host, _| {
@@ -454,8 +462,10 @@ fn runtime_drop_bridge_retires_every_mount_after_the_first_revocation_panics(
         Rc::clone(&revocations),
         NodeId::from_u128(10),
     );
-    let (host, cx) =
-        cx.add_window_view(move |_, _| OpenGpuiSceneHost::new(view, registry, visible_viewport()));
+    let (host, cx) = cx.add_window_view(move |_, _| {
+        OpenGpuiSceneHost::new(view, registry, visible_viewport())
+            .expect("valid Open GPUI scene host")
+    });
     draw(cx);
 
     drop(runtime);
@@ -495,8 +505,10 @@ fn nonterminal_retirement_panic_does_not_stop_the_lifecycle_bridge(
         Rc::clone(&revocations),
         NodeId::from_u128(10),
     );
-    let (host, cx) =
-        cx.add_window_view(move |_, _| OpenGpuiSceneHost::new(view, registry, visible_viewport()));
+    let (host, cx) = cx.add_window_view(move |_, _| {
+        OpenGpuiSceneHost::new(view, registry, visible_viewport())
+            .expect("valid Open GPUI scene host")
+    });
     draw(cx);
 
     runtime
@@ -557,8 +569,10 @@ fn stale_parked_reconciliation_finishes_every_retirement_before_propagating_a_pa
         Rc::clone(&revocations),
         NodeId::from_u128(10),
     );
-    let (host, cx) =
-        cx.add_window_view(move |_, _| OpenGpuiSceneHost::new(view, registry, visible_viewport()));
+    let (host, cx) = cx.add_window_view(move |_, _| {
+        OpenGpuiSceneHost::new(view, registry, visible_viewport())
+            .expect("valid Open GPUI scene host")
+    });
     draw(cx);
     cx.update_entity(&host, |host, cx| {
         host.set_frame_bounds(offscreen_viewport());
@@ -644,8 +658,10 @@ fn later_factory_panic_revokes_current_and_previously_prepared_mounts(
     let registry = registry
         .seal(&node_catalog)
         .expect("valid panic test registry");
-    let (host, cx) = cx
-        .add_window_view(move |_, _| OpenGpuiSceneHost::new(view, registry, offscreen_viewport()));
+    let (host, cx) = cx.add_window_view(move |_, _| {
+        OpenGpuiSceneHost::new(view, registry, offscreen_viewport())
+            .expect("valid Open GPUI scene host")
+    });
 
     panic_armed.set(true);
     let panic = catch_unwind(AssertUnwindSafe(|| {
@@ -691,8 +707,10 @@ fn unseen_eviction_retires_every_overflow_mount_before_propagating_a_panic(
     let revocations = Rc::new(RefCell::new(Vec::new()));
     let registry =
         panicking_retirement_registry(&node_catalog, Rc::clone(&revocations), NodeId::from_u128(1));
-    let (host, cx) =
-        cx.add_window_view(move |_, _| OpenGpuiSceneHost::new(view, registry, visible_viewport()));
+    let (host, cx) = cx.add_window_view(move |_, _| {
+        OpenGpuiSceneHost::new(view, registry, visible_viewport())
+            .expect("valid Open GPUI scene host")
+    });
     draw(cx);
 
     cx.update_entity(&host, |host, _| {

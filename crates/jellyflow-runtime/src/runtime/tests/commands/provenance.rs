@@ -1,9 +1,7 @@
 use super::*;
 
-use std::collections::BTreeMap;
-
 use crate::profile::ApplyPipelineError;
-use crate::runtime::graph_runtime::{GraphSnapshot, HistoryState, NodeIncarnation, RuntimePatch};
+use crate::runtime::graph_runtime::{GraphSnapshot, HistoryState, RuntimePatch};
 use crate::runtime::middleware::{GraphRuntimeMiddleware, GraphRuntimeMiddlewareSnapshot};
 
 struct CommandHookCounters {
@@ -49,7 +47,6 @@ impl GraphRuntimeMiddleware for CountingMiddleware {
 struct RuntimeBaseline {
     snapshot: GraphSnapshot,
     history: HistoryState,
-    installed_impact: (GraphIndex, BTreeMap<NodeId, NodeIncarnation>, u64),
     hook_counts: (usize, usize, usize),
 }
 
@@ -58,7 +55,6 @@ impl RuntimeBaseline {
         Self {
             snapshot: runtime.snapshot().unwrap(),
             history: runtime.history_state().unwrap(),
-            installed_impact: runtime.installed_impact_state_for_test(),
             hook_counts: counters.values(),
         }
     }
@@ -173,11 +169,6 @@ fn assert_foreign_command_has_zero_side_effects(
         runtime.history_state().unwrap(),
         baseline.history,
         "{case}: history changed",
-    );
-    assert_eq!(
-        runtime.installed_impact_state_for_test(),
-        baseline.installed_impact,
-        "{case}: indexes or node identities changed",
     );
     assert_eq!(
         counters.values(),

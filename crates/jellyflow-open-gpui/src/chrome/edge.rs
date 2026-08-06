@@ -476,32 +476,21 @@ impl OpenGpuiGraphTheme {
         let selected_width = positive_or(selected_width, fallback_widths.2);
         let active_width = positive_or(active_width, fallback_widths.2);
         let halo = visual_facts.has_emphasis().then(|| {
-            let mut color = base;
-            let mut stroke_width = base_width;
-            if visual_facts.hovered() {
-                color = color.blend(self.palette.edge_hover_tint);
-                stroke_width = stroke_width.max(hovered_width);
-            }
-            if visual_facts.selected() {
-                color = color.blend(self.palette.edge_selection_tint);
-                stroke_width = stroke_width.max(selected_width);
-            }
-            if visual_facts.focused() {
-                color = color.blend(self.palette.focus.opacity(0.72));
-                stroke_width = stroke_width.max(selected_width);
-            }
-            if visual_facts.active() {
-                color = color.blend(self.palette.edge_active_tint);
-                stroke_width = stroke_width.max(active_width);
-            }
-            if visual_facts.preview() {
-                color = color.blend(self.palette.edge_preview_tint);
-                stroke_width = stroke_width.max(active_width);
-            }
+            let layer = visual_facts.dominant_layer();
+            let (tint, stroke_width) = match layer {
+                OpenGpuiEdgeLayer::Hovered => (self.palette.edge_hover_tint, hovered_width),
+                OpenGpuiEdgeLayer::Selected => (self.palette.edge_selection_tint, selected_width),
+                OpenGpuiEdgeLayer::Focused => (self.palette.focus.opacity(0.72), selected_width),
+                OpenGpuiEdgeLayer::Active => (self.palette.edge_active_tint, active_width),
+                OpenGpuiEdgeLayer::Preview => (self.palette.edge_preview_tint, active_width),
+                OpenGpuiEdgeLayer::Base => {
+                    unreachable!("emphasis cannot resolve to the base layer")
+                }
+            };
             OpenGpuiEdgeHaloStyle {
-                color,
-                stroke_width,
-                layer: visual_facts.dominant_layer(),
+                color: base.blend(tint),
+                stroke_width: stroke_width.max(base_width),
+                layer,
             }
         });
 
@@ -519,8 +508,6 @@ impl OpenGpuiGraphTheme {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
-
     use super::*;
 
     #[test]
@@ -613,25 +600,27 @@ mod tests {
     }
 
     #[test]
-    fn every_fact_combination_keeps_batch_cardinality_finite() {
+    fn dominant_layer_is_the_only_halo_tint_and_width_authority() {
         let theme = OpenGpuiGraphTheme::default();
-        let mut keys = BTreeSet::new();
-        for mask in 0_u8..32 {
-            let facts = OpenGpuiEdgeVisualFacts::default()
-                .with_hovered(mask & 1 != 0)
-                .with_selected(mask & 2 != 0)
-                .with_focused(mask & 4 != 0)
-                .with_active(mask & 8 != 0)
-                .with_preview(mask & 16 != 0);
-            for token in [None, Some("data"), Some("control"), Some("warning")] {
-                let style = theme.resolve_edge_style(facts, token);
-                keys.insert(style.batch_key());
-                if let Some(key) = style.halo_batch_key() {
-                    keys.insert(key);
-                }
-            }
-        }
-        assert!(keys.len() <= 4 * 33);
+        let combined = theme.resolve_edge_style(
+            OpenGpuiEdgeVisualFacts::default()
+                .with_hovered(true)
+                .with_selected(true)
+                .with_focused(true)
+                .with_active(true),
+            Some("data"),
+        );
+        let active_only = theme.resolve_edge_style(
+            OpenGpuiEdgeVisualFacts::default().with_active(true),
+            Some("data"),
+        );
+
+        assert_eq!(combined.color(), active_only.color());
+        assert_eq!(combined.halo(), active_only.halo());
+        assert_eq!(
+            combined.halo().expect("combined active halo").layer(),
+            OpenGpuiEdgeLayer::Active
+        );
     }
 
     #[test]

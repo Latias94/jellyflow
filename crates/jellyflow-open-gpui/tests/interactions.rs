@@ -392,7 +392,7 @@ fn rejected_pointer_start_reports_start_before_cancel_without_cancelling_keyboar
 }
 
 #[open_gpui::test]
-fn disabled_port_is_skipped_and_blocks_pointer_and_keyboard_activation(
+fn disabled_port_is_skipped_while_pointer_input_passes_through_to_the_node(
     cx: &mut open_gpui::TestAppContext,
 ) {
     let (
@@ -405,9 +405,16 @@ fn disabled_port_is_skipped_and_blocks_pointer_and_keyboard_activation(
         control_events,
         _,
         control_focus,
-        _,
+        view,
     ) = mount_scene(cx);
     draw(cx);
+
+    let enabled_geometry = view
+        .geometry_snapshot()
+        .expect("enabled port geometry snapshot")
+        .port(output_id())
+        .expect("enabled port geometry")
+        .clone();
 
     let control = cx.debug_bounds(CONTROL_SELECTOR).expect("control bounds");
     cx.simulate_click(control.center(), Default::default());
@@ -420,6 +427,21 @@ fn disabled_port_is_skipped_and_blocks_pointer_and_keyboard_activation(
     port_events.enabled.set(false);
     cx.update_entity(&host, |_, cx| cx.notify());
     draw(cx);
+
+    let disabled_geometry = view
+        .geometry_snapshot()
+        .expect("disabled port geometry snapshot")
+        .port(output_id())
+        .expect("disabled port keeps published geometry")
+        .clone();
+    assert_eq!(
+        disabled_geometry.visual_bounds(),
+        enabled_geometry.visual_bounds()
+    );
+    assert_eq!(
+        disabled_geometry.route_anchor(),
+        enabled_geometry.route_anchor()
+    );
 
     simulate_key_press(cx, "enter");
     simulate_key_press(cx, "space");
@@ -447,7 +469,7 @@ fn disabled_port_is_skipped_and_blocks_pointer_and_keyboard_activation(
     assert!(port_events.pointer.borrow().is_empty());
     assert!(port_events.activations.borrow().is_empty());
     assert!(control_events.borrow().is_empty());
-    assert!(node_events.borrow().is_empty());
+    assert_eq!(node_events.borrow().as_slice(), ["down", "up"]);
     assert!(canvas_events.borrow().is_empty());
 
     port_events.enabled.set(true);
@@ -1292,6 +1314,7 @@ fn mount_scene_with_port_observer(
                 registry.seal(&catalog()).expect("valid test registry"),
                 viewport(),
             )
+            .expect("valid Open GPUI scene host")
         });
         *scene_host.borrow_mut() = Some(host.clone());
         InteractionScene {

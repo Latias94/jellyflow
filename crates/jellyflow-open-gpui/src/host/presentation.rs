@@ -108,6 +108,12 @@ impl OpenGpuiSceneHost {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Result<(), OpenGpuiPresentationSyncError> {
+        if self.interaction_owner.presentation().phase() == CanvasInteractionPhase::Idle
+            && (self.retained_nodes.hovered_node().is_some()
+                || self.retained_nodes.hovered_port().is_some())
+        {
+            self.reconcile_retained_hover_at(window.mouse_position(), cx);
+        }
         let graph = self.view.graph_snapshot()?;
         if self.retained_nodes.hovered_node().is_some_and(|hovered| {
             !self
@@ -136,22 +142,18 @@ impl OpenGpuiSceneHost {
             );
         }
 
-        let requested_ports = self
-            .retained_nodes
-            .active_in_order()
-            .filter_map(|(_, mounted)| mounted.binding.as_ref())
-            .flat_map(|binding| binding.read(cx).port_ids().collect::<Vec<_>>())
-            .collect::<Vec<_>>();
-        if self.retained_nodes.refresh_port_presentations(
+        let mut requested_ports = Vec::new();
+        for (_, mounted) in self.retained_nodes.active_in_order() {
+            let Some(binding) = mounted.binding.as_ref() else {
+                continue;
+            };
+            requested_ports.extend(binding.read(cx).port_ids());
+        }
+        self.retained_nodes.refresh_port_presentations(
             &self.view,
             graph.revision(),
             requested_ports.as_slice(),
-        )? {
-            self.work_ledger.binding_presentation_queries = self
-                .work_ledger
-                .binding_presentation_queries
-                .saturating_add(1);
-        }
+        )?;
 
         let interaction = self.interaction_owner.presentation();
         let connection = interaction.connection();
@@ -164,7 +166,6 @@ impl OpenGpuiSceneHost {
         let projected_interaction = projected_interaction_input(&interaction);
         let summaries = self.retained_nodes.port_presentations();
         let mut summary_cursor = 0_usize;
-        let mut materializations = 0_u64;
         let mut updates = Vec::new();
 
         for (instance, mounted) in self.retained_nodes.active_in_order() {
@@ -180,8 +181,8 @@ impl OpenGpuiSceneHost {
             )?;
             let lod = match mounted.graph_presentation() {
                 OpenGpuiNodePresentation::Detail => OpenGpuiNodeLod::Detail,
-                OpenGpuiNodePresentation::Overview if mounted.has_interaction_island() => {
-                    OpenGpuiNodeLod::InteractionIsland
+                OpenGpuiNodePresentation::Overview if mounted.has_pinned_detail_surface() => {
+                    OpenGpuiNodeLod::PinnedDetail
                 }
                 OpenGpuiNodePresentation::Overview => OpenGpuiNodeLod::Overview,
             };
@@ -260,10 +261,7 @@ impl OpenGpuiSceneHost {
             if identical {
                 continue;
             }
-            let presentation = (!semantically_equal).then(|| {
-                materializations = materializations.saturating_add(1);
-                input.materialize()
-            });
+            let presentation = (!semantically_equal).then(|| input.materialize());
             updates.push(OpenGpuiBindingPresentationUpdate {
                 binding,
                 input,
@@ -271,28 +269,15 @@ impl OpenGpuiSceneHost {
             });
         }
         debug_assert_eq!(summary_cursor, summaries.len());
-        self.work_ledger.binding_presentation_materializations = self
-            .work_ledger
-            .binding_presentation_materializations
-            .saturating_add(materializations);
-
         for update in updates {
-            let mut changed = false;
             update.binding.update(cx, |binding, cx| {
                 binding.set_presentation_input(update.input);
-                if let Some(presentation) = update.presentation {
-                    changed = binding.set_presentation(presentation);
-                    if changed {
-                        cx.notify();
-                    }
+                if let Some(presentation) = update.presentation
+                    && binding.set_presentation(presentation)
+                {
+                    cx.notify();
                 }
             });
-            if changed {
-                self.work_ledger.binding_updates =
-                    self.work_ledger.binding_updates.saturating_add(1);
-                self.work_ledger.binding_notifications =
-                    self.work_ledger.binding_notifications.saturating_add(1);
-            }
         }
         Ok(())
     }

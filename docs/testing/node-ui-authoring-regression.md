@@ -19,7 +19,7 @@ contracts.
 | Shader / Blueprint | typed real ports, inline values derived from incident edges, dynamic pins, occupied-input replacement, reconnect, create-from-wire search, and structured rejection | `examples/canvas-jellyflow/tests/native_shader_host.rs` plus `crates/jellyflow-open-gpui/src/host_tests.rs` |
 | Graph-symbol blackboard | application-owned native controls, stable `SymbolId`, explicit stale-draft reapply, and exact undo without a portable blackboard descriptor | `examples/canvas-jellyflow/tests/native_blackboard.rs` |
 | Unknown renderer | diagnostic native fallback while opaque node data and all policy-controlled real ports remain intact | `crates/jellyflow-open-gpui/tests/measurement_feedback.rs` and registry tests |
-| Real native window | non-headless Open GPUI launch, measured workflow and shader product frames, retained mounts, and successful native layout feedback | `open-gpui-canvas-jellyflow --smoke` in both demo modes |
+| Real native window | non-headless Open GPUI launch, measured workflow and shader product frames, retained mounts, and successful native layout feedback | dedicated `open-gpui-real-window-smoke` binary in both demo modes |
 
 The dropped-wire search is intentionally application-owned. The Open GPUI host exposes only the
 revision-bound request, semantic candidate query, local overlay anchor, cancellation, and atomic
@@ -64,31 +64,46 @@ remains an explicit upstream test-support gap and is not represented as passing 
 egui response geometry and immediate-mode state. It does not emulate retained entities or ship a
 second product gallery.
 
+## Test portfolio policy
+
+Each invariant has one lowest-cost authoritative layer:
+
+- pure reducers and geometry helpers own branch tables and numerical boundaries;
+- runtime owner tests cover authority, identity, stale work, panic/drop, retirement, and terminal
+  settlement through the production `GraphRuntime + ViewSession` path;
+- adapter tests use real framework events for hit testing, capture, focus, keyboard, IME, and native
+  layout behavior;
+- the representative real-window matrix owns final presentation continuity and named visual
+  checkpoints.
+
+Do not add a `cfg(test)` execution path that bypasses production authority, a shadow render-state
+model that restates what the renderer intends to paint, or a Cartesian matrix over private
+lifecycle stages. Exact cumulative counters belong only in the owner test that defines that
+counter's contract. Repeating an unchanged frame dozens of times is not additional state-space
+coverage; use a small repeated sample unless the test is explicitly measuring a bounded budget or
+scale property. Test count and line count are diagnostics, not release targets.
+
 ## Real-window contract
 
 The initial frame of `OpenGpuiSceneHost::new_measured_surface` bootstraps the native surface size.
-The real-window gate therefore waits for the first complete product frame rather than treating that
-bootstrap draw as success. The measured surface must be positive and finite. Retained lifecycle
-evidence is visibility-aware: every visible expected node must be active, parked nodes may account
-only for currently invisible nodes, active plus parked and strong-instance counts must equal the
-fixture node count, and the initial mount count must never grow. Evictions, hard retirements,
-protected-capacity overflow, and frame-materialization overflow are forbidden. At least two
-feedback submissions must have completed; feedback, layout, and measurement failure counters must
-remain zero; and the host must have no diagnostic or close reason.
+The real-window gate therefore waits for complete graph geometry and a nonblank product frame rather
+than treating that bootstrap draw as success. It reads authoritative graph, geometry, viewport,
+interaction, current resource, diagnostic, and framebuffer facts. The smoke harness must not grow a
+second renderer model or cumulative work ledger merely to make these facts testable.
 
 The gate runs the production `open_gpui_platform::application()` entrypoint, not a test platform.
-Each process emits exactly one single-line `JELLYFLOW_REAL_WINDOW_SMOKE_RECEIPT` JSON value. The
-versioned Rust contract owns its schema and semantic validation for the named run, initial topology,
-current geometry and paint, retained lifecycle, typed interaction or LOD evidence, and every
-contiguous presented frame. Python rejects missing, duplicate, malformed, or contract-invalid
-receipts and requires the process exit status to agree with the validated receipt status. It does
-not duplicate the receipt field table. Evidence that was never observed remains absent rather than
-being replaced with compact, interaction, or zoom-1 defaults. Capture totals are derived from
-unique named checkpoints, so a duplicate checkpoint fails the process instead of inflating its
-count.
-Shader and Workflow run the full interaction path at compact
-`960x640` bounds with zooms `0.5`, `1`, and `2`, plus one normal `1440x900` run at zoom `1`. The
-configured zoom remains active for every dispatched interaction and all nine checkpoints; the
+Each process emits exactly one single-line `JELLYFLOW_REAL_WINDOW_SMOKE_RECEIPT` JSON value with
+`schema_version`, `run_id`, `status`, `failure`, and `artifacts`. Rust validates graph geometry,
+native pixels, interaction outcomes, atomic connection/reconnect route replacement, node release
+continuity, and presented-frame order before it can emit `pass`. Python rejects missing, duplicate,
+malformed, mismatched, or exit-status-inconsistent receipts and verifies listed artifacts exist; it
+does not reinterpret UI semantics or launch a second validator process.
+CI keeps five representative processes instead of a product × bounds × zoom Cartesian product:
+Workflow at compact `960x640` bounds and zoom `1`; Shader at compact bounds and zooms `0.5` and `2`;
+Shader at normal `1440x900` bounds and zoom `1`; plus the directed Shader LOD-threshold probe.
+Release preflight trusts the exact successful CI source SHA and does not run a second matrix. The
+configured zoom remains active for every dispatched interaction and all nine interaction
+checkpoints; the
 native wheel probe restores that configured zoom rather than restoring a fit transform. The
 interaction path also proves a Tab/Shift-Tab focus round trip and at least three viewport-changing
 auto-pan frames while a node drag remains held in the 12-pixel edge safe area. Connection creation
@@ -105,11 +120,11 @@ A separate normal Shader process samples semantic LOD at `0.86`, `0.85`, and `0.
 stable node's screen-space bounds and every real port's node-relative route anchor across adjacent
 samples, captures all three frames, and fails on a presentation jump. Keeping this directed probe
 outside the product/bounds/zoom interaction matrix avoids a Cartesian expansion. Interaction
-checkpoints validate complete graph geometry plus nonblank paint for every visible node; the process
-receipt and exit status remain the behavioral authority, while CI uploads PNGs for visual inspection
-of overlap, endpoint shifts, and route discontinuity. The workflow starts from an empty capture
-directory, requires the exact 75-file matrix rather than only its count, and uploads its sorted
-manifest with the images.
+checkpoints validate complete graph geometry plus nonblank paint for every visible node. The Rust
+harness is the semantic authority; the process receipt and exit status transport its outcome, while
+CI uploads the named PNG artifacts for visual inspection of overlap, endpoint shifts, and route
+discontinuity. The workflow starts from an empty capture directory and atomically writes one
+canonical `results.json` matrix result.
 
 ## Runtime contracts
 
@@ -150,34 +165,31 @@ cargo fmt --manifest-path examples/canvas-jellyflow/Cargo.toml --all -- --check
 cargo check --manifest-path examples/canvas-jellyflow/Cargo.toml --workspace --locked
 cargo nextest run --manifest-path examples/canvas-jellyflow/Cargo.toml \
   -p open-gpui-canvas-jellyflow --locked --no-fail-fast
+cargo nextest run --manifest-path examples/canvas-jellyflow/Cargo.toml \
+  -p open-gpui-canvas-jellyflow --bin open-gpui-real-window-smoke \
+  --features real-window-smoke --locked --no-fail-fast
 cargo test --manifest-path examples/canvas-jellyflow/Cargo.toml --workspace --doc --locked
 cargo clippy --manifest-path examples/canvas-jellyflow/Cargo.toml \
   --workspace --all-targets --locked -- -D warnings
-
-# Prove production Window::on_next_frame drives node-drag auto-pan without test support.
-cargo build --manifest-path examples/canvas-jellyflow/Cargo.toml \
-  -p open-gpui-canvas-jellyflow --locked --no-default-features \
-  --bin open-gpui-native-frame-clock-witness
-python3 tools/check_open_gpui_native_frame_clock.py --require-native
+cargo clippy --manifest-path examples/canvas-jellyflow/Cargo.toml \
+  -p open-gpui-canvas-jellyflow --bin open-gpui-real-window-smoke \
+  --features real-window-smoke --locked -- -D warnings
 
 # Build once, then run the bounded visual and interaction matrix through the CI orchestrator.
 cargo build --manifest-path examples/canvas-jellyflow/Cargo.toml \
-  -p open-gpui-canvas-jellyflow --bins --locked --features real-window-smoke
-set -euo pipefail
-capture_output="$(mktemp)"
-trap 'rm -f "$capture_output"' EXIT
+  -p open-gpui-canvas-jellyflow --bin open-gpui-real-window-smoke \
+  --locked --features real-window-smoke
 python3 tools/run_real_window_smoke_matrix.py \
-  --binary examples/canvas-jellyflow/target/debug/open-gpui-canvas-jellyflow \
-  --receipt-validator examples/canvas-jellyflow/target/debug/smoke_receipt_contract \
+  --binary examples/canvas-jellyflow/target/debug/open-gpui-real-window-smoke \
   --capture-root target/real-window-smoke \
-  --timeout-seconds 60 \
-  --capture-dir-output "$capture_output"
-python3 tools/check_real_window_smoke_evidence.py \
-  --capture-dir-from-output "$capture_output" \
-  --receipt-validator examples/canvas-jellyflow/target/debug/smoke_receipt_contract
+  --timeout-seconds 60
 ```
 
-The Open GPUI executable is the only product example. `jellyflow-egui` and the external
-adapter-conformance consumer prove the independent framework boundary. The authoring obligations for
-future adapters are documented in `docs/guides/native-adapter-authoring.md` and backed by executable
-tests rather than a framework-free implementation.
+The matrix command runs five real processes, enforces a per-run timeout and exactly one minimal
+receipt, verifies listed artifacts, and writes an atomic `results.json`. Rust remains the semantic
+gate; PNG captures remain review artifacts, and Python does not decode them or infer UI semantics.
+
+The Open GPUI executable is the only product example. Focused `jellyflow-egui` native tests and the
+published archive consumers prove the independent framework boundary. The authoring obligations for
+future adapters are documented in `docs/guides/native-adapter-authoring.md` and backed by
+adapter-local executable tests rather than a framework-free implementation.

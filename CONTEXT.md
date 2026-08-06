@@ -1,6 +1,6 @@
 # Jellyflow Project Context
 
-Last updated: 2026-07-21
+Last updated: 2026-08-04
 
 This file is the high-signal navigation context for agents working in this repository. Shipped code
 and executable tests define current behavior. The adapter-authoring guide records the current
@@ -29,8 +29,9 @@ with Open GPUI as the first native host and other frameworks supported through i
   routing, culling, and frame/feedback state.
 - `jellyflow-open-gpui` is the first real native adapter. It may depend on Open GPUI and owns the
   retained registry, component lifecycle, measurement bridge, and input arbitration.
-- `jellyflow-egui` is the second native adapter and conformance witness. Future adapters consume the
-  same owned protocol but keep their framework types and widget lifecycles local.
+- `jellyflow-egui` is the second native adapter and an independent immediate-mode witness. Future
+  adapters consume the same owned protocol but keep their framework types and widget lifecycles
+  local.
 
 `jellyflow-core`, `jellyflow-layout`, and `jellyflow-runtime` must stay free of UI framework,
 windowing, focus, IME, popup, and platform dependencies. Use dependency smoke checks when changing
@@ -39,12 +40,13 @@ manifests or public boundaries.
 ## Current Architecture
 
 The active architecture keeps graph semantics in direct core/runtime dependencies and native UI in
-independent adapters. Its contracts live in public types, executable conformance, protocol tests,
-and migration tests. Real-window smoke belongs in the single flagship product through `--smoke`
-and `--workflow --smoke`. CI runs six compact interaction processes across both products and zooms
-`0.5`, `1`, and `2`, two normal-bounds interaction processes at zoom `1`, and one directed Shader
-LOD-threshold process. The gate validates and retains 75 uniquely named state screenshots plus a
-sorted manifest.
+independent adapters. Its contracts live in public types, runtime owner tests, adapter-local native
+tests, and migration tests. Real-window evidence belongs to the dedicated
+`open-gpui-real-window-smoke` binary, which is excluded from ordinary product builds. CI runs five
+representative processes: Shader compact at zoom `0.5` and `2`, Workflow compact at zoom `1`,
+Shader normal at zoom `1`, and one directed Shader LOD-threshold run. The Rust harness owns live UI
+semantics; Python validates only process transport, run identity, listed artifacts, and the atomic
+`results.json` matrix result.
 
 ## Runtime Interaction Strategy
 
@@ -92,10 +94,13 @@ Adapter-facing gates:
 cargo nextest run -p jellyflow-open-gpui --locked
 cargo nextest run -p jellyflow-egui --locked
 cargo test --manifest-path examples/canvas-jellyflow/Cargo.toml --workspace --doc --locked
-cargo run --manifest-path examples/canvas-jellyflow/Cargo.toml \
-  -p open-gpui-canvas-jellyflow --locked --features real-window-smoke -- --smoke
-cargo run --manifest-path examples/canvas-jellyflow/Cargo.toml \
-  -p open-gpui-canvas-jellyflow --locked --features real-window-smoke -- --workflow --smoke
+cargo build --manifest-path examples/canvas-jellyflow/Cargo.toml \
+  -p open-gpui-canvas-jellyflow --bin open-gpui-real-window-smoke \
+  --locked --features real-window-smoke
+python3 tools/run_real_window_smoke_matrix.py \
+  --binary examples/canvas-jellyflow/target/debug/open-gpui-real-window-smoke \
+  --capture-root target/real-window-smoke \
+  --timeout-seconds 60
 ```
 
 Do not add `wgpu`, egui, Fret, screenshot, or pixel dependencies to `jellyflow-core` or
@@ -112,5 +117,5 @@ incompatibility boundary and fail with structured `UnsupportedEnvelopeVersion` b
 decoding; no lossy focusability migration is supported.
 
 Do not add broad re-export layers merely to preserve stale APIs. Keep renderer/platform work outside
-headless crates and prove boundaries through protocol, persistence, conformance, direct external
-consumers, and native adapter tests.
+headless crates and prove boundaries through protocol, persistence, direct external consumers, and
+native adapter tests.

@@ -362,7 +362,25 @@ fn optional_rect_approximately_eq(
 pub(crate) type SharedGeometryMap<K, V> = RedBlackTreeMapSync<K, Arc<V>>;
 pub(crate) type SharedGeometryOwnerMap<K> = RedBlackTreeMapSync<K, NodeId>;
 pub(crate) type SharedFrameCullSet = RedBlackTreeSetSync<NodeId>;
+pub(crate) type SharedRouteGeometryRevisionMap = RedBlackTreeMapSync<EdgeId, RouteGeometryRevision>;
 type SharedGeometryMapIter<'a, K, V> = <&'a SharedGeometryMap<K, V> as IntoIterator>::IntoIter;
+
+/// Stable identity for one edge's resolved path geometry inside a view session.
+///
+/// Selection, hover, and adapter theme changes do not change this revision. Native path caches can
+/// reuse geometry until the revision reported by the current [`GeometrySnapshot`] changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RouteGeometryRevision(u128);
+
+impl RouteGeometryRevision {
+    pub(crate) const fn new(value: u128) -> Self {
+        Self(value)
+    }
+
+    pub fn get(self) -> u128 {
+        self.0
+    }
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct GeometryVisibleCounts {
@@ -598,6 +616,7 @@ struct GeometrySnapshotInner {
     frame_culled_nodes: SharedFrameCullSet,
     visible_counts: GeometryVisibleCounts,
     routes: SharedGeometryMap<EdgeId, PublishedEdgeRoute>,
+    route_geometry_revisions: SharedRouteGeometryRevisionMap,
 }
 
 /// Immutable geometry visible to one published layout revision.
@@ -634,6 +653,7 @@ impl GeometrySnapshot {
         frame_culled_nodes: SharedFrameCullSet,
         visible_counts: GeometryVisibleCounts,
         routes: SharedGeometryMap<EdgeId, PublishedEdgeRoute>,
+        route_geometry_revisions: SharedRouteGeometryRevisionMap,
     ) -> Self {
         Self {
             inner: Arc::new(GeometrySnapshotInner {
@@ -647,6 +667,7 @@ impl GeometrySnapshot {
                 frame_culled_nodes,
                 visible_counts,
                 routes,
+                route_geometry_revisions,
             }),
         }
     }
@@ -719,6 +740,11 @@ impl GeometrySnapshot {
 
     pub fn route(&self, edge: EdgeId) -> Option<&PublishedEdgeRoute> {
         self.inner.routes.get(&edge).map(Arc::as_ref)
+    }
+
+    /// Returns the geometry revision paired with the current published route.
+    pub fn route_geometry_revision(&self, edge: EdgeId) -> Option<RouteGeometryRevision> {
+        self.inner.route_geometry_revisions.get(&edge).copied()
     }
 
     pub fn routes(&self) -> GeometryElements<'_, EdgeId, PublishedEdgeRoute> {

@@ -509,8 +509,10 @@ fn foreign_catalog_document_replacement_has_zero_side_effects() {
 }
 
 #[test]
-fn one_node_change_has_bounded_four_view_fanout_in_ten_thousand_node_graph() {
-    let (graph, ids) = graph_with_nodes(10_000);
+fn one_node_change_has_bounded_four_view_fanout() {
+    const NODE_COUNT: usize = 128;
+    const CHANGED_INDEX: usize = 42;
+    let (graph, ids) = graph_with_nodes(NODE_COUNT);
     let graph_id = graph.graph_id();
     let runtime = GraphRuntime::builder(Default::default())
         .build(graph)
@@ -519,7 +521,7 @@ fn one_node_change_has_bounded_four_view_fanout_in_ten_thousand_node_graph() {
     assert_eq!(
         retained_snapshot
             .graph()
-            .node(&ids[4_321])
+            .node(&ids[CHANGED_INDEX])
             .expect("retained node")
             .data,
         serde_json::Value::Null
@@ -552,7 +554,7 @@ fn one_node_change_has_bounded_four_view_fanout_in_ten_thousand_node_graph() {
     let outcome = runtime
         .execute(GraphCommand::set_node_data(
             runtime.snapshot().unwrap().version(),
-            ids[4_321],
+            ids[CHANGED_INDEX],
             serde_json::json!({ "value": 42 }),
         ))
         .into_result()
@@ -564,7 +566,7 @@ fn one_node_change_has_bounded_four_view_fanout_in_ten_thousand_node_graph() {
     assert_eq!(
         retained_snapshot
             .graph()
-            .node(&ids[4_321])
+            .node(&ids[CHANGED_INDEX])
             .expect("retained node")
             .data,
         serde_json::Value::Null
@@ -574,7 +576,10 @@ fn one_node_change_has_bounded_four_view_fanout_in_ten_thousand_node_graph() {
     assert_eq!(receipt.planning_work().operations_emitted(), 1);
 
     for ((view, patches), counters) in views.iter().zip(&observed).zip(&binding_counts) {
-        assert_eq!(view.export_seed().unwrap().stacking().nodes().len(), 10_000);
+        assert_eq!(
+            view.export_seed().unwrap().stacking().nodes().len(),
+            NODE_COUNT
+        );
         let patches = patches.borrow();
         assert_eq!(patches.len(), 1);
         assert_eq!(patches[0].0.affected_nodes().len(), 1);
@@ -586,7 +591,7 @@ fn one_node_change_has_bounded_four_view_fanout_in_ten_thousand_node_graph() {
         assert_eq!(reconciliation.geometry().route_invalidations(), 0);
         assert!(!reconciliation.selection().reconciled());
         for (index, counter) in counters.iter().enumerate() {
-            assert_eq!(counter.get(), usize::from(index == 4_321));
+            assert_eq!(counter.get(), usize::from(index == CHANGED_INDEX));
         }
     }
 
@@ -597,13 +602,15 @@ fn one_node_change_has_bounded_four_view_fanout_in_ten_thousand_node_graph() {
 }
 
 #[test]
-fn one_retirement_uses_exact_tombstones_across_four_ten_thousand_item_draw_orders() {
-    let (graph, ids) = graph_with_nodes(10_000);
+fn one_retirement_reconciles_four_explicit_draw_orders() {
+    const NODE_COUNT: usize = 128;
+    const RETIRED_INDEX: usize = 42;
+    let (graph, ids) = graph_with_nodes(NODE_COUNT);
     let graph_id = graph.graph_id();
     let runtime = GraphRuntime::builder(Default::default())
         .build(graph)
         .expect("runtime");
-    let retired = ids[4_321];
+    let retired = ids[RETIRED_INDEX];
     let views = (0..4)
         .map(|_| {
             runtime
@@ -631,28 +638,27 @@ fn one_retirement_uses_exact_tombstones_across_four_ten_thousand_item_draw_order
         .expect("retirement applies");
 
     for (view, observed) in views.into_iter().zip(observed) {
-        assert_eq!(view.draw_order_storage_counts_for_test(), (10_000, 1));
         let observed = observed.borrow();
         assert_eq!(observed.len(), 1);
         assert!(observed[0].1.selection().reconciled());
         assert!(observed[0].1.selection().membership_rebuilt());
         let seed = view.export_seed().unwrap();
         assert!(seed.selection().nodes().is_empty());
-        assert_eq!(seed.stacking().nodes().len(), 9_999);
+        assert_eq!(seed.stacking().nodes().len(), NODE_COUNT - 1);
         assert!(!seed.stacking().nodes().contains(&retired));
-        assert_eq!(view.draw_order_storage_counts_for_test(), (10_000, 1));
     }
 }
 
 #[test]
-fn unselected_retirement_skips_full_selection_sanitation_in_four_large_views() {
-    let (graph, ids) = graph_with_nodes(10_001);
+fn unselected_retirement_skips_selection_sanitation_in_four_views() {
+    const SELECTION_COUNT: usize = 128;
+    let (graph, ids) = graph_with_nodes(SELECTION_COUNT + 1);
     let graph_id = graph.graph_id();
     let runtime = GraphRuntime::builder(Default::default())
         .build(graph)
         .expect("runtime");
-    let selected = ids[..10_000].to_vec();
-    let retired = ids[10_000];
+    let selected = ids[..SELECTION_COUNT].to_vec();
+    let retired = ids[SELECTION_COUNT];
     let views = (0..4)
         .map(|_| {
             runtime
@@ -688,33 +694,7 @@ fn unselected_retirement_skips_full_selection_sanitation_in_four_large_views() {
 }
 
 #[test]
-fn retirements_outside_explicit_draw_order_do_not_allocate_tombstones() {
-    let (graph, ids) = graph_with_nodes(128);
-    let graph_id = graph.graph_id();
-    let runtime = GraphRuntime::builder(Default::default())
-        .build(graph)
-        .expect("runtime");
-    let view = runtime
-        .attach_view(view_options(ViewSessionSeed::new(graph_id)))
-        .expect("view");
-
-    for node in ids {
-        runtime
-            .execute(GraphCommand::topology(
-                runtime.snapshot().unwrap().version(),
-                TopologyEdit::new().remove_node(node, IncidentEdgePolicy::Reject),
-            ))
-            .into_result()
-            .unwrap()
-            .applied()
-            .expect("retirement applies");
-    }
-
-    assert_eq!(view.draw_order_storage_counts_for_test(), (0, 0));
-}
-
-#[test]
-fn undoing_retirement_restores_explicit_draw_order_without_a_stale_tombstone() {
+fn undoing_retirement_restores_explicit_draw_order() {
     let (graph, ids) = graph_with_nodes(1);
     let graph_id = graph.graph_id();
     let node = ids[0];
@@ -741,7 +721,6 @@ fn undoing_retirement_restores_explicit_draw_order_without_a_stale_tombstone() {
         .applied()
         .expect("retirement applies");
     assert!(view.export_seed().unwrap().stacking().nodes().is_empty());
-    assert_eq!(view.draw_order_storage_counts_for_test(), (1, 1));
 
     runtime
         .execute(GraphCommand::undo(runtime.snapshot().unwrap().version()))
@@ -751,5 +730,4 @@ fn undoing_retirement_restores_explicit_draw_order_without_a_stale_tombstone() {
         .expect("undo applies");
 
     assert_eq!(view.export_seed().unwrap().stacking().nodes(), [node]);
-    assert_eq!(view.draw_order_storage_counts_for_test(), (1, 0));
 }

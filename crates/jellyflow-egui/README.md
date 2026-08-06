@@ -8,6 +8,8 @@ shared widget DSL or a cross-framework renderer trait.
 each admitted node, records graph commands in native event order, measures the node root and all
 real ports, and submits the feedback log once. Egui widget state stays in egui and is retired by
 the full Jellyflow node-instance identity when a node is replaced, removed, or its view closes.
+Application renderers must use a bounded set of stable state-ID salts per node lifetime; registered
+state intentionally survives temporarily hidden rows until that node instance is hard-retired.
 
 `EguiCanvasInteraction` is the matching input bridge. Begin it with the current scene rectangle,
 pass only explicit graph-interactive `egui::Response` values to `handle_response`, and end it after
@@ -30,7 +32,7 @@ policy-filtered selection deletion, while native controls and focused text edito
 
 `output` retains only application work: create-from-wire search requests and fresh graph mutations.
 The application must bind graph mutations to a fresh snapshot, preserve its command ordering, and
-return the resulting ticket settlement. This crate deliberately does not copy Open GPUI's command
+return the resulting identity-keyed completion. This crate deliberately does not copy Open GPUI's command
 journal, visual theme, or retained component lifecycle.
 
 Applications that dispatch renderers dynamically use `show_with_fallback`: returning `None` keeps
@@ -40,8 +42,8 @@ all real ports without reading or rewriting the node's opaque payload.
 This crate intentionally does not ship product galleries, schema-driven controls, renderer
 catalogs, inspectors, or sample applications. Its tests drive real egui pointer/key events through
 the shared connection, candidate, edge-pick, node-drag, cancellation, retirement, close, and
-receipt traces. Open GPUI is the product-tier native adapter; egui remains a compact conformance
-implementation for adapter authors.
+completion traces. Open GPUI is the product-tier native adapter; egui remains a compact independent
+implementation witness for adapter authors.
 
 Run its protocol witness tests with:
 

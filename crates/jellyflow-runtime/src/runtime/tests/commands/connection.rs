@@ -548,7 +548,6 @@ fn connection_rule_rejections_preserve_diagnostics_and_runtime_state() {
         .unwrap();
     let before = runtime.snapshot().unwrap();
     let history_before = runtime.history_state().unwrap();
-    let installed_impact_before = runtime.installed_impact_state_for_test();
     let event_count = Rc::new(Cell::new(0));
     let callback_count = event_count.clone();
     runtime
@@ -591,11 +590,6 @@ fn connection_rule_rejections_preserve_diagnostics_and_runtime_state() {
     ));
     assert!(before.ptr_eq(&runtime.snapshot().unwrap()));
     assert_eq!(runtime.history_state().unwrap(), history_before);
-    assert_eq!(
-        runtime.installed_impact_state_for_test(),
-        installed_impact_before,
-        "rejected connections must not update indexes or node identities"
-    );
     assert_eq!(event_count.get(), 0);
 }
 

@@ -12,8 +12,8 @@ pub enum OpenGpuiNodeLod {
     Detail,
     /// Canonical lightweight graph chrome replaces the native component tree.
     Overview,
-    /// Native controls remain active in a fixed-pixel, graph-inert presentation.
-    InteractionIsland,
+    /// Native controls remain visible at fixed logical pixels while graph geometry stays compact.
+    PinnedDetail,
 }
 
 impl OpenGpuiNodeLod {
@@ -26,7 +26,7 @@ impl OpenGpuiNodeLod {
     /// Returns whether native controls remain mounted for this presentation.
     #[must_use]
     pub const fn retains_native_controls(self) -> bool {
-        matches!(self, Self::Detail | Self::InteractionIsland)
+        matches!(self, Self::Detail | Self::PinnedDetail)
     }
 
     /// Returns whether this presentation may publish graph-interactive native geometry.
@@ -174,7 +174,7 @@ impl OpenGpuiNodeInteractionState {
         match self.lod {
             OpenGpuiNodeLod::Detail => {}
             OpenGpuiNodeLod::Overview => states.push("overview"),
-            OpenGpuiNodeLod::InteractionIsland => states.push("native interaction active"),
+            OpenGpuiNodeLod::PinnedDetail => states.push("native detail pinned"),
         }
         if self.settlement.is_pending() {
             states.push("pending");
@@ -491,7 +491,7 @@ mod tests {
             .with_dragging(true)
             .with_focused(true)
             .with_disabled(true)
-            .with_lod(OpenGpuiNodeLod::InteractionIsland)
+            .with_lod(OpenGpuiNodeLod::PinnedDetail)
             .with_settlement(OpenGpuiSettlementState::Pending);
 
         assert!(state.selected());
@@ -499,13 +499,13 @@ mod tests {
         assert!(state.dragging());
         assert!(state.focused());
         assert!(state.disabled());
-        assert_eq!(state.lod(), OpenGpuiNodeLod::InteractionIsland);
+        assert_eq!(state.lod(), OpenGpuiNodeLod::PinnedDetail);
         assert!(state.lod().retains_native_controls());
         assert!(!state.lod().publishes_native_graph_geometry());
         assert!(state.settlement().is_pending());
         assert_eq!(
             state.accessible_state_text(),
-            "selected, dragging, disabled, native interaction active, pending"
+            "selected, dragging, disabled, native detail pinned, pending"
         );
     }
 

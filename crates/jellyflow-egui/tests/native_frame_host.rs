@@ -388,13 +388,14 @@ struct TransformRoundTripState {
     host: EguiNativeFrameHost,
     node: NodeId,
     port: PortId,
+    zoom: f32,
     scene_origin: Pos2,
     root_rect: Option<Rect>,
     port_rect: Option<Rect>,
 }
 
 impl TransformRoundTripState {
-    fn new() -> Self {
+    fn new(zoom: f32) -> Self {
         let node = NodeId::from_u128(7);
         let port = PortId::from_u128(71);
         let mut node_record = test_node(vec![port]);
@@ -409,7 +410,8 @@ impl TransformRoundTripState {
             .attach_view(ViewSessionOptions::default())
             .expect("transform view");
         view.set_viewport(
-            ViewportTransform::new(CanvasPoint { x: 10.0, y: -5.0 }, 2.0).expect("valid transform"),
+            ViewportTransform::new(CanvasPoint { x: 10.0, y: -5.0 }, zoom)
+                .expect("valid transform"),
         )
         .expect("set transform");
         Self {
@@ -417,6 +419,7 @@ impl TransformRoundTripState {
             host: EguiNativeFrameHost::new(view),
             node,
             port,
+            zoom,
             scene_origin: Pos2::new(72.0, 48.0),
             root_rect: None,
             port_rect: None,
@@ -453,33 +456,44 @@ fn render_transform_round_trip(ui: &mut Ui, state: &mut TransformRoundTripState)
 
 #[test]
 fn nonzero_scene_origin_pan_and_zoom_round_trip_response_geometry() {
-    let harness = Harness::builder()
-        .with_size(Vec2::new(720.0, 480.0))
-        .build_ui_state(render_transform_round_trip, TransformRoundTripState::new());
-    let state = harness.state();
-    let root = state.root_rect.expect("native root response");
-    let port_response = state.port_rect.expect("native port response");
-    let geometry = state.host.view().geometry_snapshot().expect("geometry");
-    let node = geometry.node(state.node).expect("node geometry");
-    let port = node.ports().get(&state.port).expect("port geometry");
-    let to_canvas = |point: Pos2| CanvasPoint {
-        x: (point.x - state.scene_origin.x) / 2.0 - 10.0,
-        y: (point.y - state.scene_origin.y) / 2.0 + 5.0,
-    };
-    let expected_root = to_canvas(root.min);
-    assert_approx(node.bounds().origin.x, expected_root.x);
-    assert_approx(node.bounds().origin.y, expected_root.y);
-    assert_approx(node.bounds().size.width, root.width() / 2.0);
-    assert_approx(node.bounds().size.height, root.height() / 2.0);
-    let expected_port = to_canvas(port_response.min);
-    assert_approx(port.visual_bounds().origin.x, expected_port.x);
-    assert_approx(port.visual_bounds().origin.y, expected_port.y);
-    assert_approx(port.visual_bounds().size.width, port_response.width() / 2.0);
-    assert_approx(
-        port.visual_bounds().size.height,
-        port_response.height() / 2.0,
-    );
-    assert_eq!(port.outward(), HandlePosition::Bottom);
+    for zoom in [0.5, 1.0, 2.0] {
+        let harness = Harness::builder()
+            .with_size(Vec2::new(720.0, 480.0))
+            .build_ui_state(
+                render_transform_round_trip,
+                TransformRoundTripState::new(zoom),
+            );
+        let state = harness.state();
+        let root = state.root_rect.expect("native root response");
+        let port_response = state.port_rect.expect("native port response");
+        let geometry = state.host.view().geometry_snapshot().expect("geometry");
+        let node = geometry.node(state.node).expect("node geometry");
+        let port = node.ports().get(&state.port).expect("port geometry");
+        let to_canvas = |point: Pos2| CanvasPoint {
+            x: (point.x - state.scene_origin.x) / state.zoom - 10.0,
+            y: (point.y - state.scene_origin.y) / state.zoom + 5.0,
+        };
+        let expected_root = to_canvas(root.min);
+        assert_approx(node.bounds().origin.x, expected_root.x);
+        assert_approx(node.bounds().origin.y, expected_root.y);
+        assert_approx(node.bounds().size.width, root.width() / state.zoom);
+        assert_approx(node.bounds().size.height, root.height() / state.zoom);
+        let expected_port = to_canvas(port_response.min);
+        assert_approx(port.visual_bounds().origin.x, expected_port.x);
+        assert_approx(port.visual_bounds().origin.y, expected_port.y);
+        assert_approx(
+            port.visual_bounds().size.width,
+            port_response.width() / state.zoom,
+        );
+        assert_approx(
+            port.visual_bounds().size.height,
+            port_response.height() / state.zoom,
+        );
+        let expected_anchor = to_canvas(Pos2::new(port_response.center().x, port_response.max.y));
+        assert_approx(port.route_anchor().x, expected_anchor.x);
+        assert_approx(port.route_anchor().y, expected_anchor.y);
+        assert_eq!(port.outward(), HandlePosition::Bottom);
+    }
 }
 
 struct OrderedCommandsState {

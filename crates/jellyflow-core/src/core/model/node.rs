@@ -106,13 +106,14 @@ impl Node {
         let (origin_x, origin_y) = self.origin.map(NodeOrigin::as_tuple).unwrap_or((0.0, 0.0));
         let origin_x = normalized_origin_component(origin_x);
         let origin_y = normalized_origin_component(origin_y);
-        Some(CanvasRect {
+        let bounds = CanvasRect {
             origin: CanvasPoint {
-                x: self.pos.x - origin_x * size.width,
-                y: self.pos.y - origin_y * size.height,
+                x: projected_top_left(self.pos.x, origin_x, size.width)?,
+                y: projected_top_left(self.pos.y, origin_y, size.height)?,
             },
             size,
-        })
+        };
+        bounds.is_positive_finite().then_some(bounds)
     }
 
     /// Clears the ordered port list.
@@ -132,6 +133,12 @@ fn normalized_origin_component(value: f32) -> f32 {
     } else {
         0.0
     }
+}
+
+fn projected_top_left(position: f32, origin: f32, size: f32) -> Option<f32> {
+    let projected = position as f64 - origin as f64 * size as f64;
+    (projected.is_finite() && projected >= f32::MIN as f64 && projected <= f32::MAX as f64)
+        .then_some(projected as f32)
 }
 
 /// Per-node origin override, expressed as a normalized fraction of the node rect.
@@ -221,8 +228,29 @@ mod tests {
             None,
         );
 
-        let mut non_finite_position = centered;
+        let mut non_finite_position = centered.clone();
         non_finite_position.pos.x = f32::INFINITY;
         assert_eq!(non_finite_position.bounds_for_size(size), None);
+
+        let mut overflowing_anchor = centered.clone();
+        overflowing_anchor.pos.x = -f32::MAX;
+        assert_eq!(
+            overflowing_anchor.bounds_for_size(CanvasSize {
+                width: f32::MAX,
+                height: 6.0,
+            }),
+            None,
+        );
+
+        let mut overflowing_endpoint = centered;
+        overflowing_endpoint.origin = None;
+        overflowing_endpoint.pos.x = f32::MAX;
+        assert_eq!(
+            overflowing_endpoint.bounds_for_size(CanvasSize {
+                width: f32::MAX,
+                height: 6.0,
+            }),
+            None,
+        );
     }
 }

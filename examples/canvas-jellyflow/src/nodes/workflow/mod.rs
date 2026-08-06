@@ -1,5 +1,7 @@
 mod condition;
 mod llm;
+#[cfg(feature = "real-window-smoke")]
+mod smoke_probe;
 
 use jellyflow_core::types::TypeDesc;
 use jellyflow_core::{
@@ -50,6 +52,8 @@ pub use llm::{
     workflow_prompt_apply_selector, workflow_prompt_conflict_selector,
     workflow_prompt_reapply_selector, workflow_prompt_selector,
 };
+#[cfg(feature = "real-window-smoke")]
+pub use smoke_probe::{WorkflowConditionSmokeLayout, workflow_condition_smoke_layout};
 
 const WORKFLOW_GRAPH_ID: u128 = 0xd1fa_0000;
 const WORKFLOW_LLM_INPUT_ID: u128 = 0xd1fa_0101;
@@ -146,9 +150,9 @@ pub(super) fn workflow_port_element(
 ) -> WorkflowPortElement {
     let chrome = OpenGpuiPortMarker::new(handle.presentation(), tone, product_theme.graph_theme());
     let style = chrome.style();
-    let marker = handle
-        .with_minimum_hit_diameter(style.minimum_hit_diameter())
-        .interactive(div().debug_selector(move || selector.clone()).child(chrome));
+    let marker = div()
+        .debug_selector(move || selector.clone())
+        .child(handle.interactive_marker(chrome));
     WorkflowPortElement {
         marker: marker.into_any_element(),
         layout_diameter: style.layout_diameter(),

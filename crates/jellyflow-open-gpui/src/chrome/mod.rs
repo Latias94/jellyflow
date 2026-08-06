@@ -24,6 +24,7 @@ pub use edge_painter::{
     OpenGpuiEdgePainterRegistrationError, OpenGpuiEdgePainterRegistry,
     OpenGpuiEdgePainterRegistryBuilder, OpenGpuiEdgeStrokePattern, OpenGpuiResolvedEdgePaintRecipe,
 };
+pub(crate) use port::render_port_marker_element;
 pub use port::{
     OpenGpuiPortCandidateVisual, OpenGpuiPortMarker, OpenGpuiPortMarkerCue,
     OpenGpuiPortMarkerShape, OpenGpuiPortMarkerStyle, OpenGpuiPortTone, OpenGpuiPortVisualFacts,

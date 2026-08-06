@@ -84,17 +84,6 @@ impl RenderedPortLayout {
     pub fn outward(&self) -> HandlePosition {
         self.outward
     }
-
-    #[cfg(test)]
-    pub(crate) fn raw_for_test(
-        target: &PortLayoutTarget,
-        visual_bounds: ViewRect,
-        hit_bounds: ViewRect,
-        route_anchor: ViewPoint,
-        outward: HandlePosition,
-    ) -> Self {
-        Self::new(target, visual_bounds, hit_bounds, route_anchor, outward)
-    }
 }
 
 /// Complete layout outcome for one real graph port in a node frame.
@@ -133,7 +122,6 @@ pub struct NodeLayoutBuilder {
     target: NodeLayoutTarget,
     bounds: ViewRect,
     expected_order: Vec<PortId>,
-    expected_targets: BTreeMap<PortId, PortLayoutTarget>,
     outcomes: BTreeMap<PortId, PortLayoutOutcome>,
 }
 
@@ -145,8 +133,6 @@ pub enum NodeLayoutBuilderError {
         actual_node: NodeId,
         port: PortId,
     },
-    #[error("port {port:?} is not part of layout node {node:?}")]
-    UnknownPort { node: NodeId, port: PortId },
     #[error("port {port:?} already has a layout outcome")]
     DuplicatePort { port: PortId },
     #[error("layout is missing outcomes for real ports {ports:?}")]
@@ -157,17 +143,12 @@ impl NodeLayoutBuilder {
     pub(crate) fn new(
         target: &NodeLayoutTarget,
         bounds: ViewRect,
-        ports: impl IntoIterator<Item = PortLayoutTarget>,
+        ports: impl IntoIterator<Item = PortId>,
     ) -> Self {
-        let ports = ports.into_iter().collect::<Vec<_>>();
         Self {
             target: target.clone(),
             bounds,
-            expected_order: ports.iter().map(PortLayoutTarget::port).collect(),
-            expected_targets: ports
-                .into_iter()
-                .map(|target| (target.port(), target))
-                .collect(),
+            expected_order: ports.into_iter().collect(),
             outcomes: BTreeMap::new(),
         }
     }
@@ -267,12 +248,6 @@ impl NodeLayoutBuilder {
                 port,
             });
         }
-        if !self.expected_targets.contains_key(&port) {
-            return Err(NodeLayoutBuilderError::UnknownPort {
-                node: self.target.instance().node(),
-                port,
-            });
-        }
         if self.outcomes.contains_key(&port) {
             return Err(NodeLayoutBuilderError::DuplicatePort { port });
         }
@@ -303,19 +278,6 @@ impl NodeLayout {
 
     pub fn port_outcomes(&self) -> &[PortLayoutOutcome] {
         &self.port_outcomes
-    }
-
-    #[cfg(test)]
-    pub(crate) fn raw_for_test(
-        target: &NodeLayoutTarget,
-        bounds: ViewRect,
-        port_outcomes: impl IntoIterator<Item = PortLayoutOutcome>,
-    ) -> Self {
-        Self {
-            target: target.clone(),
-            bounds,
-            port_outcomes: port_outcomes.into_iter().collect(),
-        }
     }
 }
 

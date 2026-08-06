@@ -371,6 +371,11 @@ impl PortGeometryIndex {
         true
     }
 
+    #[cfg(test)]
+    pub(super) fn is_empty(&self) -> bool {
+        self.indexed.is_empty() && self.spatial.is_empty()
+    }
+
     pub(super) fn index_epoch(&self) -> u128 {
         self.index_epoch
     }
@@ -381,19 +386,6 @@ impl PortGeometryIndex {
     /// owner in constant work and reject its entries while advancing a query.
     pub(super) fn invalidate_visibility(&mut self) {
         self.index_epoch = self.index_epoch.saturating_add(1);
-    }
-
-    #[cfg(test)]
-    pub(super) fn indexed_ports_for_test(&self) -> BTreeSet<PortId> {
-        self.indexed.keys().copied().collect()
-    }
-
-    #[cfg(test)]
-    pub(super) fn matches_geometry_for_test(&self, geometry: &PublishedPortGeometry) -> bool {
-        match IndexedPort::from_geometry(geometry) {
-            Some(indexed) => self.indexed.get(&geometry.port()) == Some(&indexed),
-            None => !self.indexed.contains_key(&geometry.port()),
-        }
     }
 
     #[allow(clippy::too_many_arguments)]

@@ -72,7 +72,7 @@ fn assert_activity_lease_owns_graph_keys(
         .borrow()
         .clone()
         .expect("mounted node activity handle");
-    let lease = activity.acquire(kind).expect("activity lease");
+    let mut lease = Some(activity.acquire(kind).expect("activity lease"));
     select_node(&view);
     cx.update(|window, cx| window.focus(&root_focus, cx));
 
@@ -107,6 +107,18 @@ fn assert_activity_lease_owns_graph_keys(
 
     let blank = point(px(700.0), px(500.0));
     cx.simulate_mouse_down(blank, MouseButton::Left, Default::default());
+    if kind == OpenGpuiActivityKind::Overlay {
+        assert_eq!(
+            cx.read_entity(&host, |host, _| host.interaction_presentation().phase()),
+            CanvasInteractionPhase::Idle,
+            "an overlay lease must block new graph-pointer ownership beneath the overlay",
+        );
+        drop(lease.take());
+        draw(cx);
+        cx.simulate_mouse_down(blank, MouseButton::Left, Default::default());
+        lease = Some(activity.acquire(kind).expect("replacement overlay lease"));
+        draw(cx);
+    }
     let active_phase = cx.read_entity(&host, |host, _| host.interaction_presentation().phase());
     assert_ne!(active_phase, CanvasInteractionPhase::Idle);
 
@@ -117,7 +129,8 @@ fn assert_activity_lease_owns_graph_keys(
         "{kind:?} must prevent Escape from cancelling the graph interaction",
     );
 
-    drop(lease);
+    drop(lease.take());
+    draw(cx);
     cx.simulate_keystrokes("escape");
     assert_eq!(
         cx.read_entity(&host, |host, _| host.interaction_presentation().phase()),
@@ -200,6 +213,7 @@ fn mount_scene(
                 registry.seal(&node_catalog).expect("valid test registry"),
                 viewport(),
             )
+            .expect("valid Open GPUI scene host")
             .with_graph_focus_handle(root_focus.clone())
         });
         *scene_host.borrow_mut() = Some(host.clone());

@@ -25,7 +25,7 @@ use crate::interaction::{
     OpenGpuiPortDragPhase, OpenGpuiPortEvent, OpenGpuiPortFocusExit,
     OpenGpuiSceneGestureCancelReason,
 };
-use crate::port_handle::{OpenGpuiHostPortHoverListener, OpenGpuiHostPortListener};
+use crate::port_handle::OpenGpuiHostPortListener;
 use crate::theme::OpenGpuiGraphStyleSlot;
 
 use super::OpenGpuiSceneHost;
@@ -329,40 +329,6 @@ impl OpenGpuiSceneHost {
         })
     }
 
-    pub(super) fn host_port_hover_listener(
-        cx: &Context<Self>,
-        mount: OpenGpuiMountCapability,
-    ) -> OpenGpuiHostPortHoverListener {
-        let host = cx.weak_entity();
-        Rc::new(move |instance, port_instance, hovered, _window, cx| {
-            let Some(host) = host.upgrade() else {
-                return;
-            };
-            host.update(cx, |host, cx| {
-                if host.interaction_owner.terminal() {
-                    return;
-                }
-                let Some(owner) =
-                    crate::interaction::port_drag_owner(instance.clone(), port_instance)
-                else {
-                    return;
-                };
-                if !host.port_event_owner_is_current(&owner, &mount) {
-                    return;
-                }
-                let changed = if hovered {
-                    host.retained_nodes
-                        .set_hover(Some(instance.clone()), Some(port_instance))
-                } else {
-                    host.retained_nodes.clear_hovered_port(port_instance)
-                };
-                if changed {
-                    cx.notify();
-                }
-            });
-        })
-    }
-
     #[cfg(test)]
     pub(super) fn handle_port_event(
         &mut self,
@@ -568,10 +534,6 @@ impl OpenGpuiSceneHost {
             self.reject_native_connection_start(owner, mount, window, cx);
             return;
         };
-        #[cfg(test)]
-        self.scene_evidence
-            .last_port_connection_query_work
-            .set(Some(query.work()));
         let Some(drag_intent) = query.into_outcome().ready() else {
             self.reject_native_connection_start(owner, mount, window, cx);
             return;
@@ -638,6 +600,7 @@ impl OpenGpuiSceneHost {
         let Some(sample) = self.viewport_pointer_sample(position) else {
             return;
         };
+        self.reconcile_retained_hover_at(position, cx);
         if let Ok(update) = self.interaction_owner.move_to(sample) {
             self.apply_canvas_interaction_update(update, window, cx);
         }
@@ -666,6 +629,7 @@ impl OpenGpuiSceneHost {
             );
             return;
         };
+        self.reconcile_retained_hover_at(position, cx);
         if self.navigation.input_bindings().connects_on_click() {
             let Ok(source) = self.view.keyboard_connection_port(owner.port_instance()) else {
                 self.cancel_connection_for_drag(
@@ -684,9 +648,34 @@ impl OpenGpuiSceneHost {
             self.apply_canvas_interaction_result(update, window, cx);
             return;
         }
-        if let Ok(update) = self.interaction_owner.release(sample) {
-            self.apply_canvas_interaction_update(update, window, cx);
+        self.release_connection_sample(sample, window, cx);
+    }
+
+    fn release_connection_sample(
+        &mut self,
+        sample: ViewportPointerSample,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match self.interaction_owner.release(sample) {
+            Ok(update) => self.apply_canvas_interaction_update(update, window, cx),
+            Err(error) => {
+                self.record_command_diagnostic(error.to_string());
+                let cancelled = self.interaction_owner.cancel();
+                self.discard_pending_interaction_submission();
+                self.apply_canvas_interaction_result(cancelled, window, cx);
+            }
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn release_connection_sample_for_test(
+        &mut self,
+        sample: ViewportPointerSample,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.release_connection_sample(sample, window, cx);
     }
 
     fn connection_start(

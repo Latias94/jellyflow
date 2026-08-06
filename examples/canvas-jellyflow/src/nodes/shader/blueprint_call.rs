@@ -4,9 +4,8 @@ use jellyflow_core::{
     CanvasSize, NodeId, NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKind, TypeDesc,
 };
 use jellyflow_open_gpui::authoring::{
-    MutationLayoutEffect, MutationLayoutSettlement, MutationRequest, MutationSettlement,
-    OpenGpuiManagedMutation, OpenGpuiNodeAuthoring, OpenGpuiNodeBinding, OpenGpuiPortHandle,
-    OpenGpuiPortSide,
+    MutationLayoutEffect, MutationRequest, MutationSettlement, OpenGpuiManagedMutation,
+    OpenGpuiNodeAuthoring, OpenGpuiNodeBinding, OpenGpuiPortHandle, OpenGpuiPortSide,
 };
 use jellyflow_open_gpui::registry::{
     OpenGpuiNodeAdapterPresentation, OpenGpuiNodeRegistrationPolicy, OpenGpuiNodeRegistryBuilder,
@@ -207,9 +206,7 @@ impl BlueprintCallNode {
     }
 
     fn reject_request(&mut self, request: MutationRequest<BlueprintIntent>, diagnostic: String) {
-        if let MutationRequest::Retry(retry) = request
-            && !self.mutation.abandon_retry(retry)
-        {
+        if !self.mutation.reject_request(request) {
             self.mutation_diagnostic = Some(diagnostic);
             return;
         }
@@ -227,18 +224,7 @@ impl BlueprintCallNode {
     }
 
     fn apply_mutation_settlement(&mut self, settlement: &MutationSettlement) {
-        self.mutation_diagnostic = match settlement {
-            MutationSettlement::Retryable { diagnostic, .. }
-            | MutationSettlement::Uncertain { diagnostic, .. }
-            | MutationSettlement::Retired { diagnostic }
-            | MutationSettlement::Closed { diagnostic, .. } => Some(diagnostic.to_string()),
-            MutationSettlement::Satisfied {
-                layout: MutationLayoutSettlement::Failed { diagnostic },
-            } => Some(diagnostic.to_string()),
-            MutationSettlement::Ready
-            | MutationSettlement::Pending { .. }
-            | MutationSettlement::Satisfied { .. } => None,
-        };
+        self.mutation_diagnostic = settlement.diagnostic().map(ToString::to_string);
     }
 
     fn current_diagnostic(&self) -> Option<&str> {

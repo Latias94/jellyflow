@@ -9,11 +9,13 @@ values. Applying those results belongs to a revision-aware runtime or host.
 
 `jellyflow-layout` exposes a small engine protocol:
 
-- `LayoutEngine` is implemented by built-in or host-provided engines.
-- `LayoutEngineRegistry` maps stable `LayoutEngineId` values to engines.
+- `PreparedLayoutInput` is the registry-owned, validated projection shared by every engine.
+- `LayoutEngine` consumes that projection and returns only center placements plus optional routes.
+- `LayoutEngineDescriptor` registers an engine together with its stable id and discovery metadata.
+- `LayoutEngineRegistry` owns preparation, dispatch, and the single result finalizer.
 - `LayoutEngineRequest` selects one engine and carries a `LayoutRequest`.
 - `LayoutContext` carries runtime-only facts such as measured node sizes and fallback node origin.
-- `LayoutResult` contains node positions, edge routes, and bounds without mutating the graph.
+- `LayoutResult` is the finalized immutable output: node positions, edge routes, and bounds.
 - `LayoutFamilyMetadata` and `LayoutEngineMetadata` expose discovery-only family/capability data
   without changing the stable engine-id dispatch contract.
 
@@ -67,11 +69,42 @@ fn plan_builtin_layout(graph: &Graph) -> Result<LayoutResult, jellyflow_layout::
 Applications using `jellyflow-runtime` map `result.nodes` to
 `NodeGeometryEdit::new(position.node).with_position(position.pos)`, then build one
 `GraphCommand::set_node_geometry` with the opaque graph version from the snapshot used to plan the
-layout. Validate application-built
-results for duplicate or foreign node identities before enqueueing them. This keeps every layout
-write on the same explicit command path as other document mutations without coupling the runtime
-to a layout engine.
+layout. `LayoutEngineRegistry` rejects duplicate, out-of-scope, non-finite, and unrepresentable
+custom-engine geometry before it returns a result. This keeps every layout write on the same
+explicit command path as other document mutations without coupling the runtime to a layout engine.
 
-For interactive editors, keep product-specific behavior in custom engines. A radial, freeform, or
-mind-map engine can implement `LayoutEngine`, use `LayoutContext` for measured sizes or pinned
-nodes, and return the same `LayoutResult` shape as the built-in engines.
+Custom engines do not receive an editable graph or construct `LayoutResult` directly. The registry
+resolves scope, hidden nodes, size precedence, origins, pinning, and edge endpoints once, then asks
+the engine for the smallest useful output:
+
+```rust
+use jellyflow_core::CanvasPoint;
+use jellyflow_layout::{
+    LayoutEngine, LayoutEngineDescriptor, LayoutEngineId, LayoutEngineMetadata, LayoutError,
+    LayoutFamilyMetadata, LayoutNodePlacement, LayoutPlacements, PreparedLayoutInput,
+};
+
+struct PreserveCurrentCenters;
+
+impl LayoutEngine for PreserveCurrentCenters {
+    fn place(&self, input: &PreparedLayoutInput<'_>) -> Result<LayoutPlacements, LayoutError> {
+        Ok(LayoutPlacements::preserve_canvas_coordinates(
+            input.nodes().map(|node| LayoutNodePlacement {
+                node: node.id(),
+                center: node.current_center(),
+            }),
+        ))
+    }
+}
+
+fn custom_descriptor() -> LayoutEngineDescriptor {
+    let family = LayoutFamilyMetadata::new("custom", "Custom");
+    let engine = LayoutEngineId::new("custom.preserve");
+    let metadata = LayoutEngineMetadata::new(engine, family.id.clone(), "Preserve centers");
+
+    LayoutEngineDescriptor::new(family, metadata, PreserveCurrentCenters)
+}
+```
+
+This boundary keeps product-specific algorithms extensible without creating a portable layout DSL
+or allowing engines to duplicate graph validation and coordinate-frame finalization.

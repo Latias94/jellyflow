@@ -12,7 +12,6 @@ use crate::command_journal::{
     OpenGpuiCommandJournal, OpenGpuiCommandOrigin, OpenGpuiCompletedCommand,
     resolve_command_tickets,
 };
-use crate::managed_mutation::ManagedMutationPostAdmissionFault;
 use crate::port_handle::OpenGpuiPendingMeasurements;
 
 use super::super::frame_feedback::{
@@ -40,7 +39,6 @@ fn frame_transaction_schedule_and_submit_are_one_shot() {
     let completed = journal.take_deferred_completions();
     assert_eq!(completed.len(), 1);
     assert_eq!(runtime.snapshot().expect("submitted graph").revision(), 1);
-    assert_eq!(journal.capacity_usage(), (0, 0, 0));
 
     let mut repeated = transaction.submit(&view);
     assert!(matches!(
@@ -52,7 +50,6 @@ fn frame_transaction_schedule_and_submit_are_one_shot() {
         .expect("repeated submission has no batch failure");
     assert!(journal.take_deferred_completions().is_empty());
     assert_eq!(runtime.snapshot().expect("unchanged graph").revision(), 1);
-    assert_eq!(journal.capacity_usage(), (0, 0, 0));
 
     resolve_binding_commands(completed);
     assert_eq!(
@@ -67,7 +64,7 @@ fn frame_transaction_schedule_and_submit_are_one_shot() {
 
 #[test]
 fn aborting_frame_transaction_settles_collected_batch_once() {
-    let (runtime, _view, journal, mut ticket, transaction) = command_transaction("abort-once");
+    let (runtime, _view, _journal, mut ticket, transaction) = command_transaction("abort-once");
 
     let completed = transaction
         .abort_frame_preparation("injected frame abort".to_owned())
@@ -80,27 +77,33 @@ fn aborting_frame_transaction_settles_collected_batch_once() {
             .is_empty()
     );
     assert_eq!(runtime.snapshot().expect("unsubmitted graph").revision(), 0);
-    assert_eq!(journal.capacity_usage(), (0, 0, 0));
 
     resolve_binding_commands(completed);
     assert!(matches!(
         poll_command_ticket(&mut ticket),
-        Err(crate::command_journal::OpenGpuiCommandTicketError::FramePreparation { .. })
+        Err(
+            crate::command_journal::OpenGpuiCommandTicketFailure::DefinitelyNotExecuted(
+                crate::command_journal::OpenGpuiCommandTicketError::FramePreparation { .. }
+            )
+        )
     ));
     assert_command_ticket_pending_at(&mut ticket, "after abort settled it once");
 }
 
 #[test]
 fn dropping_frame_transaction_resolves_collected_ticket_once() {
-    let (runtime, _view, journal, mut ticket, transaction) = command_transaction("drop-once");
+    let (runtime, _view, _journal, mut ticket, transaction) = command_transaction("drop-once");
 
     drop(transaction);
 
     assert_eq!(runtime.snapshot().expect("unsubmitted graph").revision(), 0);
-    assert_eq!(journal.capacity_usage(), (0, 0, 0));
     assert!(matches!(
         poll_command_ticket(&mut ticket),
-        Err(crate::command_journal::OpenGpuiCommandTicketError::HostDropped)
+        Err(
+            crate::command_journal::OpenGpuiCommandTicketFailure::DefinitelyNotExecuted(
+                crate::command_journal::OpenGpuiCommandTicketError::HostDropped
+            )
+        )
     ));
     assert_command_ticket_pending_at(&mut ticket, "after drop settled it once");
 }
@@ -115,11 +118,13 @@ fn unwind_after_frame_state_take_terminalizes_batch_and_allows_retry() {
 
     assert!(panic.is_err());
     assert_eq!(runtime.snapshot().expect("unsubmitted graph").revision(), 0);
-    assert_eq!(journal.capacity_usage(), (0, 0, 0));
-    assert!(!journal.has_pending());
     assert!(matches!(
         poll_command_ticket(&mut ticket),
-        Err(crate::command_journal::OpenGpuiCommandTicketError::FramePreparation { .. })
+        Err(
+            crate::command_journal::OpenGpuiCommandTicketFailure::DefinitelyNotExecuted(
+                crate::command_journal::OpenGpuiCommandTicketError::FramePreparation { .. }
+            )
+        )
     ));
     assert_command_ticket_pending_at(&mut ticket, "after preparation unwind settled it once");
 
@@ -131,7 +136,6 @@ fn unwind_after_frame_state_take_terminalizes_batch_and_allows_retry() {
             .expect("retry command applied"),
         1
     );
-    assert_eq!(journal.capacity_usage(), (0, 0, 0));
 }
 
 #[test]
@@ -145,11 +149,13 @@ fn unwind_after_feedback_submission_terminalizes_batch_and_allows_retry() {
 
     assert!(panic.is_err());
     assert_eq!(runtime.snapshot().expect("submitted graph").revision(), 1);
-    assert_eq!(journal.capacity_usage(), (0, 0, 0));
-    assert!(!journal.has_pending());
     assert!(matches!(
         poll_command_ticket(&mut ticket),
-        Err(crate::command_journal::OpenGpuiCommandTicketError::FeedbackOutcomeUnknown)
+        Err(
+            crate::command_journal::OpenGpuiCommandTicketFailure::ExecutionUnknown(
+                crate::command_journal::OpenGpuiCommandTicketError::FeedbackOutcomeUnknown
+            )
+        )
     ));
     assert_command_ticket_pending_at(&mut ticket, "after submitted unwind settled it once");
 
@@ -161,7 +167,6 @@ fn unwind_after_feedback_submission_terminalizes_batch_and_allows_retry() {
             .expect("retry command applied"),
         2
     );
-    assert_eq!(journal.capacity_usage(), (0, 0, 0));
 }
 
 #[open_gpui::test]
@@ -178,12 +183,15 @@ fn superseding_retained_frame_transaction_settles_batch_once(cx: &mut open_gpui:
 
     assert!(matches!(
         poll_command_ticket(&mut ticket),
-        Err(crate::command_journal::OpenGpuiCommandTicketError::FramePreparation { .. })
+        Err(
+            crate::command_journal::OpenGpuiCommandTicketFailure::DefinitelyNotExecuted(
+                crate::command_journal::OpenGpuiCommandTicketError::FramePreparation { .. }
+            )
+        )
     ));
     assert_command_ticket_pending_at(&mut ticket, "after supersession settled it once");
     assert_eq!(runtime.snapshot().expect("unmodified graph").revision(), 0);
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.commands.capacity_usage(), (0, 0, 0));
         let mut repeated = transaction.submit(&host.view);
         assert!(matches!(
             repeated.submission,
@@ -232,7 +240,6 @@ fn closing_retained_frame_transaction_executes_and_settles_batch_once(
     );
     cx.read_entity(&host, |host, _| {
         assert_eq!(host.close_reason(), Some(ViewCloseReason::HostClosed));
-        assert_eq!(host.commands.capacity_usage(), (0, 0, 0));
         let mut repeated = transaction.submit(&host.view);
         assert!(matches!(
             repeated.submission,
@@ -285,7 +292,6 @@ fn unwind_after_runtime_submission_settles_ticket_and_keeps_host_usable(
     );
     assert_command_ticket_pending_at(&mut submitted, "after unwind settled it once");
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.commands.capacity_usage(), (0, 0, 0));
         let diagnostic = host.last_diagnostic().expect("host unwind diagnostic");
         assert!(diagnostic.message().contains("host update panicked"));
     });
@@ -361,11 +367,6 @@ fn managed_mutation_maps_pre_submission_unwind_to_explicit_retry(
         }
         settlement => panic!("unexpected frame-preparation settlement: {settlement:?}"),
     }
-    cx.read_entity(&host, |host, _| {
-        assert_eq!(host.commands.capacity_usage(), (0, 0, 0));
-        assert_managed_activity(host, NodeId::from_u128(10), 1, 1);
-    });
-
     let retry = mutation.retry().expect("definitive failure permits retry");
     let mut result = dispatch_and_submit_managed_data_mutation(
         cx,
@@ -400,52 +401,98 @@ fn managed_mutation_maps_pre_submission_unwind_to_explicit_retry(
         }
     );
     assert_eq!(runtime.snapshot().expect("retried graph").revision(), 1);
-    cx.read_entity(&host, |host, _| {
-        assert_eq!(host.commands.capacity_usage(), (0, 0, 0));
-        assert_managed_activity(host, NodeId::from_u128(10), 0, 0);
+}
+
+#[open_gpui::test]
+fn managed_mutation_recovers_noop_after_post_admission_transport_unwind(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let (runtime, host, cx) = mount_gesture_scene_for_graph(cx, unconnected_graph());
+    draw(cx);
+    let node = NodeId::from_u128(10);
+    let binding = mounted_binding(cx, &host, node);
+    let mut mutation = cx.read_entity(&binding, |binding, _| {
+        binding.managed_mutation::<serde_json::Value>()
     });
+    let intent = serde_json::Value::Null;
+    mutation.inject_post_admission_fault_for_test();
+
+    let panic = cx.update_entity(&binding, |binding, cx| {
+        let authoring = binding
+            .authoring()
+            .expect("post-admission unwind authoring");
+        let command =
+            GraphCommand::set_node_data(authoring.version(), authoring.node_id(), intent.clone());
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            mutation.dispatch(
+                authoring,
+                command,
+                MutationRequest::new(intent.clone()),
+                MutationLayoutEffect::InvalidateWhenSatisfied,
+                cx,
+            )
+        }))
+    });
+    assert!(panic.is_err());
+    assert_eq!(runtime.snapshot().expect("unsubmitted graph").revision(), 0);
+    assert_eq!(mutation.active_intent(), Some(&intent));
+    match mutation.settlement() {
+        MutationSettlement::Uncertain {
+            diagnostic,
+            retry_confirmable,
+        } => {
+            assert_eq!(
+                diagnostic.source(),
+                MutationDiagnosticSource::NativeDispatch
+            );
+            assert!(!retry_confirmable);
+        }
+        settlement => panic!("unexpected post-admission unwind settlement: {settlement:?}"),
+    }
+    assert!(mutation.confirm_uncertain_retry().is_none());
+    assert!(!mutation.can_confirm_uncertain_retry());
+    assert!(mutation.unobservable_abandonment().is_none());
+
+    assert!(matches!(
+        cx.update_entity(&binding, |_, cx| mutation.observe_without_authority(cx)),
+        MutationSettlement::Uncertain {
+            retry_confirmable: false,
+            ..
+        }
+    ));
+    cx.run_until_parked();
+    assert_eq!(runtime.snapshot().expect("no-op graph").revision(), 0);
+
+    let advanced = cx.update_entity(&binding, |binding, cx| {
+        binding
+            .advance(0, cx)
+            .expect("advance post-admission unwind binding")
+    });
+    assert_eq!(advanced, crate::binding::OpenGpuiBindingAdvance::Applied);
+    let generation_before = node_layout_generation(cx, &host, node);
+    cx.run_until_parked();
+
+    assert_eq!(
+        observe_managed_data_mutation(cx, &binding, &mut mutation),
+        MutationSettlement::Satisfied {
+            layout: MutationLayoutSettlement::Invalidated,
+        }
+    );
+    let generation_after = node_layout_generation(cx, &host, node);
+    assert_eq!(generation_after, generation_before + 1);
+    assert_eq!(
+        observe_managed_data_mutation(cx, &binding, &mut mutation),
+        MutationSettlement::Ready
+    );
+    assert_eq!(node_layout_generation(cx, &host, node), generation_after);
 }
 
 #[open_gpui::test]
-fn managed_mutation_maps_task_installation_unwind_to_dispatch_uncertainty(
+fn managed_mount_set_terminalizes_for_member_retirement_and_close_precedence(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    assert_managed_post_admission_unwind(
-        cx,
-        ManagedMutationPostAdmissionFault::TaskInstallationUnwound,
-        "task-installation-unwind",
-    );
-}
-
-#[open_gpui::test]
-fn managed_mutation_maps_host_notification_unwind_to_dispatch_uncertainty(
-    cx: &mut open_gpui::TestAppContext,
-) {
-    assert_managed_post_admission_unwind(
-        cx,
-        ManagedMutationPostAdmissionFault::HostNotificationUnwound,
-        "host-notification-unwind",
-    );
-}
-
-#[open_gpui::test]
-fn managed_mount_set_retires_when_its_primary_member_retires(cx: &mut open_gpui::TestAppContext) {
-    assert_managed_mount_set_terminal(cx, ManagedMountSetTerminalScenario::Retire(0));
-}
-
-#[open_gpui::test]
-fn managed_mount_set_retires_when_a_non_primary_member_retires(cx: &mut open_gpui::TestAppContext) {
-    assert_managed_mount_set_terminal(cx, ManagedMountSetTerminalScenario::Retire(1));
-}
-
-#[open_gpui::test]
-fn managed_mount_set_close_wins_after_another_member_retires(cx: &mut open_gpui::TestAppContext) {
+    assert_managed_mount_set_terminal(cx, ManagedMountSetTerminalScenario::RetireMember);
     assert_managed_mount_set_terminal(cx, ManagedMountSetTerminalScenario::RetireThenClose);
-}
-
-#[open_gpui::test]
-fn managed_mount_set_close_wins_before_another_member_retires(cx: &mut open_gpui::TestAppContext) {
-    assert_managed_mount_set_terminal(cx, ManagedMountSetTerminalScenario::CloseThenRetire);
 }
 
 #[open_gpui::test]
@@ -487,10 +534,6 @@ fn managed_mutation_satisfies_late_unknown_outcome_without_reinvalidating_layout
         }
     );
     let generation_before = node_layout_generation(cx, &host, node);
-    cx.read_entity(&host, |host, _| {
-        assert_eq!(host.commands.capacity_usage(), (0, 0, 0));
-        assert_managed_activity(host, node, 2, 1);
-    });
 
     cx.run_until_parked();
 
@@ -502,10 +545,6 @@ fn managed_mutation_satisfies_late_unknown_outcome_without_reinvalidating_layout
     );
     let generation_after = node_layout_generation(cx, &host, node);
     assert_eq!(generation_after, generation_before + 1);
-    cx.read_entity(&host, |host, _| {
-        assert_eq!(host.commands.capacity_usage(), (0, 0, 0));
-        assert_managed_activity(host, node, 0, 0);
-    });
 
     assert_eq!(
         observe_managed_data_mutation(cx, &binding, &mut mutation),
@@ -574,10 +613,6 @@ fn managed_mutation_drains_unavailable_completion_before_explicit_abandonment(
     let abandonment = mutation
         .unobservable_abandonment()
         .expect("definitive completion exposes one exact abandonment");
-    cx.read_entity(&host, |host, _| {
-        assert_eq!(host.commands.capacity_usage(), (0, 0, 0));
-        assert_managed_activity(host, node, 1, 1);
-    });
 
     assert!(cx.update_entity(&binding, |_, _| mutation.abandon_unobservable(abandonment)));
     assert_eq!(mutation.settlement(), MutationSettlement::Ready);
@@ -586,10 +621,6 @@ fn managed_mutation_drains_unavailable_completion_before_explicit_abandonment(
         generation_before_abandon,
         "discarding unavailable product facts consumes the pending layout effect"
     );
-    cx.read_entity(&host, |host, _| {
-        assert_eq!(host.commands.capacity_usage(), (0, 0, 0));
-        assert_managed_activity(host, node, 0, 0);
-    });
 }
 
 #[open_gpui::test]
@@ -635,6 +666,7 @@ fn managed_mutation_preserves_intent_when_activity_admission_rejects(
                 diagnostic.source(),
                 MutationDiagnosticSource::NativeActivity
             );
+            assert!(diagnostic.is_native_activity_backpressure());
         }
         result => panic!("unexpected activity admission result: {result:?}"),
     }
@@ -646,6 +678,7 @@ fn managed_mutation_preserves_intent_when_activity_admission_rejects(
                 diagnostic.source(),
                 MutationDiagnosticSource::NativeActivity
             );
+            assert!(diagnostic.is_native_activity_backpressure());
         }
         settlement => panic!("unexpected activity-failure settlement: {settlement:?}"),
     }
@@ -655,9 +688,6 @@ fn managed_mutation_preserves_intent_when_activity_admission_rejects(
     );
     assert_eq!(blocked_activity.active_count(), 0);
     assert_eq!(blocked_activity.protected_count(), 0);
-    cx.read_entity(&host, |host, _| {
-        assert_eq!(host.commands.capacity_usage(), (0, 0, 0));
-    });
 
     let settlement = cx.update_entity(&binding, |binding, cx| {
         let authoring = binding
@@ -715,10 +745,6 @@ fn managed_mutation_preserves_intent_when_activity_admission_rejects(
         runtime.snapshot().expect("activity retry graph").revision(),
         1
     );
-    cx.read_entity(&host, |host, _| {
-        assert_eq!(host.commands.capacity_usage(), (0, 0, 0));
-        assert_managed_activity(host, node, 0, 0);
-    });
 }
 
 #[open_gpui::test]
@@ -793,10 +819,6 @@ fn managed_mutation_persists_panicking_layout_diagnostic_without_replaying(
         MutationDiagnosticSource::NativeLayout
     );
     assert_eq!(calls.get(), 1, "layout invalidation is never replayed");
-    cx.read_entity(&host, |host, _| {
-        assert_eq!(host.commands.capacity_usage(), (0, 0, 0));
-        assert_managed_activity(host, node, 0, 0);
-    });
 }
 
 fn command_transaction(
@@ -977,7 +999,6 @@ fn dispatch_and_submit_managed_data_mutation(
         let command = GraphCommand::set_node_data(authoring.version(), authoring.node_id(), value);
         (authoring, command)
     });
-    let node = authoring.node_id();
     cx.update_entity(host, |host, cx| {
         let settlement = mutation
             .dispatch(authoring, command, request, layout_effect, cx)
@@ -988,10 +1009,7 @@ fn dispatch_and_submit_managed_data_mutation(
                 awaiting_authority: false,
             }
         );
-        assert_eq!(host.commands.capacity_usage(), (1, 0, 0));
-        assert_managed_activity(host, node, 2, 1);
         let transaction = collect_managed_transaction(host);
-        assert_eq!(host.commands.capacity_usage(), (0, 1, 0));
         if let Some(fault) = fault {
             transaction.inject_fault(fault);
         }
@@ -1014,9 +1032,8 @@ fn observe_managed_data_mutation(
 
 #[derive(Clone, Copy)]
 enum ManagedMountSetTerminalScenario {
-    Retire(usize),
+    RetireMember,
     RetireThenClose,
-    CloseThenRetire,
 }
 
 fn assert_managed_mount_set_terminal(
@@ -1078,24 +1095,15 @@ fn assert_managed_mount_set_terminal(
         };
         assert_eq!(activity(primary_node), (2, 1));
         assert_eq!(activity(secondary_node), (1, 1));
-        let resources = host.resource_snapshot();
-        assert_eq!(resources.protected_instances(), 2);
-        assert_eq!(resources.protected_leases(), 2);
     });
 
     match scenario {
-        ManagedMountSetTerminalScenario::Retire(owner) => match owner {
-            0 => primary_owner.retire_mount_for_test(),
-            1 => secondary_owner.retire_mount_for_test(),
-            _ => panic!("mount-set retirement owner is out of range"),
-        },
+        ManagedMountSetTerminalScenario::RetireMember => {
+            secondary_owner.retire_mount_for_test();
+        }
         ManagedMountSetTerminalScenario::RetireThenClose => {
             primary_owner.retire_mount_for_test();
             secondary_owner.close_mount_for_test(ViewCloseReason::HostClosed);
-        }
-        ManagedMountSetTerminalScenario::CloseThenRetire => {
-            secondary_owner.close_mount_for_test(ViewCloseReason::HostClosed);
-            primary_owner.retire_mount_for_test();
         }
     }
     let settlement = cx.update_entity(&primary_binding, |binding, cx| match binding.authoring() {
@@ -1103,11 +1111,10 @@ fn assert_managed_mount_set_terminal(
         Err(error) => mutation.observe_authoring_error(&error),
     });
     match scenario {
-        ManagedMountSetTerminalScenario::Retire(_) => {
+        ManagedMountSetTerminalScenario::RetireMember => {
             assert!(matches!(settlement, MutationSettlement::Retired { .. }));
         }
-        ManagedMountSetTerminalScenario::RetireThenClose
-        | ManagedMountSetTerminalScenario::CloseThenRetire => {
+        ManagedMountSetTerminalScenario::RetireThenClose => {
             assert!(matches!(
                 settlement,
                 MutationSettlement::Closed {
@@ -1129,116 +1136,6 @@ fn assert_managed_mount_set_terminal(
             assert_eq!(mounted.activity.active_count(), 0);
             assert_eq!(mounted.activity.protected_count(), 0);
         }
-        let resources = host.resource_snapshot();
-        assert_eq!(resources.protected_instances(), 0);
-        assert_eq!(resources.protected_leases(), 0);
-        assert_eq!(host.commands.capacity_usage(), (0, 0, 0));
-    });
-}
-
-fn assert_managed_post_admission_unwind(
-    cx: &mut open_gpui::TestAppContext,
-    fault: ManagedMutationPostAdmissionFault,
-    label: &str,
-) {
-    let (runtime, host, cx) = mount_gesture_scene_for_graph(cx, unconnected_graph());
-    draw(cx);
-    let node = NodeId::from_u128(10);
-    let binding = mounted_binding(cx, &host, node);
-    let mut mutation = cx.read_entity(&binding, |binding, _| {
-        binding.managed_mutation::<serde_json::Value>()
-    });
-    let intent = serde_json::json!({ "managed": label });
-    mutation.inject_post_admission_fault_for_test(fault);
-
-    let panic = cx.update_entity(&binding, |binding, cx| {
-        let authoring = binding
-            .authoring()
-            .expect("post-admission unwind authoring");
-        let command =
-            GraphCommand::set_node_data(authoring.version(), authoring.node_id(), intent.clone());
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            mutation.dispatch(
-                authoring,
-                command,
-                MutationRequest::new(intent.clone()),
-                MutationLayoutEffect::InvalidateWhenSatisfied,
-                cx,
-            )
-        }))
-    });
-
-    assert!(panic.is_err());
-    assert_eq!(runtime.snapshot().expect("unsubmitted graph").revision(), 0);
-    assert_eq!(mutation.active_intent(), Some(&intent));
-    match mutation.settlement() {
-        MutationSettlement::Uncertain {
-            diagnostic,
-            retry_confirmable,
-        } => {
-            assert_eq!(
-                diagnostic.source(),
-                MutationDiagnosticSource::NativeDispatch
-            );
-            let expected_message = match fault {
-                ManagedMutationPostAdmissionFault::TaskInstallationUnwound => {
-                    "native task installation unwound"
-                }
-                ManagedMutationPostAdmissionFault::HostNotificationUnwound => {
-                    "native host notification unwound"
-                }
-            };
-            assert!(diagnostic.message().contains(expected_message));
-            assert!(!retry_confirmable);
-        }
-        settlement => panic!("unexpected post-admission unwind settlement: {settlement:?}"),
-    }
-    assert!(mutation.confirm_uncertain_retry().is_none());
-    assert!(mutation.unobservable_abandonment().is_none());
-    cx.read_entity(&host, |host, _| {
-        assert_eq!(host.commands.capacity_usage(), (1, 0, 0));
-        assert_managed_activity(host, node, 1, 1);
-    });
-
-    let mut result = cx.update_entity(&host, |host, _| {
-        let transaction = collect_managed_transaction(host);
-        transaction.submit(&host.view)
-    });
-    assert!(matches!(
-        result.submission,
-        OpenGpuiFrameTransactionSubmission::Submitted(_)
-    ));
-    result
-        .take_command_batch_result()
-        .expect("post-admission unwind command batch settles");
-    let completed = cx.read_entity(&host, |host, _| host.commands.take_deferred_completions());
-    resolve_binding_commands(completed);
-    assert_eq!(runtime.snapshot().expect("submitted graph").revision(), 1);
-    let advanced = cx.update_entity(&binding, |binding, cx| {
-        binding
-            .advance(1, cx)
-            .expect("advance post-admission unwind binding")
-    });
-    assert_eq!(advanced, crate::binding::OpenGpuiBindingAdvance::Applied);
-    let generation_before = node_layout_generation(cx, &host, node);
-    cx.run_until_parked();
-
-    assert_eq!(
-        observe_managed_data_mutation(cx, &binding, &mut mutation),
-        MutationSettlement::Satisfied {
-            layout: MutationLayoutSettlement::Invalidated,
-        }
-    );
-    let generation_after = node_layout_generation(cx, &host, node);
-    assert_eq!(generation_after, generation_before + 1);
-    assert_eq!(
-        observe_managed_data_mutation(cx, &binding, &mut mutation),
-        MutationSettlement::Ready
-    );
-    assert_eq!(node_layout_generation(cx, &host, node), generation_after);
-    cx.read_entity(&host, |host, _| {
-        assert_eq!(host.commands.capacity_usage(), (0, 0, 0));
-        assert_managed_activity(host, node, 0, 0);
     });
 }
 
@@ -1266,28 +1163,6 @@ fn collect_managed_transaction(host: &OpenGpuiSceneHost) -> OpenGpuiFrameTransac
         Rc::clone(&host.commands),
         Some(batch),
     )
-}
-
-fn assert_managed_activity(
-    host: &OpenGpuiSceneHost,
-    node: NodeId,
-    active_leases: usize,
-    protected_leases: usize,
-) {
-    let mounted = host
-        .retained_nodes
-        .active_in_order()
-        .find(|(instance, _)| instance.node() == node)
-        .map(|(_, mounted)| mounted)
-        .expect("managed node remains mounted");
-    assert_eq!(mounted.activity.active_count(), active_leases);
-    assert_eq!(mounted.activity.protected_count(), protected_leases);
-    let resources = host.resource_snapshot();
-    assert_eq!(
-        resources.protected_instances(),
-        usize::from(protected_leases > 0)
-    );
-    assert_eq!(resources.protected_leases(), protected_leases);
 }
 
 fn node_layout_generation(

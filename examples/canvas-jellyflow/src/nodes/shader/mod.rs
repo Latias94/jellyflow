@@ -133,12 +133,10 @@ fn port_element(
         None => chrome,
     };
     let style = chrome.style();
-    let minimum_hit_diameter = style.minimum_hit_diameter();
     let layout_diameter = style.layout_diameter();
-    let marker = port
-        .handle
-        .with_minimum_hit_diameter(minimum_hit_diameter)
-        .interactive(div().debug_selector(move || selector.clone()).child(chrome));
+    let marker = div()
+        .debug_selector(move || selector.clone())
+        .child(port.handle.interactive_marker(chrome));
     ShaderPortElement {
         key: port.key,
         label: port.label,

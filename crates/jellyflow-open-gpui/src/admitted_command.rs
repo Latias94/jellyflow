@@ -1,6 +1,6 @@
 use std::cell::{Cell, RefCell};
 use std::future::Future;
-use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::pin::Pin;
 use std::rc::Rc;
 use std::task::{Context, Poll};
@@ -11,7 +11,10 @@ use crate::activity::{
     OpenGpuiActivityAcquireError, OpenGpuiActivityKind, OpenGpuiActivityLease,
     OpenGpuiNodeActivityRegistry,
 };
-use crate::command_journal::{OpenGpuiCommandTicket, OpenGpuiCommandTicketResult};
+use crate::command_journal::{
+    OpenGpuiCommandNotification, OpenGpuiCommandTicket, OpenGpuiCommandTicketResult,
+};
+use crate::panic_sink::{OpenGpuiPanicAccumulator, OpenGpuiPanicPayload};
 
 /// Post-admission evidence produced without interpreting the runtime command outcome.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -20,6 +23,44 @@ pub(crate) enum AdmittedCommandUncertainty {
     RunnerPanicked,
     TaskInstallationUnwound,
     HostNotificationUnwound,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AdmittedCommandTaskPhase {
+    NeedsInstall,
+    NeedsNotify,
+    AwaitingTicket,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AdmittedCommandDrive {
+    AwaitingTicket,
+    Unavailable,
+}
+
+pub(crate) struct AdmittedCommandDriveUnwind {
+    reason: AdmittedCommandUncertainty,
+    payload: OpenGpuiPanicPayload,
+}
+
+impl AdmittedCommandDriveUnwind {
+    fn new(reason: AdmittedCommandUncertainty, payload: OpenGpuiPanicPayload) -> Self {
+        Self { reason, payload }
+    }
+
+    pub(crate) const fn reason(&self) -> AdmittedCommandUncertainty {
+        self.reason
+    }
+
+    pub(crate) fn resume(self) -> ! {
+        resume_unwind(self.payload)
+    }
+
+    pub(crate) fn suppress(self) -> bool {
+        let mut panics = OpenGpuiPanicAccumulator::default();
+        panics.push(Some(self.payload));
+        panics.suppress()
+    }
 }
 
 /// One attempt-correlated event emitted by an admitted command task.
@@ -59,6 +100,51 @@ impl<A: Copy> AdmittedCommandEvent<A> {
                 reason: AdmittedCommandUncertainty::RunnerDropped,
                 ..
             } => 1,
+        }
+    }
+}
+
+/// Transactional ownership of one admitted-command event.
+///
+/// Dropping an uncommitted guard restores the event without replacing any more precise event that
+/// arrived while the consumer was preparing its state transition.
+pub(crate) struct AdmittedCommandEventGuard<A>
+where
+    A: Copy,
+{
+    cell: Rc<AdmittedCommandAttemptCell<A>>,
+    event: Option<AdmittedCommandEvent<A>>,
+}
+
+impl<A> AdmittedCommandEventGuard<A>
+where
+    A: Copy,
+{
+    fn new(cell: Rc<AdmittedCommandAttemptCell<A>>, event: AdmittedCommandEvent<A>) -> Self {
+        Self {
+            cell,
+            event: Some(event),
+        }
+    }
+
+    pub(crate) fn event(&self) -> &AdmittedCommandEvent<A> {
+        self.event
+            .as_ref()
+            .expect("an uncommitted admitted-command event guard owns its event")
+    }
+
+    pub(crate) fn commit(mut self) {
+        self.event.take();
+    }
+}
+
+impl<A> Drop for AdmittedCommandEventGuard<A>
+where
+    A: Copy,
+{
+    fn drop(&mut self) {
+        if let Some(event) = self.event.take() {
+            self.cell.record(event);
         }
     }
 }
@@ -183,7 +269,9 @@ where
                 self.terminal = true;
                 self.cell
                     .record_uncertainty(AdmittedCommandUncertainty::RunnerPanicked);
-                drop(panic);
+                let mut panics = OpenGpuiPanicAccumulator::default();
+                panics.push(Some(panic));
+                let _ = panics.suppress();
                 Poll::Ready(())
             }
         }
@@ -212,12 +300,14 @@ where
     A: Copy,
 {
     attempt: A,
-    runner: Option<AdmittedCommandRunner<A, OpenGpuiCommandTicket>>,
+    runner: Rc<RefCell<Option<AdmittedCommandRunner<A, OpenGpuiCommandTicket>>>>,
     task: Option<Task<()>>,
+    notification: Option<OpenGpuiCommandNotification>,
     lease: Option<AdmittedCommandTaskLease>,
     cell: Rc<AdmittedCommandAttemptCell<A>>,
+    phase: AdmittedCommandTaskPhase,
     #[cfg(test)]
-    installation_fault: bool,
+    setup_fault: bool,
 }
 
 impl<A> AdmittedCommandTask<A>
@@ -227,17 +317,23 @@ where
     pub(crate) fn new(
         attempt: A,
         ticket: OpenGpuiCommandTicket,
+        notification: OpenGpuiCommandNotification,
         lease: AdmittedCommandTaskLease,
     ) -> Self {
         let cell = Rc::new(AdmittedCommandAttemptCell::new(attempt));
         Self {
             attempt,
-            runner: Some(AdmittedCommandRunner::new(ticket, Rc::clone(&cell))),
+            runner: Rc::new(RefCell::new(Some(AdmittedCommandRunner::new(
+                ticket,
+                Rc::clone(&cell),
+            )))),
             task: None,
+            notification: Some(notification),
             lease: Some(lease),
             cell,
+            phase: AdmittedCommandTaskPhase::NeedsInstall,
             #[cfg(test)]
-            installation_fault: false,
+            setup_fault: false,
         }
     }
 
@@ -245,27 +341,74 @@ where
         self.attempt
     }
 
-    /// Installs the GPUI task after the owner has already been retained by its supervisor.
-    pub(crate) fn spawn(&mut self, cx: &mut App) -> bool {
-        let Some(runner) = self.runner.take() else {
-            return false;
-        };
-        #[cfg(test)]
-        if std::mem::take(&mut self.installation_fault) {
-            panic!("injected admitted command task installation fault");
+    /// Advances only the missing native setup stages for this exact admitted command.
+    ///
+    /// An unwind leaves the current phase and every unconsumed resource intact so the owner can
+    /// retry without re-enqueuing the graph command.
+    pub(crate) fn drive(
+        &mut self,
+        cx: &mut App,
+    ) -> Result<AdmittedCommandDrive, AdmittedCommandDriveUnwind> {
+        if self.phase == AdmittedCommandTaskPhase::NeedsInstall {
+            if self.runner.borrow().is_none() {
+                return Ok(AdmittedCommandDrive::Unavailable);
+            }
+            if let Err(payload) = catch_unwind(AssertUnwindSafe(|| self.install(cx))) {
+                return Err(AdmittedCommandDriveUnwind::new(
+                    AdmittedCommandUncertainty::TaskInstallationUnwound,
+                    payload,
+                ));
+            }
+            self.phase = AdmittedCommandTaskPhase::NeedsNotify;
         }
+        if self.phase == AdmittedCommandTaskPhase::NeedsNotify {
+            if let Err(payload) = catch_unwind(AssertUnwindSafe(|| self.wake_host(cx))) {
+                return Err(AdmittedCommandDriveUnwind::new(
+                    AdmittedCommandUncertainty::HostNotificationUnwound,
+                    payload,
+                ));
+            }
+            self.phase = AdmittedCommandTaskPhase::AwaitingTicket;
+        }
+        Ok(AdmittedCommandDrive::AwaitingTicket)
+    }
+
+    fn install(&mut self, cx: &mut App) {
+        if self.task.is_some() {
+            return;
+        }
+        #[cfg(test)]
+        if std::mem::take(&mut self.setup_fault) {
+            panic!("injected admitted command setup fault");
+        }
+        let runner = Rc::clone(&self.runner);
         let cell = Rc::clone(&self.cell);
         self.task = Some(cx.spawn(async move |cx| {
-            runner.await;
+            let runner = runner.borrow_mut().take();
+            if let Some(runner) = runner {
+                runner.await;
+            }
             if cell.has_event() {
                 cx.refresh();
             }
         }));
-        true
     }
 
-    pub(crate) fn take_event(&self) -> Option<AdmittedCommandEvent<A>> {
-        self.cell.take_event()
+    /// Wakes the exact host that owns the admitted journal entry.
+    ///
+    /// The notification remains owned until the call returns, so an unwind can be retried without
+    /// replaying or re-enqueuing the command.
+    fn wake_host(&mut self, cx: &mut App) {
+        if let Some(notification) = self.notification {
+            notification.notify(cx);
+            self.notification = None;
+        }
+    }
+
+    pub(crate) fn take_event_guard(&self) -> Option<AdmittedCommandEventGuard<A>> {
+        self.cell
+            .take_event()
+            .map(|event| AdmittedCommandEventGuard::new(Rc::clone(&self.cell), event))
     }
 
     pub(crate) fn record_uncertainty(&self, reason: AdmittedCommandUncertainty) {
@@ -273,8 +416,8 @@ where
     }
 
     #[cfg(test)]
-    pub(crate) fn inject_installation_fault_for_test(&mut self) {
-        self.installation_fault = true;
+    pub(crate) fn inject_setup_fault_for_test(&mut self) {
+        self.setup_fault = true;
     }
 
     /// Cancels one exact attempt without manufacturing an unresolved-drop event.
@@ -295,8 +438,9 @@ where
 
     fn suppress_and_cancel(&mut self) {
         self.cell.shutdown();
-        self.runner.take();
+        self.runner.borrow_mut().take();
         self.task.take();
+        self.notification.take();
         self.lease.take();
     }
 
@@ -305,11 +449,13 @@ where
         let cell = Rc::new(AdmittedCommandAttemptCell::new(attempt));
         Self {
             attempt,
-            runner: None,
+            runner: Rc::new(RefCell::new(None)),
             task: None,
+            notification: None,
             lease: None,
             cell,
-            installation_fault: false,
+            phase: AdmittedCommandTaskPhase::NeedsInstall,
+            setup_fault: false,
         }
     }
 }
@@ -320,8 +466,9 @@ where
 {
     fn drop(&mut self) {
         self.cell.shutdown();
-        self.runner.take();
+        self.runner.borrow_mut().take();
         self.task.take();
+        self.notification.take();
         self.lease.take();
     }
 }

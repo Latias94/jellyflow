@@ -1,20 +1,14 @@
 use std::fmt;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use jellyflow_core::NodeId;
 use jellyflow_runtime::{
-    commands::CommandExecutionCompletion,
-    commands::CommandExecutionKind,
     commands::GraphCommand,
-    commands::GraphCommandIdentity,
     graph::GraphRevision,
-    graph::GraphVersion,
-    graph::RuntimeProvenance,
     reconciliation::{
         FieldAttempt, FieldConflict, FieldConflictResolution, FieldIntentRejection, FieldPhase,
         FieldReceiptDecision, FieldReconcileDecision, FieldReconciler, FieldRecovery,
         FieldResolutionDecision, FieldRestore, FieldSubmissionDecision, FieldSubmissionIntent,
-        FieldSubmissionKind,
+        FieldSubmissionKind, MutationCommandResult,
     },
     view::NodeInstanceKey,
     view::ViewCloseReason,
@@ -26,14 +20,15 @@ use crate::activity::{
     OpenGpuiNodeActivityRegistry,
 };
 use crate::admitted_command::{
-    AdmittedCommandEvent, AdmittedCommandTask, AdmittedCommandTaskLease, AdmittedCommandUncertainty,
+    AdmittedCommandDrive, AdmittedCommandEvent, AdmittedCommandTask, AdmittedCommandTaskLease,
+    AdmittedCommandUncertainty,
 };
 use crate::authoring::{
     OpenGpuiAuthoringStamp, OpenGpuiCommandAdmissionError, OpenGpuiNodeAuthoring,
     OpenGpuiNodeAuthoringError, OpenGpuiNodeObservation,
 };
 use crate::binding::{OpenGpuiMountContext, OpenGpuiMountValidationError};
-use crate::command_journal::OpenGpuiCommandTicketResult;
+use crate::command_journal::{OpenGpuiCommandTicketDisposition, OpenGpuiCommandTicketResult};
 pub use crate::draft_store::{
     OPEN_GPUI_DEFAULT_RETAINED_FIELD_STORE_CAPACITY, RetainedFieldStore, RetainedFieldStoreError,
 };
@@ -46,7 +41,6 @@ const DISPATCH_HOST_NOTIFICATION_UNWOUND_MESSAGE: &str =
     "field command outcome is uncertain: host notification unwound after the command was enqueued";
 const DISPATCH_TASK_PANICKED_MESSAGE: &str =
     "field command outcome is uncertain: the dispatched task panicked before its ticket settled";
-static NEXT_RETAINED_DRAFT_NONCE: AtomicU64 = AtomicU64::new(1);
 
 fn admitted_command_uncertainty_message(reason: AdmittedCommandUncertainty) -> &'static str {
     match reason {
@@ -59,14 +53,6 @@ fn admitted_command_uncertainty_message(reason: AdmittedCommandUncertainty) -> &
             DISPATCH_HOST_NOTIFICATION_UNWOUND_MESSAGE
         }
     }
-}
-
-fn allocate_retained_draft_nonce() -> Option<u64> {
-    NEXT_RETAINED_DRAFT_NONCE
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-            current.checked_add(1)
-        })
-        .ok()
 }
 
 /// Stable product-owned identity for one editable value inside a native node.
@@ -94,23 +80,18 @@ impl RetainedFieldKey {
     }
 }
 
-/// Stable capability for one explicit submission by one retained draft.
+/// Stable capability for one explicit field submission.
 ///
-/// [`Self::get`] exposes the draft-local sequence for diagnostics only. Equality and command
-/// settlement also include the private draft nonce, so another field's same-numbered attempt is
-/// never authoritative.
+/// Runtime allocates the opaque identity globally, so attempts from different fields cannot
+/// collide and the adapter does not need a second provenance nonce.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct RetainedFieldAttempt {
-    draft_nonce: u64,
     sequence: FieldAttempt,
 }
 
 impl RetainedFieldAttempt {
-    const fn new(draft_nonce: u64, sequence: FieldAttempt) -> Self {
-        Self {
-            draft_nonce,
-            sequence,
-        }
+    const fn new(sequence: FieldAttempt) -> Self {
+        Self { sequence }
     }
 
     #[must_use]
@@ -179,14 +160,13 @@ pub enum RetainedFieldSubmitMode {
 /// Product-facing, inert command intent. Planning never dispatches or retries.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RetainedFieldIntent<T> {
-    draft_nonce: u64,
     inner: FieldSubmissionIntent<T>,
 }
 
 impl<T> RetainedFieldIntent<T> {
     #[must_use]
     pub const fn attempt(&self) -> RetainedFieldAttempt {
-        RetainedFieldAttempt::new(self.draft_nonce, self.inner.attempt())
+        RetainedFieldAttempt::new(self.inner.attempt())
     }
 
     #[must_use]
@@ -208,77 +188,6 @@ impl<T> RetainedFieldIntent<T> {
     }
 }
 
-/// Application-scoped submission intent bound to one exact authoritative runtime version.
-#[derive(Clone, Debug, PartialEq)]
-pub struct ApplicationRetainedFieldIntent<T> {
-    expected_version: GraphVersion,
-    inner: RetainedFieldIntent<T>,
-}
-
-impl<T> ApplicationRetainedFieldIntent<T> {
-    #[must_use]
-    pub const fn attempt(&self) -> RetainedFieldAttempt {
-        self.inner.attempt()
-    }
-
-    #[must_use]
-    pub const fn mode(&self) -> RetainedFieldSubmitMode {
-        self.inner.mode()
-    }
-
-    #[must_use]
-    pub const fn expected_version(&self) -> GraphVersion {
-        self.expected_version
-    }
-
-    #[must_use]
-    pub const fn value(&self) -> &T {
-        self.inner.value()
-    }
-
-    /// Binds this field attempt to the exact command that will carry it.
-    pub fn bind_command(
-        &self,
-        command: &GraphCommand,
-    ) -> Result<ApplicationRetainedFieldDispatchReceipt, RetainedFieldError> {
-        let actual = command.expected_version();
-        if actual != self.expected_version {
-            return Err(RetainedFieldError::DispatchVersionMismatch {
-                expected: self.expected_version,
-                actual,
-            });
-        }
-        Ok(ApplicationRetainedFieldDispatchReceipt {
-            attempt: self.attempt(),
-            expected_version: self.expected_version,
-            command_identity: command.identity().clone(),
-        })
-    }
-}
-
-/// Opaque evidence tying one application field attempt to one concrete graph command.
-///
-/// Settlement requires the outcome to carry the same runtime-issued command identity and a version
-/// transition valid for the command's expected version.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ApplicationRetainedFieldDispatchReceipt {
-    attempt: RetainedFieldAttempt,
-    expected_version: GraphVersion,
-    command_identity: GraphCommandIdentity,
-}
-
-impl ApplicationRetainedFieldDispatchReceipt {
-    #[must_use]
-    pub const fn attempt(&self) -> RetainedFieldAttempt {
-        self.attempt
-    }
-
-    #[must_use]
-    pub const fn expected_version(&self) -> GraphVersion {
-        self.expected_version
-    }
-}
-
 /// Explicit choices for a conflicting local value.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RetainedFieldConflictChoice {
@@ -293,14 +202,6 @@ pub enum RetainedFieldResolution<T> {
     AcceptedRemote { revision: GraphRevision },
     KeptLocal { conflict: RetainedFieldConflict },
     Reapply(RetainedFieldIntent<T>),
-}
-
-/// Application-scoped conflict resolution preserving exact runtime-version evidence.
-#[derive(Clone, Debug, PartialEq)]
-pub enum ApplicationRetainedFieldResolution<T> {
-    AcceptedRemote { version: GraphVersion },
-    KeptLocal { conflict: RetainedFieldConflict },
-    Reapply(ApplicationRetainedFieldIntent<T>),
 }
 
 /// Mechanical command state, orthogonal to [`RetainedFieldPhase`].
@@ -356,6 +257,15 @@ pub enum RetainedFieldUpdate {
     RemoteApplied,
     BaseAdvanced,
     Conflict,
+    AuthoritativeMismatch {
+        attempt: RetainedFieldAttempt,
+        committed_revision: GraphRevision,
+    },
+    Superseded {
+        attempt: RetainedFieldAttempt,
+        committed_revision: GraphRevision,
+        current_revision: GraphRevision,
+    },
     SnapshotFirst {
         attempt: RetainedFieldAttempt,
         revision: GraphRevision,
@@ -389,6 +299,10 @@ pub enum RetainedFieldSettlement {
         minimum_revision: GraphRevision,
         message: String,
     },
+    DefinitelyNotExecuted {
+        attempt: RetainedFieldAttempt,
+        message: String,
+    },
     Uncertain {
         attempt: RetainedFieldAttempt,
         message: String,
@@ -402,9 +316,9 @@ impl RetainedFieldSettlement {
     #[must_use]
     pub fn message(&self) -> Option<&str> {
         match self {
-            Self::RefreshRequired { message, .. } | Self::Uncertain { message, .. } => {
-                Some(message)
-            }
+            Self::RefreshRequired { message, .. }
+            | Self::DefinitelyNotExecuted { message, .. }
+            | Self::Uncertain { message, .. } => Some(message),
             Self::Acknowledged { .. } | Self::AwaitingSnapshot { .. } | Self::Ignored { .. } => {
                 None
             }
@@ -437,14 +351,12 @@ impl RetainedFieldRecovery {
 }
 
 impl RetainedFieldRecovery {
-    fn from_draft(value: FieldRecovery, draft_nonce: Option<u64>) -> Self {
+    fn from_draft(value: FieldRecovery) -> Self {
         if value.is_empty() {
             return Self::default();
         }
         Self {
-            interrupted_attempt: draft_nonce
-                .zip(value.interrupted_attempt())
-                .map(|(draft_nonce, sequence)| RetainedFieldAttempt::new(draft_nonce, sequence)),
+            interrupted_attempt: value.interrupted_attempt().map(RetainedFieldAttempt::new),
             composition_interrupted: value.composition_interrupted(),
         }
     }
@@ -453,7 +365,6 @@ impl RetainedFieldRecovery {
 /// Private revision-aware reducer shared by the two lifecycle-owning field interfaces.
 #[derive(Clone)]
 struct RevisionedField<T> {
-    draft_nonce: Option<u64>,
     draft: FieldReconciler<T>,
     attempt_state: RetainedFieldAttemptState,
     notice: Option<String>,
@@ -477,10 +388,10 @@ impl<T> RevisionedField<T>
 where
     T: Clone + PartialEq,
 {
+    #[cfg(test)]
     #[must_use]
     pub fn new(revision: GraphRevision, authoritative: T) -> Self {
         Self {
-            draft_nonce: allocate_retained_draft_nonce(),
             draft: FieldReconciler::new(revision, authoritative),
             attempt_state: RetainedFieldAttemptState::Idle,
             notice: None,
@@ -488,8 +399,7 @@ where
     }
 
     fn from_restore(restored: FieldRestore<T>) -> (Self, RetainedFieldRecovery) {
-        let draft_nonce = allocate_retained_draft_nonce();
-        let recovery = RetainedFieldRecovery::from_draft(restored.recovery(), draft_nonce);
+        let recovery = RetainedFieldRecovery::from_draft(restored.recovery());
         let draft = restored.into_reconciler();
         let attempt_state =
             recovery
@@ -502,7 +412,6 @@ where
                 });
         (
             Self {
-                draft_nonce,
                 draft,
                 attempt_state,
                 notice: (!recovery.is_empty())
@@ -512,14 +421,12 @@ where
         )
     }
 
-    fn retained_attempt(&self, sequence: FieldAttempt) -> Option<RetainedFieldAttempt> {
-        self.draft_nonce
-            .map(|draft_nonce| RetainedFieldAttempt::new(draft_nonce, sequence))
+    fn retained_attempt(&self, sequence: FieldAttempt) -> RetainedFieldAttempt {
+        RetainedFieldAttempt::new(sequence)
     }
 
     fn is_pending_attempt(&self, attempt: RetainedFieldAttempt) -> bool {
-        self.draft_nonce == Some(attempt.draft_nonce)
-            && self.draft.pending_attempt() == Some(attempt.sequence)
+        self.draft.pending_attempt() == Some(attempt.sequence)
     }
 
     #[must_use]
@@ -623,7 +530,7 @@ where
         if let Some(attempt) = self
             .draft
             .pending_attempt()
-            .and_then(|sequence| self.retained_attempt(sequence))
+            .map(|sequence| self.retained_attempt(sequence))
             && self.draft.pending_accepted_revision().is_none()
             && let Some(observed_revision) = self.draft.pending_matching_snapshot_revision()
         {
@@ -646,17 +553,42 @@ where
             FieldReconcileDecision::RemoteApplied { .. } => RetainedFieldUpdate::RemoteApplied,
             FieldReconcileDecision::BaseAdvanced { .. } => RetainedFieldUpdate::BaseAdvanced,
             FieldReconcileDecision::Conflict { .. } => RetainedFieldUpdate::Conflict,
+            FieldReconcileDecision::AuthoritativeMismatch {
+                attempt: sequence,
+                committed_revision,
+            } => {
+                let attempt = self.retained_attempt(sequence);
+                self.attempt_state = RetainedFieldAttemptState::Idle;
+                self.notice = Some(format!(
+                    "field attempt did not match the authoritative value at revision {committed_revision}"
+                ));
+                RetainedFieldUpdate::AuthoritativeMismatch {
+                    attempt,
+                    committed_revision,
+                }
+            }
+            FieldReconcileDecision::Superseded {
+                attempt: sequence,
+                committed_revision,
+                current_revision,
+            } => {
+                let attempt = self.retained_attempt(sequence);
+                self.attempt_state = RetainedFieldAttemptState::Idle;
+                self.notice = Some(format!(
+                    "field attempt committed at revision {committed_revision} was superseded by revision {current_revision}"
+                ));
+                RetainedFieldUpdate::Superseded {
+                    attempt,
+                    committed_revision,
+                    current_revision,
+                }
+            }
             FieldReconcileDecision::SelfAcknowledged {
                 attempt: sequence,
                 revision,
                 local_changed_after_submission,
             } => {
-                let Some(attempt) = self.retained_attempt(sequence) else {
-                    self.attempt_state = RetainedFieldAttemptState::Idle;
-                    self.notice =
-                        Some("field acknowledgement lost its retained draft identity".to_owned());
-                    return RetainedFieldUpdate::InconsistentSnapshot;
-                };
+                let attempt = self.retained_attempt(sequence);
                 self.attempt_state = RetainedFieldAttemptState::Idle;
                 self.notice = None;
                 RetainedFieldUpdate::Acknowledged {
@@ -687,21 +619,16 @@ where
                 attempt: self.attempt_state.attempt(),
             });
         }
-        let Some(draft_nonce) = self.draft_nonce else {
-            return Err(RetainedFieldError::AttemptIdentityExhausted);
-        };
         match self.draft.plan_submission_at(command_revision) {
             FieldSubmissionDecision::Submit(inner) => {
-                let intent = RetainedFieldIntent { draft_nonce, inner };
+                let intent = RetainedFieldIntent { inner };
                 self.attempt_state = RetainedFieldAttemptState::Pending {
                     attempt: intent.attempt(),
                 };
                 self.notice = None;
                 Ok(intent)
             }
-            FieldSubmissionDecision::Rejected(reason) => {
-                Err(map_plan_error(reason, self.draft_nonce))
-            }
+            FieldSubmissionDecision::Rejected(reason) => Err(map_plan_error(reason)),
         }
     }
 
@@ -720,9 +647,6 @@ where
             RetainedFieldConflictChoice::KeepLocal => FieldConflictResolution::KeepLocal,
             RetainedFieldConflictChoice::ReapplyLocal => FieldConflictResolution::ReapplyLocal,
         };
-        if choice == FieldConflictResolution::ReapplyLocal && self.draft_nonce.is_none() {
-            return Err(RetainedFieldError::AttemptIdentityExhausted);
-        }
         match self.draft.resolve_at(choice, command_revision) {
             FieldResolutionDecision::AcceptedRemote { revision } => {
                 self.notice = None;
@@ -734,19 +658,14 @@ where
                 })
             }
             FieldResolutionDecision::Reapply(inner) => {
-                let Some(draft_nonce) = self.draft_nonce else {
-                    return Err(RetainedFieldError::AttemptIdentityExhausted);
-                };
-                let intent = RetainedFieldIntent { draft_nonce, inner };
+                let intent = RetainedFieldIntent { inner };
                 self.attempt_state = RetainedFieldAttemptState::Pending {
                     attempt: intent.attempt(),
                 };
                 self.notice = None;
                 Ok(RetainedFieldResolution::Reapply(intent))
             }
-            FieldResolutionDecision::Rejected(reason) => {
-                Err(map_plan_error(reason, self.draft_nonce))
-            }
+            FieldResolutionDecision::Rejected(reason) => Err(map_plan_error(reason)),
         }
     }
 
@@ -765,14 +684,17 @@ where
     pub fn settle_ticket(
         &mut self,
         attempt: RetainedFieldAttempt,
-        result: OpenGpuiCommandTicketResult,
+        result: &OpenGpuiCommandTicketResult,
     ) -> RetainedFieldSettlement {
         if !self.is_pending_attempt(attempt) {
             return RetainedFieldSettlement::Ignored { attempt };
         }
-        let completion = match result {
-            Ok(completion) => completion,
-            Err(error) => {
+        let completion = match OpenGpuiCommandTicketDisposition::classify(result) {
+            OpenGpuiCommandTicketDisposition::Completed(completion) => completion,
+            OpenGpuiCommandTicketDisposition::DefinitelyNotExecuted(error) => {
+                return self.record_definitely_not_executed(attempt, error.to_string());
+            }
+            OpenGpuiCommandTicketDisposition::ExecutionUnknown(error) => {
                 return self.record_uncertain(
                     attempt,
                     format!(
@@ -781,22 +703,12 @@ where
                 );
             }
         };
-        match completion.kind() {
-            CommandExecutionKind::Applied => match completion.applied_revision() {
-                Some(revision) => self.record_receipt(attempt, revision),
-                None => self.record_uncertain(
-                    attempt,
-                    "field command outcome is uncertain: applied completion omitted its revision; wait for authoritative refresh",
-                ),
-            },
-            CommandExecutionKind::Noop => {
+        match MutationCommandResult::from_runtime(completion) {
+            MutationCommandResult::Applied { revision } => self.record_receipt(attempt, revision),
+            MutationCommandResult::Noop {
+                revision: minimum_revision,
+            } => {
                 self.draft.reject_submission(attempt.sequence);
-                let Some(minimum_revision) = completion.observed_revision() else {
-                    return self.record_uncertain(
-                        attempt,
-                        "field command outcome is uncertain: noop completion omitted its observed revision; wait for authoritative refresh",
-                    );
-                };
                 let message = format!(
                     "field command made no authoritative change at revision {minimum_revision}; refresh before retry"
                 );
@@ -811,14 +723,11 @@ where
                     message,
                 }
             }
-            CommandExecutionKind::Conflict => {
+            MutationCommandResult::Conflict {
+                revision: minimum_revision,
+                ..
+            } => {
                 self.draft.reject_submission(attempt.sequence);
-                let Some(minimum_revision) = completion.observed_revision() else {
-                    return self.record_uncertain(
-                        attempt,
-                        "field command outcome is uncertain: conflict completion omitted its observed revision; wait for authoritative refresh",
-                    );
-                };
                 let message = format!(
                     "field command conflicted at revision {minimum_revision}; refresh before retry"
                 );
@@ -833,12 +742,9 @@ where
                     message,
                 }
             }
-            CommandExecutionKind::Rejected => {
+            MutationCommandResult::Rejected { diagnostic, .. } => {
                 self.draft.reject_submission(attempt.sequence);
                 let minimum_revision = self.draft.remote_revision();
-                let diagnostic = completion
-                    .diagnostic_message()
-                    .unwrap_or_else(|| "no diagnostic was provided".to_owned());
                 let message = format!("field command was rejected: {diagnostic}");
                 self.attempt_state = RetainedFieldAttemptState::RefreshRequired {
                     attempt: Some(attempt),
@@ -851,12 +757,9 @@ where
                     message,
                 }
             }
-            CommandExecutionKind::Failed => {
+            MutationCommandResult::Failed { diagnostic } => {
                 self.draft.reject_submission(attempt.sequence);
                 let minimum_revision = self.draft.remote_revision();
-                let diagnostic = completion
-                    .diagnostic_message()
-                    .unwrap_or_else(|| "no diagnostic was provided".to_owned());
                 let message = format!("field command execution failed: {diagnostic}");
                 self.attempt_state = RetainedFieldAttemptState::RefreshRequired {
                     attempt: Some(attempt),
@@ -868,6 +771,11 @@ where
                     minimum_revision,
                     message,
                 }
+            }
+            MutationCommandResult::NativeDispatchFailed { .. }
+            | MutationCommandResult::NotDispatched { .. }
+            | MutationCommandResult::Uncertain { .. } => {
+                unreachable!("runtime completion projection cannot contain native evidence")
             }
         }
     }
@@ -888,6 +796,21 @@ where
         };
         self.notice = Some(message.clone());
         RetainedFieldSettlement::Uncertain { attempt, message }
+    }
+
+    fn record_definitely_not_executed(
+        &mut self,
+        attempt: RetainedFieldAttempt,
+        diagnostic: impl Into<String>,
+    ) -> RetainedFieldSettlement {
+        self.draft.reject_submission(attempt.sequence);
+        let message = format!(
+            "field command was definitely not executed: {}",
+            diagnostic.into()
+        );
+        self.attempt_state = RetainedFieldAttemptState::Idle;
+        self.notice = Some(message.clone());
+        RetainedFieldSettlement::DefinitelyNotExecuted { attempt, message }
     }
 
     fn record_receipt(
@@ -936,6 +859,13 @@ where
                 attempt,
                 current_revision,
                 "field receipt was superseded by a newer authoritative revision",
+            ),
+            FieldReceiptDecision::AuthoritativeMismatch {
+                committed_revision, ..
+            } => self.receipt_requires_refresh(
+                attempt,
+                committed_revision,
+                "field receipt did not match the authoritative value at its committed revision",
             ),
             FieldReceiptDecision::UnknownAttempt { .. }
             | FieldReceiptDecision::InvalidCommittedRevision { .. } => self
@@ -1080,320 +1010,8 @@ where
         transition.output
     }
 
-    fn transition<R>(&mut self, operation: impl FnOnce(&mut RevisionedField<T>) -> R) -> R {
-        let transition = self.prepare(operation);
-        self.publish(transition)
-    }
-
-    fn try_transition<R>(
-        &mut self,
-        operation: impl FnOnce(&mut RevisionedField<T>) -> Result<R, RetainedFieldError>,
-    ) -> Result<R, RetainedFieldError> {
-        let transition = self.try_prepare(operation)?;
-        Ok(self.publish(transition))
-    }
-
     fn clear_notice(&mut self) {
         self.field.clear_notice();
-    }
-}
-
-/// Application-scoped owner for one revision-aware editable field.
-///
-/// The application owns this value inside a real business lifetime such as an Open GPUI entity or
-/// a collection keyed by a domain ID. It deliberately has no node mount, activity budget, or
-/// overflow store: application panels must not fabricate a [`NodeInstanceKey`] merely to reuse
-/// draft reconciliation. Every mutation is applied to a private candidate first and published only
-/// after the owner is already retained by its application lifetime.
-pub struct ApplicationRetainedField<T> {
-    remote_version: GraphVersion,
-    state: FieldOwnerState<T>,
-}
-
-impl<T> fmt::Debug for ApplicationRetainedField<T>
-where
-    T: fmt::Debug,
-{
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("ApplicationRetainedField")
-            .field("remote_version", &self.remote_version)
-            .field("field", self.state.published())
-            .finish()
-    }
-}
-
-impl<T> ApplicationRetainedField<T>
-where
-    T: Clone + PartialEq,
-{
-    #[must_use]
-    pub fn new(version: GraphVersion, authoritative: T) -> Self {
-        Self {
-            remote_version: version,
-            state: FieldOwnerState::new(RevisionedField::new(version.revision(), authoritative)),
-        }
-    }
-
-    #[must_use]
-    pub fn local(&self) -> &T {
-        self.state.published().local()
-    }
-
-    #[must_use]
-    pub fn remote(&self) -> &T {
-        self.state.published().remote()
-    }
-
-    #[must_use]
-    pub const fn base_revision(&self) -> GraphRevision {
-        self.state.field.base_revision()
-    }
-
-    #[must_use]
-    pub const fn remote_revision(&self) -> GraphRevision {
-        self.state.field.remote_revision()
-    }
-
-    #[must_use]
-    pub const fn remote_version(&self) -> GraphVersion {
-        self.remote_version
-    }
-
-    #[must_use]
-    pub fn phase(&self) -> RetainedFieldPhase {
-        self.state.published().phase()
-    }
-
-    #[must_use]
-    pub fn conflict(&self) -> Option<RetainedFieldConflict> {
-        self.state.published().conflict()
-    }
-
-    #[must_use]
-    pub const fn attempt_state(&self) -> RetainedFieldAttemptState {
-        self.state.field.attempt_state()
-    }
-
-    #[must_use]
-    pub fn notice(&self) -> Option<&str> {
-        self.state.published().notice()
-    }
-
-    #[must_use]
-    pub fn can_submit(&self) -> bool {
-        self.state.published().can_submit()
-    }
-
-    #[must_use]
-    pub fn is_active(&self) -> bool {
-        self.phase() != RetainedFieldPhase::Clean
-            || self.attempt_state() != RetainedFieldAttemptState::Idle
-    }
-
-    pub fn edit(&mut self, value: T) -> RetainedFieldPhase {
-        self.state.transition(|field| field.edit(value))
-    }
-
-    pub fn set_composing(&mut self, composing: bool) -> RetainedFieldPhase {
-        self.state
-            .transition(|field| field.set_composing(composing))
-    }
-
-    pub fn observe(
-        &mut self,
-        version: GraphVersion,
-        authoritative: T,
-    ) -> Result<RetainedFieldUpdate, RetainedFieldError> {
-        self.ensure_authority(version)?;
-        let update = self
-            .state
-            .transition(|field| field.observe(version.revision(), authoritative));
-        if self.state.field.remote_revision() == version.revision() {
-            self.remote_version = version;
-        }
-        Ok(update)
-    }
-
-    pub fn plan(
-        &mut self,
-        command_version: GraphVersion,
-    ) -> Result<ApplicationRetainedFieldIntent<T>, RetainedFieldError> {
-        if self.state.field.attempt_state().blocks_submission() {
-            return Err(RetainedFieldError::AttemptPending {
-                attempt: self.state.field.attempt_state().attempt(),
-            });
-        }
-        self.ensure_current_version(command_version)?;
-        let inner = self
-            .state
-            .try_transition(|field| field.plan(command_version.revision()))?;
-        Ok(ApplicationRetainedFieldIntent {
-            expected_version: command_version,
-            inner,
-        })
-    }
-
-    pub fn resolve(
-        &mut self,
-        choice: RetainedFieldConflictChoice,
-        command_version: GraphVersion,
-    ) -> Result<ApplicationRetainedFieldResolution<T>, RetainedFieldError> {
-        self.ensure_current_version(command_version)?;
-        let resolution = self
-            .state
-            .try_transition(|field| field.resolve(choice, command_version.revision()))?;
-        Ok(match resolution {
-            RetainedFieldResolution::AcceptedRemote { .. } => {
-                ApplicationRetainedFieldResolution::AcceptedRemote {
-                    version: command_version,
-                }
-            }
-            RetainedFieldResolution::KeptLocal { conflict } => {
-                ApplicationRetainedFieldResolution::KeptLocal { conflict }
-            }
-            RetainedFieldResolution::Reapply(inner) => {
-                ApplicationRetainedFieldResolution::Reapply(ApplicationRetainedFieldIntent {
-                    expected_version: command_version,
-                    inner,
-                })
-            }
-        })
-    }
-
-    pub fn not_dispatched(
-        &mut self,
-        attempt: RetainedFieldAttempt,
-    ) -> Result<(), RetainedFieldError> {
-        self.state
-            .try_transition(|field| field.not_dispatched(attempt))
-    }
-
-    pub fn settle_command(
-        &mut self,
-        receipt: ApplicationRetainedFieldDispatchReceipt,
-        completion: CommandExecutionCompletion,
-    ) -> Result<RetainedFieldSettlement, RetainedFieldError> {
-        if !self.state.field.is_pending_attempt(receipt.attempt) {
-            return Ok(RetainedFieldSettlement::Ignored {
-                attempt: receipt.attempt,
-            });
-        }
-        self.validate_receipt(&receipt)?;
-        self.validate_completion(&receipt, &completion)?;
-        Ok(self
-            .state
-            .transition(|field| field.settle_ticket(receipt.attempt, Ok(completion))))
-    }
-
-    pub fn mark_uncertain(
-        &mut self,
-        receipt: ApplicationRetainedFieldDispatchReceipt,
-        message: impl Into<String>,
-    ) -> Result<RetainedFieldSettlement, RetainedFieldError> {
-        self.validate_receipt(&receipt)?;
-        let message = message.into();
-        self.state
-            .try_transition(|field| field.mark_uncertain(receipt.attempt, message))
-    }
-
-    pub fn resolve_uncertain_from_fresh(
-        &mut self,
-        version: GraphVersion,
-        authoritative: T,
-    ) -> Result<RetainedFieldUpdate, RetainedFieldError> {
-        self.ensure_authority(version)?;
-        let update = self.state.try_transition(|field| {
-            field.resolve_uncertain_from_fresh(version.revision(), authoritative)
-        })?;
-        if self.state.field.remote_revision() == version.revision() {
-            self.remote_version = version;
-        }
-        Ok(update)
-    }
-
-    pub fn clear_notice(&mut self) {
-        self.state.clear_notice();
-    }
-
-    fn ensure_authority(&self, version: GraphVersion) -> Result<(), RetainedFieldError> {
-        let expected = self.remote_version.provenance();
-        let actual = version.provenance();
-        if actual != expected {
-            return Err(RetainedFieldError::ForeignRuntimeAuthority { expected, actual });
-        }
-        Ok(())
-    }
-
-    fn ensure_current_version(&self, version: GraphVersion) -> Result<(), RetainedFieldError> {
-        self.ensure_authority(version)?;
-        if version != self.remote_version {
-            return Err(RetainedFieldError::DispatchVersionMismatch {
-                expected: self.remote_version,
-                actual: version,
-            });
-        }
-        Ok(())
-    }
-
-    fn validate_receipt(
-        &self,
-        receipt: &ApplicationRetainedFieldDispatchReceipt,
-    ) -> Result<(), RetainedFieldError> {
-        self.ensure_authority(receipt.expected_version)?;
-        if !self.state.field.is_pending_attempt(receipt.attempt) {
-            return Err(RetainedFieldError::AttemptMismatch {
-                attempt: receipt.attempt,
-            });
-        }
-        let expected_revision = self
-            .state
-            .field
-            .draft
-            .pending_expected_revision()
-            .unwrap_or(self.state.field.remote_revision());
-        if receipt.expected_version.revision() != expected_revision {
-            return Err(RetainedFieldError::DispatchVersionMismatch {
-                expected: self.remote_version,
-                actual: receipt.expected_version,
-            });
-        }
-        Ok(())
-    }
-
-    fn validate_completion(
-        &self,
-        receipt: &ApplicationRetainedFieldDispatchReceipt,
-        completion: &CommandExecutionCompletion,
-    ) -> Result<(), RetainedFieldError> {
-        if let Some(version) = completion.version() {
-            self.ensure_authority(version)?;
-        }
-        if completion.identity() != &receipt.command_identity {
-            return Err(RetainedFieldError::CompletionCommandMismatch);
-        }
-
-        let expected = receipt.expected_version;
-        let Some(actual) = completion.version() else {
-            return if completion.kind() == CommandExecutionKind::Failed {
-                Ok(())
-            } else {
-                Err(RetainedFieldError::OutcomeMissingVersion)
-            };
-        };
-        let version_is_valid = match completion.kind() {
-            CommandExecutionKind::Applied => expected
-                .revision()
-                .checked_add(1)
-                .is_some_and(|revision| actual.revision() == revision),
-            CommandExecutionKind::Noop | CommandExecutionKind::Rejected => actual == expected,
-            CommandExecutionKind::Conflict => actual != expected,
-            CommandExecutionKind::Failed => true,
-        };
-        if !version_is_valid {
-            return Err(RetainedFieldError::CompletionVersionMismatch { expected, actual });
-        }
-        Ok(())
     }
 }
 
@@ -1624,10 +1242,11 @@ where
     pub fn observe(
         &mut self,
         observation: OpenGpuiNodeObservation<T>,
+        cx: &mut App,
     ) -> Result<RetainedFieldUpdate, RetainedFieldError> {
         let (observation, authoritative) = observation.into_parts();
         self.validate_observation(&observation)?;
-        let settlement = self.drain_task_completion()?;
+        let settlement = self.drain_task_completion(cx)?;
         let revision = observation.snapshot.revision();
         let update = self.mutate(|field| Ok(field.observe(revision, authoritative)))?;
         self.observation = observation;
@@ -1646,10 +1265,11 @@ where
         &mut self,
         authoring: OpenGpuiNodeAuthoring,
         mode: RetainedFieldSubmitMode,
+        cx: &mut App,
     ) -> Result<RetainedFieldDispatchPlan<'_, T>, RetainedFieldError> {
         let stamp = authoring.stamp();
         self.validate_planning_authoring(&stamp)?;
-        self.drain_task_completion()?;
+        self.drain_task_completion(cx)?;
         let revision = stamp.snapshot.revision();
         let intent = match mode {
             RetainedFieldSubmitMode::Commit => self.mutate(|field| field.plan(revision))?,
@@ -1673,10 +1293,11 @@ where
         &mut self,
         authoring: &OpenGpuiNodeAuthoring,
         choice: RetainedFieldConflictChoice,
+        cx: &mut App,
     ) -> Result<RetainedFieldResolution<T>, RetainedFieldError> {
         let stamp = authoring.stamp();
         self.validate_planning_authoring(&stamp)?;
-        self.drain_task_completion()?;
+        self.drain_task_completion(cx)?;
         if choice == RetainedFieldConflictChoice::ReapplyLocal {
             return Err(RetainedFieldError::ReapplyRequiresDispatchPlan);
         }
@@ -1703,10 +1324,11 @@ where
     pub fn resolve_uncertain_from_fresh(
         &mut self,
         observation: OpenGpuiNodeObservation<T>,
+        cx: &mut App,
     ) -> Result<RetainedFieldUpdate, RetainedFieldError> {
         let (observation, authoritative) = observation.into_parts();
         self.validate_observation(&observation)?;
-        self.drain_task_completion()?;
+        self.drain_task_completion(cx)?;
         let revision = observation.snapshot.revision();
         let update =
             self.mutate(|field| field.resolve_uncertain_from_fresh(revision, authoritative))?;
@@ -1760,20 +1382,31 @@ where
             }
         };
         let (ticket, notification) = admitted.into_parts();
-        self.admitted_command = Some(AdmittedCommandTask::new(attempt, ticket, lease));
-        let mut post_enqueue = RetainedFieldPostEnqueueGuard::new(self, attempt);
-        if !post_enqueue
-            .field
+        self.admitted_command = Some(AdmittedCommandTask::new(
+            attempt,
+            ticket,
+            notification,
+            lease,
+        ));
+        let drive = self
             .admitted_command
             .as_mut()
-            .is_some_and(|task| task.spawn(cx))
-        {
-            return Err(RetainedFieldError::TaskInstallationFailed);
+            .expect("an admitted retained field owns its task before setup")
+            .drive(cx);
+        match drive {
+            Ok(AdmittedCommandDrive::AwaitingTicket) => Ok(()),
+            Ok(AdmittedCommandDrive::Unavailable) => {
+                self.record_admitted_uncertainty(
+                    attempt,
+                    AdmittedCommandUncertainty::RunnerDropped,
+                );
+                Err(RetainedFieldError::TaskInstallationFailed)
+            }
+            Err(unwind) => {
+                self.record_admitted_uncertainty(attempt, unwind.reason());
+                unwind.resume()
+            }
         }
-        post_enqueue.set_unwind_reason(AdmittedCommandUncertainty::HostNotificationUnwound);
-        notification.notify(cx);
-        post_enqueue.disarm();
-        Ok(())
     }
 
     fn cancel_planned(&mut self, attempt: RetainedFieldAttempt) {
@@ -1833,25 +1466,55 @@ where
 
     fn drain_task_completion(
         &mut self,
+        cx: &mut App,
     ) -> Result<Option<RetainedFieldSettlement>, RetainedFieldError> {
+        self.resume_admitted_task(cx);
         let event = self
             .admitted_command
             .as_ref()
-            .and_then(AdmittedCommandTask::take_event);
+            .and_then(AdmittedCommandTask::take_event_guard);
         let Some(event) = event else {
             return Ok(None);
         };
-        let attempt = event.attempt();
-        self.release_task_resources(attempt);
-        let settlement = self.mutate(|field| match event {
+        let attempt = event.event().attempt();
+        let recoverable_setup = matches!(
+            event.event(),
+            AdmittedCommandEvent::Uncertain {
+                reason: AdmittedCommandUncertainty::TaskInstallationUnwound
+                    | AdmittedCommandUncertainty::HostNotificationUnwound,
+                ..
+            }
+        );
+        let settlement = self.mutate(|field| match event.event() {
             AdmittedCommandEvent::Settled {
                 attempt, result, ..
-            } => Ok(field.settle_ticket(attempt, *result)),
+            } => Ok(field.settle_ticket(*attempt, result)),
             AdmittedCommandEvent::Uncertain { attempt, reason } => {
-                field.mark_uncertain(attempt, admitted_command_uncertainty_message(reason))
+                field.mark_uncertain(*attempt, admitted_command_uncertainty_message(*reason))
             }
         })?;
+        event.commit();
+        if !recoverable_setup {
+            self.release_task_resources(attempt);
+        }
         Ok(Some(settlement))
+    }
+
+    fn resume_admitted_task(&mut self, cx: &mut App) {
+        let drive = self
+            .admitted_command
+            .as_mut()
+            .map(|task| (task.attempt(), task.drive(cx)));
+        match drive {
+            Some((_, Ok(AdmittedCommandDrive::AwaitingTicket))) | None => {}
+            Some((attempt, Ok(AdmittedCommandDrive::Unavailable))) => {
+                self.record_admitted_uncertainty(attempt, AdmittedCommandUncertainty::RunnerDropped)
+            }
+            Some((attempt, Err(unwind))) => {
+                self.record_admitted_uncertainty(attempt, unwind.reason());
+                let _ = unwind.suppress();
+            }
+        }
     }
 
     fn mutate<R>(
@@ -1924,7 +1587,7 @@ where
         self.retention.release_protection();
     }
 
-    fn record_post_enqueue_unwind(
+    fn record_admitted_uncertainty(
         &self,
         attempt: RetainedFieldAttempt,
         reason: AdmittedCommandUncertainty,
@@ -1936,51 +1599,6 @@ where
         {
             task.record_uncertainty(reason);
         }
-    }
-}
-
-struct RetainedFieldPostEnqueueGuard<'a, T>
-where
-    T: Clone + PartialEq + 'static,
-{
-    field: &'a mut RetainedField<T>,
-    attempt: RetainedFieldAttempt,
-    reason: AdmittedCommandUncertainty,
-    armed: bool,
-}
-
-impl<'a, T> RetainedFieldPostEnqueueGuard<'a, T>
-where
-    T: Clone + PartialEq + 'static,
-{
-    fn new(field: &'a mut RetainedField<T>, attempt: RetainedFieldAttempt) -> Self {
-        Self {
-            field,
-            attempt,
-            reason: AdmittedCommandUncertainty::TaskInstallationUnwound,
-            armed: true,
-        }
-    }
-
-    fn set_unwind_reason(&mut self, reason: AdmittedCommandUncertainty) {
-        self.reason = reason;
-    }
-
-    fn disarm(&mut self) {
-        self.armed = false;
-    }
-}
-
-impl<T> Drop for RetainedFieldPostEnqueueGuard<'_, T>
-where
-    T: Clone + PartialEq + 'static,
-{
-    fn drop(&mut self) {
-        if !self.armed {
-            return;
-        }
-        self.field
-            .record_post_enqueue_unwind(self.attempt, self.reason);
     }
 }
 
@@ -2142,27 +1760,6 @@ pub enum RetainedFieldError {
     CommandNotAdmitted { message: String },
     #[error("retained field command task could not be installed")]
     TaskInstallationFailed,
-    #[error("retained field belongs to graph runtime {expected:?}, not foreign runtime {actual:?}")]
-    ForeignRuntimeAuthority {
-        expected: RuntimeProvenance,
-        actual: RuntimeProvenance,
-    },
-    #[error("retained field dispatch expected graph version {expected:?}, not {actual:?}")]
-    DispatchVersionMismatch {
-        expected: GraphVersion,
-        actual: GraphVersion,
-    },
-    #[error("retained field completion belongs to a different graph command")]
-    CompletionCommandMismatch,
-    #[error("retained field command completion omitted its authoritative graph version")]
-    OutcomeMissingVersion,
-    #[error(
-        "retained field command completion version {actual:?} is invalid for expected version {expected:?}"
-    )]
-    CompletionVersionMismatch {
-        expected: GraphVersion,
-        actual: GraphVersion,
-    },
     #[error(
         "retained field belongs to authoring instance {expected:?}, not foreign instance {actual:?}"
     )]
@@ -2240,7 +1837,7 @@ fn map_admission_error(error: OpenGpuiCommandAdmissionError) -> RetainedFieldErr
     }
 }
 
-fn map_plan_error(reason: FieldIntentRejection, draft_nonce: Option<u64>) -> RetainedFieldError {
+fn map_plan_error(reason: FieldIntentRejection) -> RetainedFieldError {
     match reason {
         FieldIntentRejection::Clean => RetainedFieldError::Clean,
         FieldIntentRejection::CompositionActive => RetainedFieldError::CompositionActive,
@@ -2256,7 +1853,7 @@ fn map_plan_error(reason: FieldIntentRejection, draft_nonce: Option<u64>) -> Ret
             requested_revision,
         },
         FieldIntentRejection::SubmissionPending { attempt } => RetainedFieldError::AttemptPending {
-            attempt: draft_nonce.map(|draft_nonce| RetainedFieldAttempt::new(draft_nonce, attempt)),
+            attempt: Some(RetainedFieldAttempt::new(attempt)),
         },
         FieldIntentRejection::AttemptIdentityExhausted => {
             RetainedFieldError::AttemptIdentityExhausted
@@ -2272,8 +1869,8 @@ mod tests {
         CanvasPoint, CanvasRect, CanvasSize, GraphBuilder, GraphId, Node, NodeId, NodeKindKey,
     };
     use jellyflow_runtime::{
-        graph::GraphRuntime, view::FrameRequest, view::RendererStamp, view::ViewSession,
-        view::ViewSessionOptions,
+        graph::GraphRuntime, reconciliation::MutationCommandResult, view::FrameRequest,
+        view::RendererStamp, view::ViewSession, view::ViewSessionOptions,
     };
 
     use super::*;
@@ -2288,187 +1885,43 @@ mod tests {
     }
 
     #[test]
-    fn same_sequence_attempts_from_different_drafts_are_not_interchangeable() {
-        let (_first, first_intent) = dirty_field();
-        let (mut second, second_intent) = dirty_field();
-        let first_attempt = first_intent.attempt();
-        let second_attempt = second_intent.attempt();
+    fn definitive_transport_failure_releases_the_attempt_while_unknown_execution_blocks_retry() {
+        for error in [
+            crate::command_journal::OpenGpuiCommandTicketError::HostDropped,
+            crate::command_journal::OpenGpuiCommandTicketError::HostClosed {
+                reason: ViewCloseReason::HostClosed,
+            },
+            crate::command_journal::OpenGpuiCommandTicketError::FramePreparation {
+                message: "frame preparation failed".to_owned(),
+            },
+        ] {
+            let (mut field, intent) = dirty_field();
+            let settlement = field.settle_ticket(
+                intent.attempt(),
+                &Err(
+                    crate::command_journal::OpenGpuiCommandTicketFailure::definitely_not_executed(
+                        error,
+                    ),
+                ),
+            );
+            assert!(matches!(
+                settlement,
+                RetainedFieldSettlement::DefinitelyNotExecuted { .. }
+            ));
+            assert_eq!(field.attempt_state(), RetainedFieldAttemptState::Idle);
+            assert!(field.can_submit());
+            assert!(field.plan(7).is_ok());
+        }
 
-        assert_eq!(first_attempt.get(), second_attempt.get());
-        assert_ne!(first_attempt, second_attempt);
-        assert_eq!(
-            second.record_receipt(first_attempt, 8),
-            RetainedFieldSettlement::Ignored {
-                attempt: first_attempt,
-            }
-        );
-        assert!(matches!(
-            second.not_dispatched(first_attempt),
-            Err(RetainedFieldError::AttemptMismatch { attempt })
-                if attempt == first_attempt
-        ));
-        assert!(matches!(
-            second.mark_uncertain(first_attempt, "foreign completion"),
-            Err(RetainedFieldError::AttemptMismatch { attempt })
-                if attempt == first_attempt
-        ));
-        assert_eq!(
-            second.attempt_state(),
-            RetainedFieldAttemptState::Pending {
-                attempt: second_attempt,
-            }
-        );
-        assert_eq!(
-            second.record_receipt(second_attempt, 8),
-            RetainedFieldSettlement::AwaitingSnapshot {
-                attempt: second_attempt,
-                committed_revision: 8,
-            }
-        );
-    }
-
-    #[test]
-    fn application_retained_fields_reject_each_others_same_sequence_ticket() {
-        let (runtime, _view, _instance) = retained_field_instance();
-        let version = runtime.snapshot().expect("application version").version();
-        let mut first = ApplicationRetainedField::new(version, "first remote".to_owned());
-        first.edit("first local".to_owned());
-        let first_intent = first.plan(version).expect("plan first field");
-        let first_attempt = first_intent.attempt();
-        let first_command = GraphCommand::set_node_data(
-            version,
-            NodeId::from_u128(0xffff),
-            serde_json::Value::Null,
-        );
-        let first_receipt = first_intent
-            .bind_command(&first_command)
-            .expect("bind first field command");
-        let first_completion = runtime.execute(first_command);
-
-        let mut second = ApplicationRetainedField::new(version, "second remote".to_owned());
-        second.edit("second local".to_owned());
-        let second_attempt = second.plan(version).expect("plan second field").attempt();
-
-        assert_eq!(first_attempt.get(), second_attempt.get());
-        assert_ne!(first_attempt, second_attempt);
-        assert!(matches!(
-            second.settle_command(first_receipt, first_completion),
-            Ok(RetainedFieldSettlement::Ignored {
-                attempt,
-            }) if attempt == first_attempt
-        ));
-        assert_eq!(
-            second.attempt_state(),
-            RetainedFieldAttemptState::Pending {
-                attempt: second_attempt,
-            }
-        );
-        second
-            .not_dispatched(second_attempt)
-            .expect("matching field attempt remains authoritative");
-        assert_eq!(second.attempt_state(), RetainedFieldAttemptState::Idle);
-    }
-
-    #[test]
-    fn cloned_field_candidate_preserves_attempt_capability() {
-        let (field, intent) = dirty_field();
-        let mut candidate = field.clone();
-
-        assert_eq!(
-            candidate.record_receipt(intent.attempt(), 8),
-            RetainedFieldSettlement::AwaitingSnapshot {
-                attempt: intent.attempt(),
-                committed_revision: 8,
-            }
-        );
-    }
-
-    #[test]
-    fn receipt_first_waits_for_matching_snapshot() {
         let (mut field, intent) = dirty_field();
-
-        let settlement = field.record_receipt(intent.attempt(), 8);
-        assert_eq!(
-            settlement,
-            RetainedFieldSettlement::AwaitingSnapshot {
-                attempt: intent.attempt(),
-                committed_revision: 8,
-            }
+        let settlement = field.settle_ticket(
+            intent.attempt(),
+            &Err(
+                crate::command_journal::OpenGpuiCommandTicketFailure::execution_unknown(
+                    crate::command_journal::OpenGpuiCommandTicketError::FeedbackOutcomeUnknown,
+                ),
+            ),
         );
-        assert!(matches!(
-            field.attempt_state(),
-            RetainedFieldAttemptState::ReceiptFirst { .. }
-        ));
-
-        assert_eq!(
-            field.observe(8, "submitted".to_owned()),
-            RetainedFieldUpdate::Acknowledged {
-                attempt: intent.attempt(),
-                revision: 8,
-                local_changed_after_submission: false,
-            }
-        );
-        assert_eq!(field.phase(), RetainedFieldPhase::Clean);
-    }
-
-    #[test]
-    fn snapshot_first_is_not_exposed_as_a_conflict() {
-        let (mut field, intent) = dirty_field();
-
-        assert_eq!(
-            field.observe(8, "submitted".to_owned()),
-            RetainedFieldUpdate::SnapshotFirst {
-                attempt: intent.attempt(),
-                revision: 8,
-            }
-        );
-        assert_eq!(field.conflict(), None);
-        assert_eq!(field.phase(), RetainedFieldPhase::Dirty);
-
-        assert!(matches!(
-            field.record_receipt(intent.attempt(), 8),
-            RetainedFieldSettlement::Acknowledged { .. }
-        ));
-        assert_eq!(field.phase(), RetainedFieldPhase::Clean);
-    }
-
-    #[test]
-    fn continued_edit_survives_acknowledgement_of_older_value() {
-        let (mut field, intent) = dirty_field();
-        field.edit("newer local".to_owned());
-
-        field.record_receipt(intent.attempt(), 8);
-        assert!(matches!(
-            field.observe(8, "submitted".to_owned()),
-            RetainedFieldUpdate::Acknowledged {
-                local_changed_after_submission: true,
-                ..
-            }
-        ));
-        assert_eq!(field.local(), "newer local");
-        assert_eq!(field.phase(), RetainedFieldPhase::Dirty);
-    }
-
-    #[test]
-    fn recorded_receipt_uses_matching_snapshot_ordering() {
-        let (mut field, intent) = dirty_field();
-
-        assert!(matches!(
-            field.record_receipt(intent.attempt(), 8),
-            RetainedFieldSettlement::AwaitingSnapshot { .. }
-        ));
-        assert!(matches!(
-            field.observe(8, "submitted".to_owned()),
-            RetainedFieldUpdate::Acknowledged { .. }
-        ));
-    }
-
-    #[test]
-    fn transport_error_keeps_attempt_and_blocks_duplicate_submission() {
-        let (mut field, intent) = dirty_field();
-        let error = crate::command_journal::OpenGpuiCommandTicketError::HostDropped;
-
-        let settlement = field.settle_ticket(intent.attempt(), Err(error));
         assert!(matches!(
             settlement,
             RetainedFieldSettlement::Uncertain { .. }
@@ -2481,77 +1934,6 @@ mod tests {
             field.plan(7),
             Err(RetainedFieldError::AttemptPending { .. })
         ));
-    }
-
-    #[test]
-    fn newer_authoritative_snapshot_resolves_uncertain_outcome_without_retry() {
-        let (mut field, intent) = dirty_field();
-        field
-            .mark_uncertain(intent.attempt(), "unknown outcome")
-            .expect("mark uncertain");
-
-        assert_eq!(
-            field.observe(8, "submitted".to_owned()),
-            RetainedFieldUpdate::UncertainResolved {
-                attempt: intent.attempt(),
-                revision: 8,
-                submitted_value_is_authoritative: true,
-            }
-        );
-        assert_eq!(field.phase(), RetainedFieldPhase::Clean);
-        assert_eq!(field.attempt_state(), RetainedFieldAttemptState::Idle);
-    }
-
-    #[test]
-    fn explicit_uncertain_resolution_rejects_non_fresh_evidence_without_mutation() {
-        let (mut field, intent) = dirty_field();
-        field
-            .mark_uncertain(intent.attempt(), "unknown outcome")
-            .expect("mark uncertain");
-
-        for observed_revision in [6, 7] {
-            assert!(matches!(
-                field.resolve_uncertain_from_fresh(observed_revision, "stale".to_owned()),
-                Err(RetainedFieldError::UncertainSnapshotNotFresh {
-                    attempt,
-                    observed_revision: actual,
-                    expected_revision: 7,
-                }) if attempt == intent.attempt() && actual == observed_revision
-            ));
-            assert_eq!(
-                field.attempt_state(),
-                RetainedFieldAttemptState::Uncertain {
-                    attempt: intent.attempt(),
-                    expected_revision: 7,
-                }
-            );
-            assert_eq!(field.local(), "submitted");
-            assert_eq!(field.remote(), "remote");
-            assert!(field.notice().is_some());
-        }
-
-        assert!(matches!(
-            field.resolve_uncertain_from_fresh(8, "submitted".to_owned()),
-            Ok(RetainedFieldUpdate::UncertainResolved {
-                revision: 8,
-                submitted_value_is_authoritative: true,
-                ..
-            })
-        ));
-        assert_eq!(field.attempt_state(), RetainedFieldAttemptState::Idle);
-        assert_eq!(field.phase(), RetainedFieldPhase::Clean);
-    }
-
-    #[test]
-    fn definite_not_dispatched_clears_only_the_matching_attempt() {
-        let (mut field, intent) = dirty_field();
-        field
-            .not_dispatched(intent.attempt())
-            .expect("clear undispatched attempt");
-
-        assert_eq!(field.attempt_state(), RetainedFieldAttemptState::Idle);
-        assert_eq!(field.phase(), RetainedFieldPhase::Dirty);
-        assert!(field.can_submit());
     }
 
     #[test]
@@ -2649,7 +2031,7 @@ mod tests {
         let foreign = test_capability(&foreign_view, foreign_instance, 2);
         let foreign_observation = observation_for_test(&foreign, "foreign".to_owned());
         assert!(matches!(
-            field.observe(foreign_observation),
+            field.validate_observation(foreign_observation.stamp()),
             Err(RetainedFieldError::ForeignAuthoring { .. })
         ));
 
@@ -2663,7 +2045,7 @@ mod tests {
             RetainedFieldMountCapability::new(crossed_context, field.mount.activity.clone());
         let crossed_observation = observation_for_test(&crossed, "crossed".to_owned());
         assert!(matches!(
-            field.observe(crossed_observation),
+            field.validate_observation(crossed_observation.stamp()),
             Err(RetainedFieldError::CrossedMount { .. })
         ));
         assert_eq!(field.local(), "local");
@@ -2693,11 +2075,14 @@ mod tests {
             field.instance().node(),
             serde_json::json!("fresh"),
         ));
-        assert_eq!(completion.kind(), CommandExecutionKind::Applied);
+        assert!(matches!(
+            MutationCommandResult::from_runtime(&completion),
+            MutationCommandResult::Applied { revision: 1 }
+        ));
 
         for error in [
             field
-                .observe(stale_observation)
+                .validate_observation(stale_observation.stamp())
                 .expect_err("reject stale observation"),
             field
                 .validate_planning_authoring(&stale_planning)
@@ -2733,7 +2118,7 @@ mod tests {
                 None => field.mount.context.mount().retire(),
             }
 
-            let result = field.observe(observation);
+            let result = field.validate_observation(observation.stamp());
             assert!(matches!(
                 (reason, result),
                 (None, Err(RetainedFieldError::Retired))
@@ -2747,61 +2132,6 @@ mod tests {
             assert!(field.admitted_command.is_none());
             assert_eq!(field.retention(), RetainedFieldRetention::Idle);
         }
-    }
-
-    #[test]
-    fn post_enqueue_unwind_records_uncertainty_without_reducing_from_drop() {
-        let (_runtime, view, instance) = retained_field_instance();
-        let capability = test_capability(&view, instance, 2);
-        let mut field = mount_capability_for_test(
-            capability,
-            RetainedFieldKey::new("target").unwrap(),
-            RetainedFieldStore::new(),
-            "authoritative".to_owned(),
-        )
-        .expect("mount retained field");
-        field.edit("local".to_owned()).expect("retain local edit");
-        let revision = field.base_revision();
-        let intent = field
-            .state
-            .try_transition(|field| field.plan(revision))
-            .expect("plan pending field attempt");
-        let attempt = intent.attempt();
-        field.admitted_command = Some(AdmittedCommandTask::without_transport(attempt));
-
-        {
-            let _guard = RetainedFieldPostEnqueueGuard::new(&mut field, attempt);
-        }
-
-        assert_eq!(
-            field.attempt_state(),
-            RetainedFieldAttemptState::Pending { attempt },
-            "guard drop must not clone user data or enter the field reducer",
-        );
-        let settlement = field
-            .drain_task_completion()
-            .expect("drain installation unwind")
-            .expect("installation unwind emits one event");
-        assert!(matches!(
-            settlement,
-            RetainedFieldSettlement::Uncertain {
-                attempt: settled_attempt,
-                ..
-            } if settled_attempt == attempt
-        ));
-        assert_eq!(
-            field.attempt_state(),
-            RetainedFieldAttemptState::Uncertain {
-                attempt,
-                expected_revision: revision,
-            }
-        );
-        assert!(
-            field
-                .notice()
-                .is_some_and(|notice| notice.contains("task installation unwound"))
-        );
-        assert!(field.admitted_command.is_none());
     }
 
     fn mount_capability_for_test<T>(

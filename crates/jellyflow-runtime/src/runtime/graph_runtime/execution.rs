@@ -21,6 +21,8 @@ use crate::runtime::view_session::{ViewGeneration, ViewShared};
 use crate::schema::NodeCatalog;
 
 use super::impact::InstalledTransactionImpact;
+use super::profile_evaluator::ProfileEvaluationGate;
+use super::view_registry::RuntimeViewRegistry;
 use super::{
     EdgeIncarnation, EdgeIncarnationEntry, GraphRevision, GraphRuntimeError, GraphSnapshot,
     GraphVersion, HistoryState, NodeIncarnation, PortIncarnation, PortIncarnationEntry,
@@ -116,7 +118,13 @@ pub(super) fn execute_command_locked(
     state: &mut RuntimeState,
     catalog: &NodeCatalog,
     command: &GraphCommand,
+    alive: &Cell<bool>,
+    profile_evaluation: &ProfileEvaluationGate,
+    views: &RuntimeViewRegistry,
 ) -> Result<CommandExecution, CommandExecutionFailure> {
+    if !alive.get() {
+        return Err(GraphRuntimeError::RuntimeUnavailable.into());
+    }
     let current_version = GraphVersion::new(state.provenance, state.revision);
     if command.expected_version().provenance() != state.provenance {
         return Err(GraphRuntimeError::ForeignCommandRuntime {
@@ -150,24 +158,55 @@ pub(super) fn execute_command_locked(
 
     match command.execution_kind() {
         GraphCommandExecutionKind::Undo => {
-            return execute_history_command_locked(state, command, HistoryDirection::Undo)
-                .map_err(Into::into);
+            return execute_history_command_locked(
+                state,
+                command,
+                HistoryDirection::Undo,
+                alive,
+                profile_evaluation,
+                views,
+            )
+            .map_err(Into::into);
         }
         GraphCommandExecutionKind::Redo => {
-            return execute_history_command_locked(state, command, HistoryDirection::Redo)
-                .map_err(Into::into);
+            return execute_history_command_locked(
+                state,
+                command,
+                HistoryDirection::Redo,
+                alive,
+                profile_evaluation,
+                views,
+            )
+            .map_err(Into::into);
         }
         GraphCommandExecutionKind::Mutation => {}
     }
 
-    let planned = plan_graph_command(
-        &state.graph,
-        &state.index,
-        catalog,
-        command,
-        state.profile.as_deref(),
-        &state.policy,
-    );
+    let planned = match state.profile.as_deref() {
+        Some(profile) => profile_evaluation
+            .evaluate(profile, alive, |profile| {
+                plan_graph_command(
+                    &state.graph,
+                    &state.index,
+                    catalog,
+                    command,
+                    Some(profile),
+                    &state.policy,
+                )
+            })
+            .map_err(GraphRuntimeError::from)?,
+        None => plan_graph_command(
+            &state.graph,
+            &state.index,
+            catalog,
+            command,
+            None,
+            &state.policy,
+        ),
+    };
+    if !alive.get() {
+        return Err(GraphRuntimeError::RuntimeUnavailable.into());
+    }
     let PlannedGraphCommand {
         transaction,
         footprint,
@@ -187,7 +226,11 @@ pub(super) fn execute_command_locked(
             )));
         }
     };
-    if let Err(error) = run_before_command_middleware(state, command) {
+    let middleware_result = run_before_command_middleware(state, command);
+    if !alive.get() {
+        return Err(GraphRuntimeError::RuntimeUnavailable.into());
+    }
+    if let Err(error) = middleware_result {
         return Ok(CommandExecution::Outcome(GraphCommandOutcome::Rejected(
             command_rejection_from_apply(
                 command.identity().clone(),
@@ -209,7 +252,7 @@ pub(super) fn execute_command_locked(
     }
 
     let (patch, sessions) =
-        install_incremental(state, graph, transaction, command.records_history())
+        install_incremental(state, graph, transaction, command.records_history(), views)
             .map_err(|error| CommandExecutionFailure::after_planning(error, planning_work))?;
 
     Ok(CommandExecution::Committed {
@@ -225,9 +268,16 @@ fn execute_history_command_locked(
     state: &mut RuntimeState,
     command: &GraphCommand,
     direction: HistoryDirection,
+    alive: &Cell<bool>,
+    profile_evaluation: &ProfileEvaluationGate,
+    views: &RuntimeViewRegistry,
 ) -> Result<CommandExecution, GraphRuntimeError> {
     let current_version = GraphVersion::new(state.provenance, state.revision);
-    if let Err(error) = run_before_command_middleware(state, command) {
+    let middleware_result = run_before_command_middleware(state, command);
+    if !alive.get() {
+        return Err(GraphRuntimeError::RuntimeUnavailable);
+    }
+    if let Err(error) = middleware_result {
         return Ok(CommandExecution::Outcome(GraphCommandOutcome::Rejected(
             command_rejection_from_apply(
                 command.identity().clone(),
@@ -276,13 +326,12 @@ fn execute_history_command_locked(
     }
 
     let mut after = (*state.graph).clone();
-    let replay_result: Result<(), ApplyPipelineError> = (|| {
-        replayed.apply_prevalidated_batch(&mut after)?;
-        if let Some(profile) = state.profile.as_deref() {
-            validate_profile_graph(profile, &after)?;
-        }
-        Ok(())
-    })();
+    let replay_result: Result<(), ApplyPipelineError> = replayed
+        .apply_prevalidated_batch(&mut after)
+        .map_err(Into::into);
+    if !alive.get() {
+        return Err(GraphRuntimeError::RuntimeUnavailable);
+    }
     if let Err(error) = replay_result {
         return Ok(CommandExecution::Outcome(GraphCommandOutcome::Rejected(
             command_rejection_from_apply(
@@ -293,9 +342,26 @@ fn execute_history_command_locked(
             ),
         )));
     }
+    if let Some(profile) = state.profile.as_deref() {
+        let validation = profile_evaluation
+            .evaluate(profile, alive, |profile| {
+                validate_profile_graph(profile, &after)
+            })
+            .map_err(GraphRuntimeError::from)?;
+        if let Err(error) = validation {
+            return Ok(CommandExecution::Outcome(GraphCommandOutcome::Rejected(
+                command_rejection_from_apply(
+                    command.identity().clone(),
+                    current_version,
+                    error,
+                    GraphCommandPlanningWork::empty(),
+                ),
+            )));
+        }
+    }
 
     let footprint = replayed.footprint();
-    let (patch, sessions) = install_incremental(state, after, replayed, false)?;
+    let (patch, sessions) = install_incremental(state, after, replayed, false, views)?;
     direction.commit(&mut state.history);
     Ok(CommandExecution::Committed {
         identity: command.identity().clone(),
@@ -358,6 +424,16 @@ fn planning_error_diagnostic(
         }
         GraphCommandPlanningError::DuplicateNodeGeometry(id) => (
             "geometry.node_duplicate",
+            DiagnosticTarget::Node { id: *id },
+        ),
+        GraphCommandPlanningError::NonFiniteNodeGeometry(id) => {
+            ("tx.non_finite", DiagnosticTarget::Node { id: *id })
+        }
+        GraphCommandPlanningError::InvalidNodeSize(id) => {
+            ("tx.invalid_size", DiagnosticTarget::Node { id: *id })
+        }
+        GraphCommandPlanningError::InvalidNodeGeometry(id) => (
+            "geometry.node_out_of_range",
             DiagnosticTarget::Node { id: *id },
         ),
         GraphCommandPlanningError::MissingPort(id) => {
@@ -500,6 +576,7 @@ pub(super) fn install_incremental(
     graph: Graph,
     committed: GraphTransaction,
     record_history: bool,
+    views: &RuntimeViewRegistry,
 ) -> Result<(RuntimePatch, Vec<(Rc<ViewShared>, ViewGeneration)>), GraphRuntimeError> {
     let to_revision = state
         .revision
@@ -594,30 +671,8 @@ pub(super) fn install_incremental(
     if record_history {
         state.history.record(committed);
     }
-    let sessions = collect_live_sessions(state);
+    let sessions = views.collect_open_for_patch();
     Ok((patch, sessions))
-}
-
-pub(super) fn collect_live_sessions(
-    state: &mut RuntimeState,
-) -> Vec<(Rc<ViewShared>, ViewGeneration)> {
-    let mut dead = Vec::new();
-    let mut live = Vec::new();
-    for (id, session) in &state.sessions {
-        let Some(session) = session.upgrade() else {
-            dead.push(*id);
-            continue;
-        };
-        let Some(generation) = session.open_generation() else {
-            dead.push(*id);
-            continue;
-        };
-        live.push((session, generation));
-    }
-    for id in dead {
-        state.sessions.remove(&id);
-    }
-    live
 }
 
 pub(super) fn allocate_incarnation(

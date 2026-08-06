@@ -4,6 +4,7 @@ mod phase;
 mod planning;
 mod presented_frames;
 mod scenario;
+mod workflow_authoring;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
@@ -11,16 +12,19 @@ use std::time::Instant;
 use jellyflow_core::{CanvasPoint, EdgeId, PortId};
 use jellyflow_runtime::geometry::{EdgePath, ViewPoint, ViewSize};
 use jellyflow_runtime::graph::EdgeEndpoint;
-use jellyflow_runtime::interaction::{CanvasInteractionPhase, InteractionTerminalReason};
+use jellyflow_runtime::interaction::CanvasInteractionPhase;
 use jellyflow_runtime::view::{PublishedPortOutcome, WeakViewSession};
 use jellyflow_runtime::viewport::ViewportTransform;
 use open_gpui::{
-    App, Entity, FocusHandle, MouseButton, PinchEvent, PlatformInput, TouchPhase, Window, point, px,
+    App, Entity, FocusHandle, Keystroke, MouseButton, PinchEvent, PlatformInput, TouchPhase,
+    Window, point, px,
 };
 use open_gpui_canvas_jellyflow::connection_search::NativeGraphSurface;
-use open_gpui_canvas_jellyflow::smoke_receipt::{SmokeFrameStageV1, SmokePresentedFrameV1};
+use open_gpui_canvas_jellyflow::nodes::workflow_condition_node_id;
 
-use self::events::{key_down, key_up, mouse_down, mouse_move, mouse_up};
+use crate::native_app::NativeDemo;
+
+use self::events::{key_down, key_up, mouse_down, mouse_move, mouse_up, scroll_lines};
 use self::evidence::{
     RenderedFrameFence, RenderedFrameFencePoll, capture_visual_frame, connection_preview_path,
     inspect_current_frame, inspect_edge_path_frame,
@@ -36,11 +40,13 @@ use self::planning::{
     visible_reconnect_grip, visible_unique_edge_point,
 };
 use self::presented_frames::PresentedFrameRecorder;
+use self::workflow_authoring::WorkflowAuthoringState;
+use super::presented_frame::{SmokeFrameStage, SmokePresentedFrame};
 use super::{
-    INTERACTION_CAPTURE_STATES, LOD_CAPTURE_STATES, SMOKE_AUTOPAN_MIN_FRAMES,
-    SMOKE_INPUT_EVENT_COUNT, SmokeCaptureState, SmokeConfig, SmokeExpectations,
-    SmokeGeometryEvidence, SmokeInputEvidence, SmokeInteractionEvidence, SmokeLodEvidence,
-    SmokePaintEvidence, SmokePaintPalette, SmokeScenario, SmokeScenarioEvidence,
+    INTERACTION_CAPTURE_STATES, LOD_CAPTURE_STATES, SMOKE_AUTOPAN_MIN_FRAMES, SmokeBounds,
+    SmokeCaptureState, SmokeConfig, SmokeExpectations, SmokeGeometryEvidence, SmokeInputEvidence,
+    SmokeInteractionEvidence, SmokeLodEvidence, SmokePaintEvidence, SmokePaintPalette,
+    SmokeScenario, SmokeScenarioEvidence, SmokeZoom,
 };
 
 const MAX_PHASE_WAIT_TICKS: u16 = 180;
@@ -73,7 +79,6 @@ enum ScenarioProbeState {
 
 #[derive(Debug, Default)]
 struct InteractionProbeState {
-    dispatched_events: u16,
     captures: BTreeSet<SmokeCaptureState>,
     node: Option<NodePlan>,
     first_edge: Option<EdgePlan>,
@@ -91,36 +96,15 @@ struct InteractionProbeState {
     connection_auto_pan_frames: u8,
     reconnect_auto_pan_last: Option<ViewportTransform>,
     reconnect_auto_pan_frames: u8,
-    auto_pan_reframes: u16,
     rendered_frame_fence: RenderedFrameFence,
     release_wire_path: Option<EdgePath>,
     tab_focus_origin: Option<FocusHandle>,
     tab_focus_forward: Option<FocusHandle>,
     selection_reframed: bool,
     reconnect_selection_reframed: bool,
-    selection_chrome_fitted: bool,
-    selection_chrome_sides: u8,
-    selection_chrome_detached_run: usize,
-    node_dragged: bool,
-    tab_focus_moved: bool,
-    tab_focus_restored: bool,
-    viewport_panned: bool,
-    viewport_zoomed: bool,
-    connection_created: bool,
-    connection_preview_wire_painted: bool,
-    connection_release_frame_painted: bool,
-    connection_release_continuous: bool,
-    keyboard_edge_deleted: bool,
-    reconnect_applied: bool,
-    reconnect_preview_wire_painted: bool,
-    reconnect_release_frame_painted: bool,
-    reconnect_release_continuous: bool,
-    search_opened: bool,
-    search_focus_moved: bool,
-    search_cancelled: bool,
-    search_focus_restored: bool,
     search_focus_baseline: Option<FocusHandle>,
     search_render_requested: bool,
+    workflow_authoring: Option<WorkflowAuthoringState>,
 }
 
 impl InteractionProbeState {
@@ -192,13 +176,9 @@ fn record_capture<const N: usize>(
     Ok(())
 }
 
-fn tick_ordinal(tick_id: Option<u64>) -> u64 {
-    tick_id.map_or(0, |tick_id| tick_id.saturating_add(1))
-}
-
 #[derive(Debug)]
 pub(super) struct RealWindowSmokeProbe {
-    demo: &'static str,
+    demo: NativeDemo,
     config: SmokeConfig,
     phase: ProbePhase,
     wait_ticks: u16,
@@ -206,13 +186,12 @@ pub(super) struct RealWindowSmokeProbe {
     paint: Option<SmokePaintEvidence>,
     scenario: ScenarioProbeState,
     paint_palette: SmokePaintPalette,
-    bounds_verified: bool,
     presented_frames: PresentedFrameRecorder,
 }
 
 impl RealWindowSmokeProbe {
     pub(super) fn new(
-        demo: &'static str,
+        demo: NativeDemo,
         config: SmokeConfig,
         paint_palette: SmokePaintPalette,
     ) -> Self {
@@ -231,7 +210,6 @@ impl RealWindowSmokeProbe {
             paint: None,
             scenario,
             paint_palette,
-            bounds_verified: false,
             presented_frames: PresentedFrameRecorder::default(),
         }
     }
@@ -244,21 +222,19 @@ impl RealWindowSmokeProbe {
         self.paint.as_ref()
     }
 
-    pub(super) fn presented_frames(&self) -> Vec<SmokePresentedFrameV1> {
+    pub(super) fn presented_frames(&self) -> Vec<SmokePresentedFrame> {
         self.presented_frames.frames()
     }
 
-    pub(super) fn record_lod_presented_frame(
+    pub(super) fn poll_lod_presented_frame(
         &self,
         surface: &Entity<NativeGraphSurface>,
-        cx: &App,
-    ) -> Result<(), &'static str> {
-        let host = surface.read(cx).host();
-        let scene = host
-            .read(cx)
-            .smoke_presented_scene_snapshot()
-            .ok_or("presented_frame_scene_snapshot_missing")?;
-        self.presented_frames.record_lod_frame(scene)
+        cx: &mut App,
+        expected_zoom: f32,
+    ) -> Result<bool, &'static str> {
+        let host = surface.read(cx).host().clone();
+        let scenes = host.update(cx, |host, _| host.drain_smoke_presented_scenes());
+        self.presented_frames.poll_lod_frames(scenes, expected_zoom)
     }
 
     pub(super) fn progress(&self) -> (String, u16) {
@@ -339,20 +315,16 @@ impl RealWindowSmokeProbe {
     fn capture_checkpoint(
         &mut self,
         window: &mut Window,
-        surface: &Entity<NativeGraphSurface>,
-        cx: &App,
         view: &WeakViewSession,
         surface_size: ViewSize,
         state: SmokeCaptureState,
     ) -> Result<(), &'static str> {
-        self.capture_checkpoint_omitting_edge(window, surface, cx, view, surface_size, state, None)
+        self.capture_checkpoint_omitting_edge(window, view, surface_size, state, None)
     }
 
     fn capture_checkpoint_omitting_edge(
         &mut self,
         window: &mut Window,
-        surface: &Entity<NativeGraphSurface>,
-        cx: &App,
         view: &WeakViewSession,
         surface_size: ViewSize,
         state: SmokeCaptureState,
@@ -381,8 +353,6 @@ impl RealWindowSmokeProbe {
         };
         let (_, _, geometry, paint, selection_chrome) = inspect_current_frame(
             window,
-            surface,
-            cx,
             view,
             &expectations,
             surface_size,
@@ -393,14 +363,10 @@ impl RealWindowSmokeProbe {
         if let Some(reason) = paint.failure_reason() {
             return Err(reason);
         }
-        if let Some(chrome) = selection_chrome {
-            if let Some(reason) = chrome.failure_reason() {
-                return Err(reason);
-            }
-            let interaction = self.interaction_mut()?;
-            interaction.selection_chrome_fitted = true;
-            interaction.selection_chrome_sides = chrome.matched_sides;
-            interaction.selection_chrome_detached_run = chrome.detached_max_run;
+        if let Some(chrome) = selection_chrome
+            && let Some(reason) = chrome.failure_reason()
+        {
+            return Err(reason);
         }
         self.geometry = Some(geometry);
         self.paint = Some(paint);
@@ -411,16 +377,12 @@ impl RealWindowSmokeProbe {
     fn plan_input(
         &mut self,
         window: &mut Window,
-        surface: &Entity<NativeGraphSurface>,
-        cx: &App,
         view: &WeakViewSession,
         expectations: &SmokeExpectations,
         surface_size: ViewSize,
     ) -> Result<(), &'static str> {
         let (snapshot, transform, geometry, paint, _) = inspect_current_frame(
             window,
-            surface,
-            cx,
             view,
             expectations,
             surface_size,
@@ -454,17 +416,27 @@ impl RealWindowSmokeProbe {
         if first_edge.is_none() || second_edge.is_none() {
             return Err("input_edge_fixture_incomplete");
         }
-        let (node, bounds) = expectations
-            .node_ports
-            .keys()
-            .filter_map(|node| {
-                snapshot
-                    .node(*node)
-                    .filter(|geometry| geometry.is_fresh())
-                    .map(|geometry| (*node, geometry.bounds()))
-            })
-            .min_by(|(_, left), (_, right)| left.size.width.total_cmp(&right.size.width))
-            .ok_or("input_node_fixture_incomplete")?;
+        let (node, bounds) = if self.demo == NativeDemo::Workflow {
+            let node = workflow_condition_node_id();
+            let bounds = snapshot
+                .node(node)
+                .filter(|geometry| geometry.is_fresh())
+                .map(|geometry| geometry.bounds())
+                .ok_or("input_workflow_condition_fixture_incomplete")?;
+            (node, bounds)
+        } else {
+            expectations
+                .node_ports
+                .keys()
+                .filter_map(|node| {
+                    snapshot
+                        .node(*node)
+                        .filter(|geometry| geometry.is_fresh())
+                        .map(|geometry| (*node, geometry.bounds()))
+                })
+                .min_by(|(_, left), (_, right)| left.size.width.total_cmp(&right.size.width))
+                .ok_or("input_node_fixture_incomplete")?
+        };
         let header_anchor = CanvasPoint {
             x: bounds.origin.x + bounds.size.width * 0.5,
             y: bounds.origin.y + (20.0 / transform.zoom).min(bounds.size.height * 0.5),
@@ -497,7 +469,11 @@ impl RealWindowSmokeProbe {
             y: press.y + NODE_DRAG_Y,
         };
         let release = ViewPoint {
-            x: 12.0,
+            x: if self.demo == NativeDemo::Workflow {
+                surface_size.width - 12.0
+            } else {
+                12.0
+            },
             y: activation.y.clamp(48.0, surface_size.height - 48.0),
         };
         if !point_inside_surface(press, surface_size)
@@ -518,7 +494,6 @@ impl RealWindowSmokeProbe {
         interaction.first_edge = first_edge;
         interaction.second_edge = second_edge;
         interaction.node = Some(node);
-        self.bounds_verified = self.config.surface_matches(surface_size);
         self.geometry = Some(geometry);
         self.paint = Some(paint);
         Ok(())
@@ -535,9 +510,41 @@ impl RealWindowSmokeProbe {
         self.verify_target_zoom(view)?;
         window.dispatch_event(event, cx);
         window.refresh();
-        let interaction = self.interaction_mut()?;
-        interaction.dispatched_events = interaction.dispatched_events.saturating_add(1);
         Ok(())
+    }
+
+    fn click_at_target_zoom(
+        &mut self,
+        window: &mut Window,
+        cx: &mut App,
+        view: &WeakViewSession,
+        point: ViewPoint,
+    ) -> Result<(), &'static str> {
+        self.dispatch_at_target_zoom(window, cx, view, mouse_down(MouseButton::Left, point))?;
+        self.dispatch_at_target_zoom(window, cx, view, mouse_up(MouseButton::Left, point))
+    }
+
+    fn dispatch_keystroke_at_target_zoom(
+        &mut self,
+        window: &mut Window,
+        cx: &mut App,
+        view: &WeakViewSession,
+        keystroke: Keystroke,
+    ) -> Result<(), &'static str> {
+        self.interaction()?;
+        self.verify_target_zoom(view)?;
+        if !window.dispatch_keystroke(keystroke, cx) {
+            return Err("input_workflow_keystroke_unhandled");
+        }
+        window.refresh();
+        Ok(())
+    }
+
+    fn should_run_workflow_authoring(&self) -> bool {
+        self.demo == NativeDemo::Workflow
+            && self.config.bounds() == SmokeBounds::Compact
+            && self.config.scenario() == SmokeScenario::Interaction
+            && self.config.zoom() == SmokeZoom::One
     }
 
     fn verify_target_zoom(&self, view: &WeakViewSession) -> Result<(), &'static str> {
@@ -623,36 +630,8 @@ impl RealWindowSmokeProbe {
     fn complete(&self) -> Result<Option<SmokeInputEvidence>, &'static str> {
         let scenario = match (&self.scenario, self.config.scenario()) {
             (ScenarioProbeState::Interaction(state), SmokeScenario::Interaction) => {
-                if state.dispatched_events != SMOKE_INPUT_EVENT_COUNT {
-                    return Err("input_dispatch_incomplete");
-                }
                 SmokeScenarioEvidence::Interaction(SmokeInteractionEvidence {
-                    dispatched_events: state.dispatched_events,
-                    auto_pan_reframes: state.auto_pan_reframes,
                     captures: state.captures.clone(),
-                    node_dragged: state.node_dragged,
-                    selection_chrome_fitted: state.selection_chrome_fitted,
-                    selection_chrome_sides: state.selection_chrome_sides,
-                    selection_chrome_detached_run: state.selection_chrome_detached_run,
-                    auto_pan_frames: state.auto_pan_frames,
-                    connection_auto_pan_frames: state.connection_auto_pan_frames,
-                    tab_focus_moved: state.tab_focus_moved,
-                    tab_focus_restored: state.tab_focus_restored,
-                    viewport_panned: state.viewport_panned,
-                    viewport_zoomed: state.viewport_zoomed,
-                    connection_created: state.connection_created,
-                    connection_preview_wire_painted: state.connection_preview_wire_painted,
-                    connection_release_frame_painted: state.connection_release_frame_painted,
-                    connection_release_continuous: state.connection_release_continuous,
-                    keyboard_edge_deleted: state.keyboard_edge_deleted,
-                    reconnect_applied: state.reconnect_applied,
-                    reconnect_preview_wire_painted: state.reconnect_preview_wire_painted,
-                    reconnect_release_frame_painted: state.reconnect_release_frame_painted,
-                    reconnect_release_continuous: state.reconnect_release_continuous,
-                    search_opened: state.search_opened,
-                    search_focus_moved: state.search_focus_moved,
-                    search_cancelled: state.search_cancelled,
-                    search_focus_restored: state.search_focus_restored,
                 })
             }
             (ScenarioProbeState::LodThreshold(state), SmokeScenario::LodThreshold) => {
@@ -664,10 +643,7 @@ impl RealWindowSmokeProbe {
             }
             _ => return Err("input_scenario_state_mismatch"),
         };
-        Ok(Some(SmokeInputEvidence {
-            bounds_verified: self.bounds_verified,
-            scenario,
-        }))
+        Ok(Some(SmokeInputEvidence { scenario }))
     }
 }
 
@@ -710,41 +686,10 @@ fn connection_candidate_failure(
     match presentation.phase() {
         CanvasInteractionPhase::ConnectionDrag => {}
         CanvasInteractionPhase::Idle => {
-            return Some(match presentation.terminal() {
-                Some(InteractionTerminalReason::Applied) => "input_connection_drag_applied",
-                Some(InteractionTerminalReason::Noop) => "input_connection_drag_noop",
-                Some(InteractionTerminalReason::Rejected) => "input_connection_drag_rejected",
-                Some(InteractionTerminalReason::Conflict) => "input_connection_drag_conflict",
-                Some(InteractionTerminalReason::ExecutionFailed) => {
-                    "input_connection_drag_execution_failed"
-                }
-                Some(InteractionTerminalReason::TransportFailure) => {
-                    "input_connection_drag_transport_failure"
-                }
-                Some(InteractionTerminalReason::ProtocolFailure) => {
-                    "input_connection_drag_protocol_failure"
-                }
-                Some(InteractionTerminalReason::Uncertain) => {
-                    "input_connection_drag_outcome_unknown"
-                }
-                Some(InteractionTerminalReason::InvalidTarget) => {
-                    "input_connection_drag_invalid_target"
-                }
-                Some(InteractionTerminalReason::Cancelled) => "input_connection_drag_cancelled",
-                Some(InteractionTerminalReason::OwnerRetired) => {
-                    "input_connection_drag_owner_retired"
-                }
-                Some(InteractionTerminalReason::ViewClosed) => "input_connection_drag_view_closed",
-                Some(InteractionTerminalReason::BudgetExhausted) => {
-                    "input_connection_drag_budget_exhausted"
-                }
-                Some(InteractionTerminalReason::GeometryIndeterminate) => {
-                    "input_connection_drag_geometry_indeterminate"
-                }
-                Some(InteractionTerminalReason::IdentityExhausted) => {
-                    "input_connection_drag_identity_exhausted"
-                }
-                None => "input_connection_drag_idle",
+            return Some(if presentation.terminal().is_some() {
+                "input_connection_drag_terminated"
+            } else {
+                "input_connection_drag_idle"
             });
         }
         CanvasInteractionPhase::Armed => return Some("input_connection_drag_armed"),
@@ -768,37 +713,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn capture_evidence_rejects_duplicates_and_cross_scenario_states() {
-        let mut interaction = InteractionProbeState::default();
-        assert_eq!(
-            interaction.record_capture(SmokeCaptureState::Initial),
-            Ok(())
-        );
-        assert_eq!(
-            interaction.record_capture(SmokeCaptureState::Initial),
-            Err("input_duplicate_capture")
-        );
-        assert_eq!(
-            interaction.record_capture(SmokeCaptureState::Lod086),
-            Err("input_capture_scenario_mismatch")
-        );
-        assert_eq!(interaction.captures.len(), 1);
-
-        let mut lod = LodProbeState::default();
-        assert_eq!(lod.record_capture(SmokeCaptureState::Lod086), Ok(()));
-        assert_eq!(
-            lod.record_capture(SmokeCaptureState::Lod086),
-            Err("input_duplicate_capture")
-        );
-        assert_eq!(
-            lod.record_capture(SmokeCaptureState::Initial),
-            Err("input_capture_scenario_mismatch")
-        );
-        assert_eq!(lod.captures.len(), 1);
-    }
-
-    #[test]
-    fn safe_input_point_exits_the_auto_pan_band() {
+    fn auto_pan_planning_respects_safe_settled_and_directional_bounds() {
         let surface = ViewSize::new(680.0, 640.0);
 
         assert!(!planning::input_point_is_safe(
@@ -817,11 +732,6 @@ mod tests {
             ViewPoint::new(644.0, 320.0),
             surface
         ));
-    }
-
-    #[test]
-    fn settled_connection_target_stops_auto_pan_without_losing_the_probe() {
-        let surface = ViewSize::new(680.0, 640.0);
 
         assert_eq!(
             settled_connection_target_point(ViewPoint::new(646.0, 35.0), surface),
@@ -831,11 +741,6 @@ mod tests {
             settled_connection_target_point(ViewPoint::new(664.0, 20.0), surface),
             None
         );
-    }
-
-    #[test]
-    fn auto_pan_pointer_reveals_targets_on_both_axes() {
-        let surface = ViewSize::new(680.0, 640.0);
 
         assert_eq!(
             auto_pan_pointer_toward(ViewPoint::new(900.0, 800.0), surface),

@@ -26,3 +26,18 @@ pub struct EdgePath {
     pub commands: Vec<PathCommand>,
     pub label: EdgePathLabel,
 }
+
+impl EdgePath {
+    pub(crate) fn is_finite(&self) -> bool {
+        self.commands.iter().all(|command| match *command {
+            PathCommand::MoveTo(point) | PathCommand::LineTo(point) => point.is_finite(),
+            PathCommand::CubicTo {
+                control1,
+                control2,
+                to,
+            } => control1.is_finite() && control2.is_finite() && to.is_finite(),
+        }) && self.label.point.is_finite()
+            && self.label.offset_x.is_finite()
+            && self.label.offset_y.is_finite()
+    }
+}

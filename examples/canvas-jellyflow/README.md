@@ -46,44 +46,51 @@ cargo run --manifest-path examples/canvas-jellyflow/Cargo.toml \
   -p open-gpui-canvas-jellyflow --locked -- --workflow
 ```
 
-Run both real-window smoke modes on a machine with a native window server:
+Run manual compact/zoom-1 single-process spot checks on a machine with a native window server:
 
 ```sh
 cargo run --manifest-path examples/canvas-jellyflow/Cargo.toml \
-  -p open-gpui-canvas-jellyflow --locked --features real-window-smoke -- --smoke
+  -p open-gpui-canvas-jellyflow --bin open-gpui-real-window-smoke \
+  --locked --features real-window-smoke
 cargo run --manifest-path examples/canvas-jellyflow/Cargo.toml \
-  -p open-gpui-canvas-jellyflow --locked --features real-window-smoke -- --workflow --smoke
+  -p open-gpui-canvas-jellyflow --bin open-gpui-real-window-smoke \
+  --locked --features real-window-smoke -- --workflow
 ```
 
-Smoke mode drives the production window through the bounded Shader and Workflow interaction matrix.
-A pass requires retained lifecycle invariants, complete current-graph geometry, non-blank native
-paint, fixed-zoom node and connection auto-pan, focus traversal, edge deletion and reconnect,
-create-from-wire search, fitted selection chrome, and the directed semantic-LOD continuity probe.
-The process emits one `JELLYFLOW_REAL_WINDOW_SMOKE_RECEIPT` JSON receipt and exits automatically;
-any failed invariant, early close, or timeout exits non-zero. The matrix runner validates that
-receipt through the Rust `smoke_receipt_contract` binary before accepting it. See the
-[node UI authoring regression contract](../../docs/testing/node-ui-authoring-regression.md) for the
-authoritative scenarios, window and zoom matrix, screenshot checkpoints, and required commands.
-The non-default `real-window-smoke` feature only enables framebuffer readback for this gate; normal
-product builds do not enable test support.
-
-The production frame-clock witness is a smaller, non-visual gate for native node-drag auto-pan. It
-builds without `real-window-smoke`, holds a real node drag in the viewport edge band, requires at
-least three monotonically moving viewport samples entered through `Window::on_next_frame`, and exits
-automatically:
+Build once and run the formal five-process matrix:
 
 ```sh
 cargo build --manifest-path examples/canvas-jellyflow/Cargo.toml \
-  -p open-gpui-canvas-jellyflow --locked --no-default-features \
-  --bin open-gpui-native-frame-clock-witness
-python3 tools/check_open_gpui_native_frame_clock.py --require-native
+  -p open-gpui-canvas-jellyflow --bin open-gpui-real-window-smoke \
+  --locked --features real-window-smoke
+python3 tools/run_real_window_smoke_matrix.py \
+  --binary examples/canvas-jellyflow/target/debug/open-gpui-real-window-smoke \
+  --capture-root target/real-window-smoke \
+  --timeout-seconds 60
 ```
+
+The matrix drives the production window through the bounded Shader and Workflow interaction set.
+A pass requires retained lifecycle invariants, complete current-graph geometry, non-blank native
+paint, fixed-zoom node and connection auto-pan, focus traversal, edge deletion and reconnect,
+create-from-wire search, fitted selection chrome, and the directed semantic-LOD continuity probe.
+The dedicated smoke process emits one minimal `JELLYFLOW_REAL_WINDOW_SMOKE_RECEIPT` JSON receipt
+and exits automatically; any failed invariant, early close, or timeout exits non-zero. The Rust
+window harness owns geometry, interaction, frame-continuity, and pixel assertions. Python only
+orchestrates the five processes, checks receipt transport and artifact existence, and writes an
+atomic matrix result. See the
+[node UI authoring regression contract](../../docs/testing/node-ui-authoring-regression.md) for the
+authoritative scenarios, window and zoom matrix, screenshot checkpoints, and required commands.
+The non-default `real-window-smoke` feature and dedicated binary isolate framebuffer readback and
+test support from normal product builds.
 
 Run the focused tests:
 
 ```sh
 cargo nextest run --manifest-path examples/canvas-jellyflow/Cargo.toml \
   -p open-gpui-canvas-jellyflow --locked --no-fail-fast
+cargo nextest run --manifest-path examples/canvas-jellyflow/Cargo.toml \
+  -p open-gpui-canvas-jellyflow --bin open-gpui-real-window-smoke \
+  --features real-window-smoke --locked --no-fail-fast
 ```
 
 The hard adapter contracts remain in `jellyflow-open-gpui`. This example owns

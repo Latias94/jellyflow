@@ -10,9 +10,6 @@ mod frame;
 mod geometry;
 mod work;
 
-#[cfg(feature = "adapter-conformance")]
-pub mod conformance;
-
 pub use coordinates::{ViewDelta, ViewPoint, ViewRect, ViewSize, side_anchor};
 pub use feedback::{
     FeedbackCollector, FeedbackCollectorError, FeedbackLayoutWork, FeedbackReceipt,
@@ -34,10 +31,11 @@ pub use frame::{
 pub use geometry::{
     GeometryElementIter, GeometryElementKeys, GeometryElementValues, GeometryElements,
     GeometrySnapshot, PublishedEdgeRoute, PublishedNodeGeometry, PublishedPortGeometry,
-    PublishedPortOutcome,
+    PublishedPortOutcome, RouteGeometryRevision,
 };
 pub(crate) use geometry::{
     GeometryVisibleCounts, SharedFrameCullSet, SharedGeometryMap, SharedGeometryOwnerMap,
+    SharedRouteGeometryRevisionMap,
 };
 pub use work::GeometryImpactMergeWork;
 

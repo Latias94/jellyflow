@@ -1,12 +1,10 @@
 use dugong::graphlib::{Graph as DugongGraph, GraphOptions};
 use dugong::{EdgeLabel, GraphLabel, NodeLabel, RankDir};
-use jellyflow_core::{CanvasPoint, CanvasRect, CanvasSize, EdgeId, Graph, NodeId};
+use jellyflow_core::{CanvasPoint, EdgeId, NodeId};
 
 use crate::engine::{
-    DUGONG_LAYOUT_ENGINE_ID, LayoutContext, LayoutDirection, LayoutEdgeRoute, LayoutEngine,
-    LayoutEngineId, LayoutError, LayoutNodePosition, LayoutOptions, LayoutRequest, LayoutResult,
-    node_rect_from_position, normalized_node_origin, position_from_center, resolve_node_size,
-    union_bounds, validate_request,
+    LayoutCoordinateFrame, LayoutDirection, LayoutEdgeRoute, LayoutEngine, LayoutError,
+    LayoutNodePlacement, LayoutOptions, LayoutPlacements, PreparedLayoutInput, checked_f32,
 };
 
 impl LayoutDirection {
@@ -25,28 +23,13 @@ impl LayoutDirection {
 pub struct DugongLayoutEngine;
 
 impl LayoutEngine for DugongLayoutEngine {
-    fn id(&self) -> LayoutEngineId {
-        LayoutEngineId::new(DUGONG_LAYOUT_ENGINE_ID)
-    }
-
-    fn layout(
-        &self,
-        graph: &Graph,
-        request: &LayoutRequest,
-        context: &LayoutContext,
-    ) -> Result<LayoutResult, LayoutError> {
-        run_dugong_layout(graph, request, context)
+    fn place(&self, input: &PreparedLayoutInput<'_>) -> Result<LayoutPlacements, LayoutError> {
+        run_dugong_layout(input)
     }
 }
 
-fn run_dugong_layout(
-    graph: &Graph,
-    request: &LayoutRequest,
-    context: &LayoutContext,
-) -> Result<LayoutResult, LayoutError> {
-    validate_request(graph, request)?;
-
-    let mut workspace = DugongLayoutWorkspace::new(graph, request, context)?;
+fn run_dugong_layout(input: &PreparedLayoutInput<'_>) -> Result<LayoutPlacements, LayoutError> {
+    let mut workspace = DugongLayoutWorkspace::new(input);
     workspace.solve();
     workspace.into_result()
 }
@@ -55,14 +38,11 @@ struct DugongLayoutWorkspace {
     graph: DugongGraph<NodeLabel, EdgeLabel, GraphLabel>,
     nodes: Vec<ProjectedNode>,
     edges: Vec<ProjectedEdge>,
-    bounds: Option<CanvasRect>,
 }
 
 struct ProjectedNode {
     id: NodeId,
     key: String,
-    size: CanvasSize,
-    origin: (f32, f32),
 }
 
 struct ProjectedEdge {
@@ -73,77 +53,44 @@ struct ProjectedEdge {
 }
 
 impl DugongLayoutWorkspace {
-    fn new(
-        graph: &Graph,
-        request: &LayoutRequest,
-        context: &LayoutContext,
-    ) -> Result<Self, LayoutError> {
+    fn new(input: &PreparedLayoutInput<'_>) -> Self {
         let mut projected = DugongGraph::with_capacity(
             GraphOptions {
                 multigraph: true,
                 ..GraphOptions::default()
             },
-            graph.nodes().len(),
-            graph.edges().len(),
+            input.nodes().len(),
+            input.edges().len(),
         );
-        projected.set_graph(graph_label(request.options));
+        projected.set_graph(graph_label(input.options()));
 
         let mut node_keys = std::collections::BTreeMap::new();
         let mut nodes = Vec::new();
 
-        for (id, node) in graph.nodes() {
-            if node.hidden || !request.scope.contains(*id) {
-                continue;
-            }
-
-            let size = resolve_node_size(graph, request, context, *id)?;
-            let key = node_key(*id);
+        for node in input.nodes() {
+            let key = node_key(node.id());
             projected.set_node(
                 key.clone(),
                 NodeLabel {
-                    width: f64::from(size.width),
-                    height: f64::from(size.height),
+                    width: f64::from(node.size().width),
+                    height: f64::from(node.size().height),
                     ..NodeLabel::default()
                 },
             );
-            node_keys.insert(*id, key.clone());
-            nodes.push(ProjectedNode {
-                id: *id,
-                key,
-                size,
-                origin: normalized_node_origin(node.origin),
-            });
+            node_keys.insert(node.id(), key.clone());
+            nodes.push(ProjectedNode { id: node.id(), key });
         }
 
         let mut edges = Vec::new();
-        for (id, edge) in graph.edges() {
-            if edge.hidden {
-                continue;
-            }
-
-            let source_port = graph
-                .ports()
-                .get(&edge.from)
-                .ok_or(LayoutError::MissingSourcePort(*id))?;
-            let target_port = graph
-                .ports()
-                .get(&edge.to)
-                .ok_or(LayoutError::MissingTargetPort(*id))?;
-            if !graph.nodes().contains_key(&source_port.node) {
-                return Err(LayoutError::MissingSourceNode { edge: *id });
-            }
-            if !graph.nodes().contains_key(&target_port.node) {
-                return Err(LayoutError::MissingTargetNode { edge: *id });
-            }
-
-            let Some(source) = node_keys.get(&source_port.node).cloned() else {
+        for edge in input.edges() {
+            let Some(source) = node_keys.get(&edge.source()).cloned() else {
                 continue;
             };
-            let Some(target) = node_keys.get(&target_port.node).cloned() else {
+            let Some(target) = node_keys.get(&edge.target()).cloned() else {
                 continue;
             };
 
-            let name = edge_key(*id);
+            let name = edge_key(edge.id());
             projected.set_edge_named(
                 source.clone(),
                 target.clone(),
@@ -151,28 +98,26 @@ impl DugongLayoutWorkspace {
                 Some(EdgeLabel::default()),
             );
             edges.push(ProjectedEdge {
-                id: *id,
+                id: edge.id(),
                 source,
                 target,
                 name,
             });
         }
 
-        Ok(Self {
+        Self {
             graph: projected,
             nodes,
             edges,
-            bounds: None,
-        })
+        }
     }
 
     fn solve(&mut self) {
         dugong::layout_dagreish(&mut self.graph);
     }
 
-    fn into_result(self) -> Result<LayoutResult, LayoutError> {
+    fn into_result(self) -> Result<LayoutPlacements, LayoutError> {
         let mut positions = Vec::with_capacity(self.nodes.len());
-        let mut bounds = self.bounds;
 
         for node in self.nodes {
             let label = self
@@ -190,18 +135,13 @@ impl DugongLayoutWorkspace {
             }
 
             let center = CanvasPoint {
-                x: x as f32,
-                y: y as f32,
+                x: checked_f32(x).ok_or(LayoutError::InvalidResultNodeGeometry(node.id))?,
+                y: checked_f32(y).ok_or(LayoutError::InvalidResultNodeGeometry(node.id))?,
             };
-            let pos = position_from_center(center, node.size, node.origin);
-            let node_position = LayoutNodePosition {
+            positions.push(LayoutNodePlacement {
                 node: node.id,
-                pos,
                 center,
-                size: node.size,
-            };
-            bounds = union_bounds(bounds, node_rect_from_position(&node_position));
-            positions.push(node_position);
+            });
         }
 
         let mut edge_routes = Vec::new();
@@ -215,21 +155,24 @@ impl DugongLayoutWorkspace {
             let points = label
                 .points
                 .iter()
-                .map(|point| CanvasPoint {
-                    x: point.x as f32,
-                    y: point.y as f32,
+                .map(|point| {
+                    Some(CanvasPoint {
+                        x: checked_f32(point.x)?,
+                        y: checked_f32(point.y)?,
+                    })
                 })
-                .collect();
+                .collect::<Option<Vec<_>>>()
+                .ok_or(LayoutError::InvalidResultEdgeRoute(edge.id))?;
             edge_routes.push(LayoutEdgeRoute {
                 edge: edge.id,
                 points,
             });
         }
 
-        Ok(LayoutResult {
+        Ok(LayoutPlacements {
             nodes: positions,
             edge_routes,
-            bounds,
+            coordinate_frame: LayoutCoordinateFrame::NormalizeToMargin,
         })
     }
 }
@@ -239,7 +182,8 @@ impl DugongLayoutWorkspace {
 pub mod benchmark_internals {
     use jellyflow_core::Graph;
 
-    use crate::engine::{LayoutContext, LayoutError, LayoutRequest, LayoutResult};
+    use crate::engine::{LayoutContext, LayoutError, LayoutPlacements, LayoutRequest};
+    use crate::projection::PreparedLayoutRun;
 
     use super::DugongLayoutWorkspace;
 
@@ -255,8 +199,9 @@ pub mod benchmark_internals {
             request: &LayoutRequest,
             context: &LayoutContext,
         ) -> Result<Self, LayoutError> {
+            let run = PreparedLayoutRun::prepare(graph, request, context)?;
             Ok(Self {
-                workspace: DugongLayoutWorkspace::new(graph, request, context)?,
+                workspace: DugongLayoutWorkspace::new(run.input()),
             })
         }
 
@@ -265,8 +210,8 @@ pub mod benchmark_internals {
             self.workspace.solve();
         }
 
-        /// Converts solved `dugong` output into Jellyflow layout output.
-        pub fn into_result(self) -> Result<LayoutResult, LayoutError> {
+        /// Converts solved `dugong` output into engine placements.
+        pub fn into_placements(self) -> Result<LayoutPlacements, LayoutError> {
             self.workspace.into_result()
         }
     }
@@ -278,8 +223,8 @@ fn graph_label(options: LayoutOptions) -> GraphLabel {
         nodesep: f64::from(options.spacing.nodesep),
         ranksep: f64::from(options.spacing.ranksep),
         edgesep: f64::from(options.spacing.edgesep),
-        marginx: f64::from(options.margin.width),
-        marginy: f64::from(options.margin.height),
+        marginx: 0.0,
+        marginy: 0.0,
         ..GraphLabel::default()
     }
 }

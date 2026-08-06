@@ -4,13 +4,12 @@ use jellyflow_core::{
     CanvasPoint, CanvasSize, Edge, EdgeId, EdgeKind, GraphBuilder, GraphId, Node, NodeId,
     NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKey, PortKind,
 };
-use jellyflow_egui::{
-    EguiCanvasInteraction, EguiInteractionError, EguiInteractionOutput, EguiNativeFrameHost,
-};
+use jellyflow_egui::{EguiCanvasInteraction, EguiInteractionOutput, EguiNativeFrameHost};
 use jellyflow_runtime::graph::GraphRuntime;
 use jellyflow_runtime::interaction::{
     CanvasInteractionConfig, CanvasInteractionEffect, CanvasPressTarget,
-    InteractionGraphSubmission, InteractionGraphSubmissionBindError, InteractionTicketId,
+    InteractionGraphSubmission, InteractionGraphSubmissionBindError,
+    InteractionSubmissionSettlementEvidence, InteractionTicketId,
 };
 use jellyflow_runtime::view::ViewSessionOptions;
 
@@ -22,22 +21,30 @@ fn delete_and_backspace_submit_one_atomic_mixed_selection_command() {
         harness.key_down(key);
         harness.step();
 
-        let (ticket, submission) = take_single_submission(&mut harness);
+        let (_ticket, submission) = take_single_submission(&mut harness);
         let ctx = harness.ctx.clone();
         let state = harness.state_mut();
 
-        let command = state
+        let mut bound = state
             .interaction
             .bind_submission(submission)
-            .expect("selection intent binds to its fresh revision")
+            .expect("selection intent binds to its fresh revision");
+        let command = bound
+            .take_command()
             .expect("mixed selection emits one topology command");
         assert_eq!(command.label(), Some("Delete selection"));
         let completion = state.runtime.execute(command);
         assert!(completion.applied_revision().is_some());
         let SelectionDeleteState { interaction, .. } = state;
-        interaction
-            .complete_submission(&ctx, ticket, completion)
+        let settled = interaction
+            .settle_submission(
+                &ctx,
+                bound,
+                InteractionSubmissionSettlementEvidence::Command(completion),
+            )
             .expect("adapter observes the command receipt");
+        assert!(!settled.renderer_work_pending());
+        assert!(settled.terminal_query_error().is_none());
 
         let state = harness.state();
         let graph = state.runtime.snapshot().expect("applied graph");
@@ -87,21 +94,23 @@ fn cancelled_submission_cannot_enter_the_egui_command_transport() {
     let (ticket, submission) = take_single_submission(&mut harness);
     let ctx = harness.ctx.clone();
     let state = harness.state_mut();
-    state
+    let cancelled = state
         .interaction
         .cancel(&ctx)
         .expect("cancellation reaches the bound interaction session");
+    assert!(cancelled.terminal_query_error().is_none());
+    assert!(!cancelled.renderer_work_pending());
 
+    let failure = state
+        .interaction
+        .bind_submission(submission)
+        .expect_err("cancelled submission cannot bind");
     assert!(matches!(
-        state
-            .interaction
-            .bind_submission(submission),
-        Err(EguiInteractionError::Submission(
-            InteractionGraphSubmissionBindError::Superseded {
-                ticket: rejected,
-                current: None,
-            }
-        )) if rejected == ticket
+        failure.error(),
+        InteractionGraphSubmissionBindError::Superseded {
+            ticket: rejected,
+            current: None,
+        } if rejected == ticket
     ));
     let snapshot = state.runtime.snapshot().expect("unchanged graph snapshot");
     assert!(snapshot.graph().node(&state.ids.node).is_some());
@@ -214,12 +223,12 @@ fn render_selection_delete(ui: &mut Ui, state: &mut SelectionDeleteState) {
 fn take_single_submission(
     harness: &mut Harness<'static, SelectionDeleteState>,
 ) -> (InteractionTicketId, InteractionGraphSubmission) {
-    let mut effects = harness
+    let mut output = harness
         .state_mut()
         .last_output
         .take()
-        .expect("each frame emits interaction output")
-        .into_effects();
+        .expect("each frame emits interaction output");
+    let mut effects = output.take_effects();
     assert_eq!(effects.len(), 1, "one key press submits one graph mutation");
     match effects.pop().expect("one submission") {
         CanvasInteractionEffect::SubmitGraph { submission } => (submission.ticket(), submission),

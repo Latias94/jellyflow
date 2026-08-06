@@ -12,8 +12,6 @@ use jellyflow_open_gpui::registry::{
     OpenGpuiNodeAdapterPresentation, OpenGpuiNodeRegistrationPolicy, OpenGpuiNodeRegistryBuilder,
     OpenGpuiNodeRendererDescriptor,
 };
-#[cfg(test)]
-use jellyflow_open_gpui::retained_field::ApplicationRetainedField;
 use jellyflow_open_gpui::retained_field::{
     RetainedField, RetainedFieldConflictChoice, RetainedFieldError, RetainedFieldKey,
     RetainedFieldPhase, RetainedFieldRecovery, RetainedFieldResolution, RetainedFieldStore,
@@ -21,8 +19,6 @@ use jellyflow_open_gpui::retained_field::{
 };
 use jellyflow_open_gpui::size_policy::{OpenGpuiContentHeightPolicy, OpenGpuiNodeSizePolicy};
 use jellyflow_runtime::commands::GraphCommand;
-#[cfg(test)]
-use jellyflow_runtime::graph::GraphVersion;
 use jellyflow_runtime::schema::{NodeKindSpec, NodePortSpec};
 use jellyflow_runtime::view::RendererStamp;
 use open_gpui::{
@@ -181,7 +177,7 @@ impl WorkflowLlmNode {
         match result {
             Ok((authoring, data, ports)) => {
                 let prompt_observation = authoring.observe_field(|_| data.prompt.clone());
-                let prompt_update = match self.prompt.observe(prompt_observation) {
+                let prompt_update = match self.prompt.observe(prompt_observation, cx) {
                     Ok(update) => update,
                     Err(error) => {
                         self.diagnostic =
@@ -197,7 +193,7 @@ impl WorkflowLlmNode {
                 if !self.model_menu_open.get()
                     && let Err(error) = self
                         .model
-                        .observe(authoring.observe_field(|_| data.model.clone()))
+                        .observe(authoring.observe_field(|_| data.model.clone()), cx)
                 {
                     self.diagnostic = Some(Self::field_error(LlmField::Model, error).to_string());
                     return None;
@@ -277,7 +273,7 @@ impl WorkflowLlmNode {
         };
         if let Err(error) = self
             .model
-            .observe(authoring.observe_field(|_| data.model.clone()))
+            .observe(authoring.observe_field(|_| data.model.clone()), cx)
         {
             self.diagnostic = Some(Self::field_error(LlmField::Model, error).to_string());
             cx.notify();
@@ -313,11 +309,11 @@ impl WorkflowLlmNode {
     fn accept_remote_model(&mut self, cx: &mut Context<Self>) {
         let result = read_llm_binding(&self.binding, cx).and_then(|(authoring, data)| {
             self.model
-                .observe(authoring.observe_field(|_| data.model))
+                .observe(authoring.observe_field(|_| data.model), cx)
                 .map_err(|error| Self::field_error(LlmField::Model, error))?;
             match self
                 .model
-                .resolve(&authoring, RetainedFieldConflictChoice::AcceptRemote)
+                .resolve(&authoring, RetainedFieldConflictChoice::AcceptRemote, cx)
             {
                 Ok(RetainedFieldResolution::AcceptedRemote { .. }) => Ok(()),
                 Ok(_) => Err(WorkflowNodeError::DraftConflict { field: "model" }),
@@ -335,11 +331,11 @@ impl WorkflowLlmNode {
     fn accept_remote_prompt(&mut self, cx: &mut Context<Self>) {
         let result = read_llm_binding(&self.binding, cx).and_then(|(authoring, data)| {
             self.prompt
-                .observe(authoring.observe_field(|_| data.prompt))
+                .observe(authoring.observe_field(|_| data.prompt), cx)
                 .map_err(|error| Self::field_error(LlmField::Prompt, error))?;
             match self
                 .prompt
-                .resolve(&authoring, RetainedFieldConflictChoice::AcceptRemote)
+                .resolve(&authoring, RetainedFieldConflictChoice::AcceptRemote, cx)
             {
                 Ok(RetainedFieldResolution::AcceptedRemote { .. }) => Ok(()),
                 Ok(_) => Err(WorkflowNodeError::DraftConflict { field: "prompt" }),
@@ -385,9 +381,12 @@ impl WorkflowLlmNode {
         let node_id = authoring.node_id();
         let current = LlmData::parse(node_id, authoring.node())?;
         self.retained_field_mut(field)
-            .observe(authoring.observe_field(|_| current.field(field).to_owned()))
+            .observe(
+                authoring.observe_field(|_| current.field(field).to_owned()),
+                cx,
+            )
             .map_err(|error| Self::field_error(field, error))?;
-        let plan = match self.retained_field_mut(field).plan(authoring, mode) {
+        let plan = match self.retained_field_mut(field).plan(authoring, mode, cx) {
             Ok(plan) => plan,
             Err(RetainedFieldError::Clean | RetainedFieldError::CompositionActive) => return Ok(()),
             Err(error) => return Err(Self::field_error(field, error)),
@@ -503,18 +502,6 @@ impl WorkflowLlmNode {
             WorkflowNodeStatus::Ready
         }
     }
-}
-
-#[cfg(test)]
-fn observe_model_snapshot(
-    field: &mut ApplicationRetainedField<String>,
-    menu_open: bool,
-    version: GraphVersion,
-    authoritative: String,
-) -> Option<Result<RetainedFieldUpdate, RetainedFieldError>> {
-    // A selection is authored against the value visible when the menu opened. Keeping that base
-    // stable turns a concurrent provider update into an explicit conflict instead of overwriting it.
-    (!menu_open).then(|| field.observe(version, authoritative))
 }
 
 impl Render for WorkflowLlmNode {
@@ -1236,20 +1223,6 @@ fn ensure_kind(node_id: NodeId, node: &Node) -> Result<(), WorkflowNodeError> {
 }
 
 #[cfg(test)]
-fn reconcile_prompt_composition(field: &mut ApplicationRetainedField<String>, composing: bool) {
-    if composing {
-        field.set_composing(true);
-    } else if matches!(
-        field.phase(),
-        RetainedFieldPhase::Composing | RetainedFieldPhase::ComposingConflict
-    ) {
-        // The native text controller clears its marked range during IME commit without emitting a
-        // second application-level change callback. Reconcile that edge on render.
-        field.set_composing(false);
-    }
-}
-
-#[cfg(test)]
 mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -1260,9 +1233,6 @@ mod tests {
         OpenGpuiSceneHost,
     };
     use jellyflow_open_gpui::registry::OpenGpuiNodeRegistry;
-    use jellyflow_open_gpui::retained_field::{
-        ApplicationRetainedFieldDispatchReceipt, RetainedFieldAttemptState,
-    };
     use jellyflow_runtime::graph::GraphRuntime;
     use jellyflow_runtime::view::ViewSessionOptions;
     use open_gpui::{
@@ -1289,153 +1259,6 @@ mod tests {
         ) -> impl open_gpui::IntoElement {
             div().size_full().child("protected workflow state")
         }
-    }
-
-    #[test]
-    fn ime_commit_without_a_second_change_callback_returns_prompt_to_dirty() {
-        let runtime = test_application_runtime();
-        let mut field =
-            ApplicationRetainedField::new(graph_version(&runtime), String::from("before"));
-        field.edit(String::from("composing"));
-
-        reconcile_prompt_composition(&mut field, true);
-        assert_eq!(field.phase(), RetainedFieldPhase::Composing);
-
-        reconcile_prompt_composition(&mut field, false);
-        assert_eq!(field.phase(), RetainedFieldPhase::Dirty);
-    }
-
-    #[test]
-    fn ime_commit_preserves_a_remote_conflict_for_explicit_resolution() {
-        let runtime = test_application_runtime();
-        let mut field =
-            ApplicationRetainedField::new(graph_version(&runtime), String::from("before"));
-        field.edit(String::from("local"));
-        reconcile_prompt_composition(&mut field, true);
-        let remote = advance_prompt(&runtime, "remote");
-        field
-            .observe(remote, String::from("remote"))
-            .expect("same-runtime prompt observation");
-        assert_eq!(field.phase(), RetainedFieldPhase::ComposingConflict);
-
-        reconcile_prompt_composition(&mut field, false);
-        assert_eq!(field.phase(), RetainedFieldPhase::Conflict);
-    }
-
-    #[test]
-    fn model_transport_error_survives_prompt_edit_and_blocks_duplicate_model_submission() {
-        let runtime = test_application_runtime();
-        let version = graph_version(&runtime);
-        let mut prompt = ApplicationRetainedField::new(version, String::from("before prompt"));
-        let mut model = ApplicationRetainedField::new(version, String::from("gpt-4.1"));
-        model.edit(String::from("gpt-5"));
-        let intent = model.plan(version).expect("dirty model intent");
-        let command = unchanged_workflow_command(&runtime);
-        let receipt = intent
-            .bind_command(&command)
-            .expect("bind model field command");
-        assert!(matches!(
-            model.mark_uncertain(receipt, "host dropped"),
-            Ok(jellyflow_open_gpui::retained_field::RetainedFieldSettlement::Uncertain { .. })
-        ));
-        let model_notice = model.notice().expect("uncertain model notice").to_owned();
-
-        prompt.edit(String::from("edited prompt"));
-
-        assert!(prompt.can_submit());
-        assert!(prompt.notice().is_none());
-        assert!(matches!(
-            model.attempt_state(),
-            RetainedFieldAttemptState::Uncertain { .. }
-        ));
-        assert_eq!(model.notice(), Some(model_notice.as_str()));
-        assert!(matches!(
-            model.plan(version),
-            Err(RetainedFieldError::AttemptPending { .. })
-        ));
-    }
-
-    #[test]
-    fn applied_prompt_receipt_waits_for_the_authoritative_snapshot() {
-        let PendingPromptSubmission {
-            runtime,
-            mut field,
-            receipt,
-            command,
-        } = pending_prompt_submission("before", "local");
-        let completion = runtime.execute(command);
-        let committed_version = completion
-            .version()
-            .expect("applied prompt completion carries a version");
-        assert!(matches!(
-            field.settle_command(receipt, completion),
-            Ok(
-                jellyflow_open_gpui::retained_field::RetainedFieldSettlement::AwaitingSnapshot { .. }
-            )
-        ));
-        assert!(matches!(
-            field.attempt_state(),
-            RetainedFieldAttemptState::ReceiptFirst { .. }
-        ));
-        assert!(matches!(
-            field.observe(committed_version, String::from("local")),
-            Ok(RetainedFieldUpdate::Acknowledged { .. })
-        ));
-        assert_eq!(field.phase(), RetainedFieldPhase::Clean);
-    }
-
-    #[test]
-    fn authoritative_prompt_snapshot_can_arrive_before_its_receipt() {
-        let PendingPromptSubmission {
-            runtime,
-            mut field,
-            receipt,
-            command,
-        } = pending_prompt_submission("before", "local");
-        let completion = runtime.execute(command);
-        assert!(matches!(
-            field.observe(
-                completion
-                    .version()
-                    .expect("applied prompt completion carries a version"),
-                String::from("local")
-            ),
-            Ok(RetainedFieldUpdate::SnapshotFirst { .. })
-        ));
-        assert!(matches!(
-            field.settle_command(receipt, completion),
-            Ok(jellyflow_open_gpui::retained_field::RetainedFieldSettlement::Acknowledged { .. })
-        ));
-        assert_eq!(field.phase(), RetainedFieldPhase::Clean);
-    }
-
-    #[test]
-    fn open_model_menu_keeps_its_authoring_base_until_selection() {
-        let runtime = test_application_runtime();
-        let initial = graph_version(&runtime);
-        let mut field = ApplicationRetainedField::new(initial, String::from("gpt-4.1"));
-        let remote = advance_prompt(&runtime, "remote-provider-model");
-
-        assert!(
-            observe_model_snapshot(
-                &mut field,
-                true,
-                remote,
-                String::from("remote-provider-model"),
-            )
-            .is_none()
-        );
-        assert_eq!(field.remote_version(), initial);
-        assert_eq!(field.remote(), "gpt-4.1");
-
-        field.edit(String::from("claude-3.7-sonnet"));
-        assert!(matches!(
-            field.observe(remote, String::from("remote-provider-model")),
-            Ok(RetainedFieldUpdate::Conflict)
-        ));
-        assert_eq!(field.phase(), RetainedFieldPhase::Conflict);
-        assert_eq!(field.local(), "claude-3.7-sonnet");
-        assert_eq!(field.remote(), "remote-provider-model");
     }
 
     #[open_gpui::test]
@@ -1496,6 +1319,7 @@ mod tests {
                     .expect("valid saturated LLM registry"),
                 saturated_llm_bounds(),
             )
+            .expect("valid Open GPUI scene host")
         });
         draw_transient_host(cx);
 
@@ -1666,74 +1490,6 @@ mod tests {
         );
     }
 
-    struct PendingPromptSubmission {
-        runtime: GraphRuntime,
-        field: ApplicationRetainedField<String>,
-        receipt: ApplicationRetainedFieldDispatchReceipt,
-        command: GraphCommand,
-    }
-
-    fn pending_prompt_submission(remote: &str, local: &str) -> PendingPromptSubmission {
-        let runtime = test_application_runtime();
-        let version = graph_version(&runtime);
-        let mut field = ApplicationRetainedField::new(version, remote.to_owned());
-        field.edit(local.to_owned());
-        let intent = field.plan(version).expect("dirty prompt intent");
-        let command = prompt_command(&runtime, local);
-        let receipt = intent
-            .bind_command(&command)
-            .expect("bind workflow prompt command");
-        PendingPromptSubmission {
-            runtime,
-            field,
-            receipt,
-            command,
-        }
-    }
-
-    fn test_application_runtime() -> GraphRuntime {
-        let catalog = transient_overflow_catalog();
-        GraphRuntime::builder(catalog.clone())
-            .build(transient_overflow_graph(&catalog))
-            .expect("valid workflow application-field graph")
-    }
-
-    fn graph_version(runtime: &GraphRuntime) -> GraphVersion {
-        runtime
-            .snapshot()
-            .expect("workflow graph snapshot")
-            .version()
-    }
-
-    fn unchanged_workflow_command(runtime: &GraphRuntime) -> GraphCommand {
-        let snapshot = runtime.snapshot().expect("initial workflow snapshot");
-        let node = snapshot
-            .graph()
-            .node(&transient_llm_id())
-            .expect("workflow receipt LLM node");
-        GraphCommand::set_node_data(snapshot.version(), transient_llm_id(), node.data.clone())
-    }
-
-    fn prompt_command(runtime: &GraphRuntime, value: &str) -> GraphCommand {
-        let snapshot = runtime.snapshot().expect("initial workflow snapshot");
-        let node = snapshot
-            .graph()
-            .node(&transient_llm_id())
-            .expect("workflow receipt LLM node");
-        let data = LlmData::parse(transient_llm_id(), node)
-            .expect("valid workflow receipt data")
-            .with_field(transient_llm_id(), LlmField::Prompt, value.to_owned())
-            .expect("valid workflow prompt update");
-        GraphCommand::set_node_data(snapshot.version(), transient_llm_id(), data)
-    }
-
-    fn advance_prompt(runtime: &GraphRuntime, value: &str) -> GraphVersion {
-        runtime
-            .execute(prompt_command(runtime, value))
-            .version()
-            .expect("applied workflow prompt completion carries a version")
-    }
-
     #[open_gpui::test]
     fn rejected_workflow_ime_is_canceled_and_its_draft_survives_lru_churn(
         cx: &mut open_gpui::TestAppContext,
@@ -1811,6 +1567,7 @@ mod tests {
                     .expect("valid workflow transient overflow registry"),
                 transient_initial_bounds(),
             )
+            .expect("valid Open GPUI scene host")
         });
         draw_transient_host(cx);
         cx.read_entity(&host, |host, _| {

@@ -82,36 +82,70 @@ impl MutationCommandResult {
     /// Projects the semantic runtime completion without exposing runtime internals to products.
     #[must_use]
     pub fn from_runtime(completion: &CommandExecutionCompletion) -> Self {
-        match completion.result() {
-            Ok(outcome) => match completion.kind() {
-                CommandExecutionKind::Applied => Self::Applied {
-                    revision: outcome.version().revision(),
-                },
-                CommandExecutionKind::Noop => Self::Noop {
-                    revision: outcome.version().revision(),
-                },
-                CommandExecutionKind::Rejected => Self::Rejected {
-                    revision: outcome.version().revision(),
-                    diagnostic: completion
-                        .diagnostic_message()
-                        .unwrap_or_else(|| "command rejected".to_owned()),
-                },
-                CommandExecutionKind::Conflict => Self::Conflict {
-                    revision: outcome.version().revision(),
-                    diagnostic: completion
-                        .diagnostic_message()
-                        .unwrap_or_else(|| "command conflicted".to_owned()),
-                },
-                CommandExecutionKind::Failed => unreachable!(
-                    "a failed command completion carries an error rather than an outcome"
-                ),
+        match completion.kind() {
+            CommandExecutionKind::Applied => Self::Applied {
+                revision: completion
+                    .applied_revision()
+                    .expect("applied command completion carries its committed revision"),
             },
-            Err(_) => Self::Failed {
+            CommandExecutionKind::Noop => Self::Noop {
+                revision: completion
+                    .observed_revision()
+                    .expect("noop command completion carries its observed revision"),
+            },
+            CommandExecutionKind::Rejected => Self::Rejected {
+                revision: completion
+                    .observed_revision()
+                    .expect("rejected command completion carries its observed revision"),
+                diagnostic: completion
+                    .diagnostic_message()
+                    .unwrap_or_else(|| "command rejected".to_owned()),
+            },
+            CommandExecutionKind::Conflict => Self::Conflict {
+                revision: completion
+                    .observed_revision()
+                    .expect("conflict command completion carries its observed revision"),
+                diagnostic: completion
+                    .diagnostic_message()
+                    .unwrap_or_else(|| "command conflicted".to_owned()),
+            },
+            CommandExecutionKind::Failed => Self::Failed {
                 diagnostic: completion
                     .diagnostic_message()
                     .unwrap_or_else(|| "command execution failed".to_owned()),
             },
         }
+    }
+
+    fn revision(&self) -> Option<GraphRevision> {
+        match self {
+            Self::Applied { revision }
+            | Self::Noop { revision }
+            | Self::Rejected { revision, .. }
+            | Self::Conflict { revision, .. } => Some(*revision),
+            Self::Failed { .. }
+            | Self::NativeDispatchFailed { .. }
+            | Self::NotDispatched { .. }
+            | Self::Uncertain { .. } => None,
+        }
+    }
+}
+
+fn completion_revision_is_valid(
+    completion: &MutationCommandResult,
+    base_revision: GraphRevision,
+) -> bool {
+    match completion {
+        MutationCommandResult::Applied { revision } => {
+            base_revision.checked_add(1) == Some(*revision)
+        }
+        MutationCommandResult::Noop { revision }
+        | MutationCommandResult::Rejected { revision, .. } => *revision == base_revision,
+        MutationCommandResult::Conflict { revision, .. } => *revision > base_revision,
+        MutationCommandResult::Failed { .. }
+        | MutationCommandResult::NativeDispatchFailed { .. }
+        | MutationCommandResult::NotDispatched { .. }
+        | MutationCommandResult::Uncertain { .. } => true,
     }
 }
 
@@ -532,26 +566,46 @@ impl<I: Clone> MutationReconciler<I> {
         attempt: MutationAttemptId,
         completion: MutationCommandResult,
     ) -> Result<MutationTransition, MutationCompletionError> {
-        let state = std::mem::replace(&mut self.state, State::Idle);
-        let State::Pending {
-            attempt: active,
-            intent,
-            base_revision,
-            observation,
-        } = state
-        else {
-            self.state = state;
-            return Err(MutationCompletionError::NotPending { attempt });
+        let (active, base_revision) = match &self.state {
+            State::Pending {
+                attempt,
+                base_revision,
+                ..
+            }
+            | State::Uncertain {
+                attempt,
+                base_revision,
+                ..
+            } => (*attempt, *base_revision),
+            _ => return Err(MutationCompletionError::NotPending { attempt }),
         };
         if active != attempt {
-            self.state = State::Pending {
-                attempt: active,
-                intent,
-                base_revision,
-                observation,
-            };
             return Err(MutationCompletionError::ForeignAttempt { attempt, active });
         }
+        if let Some(received_revision) = completion.revision()
+            && !completion_revision_is_valid(&completion, base_revision)
+        {
+            return Err(MutationCompletionError::InvalidRevision {
+                attempt,
+                base_revision,
+                received_revision,
+            });
+        }
+
+        let state = std::mem::replace(&mut self.state, State::Idle);
+        let (intent, observation, was_uncertain) = match state {
+            State::Pending {
+                intent,
+                observation,
+                ..
+            } => (intent, observation, false),
+            State::Uncertain {
+                intent,
+                observation,
+                ..
+            } => (intent, observation, true),
+            _ => unreachable!("mutation completion preflight accepted only active states"),
+        };
 
         let mut transition = MutationTransition {
             completion_recorded: true,
@@ -571,7 +625,7 @@ impl<I: Clone> MutationReconciler<I> {
                         State::Idle
                     }
                     Some((observed_revision, false)) => State::Retryable {
-                        attempt: active,
+                        attempt,
                         intent,
                         minimum_revision: revision,
                         observation,
@@ -581,7 +635,7 @@ impl<I: Clone> MutationReconciler<I> {
                         ),
                     },
                     None => State::AwaitingSnapshot {
-                        attempt: active,
+                        attempt,
                         intent,
                         minimum_revision: revision,
                     },
@@ -591,7 +645,7 @@ impl<I: Clone> MutationReconciler<I> {
                 revision,
                 diagnostic,
             } => retryable_or_satisfied(
-                active,
+                attempt,
                 intent,
                 revision,
                 observation,
@@ -603,7 +657,7 @@ impl<I: Clone> MutationReconciler<I> {
                 revision,
                 diagnostic,
             } => retryable_or_satisfied(
-                active,
+                attempt,
                 intent,
                 revision,
                 observation,
@@ -612,7 +666,7 @@ impl<I: Clone> MutationReconciler<I> {
                 &mut transition,
             ),
             MutationCommandResult::Failed { diagnostic } => retryable_or_satisfied(
-                active,
+                attempt,
                 intent,
                 base_revision,
                 observation,
@@ -621,7 +675,7 @@ impl<I: Clone> MutationReconciler<I> {
                 &mut transition,
             ),
             MutationCommandResult::NativeDispatchFailed { diagnostic } => retryable_or_satisfied(
-                active,
+                attempt,
                 intent,
                 base_revision,
                 observation,
@@ -630,7 +684,7 @@ impl<I: Clone> MutationReconciler<I> {
                 &mut transition,
             ),
             MutationCommandResult::NotDispatched { diagnostic } => retryable_or_satisfied(
-                active,
+                attempt,
                 intent,
                 base_revision,
                 observation,
@@ -639,7 +693,15 @@ impl<I: Clone> MutationReconciler<I> {
                 &mut transition,
             ),
             MutationCommandResult::Uncertain { diagnostic } => {
-                if observation
+                if was_uncertain {
+                    State::Uncertain {
+                        attempt,
+                        intent,
+                        base_revision,
+                        observation,
+                        diagnostic,
+                    }
+                } else if observation
                     .as_ref()
                     .is_some_and(|value| value.revision > base_revision && value.satisfied)
                 {
@@ -647,7 +709,7 @@ impl<I: Clone> MutationReconciler<I> {
                     State::Idle
                 } else {
                     State::Uncertain {
-                        attempt: active,
+                        attempt,
                         intent,
                         base_revision,
                         observation,
@@ -879,6 +941,11 @@ pub enum MutationCompletionError {
         attempt: MutationAttemptId,
         active: MutationAttemptId,
     },
+    InvalidRevision {
+        attempt: MutationAttemptId,
+        base_revision: GraphRevision,
+        received_revision: GraphRevision,
+    },
 }
 
 #[cfg(test)]
@@ -887,6 +954,91 @@ mod tests {
 
     fn applied(revision: GraphRevision) -> MutationCommandResult {
         MutationCommandResult::Applied { revision }
+    }
+
+    #[test]
+    fn revision_bearing_completion_cannot_predate_its_admitted_base() {
+        let completions = [
+            MutationCommandResult::Applied { revision: 9 },
+            MutationCommandResult::Noop { revision: 9 },
+            MutationCommandResult::Rejected {
+                revision: 9,
+                diagnostic: "rejected".to_owned(),
+            },
+            MutationCommandResult::Conflict {
+                revision: 9,
+                diagnostic: "conflict".to_owned(),
+            },
+        ];
+
+        for completion in completions {
+            let mut reducer = MutationReconciler::default();
+            let attempt = reducer.begin("add-port", 10).expect("begin");
+            reducer.observe(10, |_| true);
+            let before = reducer.state.clone();
+
+            assert_eq!(
+                reducer.complete(attempt, completion),
+                Err(MutationCompletionError::InvalidRevision {
+                    attempt,
+                    base_revision: 10,
+                    received_revision: 9,
+                })
+            );
+            assert_eq!(reducer.state, before);
+            assert_eq!(reducer.phase(), MutationPhase::Pending);
+            assert_eq!(reducer.active_attempt(), Some(attempt));
+            assert_eq!(reducer.active_intent(), Some(&"add-port"));
+        }
+    }
+
+    #[test]
+    fn completion_revision_rules_match_runtime_execution_kinds() {
+        let cases = [
+            (MutationCommandResult::Applied { revision: 10 }, false),
+            (MutationCommandResult::Applied { revision: 11 }, true),
+            (MutationCommandResult::Noop { revision: 10 }, true),
+            (MutationCommandResult::Noop { revision: 11 }, false),
+            (
+                MutationCommandResult::Rejected {
+                    revision: 10,
+                    diagnostic: "rejected".to_owned(),
+                },
+                true,
+            ),
+            (
+                MutationCommandResult::Rejected {
+                    revision: 11,
+                    diagnostic: "rejected".to_owned(),
+                },
+                false,
+            ),
+            (
+                MutationCommandResult::Conflict {
+                    revision: 10,
+                    diagnostic: "conflict".to_owned(),
+                },
+                false,
+            ),
+            (
+                MutationCommandResult::Conflict {
+                    revision: 11,
+                    diagnostic: "conflict".to_owned(),
+                },
+                true,
+            ),
+        ];
+
+        for (completion, valid) in cases {
+            let mut reducer = MutationReconciler::default();
+            let attempt = reducer.begin("edit", 10).expect("begin");
+            let description = format!("{completion:?}");
+            let result = reducer.complete(attempt, completion);
+            assert_eq!(result.is_ok(), valid, "completion={description}");
+            if !valid {
+                assert_eq!(reducer.phase(), MutationPhase::Pending);
+            }
+        }
     }
 
     #[test]
@@ -1052,6 +1204,53 @@ mod tests {
     }
 
     #[test]
+    fn late_noop_at_the_base_revision_resolves_uncertainty_only_with_definitive_receipt() {
+        for satisfied in [true, false] {
+            let mut reducer = MutationReconciler::default();
+            let attempt = reducer.begin("already-applied", 5).expect("begin");
+            reducer
+                .complete(
+                    attempt,
+                    MutationCommandResult::Uncertain {
+                        diagnostic: "notification lost".to_owned(),
+                    },
+                )
+                .expect("uncertain");
+
+            let transition = reducer
+                .complete(attempt, MutationCommandResult::Noop { revision: 5 })
+                .expect("late noop");
+            if satisfied {
+                assert!(!transition.became_satisfied());
+                assert!(reducer.observe(5, |_| true).became_satisfied());
+                assert_eq!(reducer.phase(), MutationPhase::Idle);
+            } else {
+                assert!(!transition.became_satisfied());
+                assert_eq!(reducer.phase(), MutationPhase::AwaitingSnapshot);
+                assert!(reducer.observe(5, |_| false).state_changed());
+                assert_eq!(reducer.phase(), MutationPhase::Retryable);
+            }
+        }
+    }
+
+    #[test]
+    fn equal_base_observation_cannot_resolve_uncertainty_without_a_receipt() {
+        let mut reducer = MutationReconciler::default();
+        let attempt = reducer.begin("already-applied", 5).expect("begin");
+        reducer
+            .complete(
+                attempt,
+                MutationCommandResult::Uncertain {
+                    diagnostic: "notification lost".to_owned(),
+                },
+            )
+            .expect("uncertain");
+
+        assert!(!reducer.observe(5, |_| true).became_satisfied());
+        assert_eq!(reducer.phase(), MutationPhase::Uncertain);
+    }
+
+    #[test]
     fn noop_at_the_base_revision_is_order_independent() {
         for snapshot_first in [true, false] {
             let mut reducer = MutationReconciler::default();
@@ -1088,7 +1287,7 @@ mod tests {
         );
         assert!(
             reducer
-                .complete(attempt, applied(12))
+                .complete(attempt, applied(11))
                 .unwrap()
                 .became_satisfied()
         );
@@ -1179,13 +1378,14 @@ mod tests {
 
     #[test]
     fn rejected_and_conflict_completions_require_their_authoritative_revision() {
-        for (completion, reason) in [
+        for (completion, reason, satisfying_revision) in [
             (
                 MutationCommandResult::Rejected {
-                    revision: 6,
+                    revision: 4,
                     diagnostic: "rejected".to_owned(),
                 },
                 MutationRetryReason::RuntimeRejected,
+                5,
             ),
             (
                 MutationCommandResult::Conflict {
@@ -1193,6 +1393,7 @@ mod tests {
                     diagnostic: "conflict".to_owned(),
                 },
                 MutationRetryReason::RuntimeConflict,
+                6,
             ),
         ] {
             let mut reducer = MutationReconciler::default();
@@ -1203,13 +1404,10 @@ mod tests {
             assert_eq!(reducer.phase(), MutationPhase::Retryable);
             assert_eq!(reducer.retry_reason(), Some(reason));
             assert!(
-                !reducer
-                    .observe(5, |_| panic!(
-                        "pre-completion snapshot must not settle the intent"
-                    ))
-                    .state_changed()
+                reducer
+                    .observe(satisfying_revision, |_| true)
+                    .became_satisfied()
             );
-            assert!(reducer.observe(6, |_| true).became_satisfied());
             assert_eq!(reducer.phase(), MutationPhase::Idle);
         }
     }

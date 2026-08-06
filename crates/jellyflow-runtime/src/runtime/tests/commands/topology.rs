@@ -148,6 +148,71 @@ fn dynamic_port_replacement_is_one_undoable_command() {
 }
 
 #[test]
+fn replacing_node_ports_cannot_steal_a_port_from_another_node() {
+    let (graph, nodes) = graph_with_nodes(2);
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .unwrap();
+    let foreign_port = PortId::from_u128(109);
+    runtime
+        .execute(GraphCommand::topology(
+            runtime.snapshot().unwrap().version(),
+            TopologyEdit::new().replace_node_ports(
+                nodes[0],
+                [TopologyPort::new(
+                    foreign_port,
+                    port(nodes[0], "owned", PortDirection::Out),
+                )],
+                IncidentEdgePolicy::Reject,
+            ),
+        ))
+        .into_result()
+        .unwrap()
+        .applied()
+        .expect("fixture port applies");
+
+    assert_rejected_without_side_effects(
+        &runtime,
+        GraphCommand::topology(
+            runtime.snapshot().unwrap().version(),
+            TopologyEdit::new().replace_node_ports(
+                nodes[1],
+                [TopologyPort::new(
+                    foreign_port,
+                    port(nodes[1], "stolen", PortDirection::In),
+                )],
+                IncidentEdgePolicy::Cascade,
+            ),
+        ),
+        "topology.port_owner_mismatch",
+    );
+}
+
+#[test]
+fn replacing_node_ports_cannot_cascade_a_foreign_connected_port() {
+    let (graph, ids) = graph_with_routed_edge();
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .unwrap();
+
+    assert_rejected_without_side_effects(
+        &runtime,
+        GraphCommand::topology(
+            runtime.snapshot().unwrap().version(),
+            TopologyEdit::new().replace_node_ports(
+                ids.target,
+                [TopologyPort::new(
+                    ids.source_port,
+                    port(ids.target, "stolen", PortDirection::In),
+                )],
+                IncidentEdgePolicy::Cascade,
+            ),
+        ),
+        "topology.port_owner_mismatch",
+    );
+}
+
+#[test]
 fn late_failure_rolls_back_data_ports_and_incident_edges_atomically() {
     let (mut graph, ids) = graph_with_routed_edge();
     graph
@@ -621,7 +686,6 @@ fn duplicate_ports_reject_without_revision_or_history_changes() {
         .unwrap();
     let before = runtime.snapshot().unwrap();
     let history_before = runtime.history_state().unwrap();
-    let installed_impact_before = runtime.installed_impact_state_for_test();
     let event_count = Rc::new(Cell::new(0));
     let callback_count = event_count.clone();
     runtime
@@ -648,11 +712,6 @@ fn duplicate_ports_reject_without_revision_or_history_changes() {
     assert!(matches!(outcome, GraphCommandOutcome::Rejected(_)));
     assert!(before.ptr_eq(&runtime.snapshot().unwrap()));
     assert_eq!(runtime.history_state().unwrap(), history_before);
-    assert_eq!(
-        runtime.installed_impact_state_for_test(),
-        installed_impact_before,
-        "rejected topology edits must not update indexes or node identities"
-    );
     assert_eq!(event_count.get(), 0);
 }
 

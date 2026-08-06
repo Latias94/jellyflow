@@ -4,9 +4,10 @@ use jellyflow_core::CanvasSize;
 
 use crate::dugong::DugongLayoutEngine;
 use crate::engine::{
-    DUGONG_LAYOUT_ENGINE_ID, LayoutEngine, LayoutEngineRegistry, LayoutEngineRequest, LayoutError,
-    LayoutOptions, LayoutRequest, LayoutSpacing, MIND_MAP_FREEFORM_LAYOUT_ENGINE_ID,
-    MIND_MAP_RADIAL_LAYOUT_ENGINE_ID, TIDY_TREE_LAYOUT_ENGINE_ID,
+    DUGONG_LAYOUT_ENGINE_ID, LayoutEngine, LayoutEngineDescriptor, LayoutEngineRegistry,
+    LayoutEngineRequest, LayoutError, LayoutOptions, LayoutRequest, LayoutSpacing,
+    MIND_MAP_FREEFORM_LAYOUT_ENGINE_ID, MIND_MAP_RADIAL_LAYOUT_ENGINE_ID,
+    TIDY_TREE_LAYOUT_ENGINE_ID,
 };
 use crate::family::{
     LAYERED_DAG_LAYOUT_FAMILY_ID, LayoutEngineCapability, LayoutEngineMetadata,
@@ -189,13 +190,8 @@ pub(crate) fn builtin_layout_specs() -> &'static [BuiltinLayoutSpec] {
 fn try_builtin_layout_registry() -> Result<LayoutEngineRegistry, LayoutError> {
     let mut registry = LayoutEngineRegistry::new();
 
-    for family in builtin_family_specs() {
-        registry.insert_family(family.metadata())?;
-    }
-
     for spec in builtin_layout_specs() {
-        registry.insert_shared(spec.engine())?;
-        registry.insert_metadata(spec.metadata())?;
+        registry.register(spec.descriptor())?;
     }
 
     Ok(registry)
@@ -262,49 +258,14 @@ fn mind_map_freeform_engine() -> Arc<dyn LayoutEngine> {
 }
 
 impl BuiltinLayoutFamilySpec {
-    #[cfg(test)]
-    pub(crate) fn id(&self) -> &'static str {
-        self.id
-    }
-
-    #[cfg(test)]
-    pub(crate) fn name(&self) -> &'static str {
-        self.name
-    }
-
     fn metadata(&self) -> LayoutFamilyMetadata {
         LayoutFamilyMetadata::new(self.id, self.name)
     }
 }
 
 impl BuiltinLayoutSpec {
-    #[cfg(test)]
-    pub(crate) fn preset(&self) -> BuiltinLayoutPreset {
-        self.preset
-    }
-
-    #[cfg(test)]
-    pub(crate) fn engine_id(&self) -> &'static str {
-        self.engine_id
-    }
-
     pub(crate) fn family_id(&self) -> &'static str {
         self.family_spec().id
-    }
-
-    #[cfg(test)]
-    pub(crate) fn engine_name(&self) -> &'static str {
-        self.engine_name
-    }
-
-    #[cfg(test)]
-    pub(crate) fn capabilities(&self) -> &'static [LayoutEngineCapability] {
-        self.capabilities
-    }
-
-    #[cfg(test)]
-    pub(crate) fn options(&self) -> LayoutOptions {
-        self.options
     }
 
     fn engine(&self) -> Arc<dyn LayoutEngine> {
@@ -321,6 +282,14 @@ impl BuiltinLayoutSpec {
     fn metadata(&self) -> LayoutEngineMetadata {
         LayoutEngineMetadata::new(self.engine_id, self.family_id(), self.engine_name)
             .with_capabilities(self.capabilities.iter().copied())
+    }
+
+    fn descriptor(&self) -> LayoutEngineDescriptor {
+        LayoutEngineDescriptor::from_shared(
+            self.family_spec().metadata(),
+            self.metadata(),
+            self.engine(),
+        )
     }
 
     fn family_spec(&self) -> BuiltinLayoutFamilySpec {

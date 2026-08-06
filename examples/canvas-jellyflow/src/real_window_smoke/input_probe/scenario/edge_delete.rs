@@ -82,7 +82,6 @@ impl RealWindowSmokeProbe {
                     .ok_or("input_edge_plan_missing")?
                     .edge;
                 if !graph_contains_edge(view, edge)? && interaction_is_settled(surface, cx) {
-                    self.interaction_mut()?.keyboard_edge_deleted = true;
                     self.transition(ProbePhase::ConnectPress);
                     Ok(None)
                 } else {

@@ -6,9 +6,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::rc::Rc;
 
 use jellyflow_core::{Symbol, SymbolId, TypeDesc};
-use jellyflow_runtime::commands::{
-    CommandExecutionCompletion, CommandExecutionKind, GraphCommand, SymbolEdit,
-};
+use jellyflow_runtime::commands::{CommandExecutionCompletion, GraphCommand, SymbolEdit};
 use jellyflow_runtime::graph::{
     FactChange, GraphRuntime, GraphRuntimeEvent, GraphSnapshot, GraphVersion, RuntimeFactKey,
     RuntimePatchKind, RuntimeProvenance,
@@ -685,41 +683,43 @@ impl BlackboardAuthoring {
                         symbol: submission.symbol,
                     });
                 }
-                match completion.kind() {
-                    CommandExecutionKind::Applied => {
-                        let revision = completion.applied_revision().ok_or(
-                            BlackboardError::IncompleteCompletion {
-                                symbol: submission.symbol,
-                            },
-                        )?;
+                let mutation_result = MutationCommandResult::from_runtime(&completion);
+                match &mutation_result {
+                    MutationCommandResult::Applied { revision } => {
                         let mut candidate = draft.field.clone();
-                        match candidate.record_self_receipt(submission.field_attempt, revision) {
+                        match candidate.record_self_receipt(submission.field_attempt, *revision) {
                             FieldReceiptDecision::Recorded { .. }
                             | FieldReceiptDecision::Acknowledged { .. }
-                            | FieldReceiptDecision::AlreadyRecorded { .. } => {
+                            | FieldReceiptDecision::AlreadyRecorded { .. }
+                            | FieldReceiptDecision::AuthoritativeMismatch { .. }
+                            | FieldReceiptDecision::Superseded { .. } => {
                                 draft.field = candidate;
                             }
                             FieldReceiptDecision::UnknownAttempt { .. }
-                            | FieldReceiptDecision::InvalidCommittedRevision { .. }
-                            | FieldReceiptDecision::Superseded { .. } => {
+                            | FieldReceiptDecision::InvalidCommittedRevision { .. } => {
                                 return Err(BlackboardError::FieldCorrelation {
                                     symbol: submission.symbol,
                                 });
                             }
                         }
                     }
-                    CommandExecutionKind::Noop
-                    | CommandExecutionKind::Rejected
-                    | CommandExecutionKind::Conflict
-                    | CommandExecutionKind::Failed => {
+                    MutationCommandResult::Noop { .. }
+                    | MutationCommandResult::Rejected { .. }
+                    | MutationCommandResult::Conflict { .. }
+                    | MutationCommandResult::Failed { .. } => {
                         reject_field_submission(
                             &mut draft.field,
                             submission.symbol,
                             submission.field_attempt,
                         )?;
                     }
+                    MutationCommandResult::NativeDispatchFailed { .. }
+                    | MutationCommandResult::NotDispatched { .. }
+                    | MutationCommandResult::Uncertain { .. } => {
+                        unreachable!("runtime completion projection cannot contain native evidence")
+                    }
                 }
-                MutationCommandResult::from_runtime(&completion)
+                mutation_result
             }
             BlackboardDispatchOutcome::NotDispatched { diagnostic } => {
                 reject_field_submission(
@@ -927,6 +927,8 @@ fn validate_field_reconciliation(
         | FieldReconcileDecision::RemoteApplied { .. }
         | FieldReconcileDecision::BaseAdvanced { .. }
         | FieldReconcileDecision::Conflict { .. }
+        | FieldReconcileDecision::AuthoritativeMismatch { .. }
+        | FieldReconcileDecision::Superseded { .. }
         | FieldReconcileDecision::SelfAcknowledged { .. } => Ok(()),
     }
 }
@@ -1084,9 +1086,6 @@ pub enum BlackboardError {
     ForeignCompletion {
         symbol: SymbolId,
     },
-    IncompleteCompletion {
-        symbol: SymbolId,
-    },
     FieldCorrelation {
         symbol: SymbolId,
     },
@@ -1149,12 +1148,6 @@ impl fmt::Display for BlackboardError {
                 write!(
                     formatter,
                     "symbol completion belongs to another command: {symbol:?}"
-                )
-            }
-            Self::IncompleteCompletion { symbol } => {
-                write!(
-                    formatter,
-                    "symbol completion omitted applied revision: {symbol:?}"
                 )
             }
             Self::FieldCorrelation { symbol } => {
