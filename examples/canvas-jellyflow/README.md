@@ -46,7 +46,7 @@ cargo run --manifest-path examples/canvas-jellyflow/Cargo.toml \
   -p open-gpui-canvas-jellyflow --locked -- --workflow
 ```
 
-Run manual compact/zoom-1 single-process spot checks on a machine with a native window server:
+Run the two native-window readiness checks on a machine with a window server:
 
 ```sh
 cargo run --manifest-path examples/canvas-jellyflow/Cargo.toml \
@@ -57,40 +57,24 @@ cargo run --manifest-path examples/canvas-jellyflow/Cargo.toml \
   --locked --features real-window-smoke -- --workflow
 ```
 
-Build once and run the formal five-process matrix:
+CI builds the smoke binary once and runs the same two commands directly. Each process opens the
+production Shader or Workflow window, waits for a positive native surface, a live view, mounted
+nodes, and published node/port/route geometry, then exits. It reports failures on stderr and uses
+the process exit status as the complete smoke protocol.
 
-```sh
-cargo build --manifest-path examples/canvas-jellyflow/Cargo.toml \
-  -p open-gpui-canvas-jellyflow --bin open-gpui-real-window-smoke \
-  --locked --features real-window-smoke
-python3 tools/run_real_window_smoke_matrix.py \
-  --binary examples/canvas-jellyflow/target/debug/open-gpui-real-window-smoke \
-  --capture-root target/real-window-smoke \
-  --timeout-seconds 60
-```
+Interaction semantics do not belong in this process-level smoke. Drag, reconnect, connection
+search, focus, content-size convergence, semantic zoom, and selection chrome are covered by the
+deterministic runtime and Open GPUI tests, where failures are reproducible and do not depend on
+window-manager bounds, compositor pixels, or synthetic input timing. See the
+[node UI authoring regression contract](../../docs/testing/node-ui-authoring-regression.md).
 
-The matrix drives the production window through the bounded Shader and Workflow interaction set.
-A pass requires retained lifecycle invariants, complete current-graph geometry, non-blank native
-paint, fixed-zoom node and connection auto-pan, focus traversal, edge deletion and reconnect,
-create-from-wire search, fitted selection chrome, and the directed semantic-LOD continuity probe.
-The dedicated smoke process emits one minimal `JELLYFLOW_REAL_WINDOW_SMOKE_RECEIPT` JSON receipt
-and exits automatically; any failed invariant, early close, or timeout exits non-zero. The Rust
-window harness owns geometry, interaction, frame-continuity, and pixel assertions. Python only
-orchestrates the five processes, checks receipt transport and artifact existence, and writes an
-atomic matrix result. See the
-[node UI authoring regression contract](../../docs/testing/node-ui-authoring-regression.md) for the
-authoritative scenarios, window and zoom matrix, screenshot checkpoints, and required commands.
-The non-default `real-window-smoke` feature and dedicated binary isolate framebuffer readback and
-test support from normal product builds.
-
-Run the focused tests:
+Run the focused product gates:
 
 ```sh
 cargo nextest run --manifest-path examples/canvas-jellyflow/Cargo.toml \
-  -p open-gpui-canvas-jellyflow --locked --no-fail-fast
-cargo nextest run --manifest-path examples/canvas-jellyflow/Cargo.toml \
-  -p open-gpui-canvas-jellyflow --bin open-gpui-real-window-smoke \
-  --features real-window-smoke --locked --no-fail-fast
+  --workspace --all-features --locked --no-fail-fast
+cargo clippy --manifest-path examples/canvas-jellyflow/Cargo.toml \
+  --workspace --all-targets --all-features --locked -- -D warnings
 ```
 
 The hard adapter contracts remain in `jellyflow-open-gpui`. This example owns

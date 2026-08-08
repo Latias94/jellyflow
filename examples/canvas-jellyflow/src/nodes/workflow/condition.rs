@@ -636,9 +636,6 @@ impl Render for WorkflowConditionNode {
                 let _ = select_node.update(cx, |node, cx| node.select_operand(value, cx));
                 window.refresh();
             });
-        #[cfg(feature = "real-window-smoke")]
-        let field = super::smoke_probe::measure_field(node_id, field_enabled, field);
-
         let value = TextInput::new(workflow_condition_value_id(node_id), "Case value")
             .controller(self.case_value_controller.clone())
             .value(self.case_value.clone())
@@ -654,9 +651,6 @@ impl Render for WorkflowConditionNode {
                     window.refresh();
                 });
             });
-        #[cfg(feature = "real-window-smoke")]
-        let value = super::smoke_probe::measure_value(node_id, value);
-
         let add = div()
             .debug_selector(move || workflow_condition_add_selector(node_id))
             .child(
@@ -668,9 +662,6 @@ impl Render for WorkflowConditionNode {
                         window.refresh();
                     }),
             );
-        #[cfg(feature = "real-window-smoke")]
-        let add = super::smoke_probe::measure_add(node_id, add_enabled, add);
-
         let composer = div()
             .px(px(CONDITION_BODY_HORIZONTAL_PADDING))
             .flex()
@@ -813,13 +804,6 @@ impl Render for WorkflowConditionNode {
                 .child(actions)
                 .child(value_marker)
                 .child(route_marker);
-            #[cfg(feature = "real-window-smoke")]
-            let row = if index == 0 {
-                super::smoke_probe::measure_first_case(node_id, row).into_any_element()
-            } else {
-                row.into_any_element()
-            };
-            #[cfg(not(feature = "real-window-smoke"))]
             let row = row.into_any_element();
             rows = rows.child(row);
         }
@@ -903,9 +887,6 @@ impl Render for WorkflowConditionNode {
             .overflow_y_scroll()
             .scrollbar_width(px(7.0))
             .child(rows);
-        #[cfg(feature = "real-window-smoke")]
-        let rows = super::smoke_probe::measure_scroll(node_id, rows);
-
         let retry_allowed = binding_valid
             && matches!(
                 settlement,
@@ -1009,8 +990,6 @@ impl Render for WorkflowConditionNode {
             data.inputs,
             theme,
         ));
-        #[cfg(feature = "real-window-smoke")]
-        let header = super::smoke_probe::measure_header(node_id, header);
         let content = div()
             .debug_selector(move || node_selector.clone())
             .relative()
@@ -1023,8 +1002,6 @@ impl Render for WorkflowConditionNode {
             .child(header)
             .child(controls)
             .children(diagnostic);
-        #[cfg(feature = "real-window-smoke")]
-        let content = super::smoke_probe::measure_root(node_id, content);
         self.binding.read(cx).measure_content(content)
     }
 }

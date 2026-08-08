@@ -214,25 +214,25 @@ unknown node kinds remain round-trippable.
 ## Development
 
 ```sh
-cargo fmt --all -- --check
-cargo check --workspace --locked
+cargo fmt --all --check
 cargo nextest run --workspace --locked --cargo-quiet
 cargo test --workspace --doc --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 python3 tools/check_no_fret_dependencies.py
 python3 -m unittest discover -s tools/tests -p "test_*.py"
-python3 tools/check_external_consumer_smoke.py
 git diff --check
 ```
 
 Native adapter gates:
 
 ```sh
-cargo nextest run -p jellyflow-open-gpui --locked
-cargo nextest run -p jellyflow-egui --locked
-
+cargo fmt --manifest-path examples/canvas-jellyflow/Cargo.toml --all -- --check
 cargo nextest run --manifest-path examples/canvas-jellyflow/Cargo.toml \
-  -p open-gpui-canvas-jellyflow --locked --no-fail-fast
+  --workspace --all-features --locked --no-fail-fast
+cargo test --manifest-path examples/canvas-jellyflow/Cargo.toml \
+  --workspace --all-features --doc --locked
+cargo clippy --manifest-path examples/canvas-jellyflow/Cargo.toml \
+  --workspace --all-targets --all-features --locked -- -D warnings
 ```
 
 MSRV is Rust 1.95. The core, layout, and runtime crates must remain free of UI framework,

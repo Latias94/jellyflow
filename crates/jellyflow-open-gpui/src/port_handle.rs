@@ -26,8 +26,6 @@ use crate::accessibility::{
 use crate::activity::OpenGpuiNodeActivityRegistry;
 use crate::binding::OpenGpuiMountCapability;
 use crate::chrome::OpenGpuiPortMarker;
-#[cfg(feature = "test-support")]
-use crate::host::test_support::OpenGpuiSmokePresentedFrameDraft;
 use crate::interaction::{
     OpenGpuiNativeInteractionHandle, OpenGpuiPortActivationEvent, OpenGpuiPortActivationSource,
     OpenGpuiPortDragCancelReason, OpenGpuiPortDragOwner, OpenGpuiPortDragPhase, OpenGpuiPortEvent,
@@ -1062,8 +1060,6 @@ pub(crate) struct OpenGpuiPendingMeasurements {
     presentation_offsets: BTreeMap<NodeId, CanvasPoint>,
     scene_origin: Cell<Option<ViewPoint>>,
     environment_epoch: u64,
-    #[cfg(feature = "test-support")]
-    smoke_presented_frame: OpenGpuiSmokePresentedFrameDraft,
     errors: RefCell<Vec<OpenGpuiMeasurementError>>,
     error_queue_busy: Cell<bool>,
 }
@@ -1117,8 +1113,6 @@ impl OpenGpuiPendingMeasurements {
             presentation_offsets,
             scene_origin: Cell::new(None),
             environment_epoch,
-            #[cfg(feature = "test-support")]
-            smoke_presented_frame: OpenGpuiSmokePresentedFrameDraft::default(),
             errors: RefCell::new(Vec::new()),
             error_queue_busy: Cell::new(false),
         }
@@ -1134,11 +1128,6 @@ impl OpenGpuiPendingMeasurements {
 
     pub(crate) fn presentation_offset(&self, node: NodeId) -> Option<CanvasPoint> {
         self.presentation_offsets.get(&node).copied()
-    }
-
-    #[cfg(feature = "test-support")]
-    pub(crate) fn smoke_presented_frame(&self) -> OpenGpuiSmokePresentedFrameDraft {
-        self.smoke_presented_frame.clone()
     }
 
     pub(crate) fn record_root(
@@ -1201,15 +1190,6 @@ impl OpenGpuiPendingMeasurements {
                 port,
             });
         }
-        #[cfg(feature = "test-support")]
-        self.smoke_presented_frame.record_port_geometry(
-            instance.node(),
-            port,
-            measurement.visual_bounds,
-            measurement.hit_bounds,
-            measurement.interaction_bounds,
-            measurement.route_anchor,
-        );
         match node.ports.entry(port) {
             Entry::Vacant(entry) => {
                 entry.insert(RecordedPortMeasurement {

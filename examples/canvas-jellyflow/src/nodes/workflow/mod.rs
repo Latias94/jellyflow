@@ -1,7 +1,5 @@
 mod condition;
 mod llm;
-#[cfg(feature = "real-window-smoke")]
-mod smoke_probe;
 
 use jellyflow_core::types::TypeDesc;
 use jellyflow_core::{
@@ -52,9 +50,6 @@ pub use llm::{
     workflow_prompt_apply_selector, workflow_prompt_conflict_selector,
     workflow_prompt_reapply_selector, workflow_prompt_selector,
 };
-#[cfg(feature = "real-window-smoke")]
-pub use smoke_probe::{WorkflowConditionSmokeLayout, workflow_condition_smoke_layout};
-
 const WORKFLOW_GRAPH_ID: u128 = 0xd1fa_0000;
 const WORKFLOW_LLM_INPUT_ID: u128 = 0xd1fa_0101;
 const WORKFLOW_LLM_OUTPUT_ID: u128 = 0xd1fa_0102;

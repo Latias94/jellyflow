@@ -52,14 +52,6 @@ pub(crate) enum NativeDemo {
 }
 
 impl NativeDemo {
-    #[cfg(feature = "real-window-smoke")]
-    pub(crate) const fn label(self) -> &'static str {
-        match self {
-            Self::Shader => "shader",
-            Self::Workflow => "workflow",
-        }
-    }
-
     pub(crate) fn parse<I, S>(arguments: I) -> Result<Self, String>
     where
         I: IntoIterator<Item = S>,

@@ -17,8 +17,6 @@ mod retained_mount_store;
 mod retained_node_owner;
 mod scene_gesture;
 mod scene_render;
-#[cfg(feature = "test-support")]
-pub(crate) mod test_support;
 
 pub use self::connection::{OpenGpuiConnectionSearchError, OpenGpuiConnectionSearchSubmission};
 pub use self::diagnostics::{
@@ -26,12 +24,6 @@ pub use self::diagnostics::{
     OpenGpuiSceneHostResourceSnapshot,
 };
 pub use self::lifecycle::OpenGpuiSceneHostCloseError;
-#[cfg(feature = "test-support")]
-pub use self::test_support::{
-    OpenGpuiSmokeNodeBounds, OpenGpuiSmokePortGeometry, OpenGpuiSmokePresentedScene,
-    OpenGpuiSmokePreviewRoute, OpenGpuiSmokePreviewTarget, OpenGpuiSmokeRoute,
-    resolve_smoke_reconnect_hit_center,
-};
 
 use self::content_size_submission_owner::ContentSizeSubmissionOwner;
 use self::edge_layer::{OpenGpuiEdgePathCache, OpenGpuiVisibleRouteCache};
@@ -68,8 +60,6 @@ use open_gpui::{
 
 use self::lifecycle::HostLifecycleBridge;
 use self::scene_render::OpenGpuiPreparedEdgeCache;
-#[cfg(feature = "test-support")]
-use self::test_support::OpenGpuiSmokePresentedSceneOwner;
 
 use crate::chrome::OpenGpuiEdgePainterRegistry;
 use crate::command_journal::{OpenGpuiCommandJournal, resolve_command_tickets};
@@ -79,20 +69,6 @@ use crate::panic_sink::OpenGpuiPanicAccumulator;
 use crate::port_handle::OpenGpuiPendingMeasurements;
 use crate::registry::OpenGpuiNodeRegistry;
 use crate::theme::OpenGpuiGraphTheme;
-
-/// Requests a platform-backed redraw for test-support real-window drivers.
-#[cfg(feature = "test-support")]
-#[doc(hidden)]
-pub fn request_native_test_frame(window: &mut Window) {
-    #[cfg(target_os = "macos")]
-    {
-        if let Some(wake) = native_frame_wake::prepare(window) {
-            wake.request();
-        }
-    }
-    #[cfg(not(target_os = "macos"))]
-    window.refresh();
-}
 
 #[cfg(test)]
 use crate::binding::OpenGpuiNodeBinding;
@@ -235,8 +211,6 @@ pub struct OpenGpuiSceneHost {
     last_frame_materialization_overflow: Option<FrameMaterializationOverflow>,
     unobserved_frame_materialization_overflow: Option<FrameMaterializationOverflow>,
     last_edge_layer_overflow: OpenGpuiEdgeLayerOverflow,
-    #[cfg(feature = "test-support")]
-    smoke_presented_scene: OpenGpuiSmokePresentedSceneOwner,
 }
 
 /// One-shot policy for initializing a measured native surface viewport.
@@ -356,8 +330,6 @@ impl OpenGpuiSceneHost {
             last_frame_materialization_overflow: None,
             unobserved_frame_materialization_overflow: None,
             last_edge_layer_overflow: OpenGpuiEdgeLayerOverflow::default(),
-            #[cfg(feature = "test-support")]
-            smoke_presented_scene: OpenGpuiSmokePresentedSceneOwner::default(),
         })
     }
 

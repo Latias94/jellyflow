@@ -17,8 +17,6 @@ use crate::port_handle::{OpenGpuiMeasurementError, OpenGpuiPendingMeasurements};
 
 use super::OpenGpuiSceneHost;
 use super::interaction_session::NodeDragRouteHandoffToken;
-#[cfg(feature = "test-support")]
-use super::test_support::OpenGpuiSmokePresentedFrameDraft;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum LayoutReceiptAction {
@@ -62,8 +60,6 @@ pub(super) struct OpenGpuiFrameTransaction {
     commands: Rc<OpenGpuiCommandJournal>,
     scheduled: Cell<bool>,
     node_drag_route_handoff: Cell<Option<NodeDragRouteHandoffToken>>,
-    #[cfg(feature = "test-support")]
-    smoke_presented_frame: OpenGpuiSmokePresentedFrameDraft,
     #[cfg(test)]
     fault: Cell<Option<OpenGpuiFrameTransactionFault>>,
 }
@@ -80,8 +76,6 @@ impl OpenGpuiFrameTransaction {
         commands: Rc<OpenGpuiCommandJournal>,
         command_batch: Option<OpenGpuiCommandBatch>,
     ) -> Self {
-        #[cfg(feature = "test-support")]
-        let smoke_presented_frame = measurements.smoke_presented_frame();
         Self {
             state: RefCell::new(Some(OpenGpuiFrameTransactionState {
                 collector,
@@ -91,8 +85,6 @@ impl OpenGpuiFrameTransaction {
             commands,
             scheduled: Cell::new(false),
             node_drag_route_handoff: Cell::new(None),
-            #[cfg(feature = "test-support")]
-            smoke_presented_frame,
             #[cfg(test)]
             fault: Cell::new(None),
         }
@@ -116,11 +108,6 @@ impl OpenGpuiFrameTransaction {
 
     pub(super) fn node_drag_route_handoff(&self) -> Option<NodeDragRouteHandoffToken> {
         self.node_drag_route_handoff.get()
-    }
-
-    #[cfg(feature = "test-support")]
-    pub(super) fn smoke_presented_frame(&self) -> OpenGpuiSmokePresentedFrameDraft {
-        self.smoke_presented_frame.clone()
     }
 
     pub(super) fn requires_follow_up_frame(&self) -> bool {

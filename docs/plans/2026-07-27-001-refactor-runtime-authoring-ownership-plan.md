@@ -11,6 +11,12 @@ deepened: 2026-07-27
 
 # Fearless Runtime and Native Authoring Ownership - Plan
 
+> Historical implementation plan. Its five-process real-window matrix, receipt transport, Python
+> process supervisor, and archive-digest recovery requirements were superseded in August 2026
+> after implementation review showed that they duplicated runtime/adapter tests and had become a
+> second test and release engine. Current testing and release contracts live in
+> `docs/testing/node-ui-authoring-regression.md` and `docs/releasing/CRATES_IO.md`.
+
 ## Goal Capsule
 
 | Field | Contract |

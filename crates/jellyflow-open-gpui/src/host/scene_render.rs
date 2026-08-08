@@ -74,8 +74,6 @@ use super::focus_navigation::{OpenGpuiGraphFocusEntry, OpenGpuiGraphFocusTarget}
 use super::frame_feedback::{OpenGpuiFrameTransaction, OpenGpuiFrameTransactionSubmission};
 use super::interaction_session::NodeDragRouteHandoffToken;
 use super::node_lifecycle::suppress_host_panic;
-#[cfg(feature = "test-support")]
-use super::test_support::{OpenGpuiSmokePresentedFrameDraft, OpenGpuiSmokePreviewTarget};
 
 pub(super) const OPEN_GPUI_SELECTION_RECTANGLE_SELECTOR: &str = "jellyflow-selection-rectangle";
 pub(super) const OPEN_GPUI_GRID_SELECTOR: &str = "jellyflow-grid";
@@ -516,11 +514,9 @@ impl OpenGpuiSceneHost {
         &self,
         wires: &OpenGpuiSceneWires,
         transform: ViewportTransform,
-        #[cfg(feature = "test-support")] smoke_presented_frame: OpenGpuiSmokePresentedFrameDraft,
     ) -> AnyElement {
         let committed_marker_count = scene_wire_marker_count(&wires.published);
-        #[cfg(feature = "test-support")]
-        let edge_layer = self.render_edge_path_canvas(
+        self.render_edge_path_canvas(
             wires.geometry.clone(),
             wires.published.clone(),
             0..wires.published.len(),
@@ -528,19 +524,7 @@ impl OpenGpuiSceneHost {
             wires.published_plan_id,
             OpenGpuiEdgePaintPlanSegment::Ordinary,
             committed_marker_count,
-            smoke_presented_frame,
-        );
-        #[cfg(not(feature = "test-support"))]
-        let edge_layer = self.render_edge_path_canvas(
-            wires.geometry.clone(),
-            wires.published.clone(),
-            0..wires.published.len(),
-            transform,
-            wires.published_plan_id,
-            OpenGpuiEdgePaintPlanSegment::Ordinary,
-            committed_marker_count,
-        );
-        edge_layer
+        )
     }
 
     fn render_grid_layer(&self, transform: ViewportTransform) -> AnyElement {
@@ -591,7 +575,6 @@ impl OpenGpuiSceneHost {
         plan_id: u64,
         segment: OpenGpuiEdgePaintPlanSegment,
         reserved_items: usize,
-        #[cfg(feature = "test-support")] smoke_presented_frame: OpenGpuiSmokePresentedFrameDraft,
     ) -> AnyElement {
         let path_cache = self.edge_paths.clone();
         canvas(
@@ -605,7 +588,7 @@ impl OpenGpuiSceneHost {
                     bounds.origin.x.as_f32(),
                     bounds.origin.y.as_f32(),
                 );
-                let plan = path_cache.borrow_mut().resolve_paint_plan_reserving(
+                path_cache.borrow_mut().resolve_paint_plan_reserving(
                     plan_key,
                     reserved_items,
                     |cache, builder| {
@@ -667,28 +650,7 @@ impl OpenGpuiSceneHost {
                         }
                         debug_assert_eq!(remaining_items, 0);
                     },
-                );
-                #[cfg(feature = "test-support")]
-                if plan.is_complete() {
-                    for wire in &published[range.clone()] {
-                        let Some(source) = project_scene_point(
-                            wire.source_endpoint.point(),
-                            transform,
-                            bounds.origin,
-                        ) else {
-                            continue;
-                        };
-                        let Some(target) = project_scene_point(
-                            wire.target_endpoint.point(),
-                            transform,
-                            bounds.origin,
-                        ) else {
-                            continue;
-                        };
-                        smoke_presented_frame.record_authoritative_route(wire.edge, source, target);
-                    }
-                }
-                plan
+                )
             },
             move |_, plan, window, _| {
                 // Open GPUI consumes owned paths; the plan builder bounds this aggregate clone.
@@ -1047,7 +1009,6 @@ impl OpenGpuiSceneHost {
         feedback: Rc<OpenGpuiFrameTransaction>,
         transform: ViewportTransform,
         window: &Window,
-        #[cfg(feature = "test-support")] smoke_presented_frame: &OpenGpuiSmokePresentedFrameDraft,
         focus_entries: &mut Vec<OpenGpuiGraphFocusEntry>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -1148,12 +1109,6 @@ impl OpenGpuiSceneHost {
                 node_state.dragging(),
                 self.graph_theme,
             );
-            #[cfg(feature = "test-support")]
-            smoke_presented_frame.record_node_state(
-                key.node(),
-                node_state.selected(),
-                chrome_color.is_some(),
-            );
             let chrome_corner_radius =
                 node_chrome_corner_radius(presentation, graph_size, self.graph_theme);
             let child = node_semantic_element(
@@ -1208,17 +1163,11 @@ impl OpenGpuiSceneHost {
             let instance = key.clone();
             let source = mounted.graph_measurement_source();
             let measurements = feedback.measurement_writer();
-            #[cfg(feature = "test-support")]
-            let smoke_node_measurement = smoke_presented_frame.clone();
-            #[cfg(feature = "test-support")]
-            let smoke_node = key.node();
             let measured = measured_element(
                 open_gpui_node_measurement_element_id(host_id, key),
                 child,
                 move |_, bounds, _, _, _| {
                     let _ = measurements.record_root(&instance, source, bounds);
-                    #[cfg(feature = "test-support")]
-                    smoke_node_measurement.record_node_bounds(smoke_node, bounds);
                 },
             );
             let mut wrapper = div()
@@ -1255,19 +1204,6 @@ impl OpenGpuiSceneHost {
                     .rounded(px(chrome_corner_radius))
                     .border_1()
                     .border_color(chrome_color);
-                #[cfg(feature = "test-support")]
-                let chrome = {
-                    let smoke_chrome_measurement = smoke_presented_frame.clone();
-                    measured_element(
-                        format!("jellyflow-node-chrome-measurement-{chrome_node:?}"),
-                        chrome,
-                        move |_, bounds, _, _, _| {
-                            smoke_chrome_measurement.record_node_chrome_bounds(chrome_node, bounds);
-                        },
-                    )
-                    .into_any_element()
-                };
-                #[cfg(not(feature = "test-support"))]
                 let chrome = chrome.into_any_element();
                 wrapper = wrapper.child(chrome);
             }
@@ -1298,7 +1234,6 @@ impl OpenGpuiSceneHost {
         &self,
         connection_preview: Option<OpenGpuiConnectionPreviewPlan>,
         transform: ViewportTransform,
-        #[cfg(feature = "test-support")] smoke_presented_frame: OpenGpuiSmokePresentedFrameDraft,
     ) -> AnyElement {
         let mut preview_layer = div().absolute().size_full();
         if let Some(connection_preview) = connection_preview {
@@ -1330,12 +1265,6 @@ impl OpenGpuiSceneHost {
                 })
             });
             let preview_path = connection_preview.path;
-            #[cfg(feature = "test-support")]
-            let smoke_preview_endpoints = preview_path
-                .sample(EdgePathAnchor::Source)
-                .ok()
-                .zip(preview_path.sample(EdgePathAnchor::Target).ok())
-                .map(|(source, target)| (source.point, target.point));
             let marker_diameter = self.graph_theme.metrics.edge_marker_diameter;
             let preview = canvas(
                 move |bounds, _, _| {
@@ -1381,16 +1310,6 @@ impl OpenGpuiSceneHost {
                         ) {
                             markers.push(path);
                         }
-                    }
-                    #[cfg(feature = "test-support")]
-                    if base_path.is_some()
-                        && let Some((source, target)) = smoke_preview_endpoints
-                        && let (Some(source), Some(target)) = (
-                            project_scene_point(source, transform, bounds.origin),
-                            project_scene_point(target, transform, bounds.origin),
-                        )
-                    {
-                        smoke_presented_frame.record_preview_route(source, target);
                     }
                     OpenGpuiPreviewPaintPlan {
                         base_path,
@@ -1646,41 +1565,7 @@ impl OpenGpuiSceneHost {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let host_id = cx.entity_id();
-        #[cfg(feature = "test-support")]
-        let smoke_presentation = self.interaction_owner.presentation();
-        #[cfg(feature = "test-support")]
-        let smoke_presented_frame = feedback.smoke_presented_frame();
-        #[cfg(feature = "test-support")]
-        smoke_presented_frame.begin(
-            _graph_revision,
-            smoke_presentation.phase(),
-            smoke_presentation
-                .node_drag()
-                .map_or(&[] as &[NodeId], |drag| drag.nodes()),
-            transform,
-        );
-        #[cfg(feature = "test-support")]
-        smoke_presented_frame.set_preview_metadata(
-            smoke_presentation.connection().and_then(|connection| {
-                let target = connection
-                    .probe()
-                    .target()
-                    .filter(|_| connection.probe().is_committable())?;
-                Some(OpenGpuiSmokePreviewTarget::new(
-                    target.port(),
-                    transform.screen_point_for_canvas(target.route_anchor())?,
-                ))
-            }),
-            wires
-                .connection_preview
-                .as_ref()
-                .and_then(|preview| preview.suppressed_edge.map(EdgeInstanceKey::edge)),
-        );
         let connection_preview = wires.connection_preview.take();
-        #[cfg(feature = "test-support")]
-        let rendered_edge_layer =
-            self.render_edge_layer(&wires, transform, smoke_presented_frame.clone());
-        #[cfg(not(feature = "test-support"))]
         let rendered_edge_layer = self.render_edge_layer(&wires, transform);
         let edge_layer = div()
             .absolute()
@@ -1688,22 +1573,11 @@ impl OpenGpuiSceneHost {
             .child(self.render_grid_layer(transform))
             .child(rendered_edge_layer)
             .into_any_element();
-        #[cfg(feature = "test-support")]
-        let preview_layer =
-            self.render_preview_layer(connection_preview, transform, smoke_presented_frame.clone());
-        #[cfg(not(feature = "test-support"))]
         let preview_layer = self.render_preview_layer(connection_preview, transform);
         let edge_chrome_layer = self.render_edge_chrome_layer(&wires, transform);
         let mut focus_entries = Vec::new();
-        let node_layer = self.render_node_layer(
-            feedback.clone(),
-            transform,
-            window,
-            #[cfg(feature = "test-support")]
-            &smoke_presented_frame,
-            &mut focus_entries,
-            cx,
-        );
+        let node_layer =
+            self.render_node_layer(feedback.clone(), transform, window, &mut focus_entries, cx);
         let (edge_interaction_layer, edge_interaction_chrome_layer) =
             self.render_interaction_chrome_layer(&wires, transform, &mut focus_entries, window, cx);
         let allow_focus_return =
@@ -1940,30 +1814,12 @@ impl OpenGpuiSceneHost {
                 .size_full(),
             );
         }
-        #[cfg(feature = "test-support")]
-        {
-            let host = cx.weak_entity();
-            let smoke_presented_frame = smoke_presented_frame.clone();
-            window.on_next_frame(move |_, cx| {
-                let Some(host) = host.upgrade() else {
-                    return;
-                };
-                host.update(cx, |host, _| {
-                    host.smoke_presented_scene.present(&smoke_presented_frame);
-                });
-            });
-        }
-
         let host = cx.weak_entity();
-        #[cfg(feature = "test-support")]
-        let smoke_scene_measurement = smoke_presented_frame.clone();
         let scene = measured_element(
             open_gpui_scene_measurement_element_id(host_id, self.view.id()),
             scene,
             move |_, bounds, _, window, cx| {
                 feedback.measurements().record_scene(bounds);
-                #[cfg(feature = "test-support")]
-                smoke_scene_measurement.record_scene_bounds(bounds);
                 let measured_origin = bounds.origin;
                 let measured_size =
                     ViewSize::new(bounds.size.width.as_f32(), bounds.size.height.as_f32());

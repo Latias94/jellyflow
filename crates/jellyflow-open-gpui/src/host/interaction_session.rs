@@ -1093,10 +1093,10 @@ impl OpenGpuiNativeInteractionOwner {
             return Ok(None);
         }
         if let Some(source) = self.session.armed_keyboard_connection_source() {
-            if !self
+            if self
                 .connection
                 .as_ref()
-                .is_some_and(|current| current.owner.port() == source.port())
+                .is_none_or(|current| current.owner.port() != source.port())
             {
                 return Ok(None);
             }

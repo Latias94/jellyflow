@@ -13,9 +13,8 @@ description = "Retained native Open GPUI adapter for Jellyflow node graphs."
 keywords = ["gpui", "graph", "node-graph", "adapter"]
 categories = ["gui", "visualization"]
 
-[features]
-default = []
-test-support = []
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-clippy"))'] }
 
 [dependencies]
 jellyflow-core.workspace = true

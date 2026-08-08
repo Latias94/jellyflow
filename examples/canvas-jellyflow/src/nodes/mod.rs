@@ -111,9 +111,6 @@ pub use workflow::{
     workflow_prompt_accept_remote_selector, workflow_prompt_apply_selector,
     workflow_prompt_conflict_selector, workflow_prompt_reapply_selector, workflow_prompt_selector,
 };
-#[cfg(feature = "real-window-smoke")]
-pub use workflow::{WorkflowConditionSmokeLayout, workflow_condition_smoke_layout};
-
 fn sync_activity_lease(
     activity: &OpenGpuiNodeActivityHandle,
     lease: &mut Option<OpenGpuiActivityLease>,

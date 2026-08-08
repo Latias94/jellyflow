@@ -1,6 +1,6 @@
 # Jellyflow Project Context
 
-Last updated: 2026-08-04
+Last updated: 2026-08-08
 
 This file is the high-signal navigation context for agents working in this repository. Shipped code
 and executable tests define current behavior. The adapter-authoring guide records the current
@@ -42,11 +42,10 @@ manifests or public boundaries.
 The active architecture keeps graph semantics in direct core/runtime dependencies and native UI in
 independent adapters. Its contracts live in public types, runtime owner tests, adapter-local native
 tests, and migration tests. Real-window evidence belongs to the dedicated
-`open-gpui-real-window-smoke` binary, which is excluded from ordinary product builds. CI runs five
-representative processes: Shader compact at zoom `0.5` and `2`, Workflow compact at zoom `1`,
-Shader normal at zoom `1`, and one directed Shader LOD-threshold run. The Rust harness owns live UI
-semantics; Python validates only process transport, run identity, listed artifacts, and the atomic
-`results.json` matrix result.
+`open-gpui-real-window-smoke` binary, which is excluded from ordinary product builds. CI runs one
+Shader process and one Workflow process. Each process only proves that the production native window
+can reach a valid first scene; deterministic adapter tests own interaction semantics and visual
+geometry.
 
 ## Runtime Interaction Strategy
 
@@ -77,30 +76,30 @@ workstream.
 Common gates:
 
 ```text
-cargo fmt --all -- --check
-cargo check --workspace --locked
+cargo fmt --all --check
 cargo nextest run --workspace --locked --cargo-quiet
 cargo test --workspace --doc --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 python3 tools/check_no_fret_dependencies.py
 python3 -m unittest discover -s tools/tests -p "test_*.py"
-python3 tools/check_external_consumer_smoke.py
 git diff --check
 ```
 
 Adapter-facing gates:
 
 ```text
-cargo nextest run -p jellyflow-open-gpui --locked
-cargo nextest run -p jellyflow-egui --locked
-cargo test --manifest-path examples/canvas-jellyflow/Cargo.toml --workspace --doc --locked
+cargo fmt --manifest-path examples/canvas-jellyflow/Cargo.toml --all -- --check
+cargo nextest run --manifest-path examples/canvas-jellyflow/Cargo.toml \
+  --workspace --all-features --locked --no-fail-fast
+cargo test --manifest-path examples/canvas-jellyflow/Cargo.toml \
+  --workspace --all-features --doc --locked
+cargo clippy --manifest-path examples/canvas-jellyflow/Cargo.toml \
+  --workspace --all-targets --all-features --locked -- -D warnings
 cargo build --manifest-path examples/canvas-jellyflow/Cargo.toml \
   -p open-gpui-canvas-jellyflow --bin open-gpui-real-window-smoke \
   --locked --features real-window-smoke
-python3 tools/run_real_window_smoke_matrix.py \
-  --binary examples/canvas-jellyflow/target/debug/open-gpui-real-window-smoke \
-  --capture-root target/real-window-smoke \
-  --timeout-seconds 60
+examples/canvas-jellyflow/target/debug/open-gpui-real-window-smoke
+examples/canvas-jellyflow/target/debug/open-gpui-real-window-smoke --workflow
 ```
 
 Do not add `wgpu`, egui, Fret, screenshot, or pixel dependencies to `jellyflow-core` or
