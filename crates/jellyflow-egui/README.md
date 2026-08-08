@@ -1,119 +1,55 @@
 # jellyflow-egui
 
-Immediate-mode egui adapter for Jellyflow node graphs.
+`jellyflow-egui` is Jellyflow's narrow immediate-mode protocol witness. It proves that the
+renderer-neutral `GraphRuntime` and `ViewSession` contract can drive egui without introducing a
+shared widget DSL or a cross-framework renderer trait.
 
-This crate owns egui rendering, panels, pointer input, and a runnable `eframe::App`. Graph
-semantics stay in the headless Jellyflow crates: schema-driven node creation, selection, drag,
-resize, connect, delete, undo/redo, viewport math, layout, and rendering queries all go through
-`NodeGraphStore`.
+`EguiNativeFrameHost` materializes one view frame, invokes application-owned egui rendering for
+each admitted node, records graph commands in native event order, measures the node root and all
+real ports, and submits the feedback log once. Egui widget state stays in egui and is retired by
+the full Jellyflow node-instance identity when a node is replaced, removed, or its view closes.
+Application renderers must use a bounded set of stable state-ID salts per node lifetime; registered
+state intentionally survives temporarily hidden rows until that node instance is hard-retired.
+
+`EguiCanvasInteraction` is the matching input bridge. Begin it with the current scene rectangle,
+pass only explicit graph-interactive `egui::Response` values to `handle_response`, and end it after
+all responses have been rendered. The bridge normalizes raw press/move/release events, owns the
+active egui `Id`, and resolves bounded runtime geometry queries. The attached interaction session
+commits view-local selection and viewport state to the same `ViewSession`. Missing responses,
+stolen drag ownership, escape,
+pointer loss, owner retirement, and view close all terminate native ownership explicitly.
+
+```rust,ignore
+interaction.begin_frame(ui.ctx(), ui.max_rect())?;
+interaction.handle_response(&canvas_keyboard_scope, CanvasPressTarget::Pan)?;
+interaction.handle_response(&drag_handle, node_drag_target)?;
+interaction.handle_response(&port_handle, connection_target)?;
+let output = interaction.end_frame(ui.ctx())?;
+```
+
+The focused graph response is also the keyboard authority boundary: Delete and Backspace submit one
+policy-filtered selection deletion, while native controls and focused text editors retain those keys.
+
+`output` retains only application work: create-from-wire search requests and fresh graph mutations.
+The application must bind graph mutations to a fresh snapshot, preserve its command ordering, and
+return the resulting identity-keyed completion. This crate deliberately does not copy Open GPUI's command
+journal, visual theme, or retained component lifecycle.
+
+Applications that dispatch renderers dynamically use `show_with_fallback`: returning `None` keeps
+unknown-kind handling inside the adapter, emits a structured diagnostic, and renders and measures
+all real ports without reading or rewriting the node's opaque payload.
+
+This crate intentionally does not ship product galleries, schema-driven controls, renderer
+catalogs, inspectors, or sample applications. Its tests drive real egui pointer/key events through
+the shared connection, candidate, edge-pick, node-drag, cancellation, retirement, close, and
+completion traces. Open GPUI is the product-tier native adapter; egui remains a compact independent
+implementation witness for adapter authors.
+
+Run its protocol witness tests with:
 
 ```sh
-cargo run -p jellyflow-egui --example demo
-cargo run -p jellyflow-egui --example workflow
-cargo run -p jellyflow-egui --example automation_builder
-cargo run -p jellyflow-egui --example mind_map
-cargo run -p jellyflow-egui --example tree
-cargo run -p jellyflow-egui --example org_chart
-cargo run -p jellyflow-egui --example knowledge_board
-cargo run -p jellyflow-egui --example erd
-cargo run -p jellyflow-egui --example shader_graph
-cargo run -p jellyflow-egui --example custom_widget
-cargo run -p jellyflow-egui --example gallery_snapshot
+cargo nextest run -p jellyflow-egui
 ```
 
-The demo ships with a sample gallery for workflow, automation builder, mind map, tree, org chart,
-knowledge-board, ERD-style, and shader/blueprint-style graphs. It includes selection, marquee
-selection, node dragging, handle-to-handle connections, selected node resize handles, viewport panning and zooming, keyboard
-nudging, cursor feedback, layout presets, undo/redo, delete, a schema-driven palette, and a read-only
-inspector.
-
-The samples are product fixtures, not separate domain frameworks:
-
-- Workflow and automation builder reuse schema descriptors, exec/data ports, edge labels, and
-  profile-ready metadata for Dify-like LLM/tool branches and error paths.
-- ERD uses the built-in `table-card` renderer to expose node-local field regions; table ports with
-  `field.*` anchors are placed on those field rows, with edge-owned cardinality labels.
-- Shader graph reuses the built-in `shader-card` renderer to expose typed port rails, config groups,
-  preview regions, and shader-style data edges without adding a shader compiler backend.
-- Mind map and org chart stress hierarchy layout with the same node/edge graph model.
-- Knowledge board stresses freeform source, claim, question, action, and output cards.
-
-Use `JellyflowEguiBridge` when embedding the adapter into your own app. Register node schemas in a
-`NodeRegistry`, map each descriptor `renderer_key` to your own `RendererCatalog` style, then let the
-egui canvas call Jellyflow runtime APIs instead of mutating graph storage directly.
-
-Rich renderers return `NodeRenderLayout` plus node-local `NodeInteractiveRegion` values. The egui
-adapter consumes those regions for widget placement and anchor-aware handle placement, so complex
-nodes can align ports to internal rows without changing the headless graph model.
-Schemas can declare matching renderer-neutral `NodeSurfaceSlotDescriptor` values so field rows,
-badges, actions, previews, and nested regions are described as semantic data rather than egui
-widgets.
-Use `slot` for the semantic data path and `anchor` for adapter-local placement or port binding.
-Use `NodeWidgetRenderInput::region_screen_rect` when placing child widgets so clipping stays
-consistent with the canvas viewport.
-
-## Custom node widgets
-
-Use two adapter-owned renderer traits for complex nodes:
-
-- `RichNodeRenderer` measures the node and emits node-local interactive regions.
-- `EguiNodeWidgetRenderer` draws egui child UI into those regions.
-
-Register both implementations under the descriptor `renderer_key`:
-
-```rust
-let mut renderers = RendererCatalog::default();
-renderers
-    .register("review-card", NodeRendererStyle::task())
-    .register_rich("review-card", ReviewCardRenderer)
-    .register_widgets("review-card", ReviewCardRenderer);
-```
-
-Then point a schema at that key and anchor ports to the regions produced by the renderer:
-
-```rust
-let schema = NodeSchema::builder("demo.review_card", "Review card")
-    .renderer_key("review-card")
-    .default_size(CanvasSize {
-        width: 246.0,
-        height: 136.0,
-    })
-    .port(
-        PortDecl::data_input("source")
-            .on_left()
-            .with_view_anchor("field.assignee"),
-    )
-    .port(
-        PortDecl::data_output("approved")
-            .on_right()
-            .with_view_anchor("field.status"),
-    )
-    .surface_slot(
-        NodeSurfaceSlotDescriptor::field_row("field.assignee")
-            .with_label("Assignee")
-            .with_anchor("field.assignee"),
-    )
-    .surface_slot(
-        NodeSurfaceSlotDescriptor::field_row("field.status")
-            .with_label("Status")
-            .with_anchor("field.status"),
-    )
-    .build();
-```
-
-The complete example lives in `examples/custom_widget.rs`. It builds a custom review-card node with
-embedded egui rows, zoom-aware content levels, and ports anchored to row regions.
-
-## Visual review gallery
-
-Run `cargo run -p jellyflow-egui --example gallery_snapshot` to export PNGs for every product
-sample into `target/jellyflow-egui-gallery`. This is intentionally a local review aid instead of a
-CI pixel gate, because GPU snapshot output can vary across platforms.
-
-The hard regression gate lives in code-level geometry tests rather than pixel comparison. The egui
-library tests cover Dify-style workflow controls, shader/blueprint typed ports, ERD repeatable
-fields, mind-map shell density, resize, invalid hover, dropped-wire menus, and inspector descriptor
-availability. See `docs/testing/node-ui-authoring-regression.md` for the matrix and commands.
-
-The crate intentionally depends on `eframe`; the core `jellyflow`, `jellyflow-core`,
-`jellyflow-layout`, and `jellyflow-runtime` crates remain renderer-free.
+The crate depends directly on `egui`, `jellyflow-core`, and `jellyflow-runtime`. It does not depend
+on a layout engine or the Open GPUI adapter; the headless crates remain UI-framework-free.

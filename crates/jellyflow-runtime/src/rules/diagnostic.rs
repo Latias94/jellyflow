@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 
 use jellyflow_core::core::{EdgeId, NodeId, PortId, SymbolId};
-use jellyflow_core::ops::GraphOp;
 
 /// Diagnostic severity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -32,7 +31,7 @@ pub enum DiagnosticTarget {
 }
 
 /// A diagnostic produced by validation or connection planning.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Diagnostic {
     /// Stable machine key (for filtering/suppression).
     pub key: String,
@@ -42,9 +41,6 @@ pub struct Diagnostic {
     pub target: DiagnosticTarget,
     /// Human-readable message.
     pub message: String,
-    /// Optional suggested fixes expressed as graph ops.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub fixes: Vec<GraphOp>,
 }
 
 impl Diagnostic {
@@ -58,7 +54,6 @@ impl Diagnostic {
             severity: DiagnosticSeverity::Error,
             target,
             message: message.into(),
-            fixes: Vec::new(),
         }
     }
 }

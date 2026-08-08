@@ -1,0 +1,73 @@
+use crate::graph_kernel::GraphOp;
+use jellyflow_core::core::{Binding, BindingId, Edge, EdgeId, GraphBuilder, Port, PortId};
+
+use super::ApplyError;
+use super::resources::{remove_bindings_exact, remove_edge_exact};
+
+pub(super) fn apply_port_op(graph: &mut GraphBuilder, op: &GraphOp) -> Result<(), ApplyError> {
+    match op {
+        GraphOp::AddPort { id, port } => apply_add_port(graph, *id, port)?,
+        GraphOp::RemovePort {
+            id,
+            port,
+            edges,
+            bindings,
+        } => apply_remove_port(graph, *id, port, edges, bindings)?,
+        GraphOp::SetPortConnectable { id, to, .. } => {
+            port_mut(graph, *id)?.connectable = *to;
+        }
+        GraphOp::SetPortConnectableStart { id, to, .. } => {
+            port_mut(graph, *id)?.connectable_start = *to;
+        }
+        GraphOp::SetPortConnectableEnd { id, to, .. } => {
+            port_mut(graph, *id)?.connectable_end = *to;
+        }
+        GraphOp::SetPortType { id, to, .. } => {
+            port_mut(graph, *id)?.ty = to.clone();
+        }
+        GraphOp::SetPortData { id, to, .. } => {
+            port_mut(graph, *id)?.data = to.clone();
+        }
+        _ => unreachable!("non-port op routed to port apply"),
+    }
+    Ok(())
+}
+
+fn apply_add_port(graph: &mut GraphBuilder, id: PortId, port: &Port) -> Result<(), ApplyError> {
+    if graph.ports().contains_key(&id) {
+        return Err(ApplyError::PortAlreadyExists { id });
+    }
+    if !graph.nodes().contains_key(&port.node) {
+        return Err(ApplyError::MissingNode { id: port.node });
+    }
+    graph.insert_port(id, port.clone());
+    Ok(())
+}
+
+fn apply_remove_port(
+    graph: &mut GraphBuilder,
+    id: PortId,
+    port: &Port,
+    edges: &[(EdgeId, Edge)],
+    bindings: &[(BindingId, Binding)],
+) -> Result<(), ApplyError> {
+    let Some(current) = graph.ports().get(&id) else {
+        return Err(ApplyError::MissingPort { id });
+    };
+    if current.node != port.node || current.key != port.key {
+        return Err(ApplyError::RemovePortMismatch { id });
+    }
+    remove_bindings_exact(graph, bindings)?;
+    for (edge_id, edge) in edges {
+        remove_edge_exact(graph, *edge_id, edge)?;
+    }
+    graph.remove_port(&id);
+    if let Some(node) = graph.node_mut(&port.node) {
+        node.retain_ports(|p| *p != id);
+    }
+    Ok(())
+}
+
+fn port_mut(graph: &mut GraphBuilder, id: PortId) -> Result<&mut Port, ApplyError> {
+    graph.port_mut(&id).ok_or(ApplyError::MissingPort { id })
+}

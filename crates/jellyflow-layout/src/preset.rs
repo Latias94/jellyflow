@@ -97,12 +97,6 @@ impl LayoutPresetBuilder {
         self
     }
 
-    /// Uses a different fallback node origin.
-    pub fn with_node_origin(mut self, node_origin: (f32, f32)) -> Self {
-        self.request.layout.options.node_origin = node_origin;
-        self
-    }
-
     /// Targets all visible nodes.
     pub fn all(mut self) -> Self {
         self.request.layout.scope = LayoutScope::All;

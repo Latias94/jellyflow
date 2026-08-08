@@ -1,48 +1,42 @@
-//! Headless runtime, rules, schema, and profile pipeline for Jellyflow.
+//! Headless graph runtime, interaction protocol, schema, and persistence for Jellyflow.
 //!
-//! This crate owns the portable B-layer store and change pipeline built on top of
-//! `jellyflow-core` graph transactions. It must stay free of Fret UI, renderer, platform, and
-//! windowing dependencies.
+//! Every public concept has one owning module. Applications compose [`graph`], [`commands`],
+//! [`view`], [`interaction`], [`geometry`], [`reconciliation`], and [`viewport`] without depending
+//! on the private implementation tree or a UI framework.
 //!
-//! Public API shape:
-//! - crate-root re-exports are the canonical runtime entry points,
-//! - [`io`] owns persisted files and editor configuration,
-//! - [`runtime::xyflow`] is an explicit compatibility adapter, not the primary store contract.
+//! Root-level type aliases are intentionally absent:
+//!
+//! ```compile_fail
+//! use jellyflow_runtime::GraphRuntime;
+//! ```
+//!
+//! The implementation tree is not a second public entry point:
+//!
+//! ```compile_fail
+//! use jellyflow_runtime::runtime::graph_runtime::GraphRuntime;
+//! ```
+//!
+//! Raw rule plans and reversible operation journals are not public mutation surfaces:
+//!
+//! ```compile_fail
+//! use jellyflow_runtime::rules::ConnectPlan;
+//! ```
 
 #![deny(unsafe_code)]
 
-mod node_origin;
-
+pub mod commands;
+pub mod geometry;
+pub mod graph;
+mod graph_kernel;
+pub mod interaction;
 pub mod io;
 pub mod profile;
-pub mod rules;
-pub mod runtime;
-pub mod schema;
-
-pub use profile::{
-    ApplyPipelineError, GraphProfile, apply_connect_plan_with_profile,
-    apply_transaction_with_profile,
-};
-pub use runtime::commit::NodeGraphPatch;
-pub use runtime::store::{DispatchError, DispatchOutcome, NodeGraphStore};
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn manifest_stays_free_of_fret_ui_renderer_and_platform_dependencies() {
-        let manifest = include_str!("../Cargo.toml");
-        for forbidden in [
-            "fret-core",
-            "fret-ui",
-            "fret-runtime",
-            "fret-canvas",
-            "wgpu",
-            "winit",
-        ] {
-            assert!(
-                !manifest.contains(forbidden),
-                "jellyflow-runtime must stay headless; forbidden dependency `{forbidden}` found",
-            );
-        }
-    }
+mod rules;
+mod runtime;
+/// Pure, renderer-neutral reconciliation reducers for product-owned authoring.
+pub mod reconciliation {
+    pub use crate::runtime::reconciliation::*;
 }
+pub mod schema;
+pub mod view;
+pub mod viewport;

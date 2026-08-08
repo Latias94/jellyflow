@@ -1,42 +1,18 @@
 use jellyflow_core::{
     CanvasPoint, CanvasSize, Edge, EdgeId, EdgeKind, Graph, GraphBuilder, GraphId, Node, NodeId,
-    NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKey,
+    NodeKindKey, NodeOrigin, Port, PortCapacity, PortDirection, PortId, PortKey,
 };
 
 use crate::{
-    LayoutContext, LayoutEngine, LayoutEngineId, LayoutRequest, MIND_MAP_RADIAL_LAYOUT_ENGINE_ID,
-    MindMapRadialLayoutEngine, builtin_layout_engine_registry, layout_graph_with_mind_map_radial,
+    LayoutContext, LayoutEngineRequest, LayoutError, LayoutRequest, LayoutResult,
+    builtin_layout_engine_registry,
 };
-
-#[test]
-fn builtin_registry_contains_mind_map_radial_engine() {
-    let registry = builtin_layout_engine_registry();
-
-    assert!(registry.get(&LayoutEngineId::dugong()).is_some());
-    assert!(registry.get(&LayoutEngineId::mind_map_radial()).is_some());
-    assert_eq!(
-        LayoutEngineId::mind_map_radial().as_str(),
-        MIND_MAP_RADIAL_LAYOUT_ENGINE_ID
-    );
-}
-
-#[test]
-fn wrapper_matches_engine_entry_point() {
-    let (graph, _root, _left, _right, _grandchild) = radial_tree_graph();
-    let request = LayoutRequest::all();
-
-    let wrapper = layout_graph_with_mind_map_radial(&graph, &request).expect("wrapper");
-    let engine = MindMapRadialLayoutEngine
-        .layout(&graph, &request, &LayoutContext::default())
-        .expect("engine");
-
-    assert_eq!(wrapper, engine);
-}
 
 #[test]
 fn layout_places_descendants_on_expanding_rings() {
     let (graph, root, left, right, grandchild) = radial_tree_graph();
-    let result = layout_graph_with_mind_map_radial(&graph, &LayoutRequest::all()).expect("layout");
+    let graph = graph.build_unchecked();
+    let result = run_default_mind_map_layout(&graph, &LayoutRequest::all()).expect("layout");
 
     let root = result.node_position(root).expect("root");
     let left = result.node_position(left).expect("left");
@@ -56,7 +32,7 @@ fn layout_places_descendants_on_expanding_rings() {
 #[test]
 fn layout_separates_disconnected_roots() {
     let (graph, first, second) = disconnected_roots_graph();
-    let result = layout_graph_with_mind_map_radial(&graph, &LayoutRequest::all()).expect("layout");
+    let result = run_default_mind_map_layout(&graph, &LayoutRequest::all()).expect("layout");
 
     let first = result.node_position(first).expect("first");
     let second = result.node_position(second).expect("second");
@@ -65,7 +41,63 @@ fn layout_separates_disconnected_roots() {
     assert!(result.edge_routes.is_empty());
 }
 
-fn radial_tree_graph() -> (Graph, NodeId, NodeId, NodeId, NodeId) {
+#[test]
+fn radial_layout_keeps_a_nonzero_pinned_anchor_in_canvas_coordinates() {
+    let (mut graph, root, _, _, _) = radial_tree_graph();
+    let root_node = graph.node_mut(&root).expect("root exists");
+    root_node.pos = CanvasPoint { x: 240.0, y: 120.0 };
+    root_node.origin = Some(NodeOrigin { x: 0.5, y: 0.5 });
+    let graph = graph.build_unchecked();
+
+    let result = run_mind_map_layout(
+        &graph,
+        &LayoutRequest::all(),
+        &LayoutContext::new().with_pinned_nodes([root]),
+    )
+    .expect("layout");
+
+    let root = result.node_position(root).expect("root placement");
+    assert_eq!(root.pos, CanvasPoint { x: 240.0, y: 120.0 });
+    assert_eq!(root.center, CanvasPoint { x: 240.0, y: 120.0 });
+}
+
+#[test]
+fn mind_map_layout_handles_a_deep_chain_without_recursive_traversal() {
+    const NODE_COUNT: usize = 4_096;
+
+    let graph = deep_chain_graph(NODE_COUNT);
+    let result = run_default_mind_map_layout(&graph, &LayoutRequest::all()).expect("layout");
+
+    assert_eq!(result.nodes.len(), NODE_COUNT);
+    assert_eq!(result.edge_routes.len(), NODE_COUNT - 1);
+    assert!(
+        result
+            .nodes
+            .iter()
+            .all(|node| node.pos.x.is_finite() && node.pos.y.is_finite())
+    );
+}
+
+fn run_default_mind_map_layout(
+    graph: &Graph,
+    request: &LayoutRequest,
+) -> Result<LayoutResult, LayoutError> {
+    run_mind_map_layout(graph, request, &LayoutContext::default())
+}
+
+fn run_mind_map_layout(
+    graph: &Graph,
+    request: &LayoutRequest,
+    context: &LayoutContext,
+) -> Result<LayoutResult, LayoutError> {
+    builtin_layout_engine_registry().layout(
+        graph,
+        &LayoutEngineRequest::mind_map_radial(request.clone()),
+        context,
+    )
+}
+
+fn radial_tree_graph() -> (GraphBuilder, NodeId, NodeId, NodeId, NodeId) {
     let mut graph = GraphBuilder::new(GraphId::from_u128(1));
     let root = NodeId::from_u128(1);
     let left = NodeId::from_u128(2);
@@ -95,7 +127,7 @@ fn radial_tree_graph() -> (Graph, NodeId, NodeId, NodeId, NodeId) {
     graph.insert_edge(second_edge, edge(root_out, right_in));
     graph.insert_edge(third_edge, edge(left_out, grandchild_in));
 
-    (graph.build_unchecked(), root, left, right, grandchild)
+    (graph, root, left, right, grandchild)
 }
 
 fn disconnected_roots_graph() -> (Graph, NodeId, NodeId) {
@@ -109,6 +141,43 @@ fn disconnected_roots_graph() -> (Graph, NodeId, NodeId) {
     (graph.build_unchecked(), first, second)
 }
 
+fn deep_chain_graph(node_count: usize) -> Graph {
+    let mut graph = GraphBuilder::new(GraphId::from_u128(3));
+
+    for index in 0..node_count {
+        let node_id = NodeId::from_u128(index as u128 + 1);
+        let incoming = (index > 0).then(|| PortId::from_u128(10_001 + (index as u128 - 1) * 2));
+        let outgoing =
+            (index + 1 < node_count).then(|| PortId::from_u128(10_000 + index as u128 * 2));
+        let mut ports = Vec::with_capacity(2);
+        if let Some(incoming) = incoming {
+            ports.push(incoming);
+        }
+        if let Some(outgoing) = outgoing {
+            ports.push(outgoing);
+        }
+
+        graph.insert_node(node_id, node("demo.chain", ports));
+        if let Some(incoming) = incoming {
+            graph.insert_port(incoming, port(node_id, "in", PortDirection::In));
+        }
+        if let Some(outgoing) = outgoing {
+            graph.insert_port(outgoing, port(node_id, "out", PortDirection::Out));
+        }
+    }
+
+    for index in 0..node_count.saturating_sub(1) {
+        let source = PortId::from_u128(10_000 + index as u128 * 2);
+        let target = PortId::from_u128(10_001 + index as u128 * 2);
+        graph.insert_edge(
+            EdgeId::from_u128(20_000 + index as u128),
+            edge(source, target),
+        );
+    }
+
+    graph.build_unchecked()
+}
+
 fn node(kind: &str, ports: Vec<PortId>) -> Node {
     Node {
         kind: NodeKindKey::new(kind),
@@ -116,7 +185,6 @@ fn node(kind: &str, ports: Vec<PortId>) -> Node {
         pos: CanvasPoint { x: 0.0, y: 0.0 },
         origin: None,
         selectable: None,
-        focusable: None,
         draggable: None,
         connectable: None,
         deletable: None,

@@ -1,0 +1,474 @@
+{
+  "graph_id": "00000000-0000-0000-0000-000000000300",
+  "graph_version": 2,
+  "graph": {
+    "graph_id": "00000000-0000-0000-0000-000000000300",
+    "graph_version": 1,
+    "imports": {
+      "00000000-0000-0000-0000-000000000d00": {
+        "alias": "shared-workflow"
+      }
+    },
+    "symbols": {
+      "00000000-0000-0000-0000-000000000a00": {
+        "name": "DocumentLanguage",
+        "ty": {
+          "kind": "string"
+        },
+        "default_value": "en-US",
+        "meta": {
+          "scope": "workflow",
+          "source": "blackboard"
+        }
+      }
+    },
+    "nodes": {
+      "00000000-0000-0000-0000-000000000010": {
+        "kind": "dify.workflow.llm",
+        "kind_version": 3,
+        "pos": {
+          "x": 80.0,
+          "y": 120.0
+        },
+        "selectable": true,
+        "draggable": true,
+        "parent": "00000000-0000-0000-0000-000000000900",
+        "size": {
+          "width": 320.0,
+          "height": 260.0
+        },
+        "collapsed": false,
+        "ports": [
+          "00000000-0000-0000-0000-000000001002",
+          "00000000-0000-0000-0000-000000001001"
+        ],
+        "data": {
+          "model": {
+            "name": "gpt-4.1",
+            "provider": "openai"
+          },
+          "prompt": {
+            "messages": [
+              {
+                "content": [
+                  {
+                    "text": "Summarize {{document}}",
+                    "type": "text"
+                  }
+                ],
+                "role": "user"
+              }
+            ],
+            "variables": {
+              "document": {
+                "required": true,
+                "source": "knowledge"
+              }
+            }
+          },
+          "retry": {
+            "max_attempts": 3,
+            "strategy": "exponential"
+          },
+          "stream": true
+        }
+      },
+      "00000000-0000-0000-0000-000000000020": {
+        "kind": "unity.shader.multiply",
+        "kind_version": 2,
+        "pos": {
+          "x": 520.0,
+          "y": 100.0
+        },
+        "parent": "00000000-0000-0000-0000-000000000900",
+        "size": {
+          "width": 260.0,
+          "height": 220.0
+        },
+        "collapsed": false,
+        "ports": [
+          "00000000-0000-0000-0000-000000002003",
+          "00000000-0000-0000-0000-000000002001",
+          "00000000-0000-0000-0000-000000002002"
+        ],
+        "data": {
+          "inputs": [
+            {
+              "id": "factor",
+              "inline_value": 0.5,
+              "port": "factor"
+            },
+            {
+              "id": "color",
+              "inline_value": [
+                1.0,
+                0.5,
+                0.0,
+                1.0
+              ],
+              "port": "color"
+            }
+          ],
+          "operation": "multiply",
+          "precision": "half"
+        }
+      },
+      "00000000-0000-0000-0000-000000000030": {
+        "kind": "erd.table.users",
+        "kind_version": 1,
+        "pos": {
+          "x": 960.0,
+          "y": 420.0
+        },
+        "size": {
+          "width": 300.0,
+          "height": 240.0
+        },
+        "collapsed": false,
+        "ports": [
+          "00000000-0000-0000-0000-000000003002",
+          "00000000-0000-0000-0000-000000003001"
+        ],
+        "data": {
+          "columns": [
+            {
+              "name": "id",
+              "nullable": false,
+              "primary_key": true,
+              "type": "uuid"
+            },
+            {
+              "name": "email",
+              "nullable": false,
+              "type": "varchar"
+            }
+          ],
+          "indexes": [
+            {
+              "columns": [
+                "email"
+              ],
+              "unique": true
+            }
+          ],
+          "table": "users"
+        }
+      },
+      "00000000-0000-0000-0000-000000000040": {
+        "kind": "mind-map.topic",
+        "kind_version": 1,
+        "pos": {
+          "x": 1240.0,
+          "y": 120.0
+        },
+        "size": {
+          "width": 240.0,
+          "height": 132.0
+        },
+        "collapsed": false,
+        "data": {
+          "branch": {
+            "color": "cyan",
+            "order": 2
+          },
+          "children": [
+            "retained",
+            "immediate"
+          ],
+          "title": "Native adapters"
+        }
+      },
+      "00000000-0000-0000-0000-000000000050": {
+        "kind": "plugin.acme.future_node",
+        "kind_version": 77,
+        "pos": {
+          "x": 520.0,
+          "y": 480.0
+        },
+        "size": {
+          "width": 280.0,
+          "height": 180.0
+        },
+        "collapsed": false,
+        "ports": [
+          "00000000-0000-0000-0000-000000005002",
+          "00000000-0000-0000-0000-000000005001"
+        ],
+        "data": {
+          "opaque": {
+            "arrays": [
+              1,
+              {
+                "deep": [
+                  true,
+                  null,
+                  {
+                    "sentinel": "keep-me"
+                  }
+                ]
+              }
+            ],
+            "future": {
+              "flags": {
+                "alpha": true,
+                "beta": false
+              },
+              "version": 99
+            }
+          },
+          "plugin_state": {
+            "bytes": [
+              0,
+              127,
+              255
+            ],
+            "custom_key": "must-round-trip"
+          }
+        }
+      }
+    },
+    "ports": {
+      "00000000-0000-0000-0000-000000001001": {
+        "node": "00000000-0000-0000-0000-000000000010",
+        "key": "completion",
+        "dir": "out",
+        "kind": "data",
+        "capacity": "multi",
+        "ty": {
+          "kind": "string"
+        },
+        "data": {
+          "label": "Completion"
+        }
+      },
+      "00000000-0000-0000-0000-000000001002": {
+        "node": "00000000-0000-0000-0000-000000000010",
+        "key": "document",
+        "dir": "in",
+        "kind": "data",
+        "capacity": "single",
+        "ty": {
+          "kind": "string"
+        },
+        "data": {
+          "required": true
+        }
+      },
+      "00000000-0000-0000-0000-000000002001": {
+        "node": "00000000-0000-0000-0000-000000000020",
+        "key": "result",
+        "dir": "out",
+        "kind": "data",
+        "capacity": "multi",
+        "ty": {
+          "kind": "opaque",
+          "key": "shader.vec4"
+        },
+        "data": {
+          "semantic": "rgba"
+        }
+      },
+      "00000000-0000-0000-0000-000000002002": {
+        "node": "00000000-0000-0000-0000-000000000020",
+        "key": "factor",
+        "dir": "in",
+        "kind": "data",
+        "capacity": "single",
+        "ty": {
+          "kind": "float"
+        },
+        "data": {
+          "inline_value": 0.5
+        }
+      },
+      "00000000-0000-0000-0000-000000002003": {
+        "node": "00000000-0000-0000-0000-000000000020",
+        "key": "color",
+        "dir": "in",
+        "kind": "data",
+        "capacity": "single",
+        "ty": {
+          "kind": "opaque",
+          "key": "shader.vec4"
+        },
+        "data": {
+          "inline_value": [
+            1.0,
+            0.5,
+            0.0,
+            1.0
+          ]
+        }
+      },
+      "00000000-0000-0000-0000-000000003001": {
+        "node": "00000000-0000-0000-0000-000000000030",
+        "key": "relation",
+        "dir": "out",
+        "kind": "data",
+        "capacity": "multi",
+        "ty": {
+          "kind": "string"
+        },
+        "data": {
+          "cardinality": "one_to_many"
+        }
+      },
+      "00000000-0000-0000-0000-000000003002": {
+        "node": "00000000-0000-0000-0000-000000000030",
+        "key": "topic",
+        "dir": "in",
+        "kind": "data",
+        "capacity": "single",
+        "ty": {
+          "kind": "string"
+        },
+        "data": {
+          "column": "email"
+        }
+      },
+      "00000000-0000-0000-0000-000000005001": {
+        "node": "00000000-0000-0000-0000-000000000050",
+        "key": "future_output",
+        "dir": "out",
+        "kind": "data",
+        "capacity": "multi",
+        "ty": {
+          "kind": "opaque",
+          "key": "plugin.acme.packet"
+        },
+        "data": {
+          "opaque_port_fact": {
+            "version": 12
+          }
+        }
+      },
+      "00000000-0000-0000-0000-000000005002": {
+        "node": "00000000-0000-0000-0000-000000000050",
+        "key": "future_input",
+        "dir": "in",
+        "kind": "data",
+        "capacity": "single",
+        "ty": {
+          "kind": "any"
+        },
+        "data": {
+          "opaque_port_fact": {
+            "accepts_future": true
+          }
+        }
+      }
+    },
+    "edges": {
+      "00000000-0000-0000-0000-00000000e001": {
+        "kind": "data",
+        "from": "00000000-0000-0000-0000-000000001001",
+        "to": "00000000-0000-0000-0000-000000005002",
+        "reconnectable": true,
+        "data": {
+          "branch": "success"
+        },
+        "view": {
+          "label": "completion",
+          "label_anchor": "center",
+          "route": {
+            "kind": "smooth_step",
+            "offset": 20.0,
+            "step_position": 0.5,
+            "border_radius": 5.0
+          }
+        }
+      },
+      "00000000-0000-0000-0000-00000000e002": {
+        "kind": "data",
+        "from": "00000000-0000-0000-0000-000000002001",
+        "to": "00000000-0000-0000-0000-000000001002",
+        "data": {
+          "conversion": "preview"
+        }
+      },
+      "00000000-0000-0000-0000-00000000e003": {
+        "kind": "data",
+        "from": "00000000-0000-0000-0000-000000005001",
+        "to": "00000000-0000-0000-0000-000000003002",
+        "data": {
+          "relationship": "documents"
+        },
+        "view": {
+          "style_token": "reference",
+          "route": {
+            "kind": "orthogonal",
+            "offset": 20.0,
+            "step_position": 0.5
+          }
+        }
+      }
+    },
+    "groups": {
+      "00000000-0000-0000-0000-000000000900": {
+        "title": "Generation Pipeline",
+        "rect": {
+          "origin": {
+            "x": 40.0,
+            "y": 40.0
+          },
+          "size": {
+            "width": 800.0,
+            "height": 380.0
+          }
+        },
+        "color": "workflow.primary"
+      }
+    },
+    "sticky_notes": {
+      "00000000-0000-0000-0000-000000000b00": {
+        "text": "Keep unknown plugin payloads and real ports intact.",
+        "rect": {
+          "origin": {
+            "x": 860.0,
+            "y": 720.0
+          },
+          "size": {
+            "width": 340.0,
+            "height": 140.0
+          }
+        },
+        "color": "warning"
+      }
+    },
+    "bindings": {
+      "00000000-0000-0000-0000-000000000c00": {
+        "subject": {
+          "kind": "graph_local",
+          "target": {
+            "kind": "node",
+            "id": "00000000-0000-0000-0000-000000000050"
+          }
+        },
+        "target": {
+          "kind": "source",
+          "anchor": {
+            "source_id": "knowledge://spec/42",
+            "payload": {
+              "page": 7,
+              "region": {
+                "height": 64,
+                "width": 240,
+                "x": 12,
+                "y": 48
+              },
+              "quote": "Opaque data must survive migrations."
+            }
+          }
+        },
+        "kind": "evidence",
+        "meta": {
+          "confidence": 0.97,
+          "tags": [
+            "fixture",
+            "opaque"
+          ]
+        }
+      }
+    }
+  }
+}

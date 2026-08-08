@@ -9,18 +9,30 @@ repository.workspace = true
 homepage.workspace = true
 documentation = "https://docs.rs/jellyflow-open-gpui"
 readme = "README.md"
-publish = false
-description = "Open GPUI adapter boundary for Jellyflow node graphs."
+description = "Retained native Open GPUI adapter for Jellyflow node graphs."
 keywords = ["gpui", "graph", "node-graph", "adapter"]
 categories = ["gui", "visualization"]
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-clippy"))'] }
+
 [dependencies]
-jellyflow.workspace = true
-serde.workspace = true
-serde_json.workspace = true
+jellyflow-core.workspace = true
+jellyflow-runtime.workspace = true
+lyon.workspace = true
+futures-util.workspace = true
+open_gpui = { package = "open-gpui", version = "=0.2.0", default-features = false }
 thiserror.workspace = true
 
+[target.'cfg(target_os = "macos")'.dependencies]
+dispatch2 = "0.3.1"
+objc = "0.2.7"
+raw-window-handle = "0.6.2"
+
 [dev-dependencies]
+open_gpui = { package = "open-gpui", version = "=0.2.0", default-features = false, features = ["test-support"] }
+open_gpui_ui_components = { package = "open-gpui-ui-components", version = "=0.2.0" }
+serde_json.workspace = true
 
 [lints.clippy]
 too_many_arguments = "allow"

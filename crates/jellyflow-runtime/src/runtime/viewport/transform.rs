@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-use crate::io::NodeGraphViewState;
-use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize};
+use jellyflow_core::core::{CanvasPoint, CanvasRect};
+
+use crate::runtime::adapter_protocol::{ViewDelta, ViewPoint, ViewSize};
 
 /// Current viewport transform.
 ///
@@ -31,18 +32,25 @@ impl ViewportTransform {
         self.pan.is_finite() && valid_zoom(self.zoom)
     }
 
-    /// Reads the viewport transform from a persisted view-state.
-    pub fn from_view_state(view_state: &NodeGraphViewState) -> Option<Self> {
-        Self::new(view_state.pan, view_state.zoom)
-    }
-
     /// Projects a canvas point into logical screen pixels.
-    pub fn screen_point_for_canvas(self, canvas: CanvasPoint) -> Option<CanvasPoint> {
+    ///
+    /// Canvas and view coordinates are intentionally not interchangeable.
+    ///
+    /// ```compile_fail
+    /// use jellyflow_core::CanvasPoint;
+    /// use jellyflow_runtime::viewport::ViewportTransform;
+    ///
+    /// let transform = ViewportTransform::new(CanvasPoint::default(), 1.0).unwrap();
+    /// let projected: CanvasPoint = transform
+    ///     .screen_point_for_canvas(CanvasPoint::default())
+    ///     .unwrap();
+    /// ```
+    pub fn screen_point_for_canvas(self, canvas: CanvasPoint) -> Option<ViewPoint> {
         if !self.is_valid() || !canvas.is_finite() {
             return None;
         }
 
-        let screen = CanvasPoint {
+        let screen = ViewPoint {
             x: (canvas.x + self.pan.x) * self.zoom,
             y: (canvas.y + self.pan.y) * self.zoom,
         };
@@ -50,18 +58,31 @@ impl ViewportTransform {
     }
 
     /// Converts a logical screen-pixel point to canvas space.
-    pub fn canvas_point_at_screen(self, screen: CanvasPoint) -> CanvasPoint {
-        CanvasPoint {
+    ///
+    /// ```compile_fail
+    /// use jellyflow_core::CanvasPoint;
+    /// use jellyflow_runtime::viewport::ViewportTransform;
+    ///
+    /// let transform = ViewportTransform::new(CanvasPoint::default(), 1.0).unwrap();
+    /// let _ = transform.canvas_point_at_screen(CanvasPoint::default());
+    /// ```
+    pub fn canvas_point_at_screen(self, screen: ViewPoint) -> Option<CanvasPoint> {
+        if !self.is_valid() || !screen.is_finite() {
+            return None;
+        }
+
+        let canvas = CanvasPoint {
             x: screen.x / self.zoom - self.pan.x,
             y: screen.y / self.zoom - self.pan.y,
-        }
+        };
+        canvas.is_finite().then_some(canvas)
     }
 }
 
 /// Optional pan constraints for a viewport transform.
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub struct ViewportConstraints {
-    pub viewport_size: Option<CanvasSize>,
+    pub viewport_size: Option<ViewSize>,
     pub translate_extent: Option<CanvasRect>,
 }
 
@@ -70,7 +91,7 @@ impl ViewportConstraints {
         Self::default()
     }
 
-    pub fn with_translate_extent(viewport_size: CanvasSize, translate_extent: CanvasRect) -> Self {
+    pub fn with_translate_extent(viewport_size: ViewSize, translate_extent: CanvasRect) -> Self {
         Self {
             viewport_size: Some(viewport_size),
             translate_extent: Some(translate_extent),
@@ -82,11 +103,11 @@ impl ViewportConstraints {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct ViewportPanRequest {
     /// Logical screen-pixel delta for the content movement.
-    pub screen_delta: CanvasPoint,
+    pub screen_delta: ViewDelta,
 }
 
 impl ViewportPanRequest {
-    pub fn new(screen_delta: CanvasPoint) -> Self {
+    pub fn new(screen_delta: ViewDelta) -> Self {
         Self { screen_delta }
     }
 }
@@ -95,7 +116,7 @@ impl ViewportPanRequest {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct ViewportZoomRequest {
     /// Logical screen-pixel point that should keep the same canvas coordinate while zooming.
-    pub anchor_screen: CanvasPoint,
+    pub anchor_screen: ViewPoint,
     /// Desired zoom before clamping.
     pub target_zoom: f32,
     /// Inclusive minimum zoom clamp.
@@ -105,7 +126,7 @@ pub struct ViewportZoomRequest {
 }
 
 impl ViewportZoomRequest {
-    pub fn new(anchor_screen: CanvasPoint, target_zoom: f32, min_zoom: f32, max_zoom: f32) -> Self {
+    pub fn new(anchor_screen: ViewPoint, target_zoom: f32, min_zoom: f32, max_zoom: f32) -> Self {
         Self {
             anchor_screen,
             target_zoom,
@@ -222,4 +243,129 @@ fn constrain_pan_axis(pan: f32, visible_size: f32, extent_min: f32, extent_max: 
 
 pub(super) fn valid_zoom(zoom: f32) -> bool {
     zoom.is_finite() && zoom > 0.0
+}
+
+#[cfg(test)]
+mod tests {
+    use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize};
+
+    use crate::runtime::adapter_protocol::{ViewPoint, ViewSize};
+
+    use super::{
+        ViewportConstraints, ViewportTransform, ViewportZoomRequest, constrain_viewport,
+        zoom_viewport,
+    };
+
+    #[test]
+    fn canvas_and_view_points_round_trip_across_pans_and_zooms() {
+        let canvas = CanvasPoint { x: 37.5, y: -12.25 };
+
+        for (pan, zoom) in [
+            (CanvasPoint { x: 0.0, y: 0.0 }, 0.5),
+            (CanvasPoint { x: -7.0, y: 19.0 }, 1.0),
+            (CanvasPoint { x: 11.5, y: -3.25 }, 2.0),
+        ] {
+            let transform = ViewportTransform::new(pan, zoom).expect("valid transform");
+            let view = transform
+                .screen_point_for_canvas(canvas)
+                .expect("finite canvas point projects into view space");
+            let restored = transform
+                .canvas_point_at_screen(view)
+                .expect("finite view point projects into canvas space");
+
+            assert!((restored.x - canvas.x).abs() <= f32::EPSILON);
+            assert!((restored.y - canvas.y).abs() <= f32::EPSILON);
+        }
+    }
+
+    #[test]
+    fn zoom_preserves_canvas_coordinate_under_view_anchor() {
+        let current = ViewportTransform::new(CanvasPoint { x: 14.0, y: -8.0 }, 1.25)
+            .expect("valid transform");
+        let anchor = ViewPoint::new(160.0, 90.0);
+        let before = current
+            .canvas_point_at_screen(anchor)
+            .expect("finite anchor projects into canvas space");
+        let next = zoom_viewport(current, ViewportZoomRequest::new(anchor, 2.0, 0.25, 4.0))
+            .expect("valid anchored zoom");
+        let after = next
+            .canvas_point_at_screen(anchor)
+            .expect("finite anchor projects into canvas space");
+
+        assert!((after.x - before.x).abs() <= f32::EPSILON);
+        assert!((after.y - before.y).abs() <= f32::EPSILON);
+    }
+
+    #[test]
+    fn translate_extent_centers_small_viewport_and_clamps_equal_and_large_viewports() {
+        let extent = CanvasRect {
+            origin: CanvasPoint { x: 10.0, y: 20.0 },
+            size: CanvasSize {
+                width: 100.0,
+                height: 80.0,
+            },
+        };
+        let transform = ViewportTransform::new(
+            CanvasPoint {
+                x: 500.0,
+                y: -500.0,
+            },
+            1.0,
+        )
+        .expect("valid transform");
+
+        let small = constrain_viewport(
+            transform,
+            ViewportConstraints::with_translate_extent(ViewSize::new(50.0, 40.0), extent),
+        )
+        .expect("small viewport is constrained");
+        assert_eq!(small.pan, CanvasPoint { x: -10.0, y: -60.0 });
+
+        let equal = constrain_viewport(
+            transform,
+            ViewportConstraints::with_translate_extent(ViewSize::new(100.0, 80.0), extent),
+        )
+        .expect("equal viewport is constrained");
+        assert_eq!(equal.pan, CanvasPoint { x: -10.0, y: -20.0 });
+
+        let large = constrain_viewport(
+            transform,
+            ViewportConstraints::with_translate_extent(ViewSize::new(140.0, 120.0), extent),
+        )
+        .expect("large viewport is constrained");
+        assert_eq!(large.pan, CanvasPoint { x: 10.0, y: 0.0 });
+    }
+
+    #[test]
+    fn projections_and_constraints_reject_non_finite_or_invalid_inputs() {
+        let transform = ViewportTransform::new(CanvasPoint::default(), 1.0).expect("valid");
+
+        assert_eq!(
+            transform.screen_point_for_canvas(CanvasPoint {
+                x: f32::NAN,
+                y: 0.0,
+            }),
+            None
+        );
+        assert_eq!(
+            transform.canvas_point_at_screen(ViewPoint::new(f32::INFINITY, 0.0)),
+            None
+        );
+        assert!(ViewportTransform::new(CanvasPoint::default(), 0.0).is_none());
+
+        let extent = CanvasRect {
+            origin: CanvasPoint::default(),
+            size: CanvasSize {
+                width: 10.0,
+                height: 10.0,
+            },
+        };
+        assert!(
+            constrain_viewport(
+                transform,
+                ViewportConstraints::with_translate_extent(ViewSize::new(0.0, 10.0), extent),
+            )
+            .is_none()
+        );
+    }
 }

@@ -1,82 +1,123 @@
 #!/usr/bin/env python3
-"""Check that Jellyflow workspace packages do not depend on Fret packages."""
+"""Enforce Jellyflow dependency boundaries using Cargo's resolved tree."""
 
 from __future__ import annotations
 
-import argparse
 import subprocess
-import sys
 from pathlib import Path
 
 
-DEFAULT_PACKAGES = (
-    "jellyflow-core",
-    "jellyflow-layout",
-    "jellyflow-runtime",
-    "jellyflow",
-    "jellyflow-egui",
+ROOT = Path(__file__).resolve().parents[1]
+RELEASE_CRATES = tuple(
+    name
+    for name in (ROOT / "scripts" / "release-crates.txt")
+    .read_text(encoding="utf-8")
+    .splitlines()
+    if name
+)
+HEADLESS_CRATES = frozenset(
+    ("jellyflow-core", "jellyflow-layout", "jellyflow-runtime")
+)
+HEADLESS_FORBIDDEN_NAMES = frozenset(
+    (
+        "accesskit",
+        "dioxus",
+        "eframe",
+        "egui",
+        "floem",
+        "gpui",
+        "gtk",
+        "gtk4",
+        "iced",
+        "metal",
+        "open-gpui",
+        "raw-window-handle",
+        "slint",
+        "tauri",
+        "wayland-client",
+        "wgpu",
+        "winit",
+        "x11",
+    )
+)
+HEADLESS_FORBIDDEN_PREFIXES = (
+    "accesskit_",
+    "dioxus-",
+    "egui-",
+    "egui_",
+    "gpui-",
+    "gtk-",
+    "iced-",
+    "open-gpui-",
+    "slint-",
+    "tauri-",
+    "wayland-",
+    "wgpu-",
+    "winit-",
+    "x11-",
 )
 
 
-def is_forbidden_package(line: str) -> bool:
-    package_name = line.strip().split(" ", 1)[0]
-    return package_name == "fret" or package_name.startswith("fret-")
-
-
-def run_tree(repo_root: Path, package: str, depth: int) -> list[str]:
-    tree = subprocess.run(
+def resolved_packages(package: str) -> set[str]:
+    result = subprocess.run(
         [
             "cargo",
             "tree",
-            "-p",
+            "--package",
             package,
-            "--depth",
-            str(depth),
+            "--all-features",
+            "--edges",
+            "normal,build",
             "--prefix",
             "none",
+            "--no-dedupe",
+            "--locked",
+            "--format",
+            "{p}",
         ],
-        cwd=repo_root,
+        cwd=ROOT,
         check=True,
         capture_output=True,
         text=True,
+        timeout=120,
     )
-    return tree.stdout.splitlines()
+    return {
+        line.split(maxsplit=1)[0]
+        for line in result.stdout.splitlines()
+        if line.strip()
+    }
+
+
+def is_headless_forbidden(name: str) -> bool:
+    return name in HEADLESS_FORBIDDEN_NAMES or name.startswith(
+        HEADLESS_FORBIDDEN_PREFIXES
+    )
+
+
+def violations(package: str, dependencies: set[str]) -> list[str]:
+    found = {
+        dependency
+        for dependency in dependencies
+        if dependency == "fret" or dependency.startswith("fret-")
+    }
+    if package in HEADLESS_CRATES:
+        found.update(filter(is_headless_forbidden, dependencies))
+    if package == "jellyflow-egui" and "jellyflow-open-gpui" in dependencies:
+        found.add("jellyflow-open-gpui")
+    if package == "jellyflow-open-gpui" and "jellyflow-egui" in dependencies:
+        found.add("jellyflow-egui")
+    return sorted(found)
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Check Jellyflow package dependency trees for accidental Fret packages."
-    )
-    parser.add_argument(
-        "--package",
-        action="append",
-        choices=DEFAULT_PACKAGES,
-        help="package to check; defaults to both Jellyflow packages",
-    )
-    parser.add_argument(
-        "--depth",
-        type=int,
-        default=2,
-        help="cargo tree depth to inspect",
-    )
-    args = parser.parse_args()
-
-    repo_root = Path(__file__).resolve().parents[1]
-    packages = tuple(args.package or DEFAULT_PACKAGES)
     failed = False
-
-    for package in packages:
-        lines = run_tree(repo_root, package, args.depth)
-        forbidden = [line.strip() for line in lines if is_forbidden_package(line)]
-        if forbidden:
+    for package in RELEASE_CRATES:
+        found = violations(package, resolved_packages(package))
+        if found:
             failed = True
-            print(
-                f"{package} pulled Fret packages:\n" + "\n".join(forbidden),
-                file=sys.stderr,
-            )
+            print(f"{package}: forbidden dependencies: {', '.join(found)}")
         else:
-            print(f"{package}: no fret or fret-* packages within depth {args.depth}")
-
+            print(f"{package}: dependency boundaries clean")
     return 1 if failed else 0
 
 

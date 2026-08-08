@@ -1,78 +1,43 @@
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 use std::f32::consts::{PI, TAU};
 
-use jellyflow_core::{CanvasPoint, CanvasSize, Graph, GraphTransaction, NodeId};
+use jellyflow_core::{CanvasPoint, CanvasSize, NodeId};
 
 use crate::engine::{
-    LayoutContext, LayoutDirection, LayoutEngine, LayoutEngineId, LayoutError, LayoutNodePosition,
-    LayoutOptions, LayoutRequest, LayoutResult, MIND_MAP_RADIAL_LAYOUT_ENGINE_ID,
-    position_from_center, resolve_node_origin, resolve_node_size, validate_request,
+    LayoutCoordinateFrame, LayoutDirection, LayoutEngine, LayoutError, LayoutOptions,
+    LayoutPlacements, PreparedLayoutEdge, PreparedLayoutInput,
 };
-use crate::projection::{
-    VisibleLayoutEdge, build_visible_edge_projection, center_from_position, result_from_placements,
-};
+use crate::projection::{SpanningForestComponent, build_spanning_forest, placements_from_centers};
 
 /// Built-in radial mind-map engine.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct MindMapRadialLayoutEngine;
 
 impl LayoutEngine for MindMapRadialLayoutEngine {
-    fn id(&self) -> LayoutEngineId {
-        LayoutEngineId::new(MIND_MAP_RADIAL_LAYOUT_ENGINE_ID)
-    }
-
-    fn layout(
-        &self,
-        graph: &Graph,
-        request: &LayoutRequest,
-        context: &LayoutContext,
-    ) -> Result<LayoutResult, LayoutError> {
-        layout_graph_with_mind_map_radial_context(graph, request, context)
+    fn place(&self, input: &PreparedLayoutInput<'_>) -> Result<LayoutPlacements, LayoutError> {
+        run_mind_map_radial_layout(input)
     }
 }
 
-/// Runs the native radial mind-map engine.
-pub fn layout_graph_with_mind_map_radial(
-    graph: &Graph,
-    request: &LayoutRequest,
-) -> Result<LayoutResult, LayoutError> {
-    layout_graph_with_mind_map_radial_context(graph, request, &LayoutContext::default())
-}
-
-/// Runs the native radial mind-map engine and converts the result into a transaction.
-pub fn layout_graph_to_transaction_with_mind_map_radial(
-    graph: &Graph,
-    request: &LayoutRequest,
-) -> Result<GraphTransaction, LayoutError> {
-    layout_graph_with_mind_map_radial(graph, request)?.to_transaction(graph)
-}
-
-fn layout_graph_with_mind_map_radial_context(
-    graph: &Graph,
-    request: &LayoutRequest,
-    context: &LayoutContext,
-) -> Result<LayoutResult, LayoutError> {
-    validate_request(graph, request)?;
-
-    let mut projection = MindMapProjection::new(graph, request, context)?;
-    projection.layout(request);
+fn run_mind_map_radial_layout(
+    input: &PreparedLayoutInput<'_>,
+) -> Result<LayoutPlacements, LayoutError> {
+    let mut projection = MindMapProjection::new(input);
+    projection.layout(input.options())?;
     projection.into_result()
 }
 
-struct MindMapProjection<'a> {
-    graph: &'a Graph,
-    request: &'a LayoutRequest,
-    context: &'a LayoutContext,
+struct MindMapProjection {
     node_infos: BTreeMap<NodeId, MindMapNodeInfo>,
-    visible_edges: Vec<VisibleLayoutEdge>,
+    visible_edges: Vec<PreparedLayoutEdge>,
     components: Vec<MindMapComponent>,
-    placements: BTreeMap<NodeId, LayoutNodePosition>,
+    placements: BTreeMap<NodeId, CanvasPoint>,
+    preserve_canvas_coordinates: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
 struct MindMapNodeInfo {
     size: CanvasSize,
-    origin: (f32, f32),
     current_center: CanvasPoint,
     arc_demand: f32,
     pinned: bool,
@@ -86,77 +51,71 @@ struct MindMapComponent {
     max_depth: usize,
 }
 
-struct MindMapLayoutNode<'a> {
+struct MindMapLayoutNode {
     node: NodeId,
     center: CanvasPoint,
     start_angle: f32,
     end_angle: f32,
-    ring_gap: f32,
-    component: &'a MindMapComponent,
     depth: usize,
 }
 
-impl<'a> MindMapProjection<'a> {
-    fn new(
-        graph: &'a Graph,
-        request: &'a LayoutRequest,
-        context: &'a LayoutContext,
-    ) -> Result<Self, LayoutError> {
+impl MindMapProjection {
+    fn new(input: &PreparedLayoutInput<'_>) -> Self {
         let mut node_infos = BTreeMap::new();
         let mut visible_nodes = BTreeSet::new();
+        let mut outgoing = BTreeMap::new();
 
-        for (id, node) in graph.nodes() {
-            if node.hidden || !request.scope.contains(*id) {
-                continue;
-            }
-
-            let size = resolve_node_size(graph, request, context, *id)?;
-            let origin = resolve_node_origin(node.origin, request.options.node_origin, context);
-            let current_center = center_from_position(node.pos, size, origin);
-            let arc_demand = node_arc_demand(size, request.options);
+        for node in input.nodes() {
+            let arc_demand = node_arc_demand(node.size(), input.options());
 
             node_infos.insert(
-                *id,
+                node.id(),
                 MindMapNodeInfo {
-                    size,
-                    origin,
-                    current_center,
+                    size: node.size(),
+                    current_center: node.current_center(),
                     arc_demand,
-                    pinned: context.pinned_nodes.contains(id),
+                    pinned: node.is_pinned(),
                 },
             );
-            visible_nodes.insert(*id);
+            visible_nodes.insert(node.id());
+            if !input.outgoing(node.id()).is_empty() {
+                outgoing.insert(node.id(), input.outgoing(node.id()).to_vec());
+            }
         }
 
-        let (outgoing, visible_edges) = build_visible_edge_projection(graph, &visible_nodes)?;
         let components = build_components(&visible_nodes, &outgoing, &node_infos);
 
-        Ok(Self {
-            graph,
-            request,
-            context,
+        Self {
             node_infos,
-            visible_edges,
+            visible_edges: input.edges().to_vec(),
             components,
             placements: BTreeMap::new(),
-        })
+            preserve_canvas_coordinates: input.has_pinned_nodes(),
+        }
     }
 
-    fn layout(&mut self, request: &LayoutRequest) {
+    fn layout(&mut self, options: LayoutOptions) -> Result<(), LayoutError> {
         if self.node_infos.is_empty() {
-            return;
+            return Ok(());
         }
 
-        let ring_gap = compute_ring_gap(request, &self.node_infos);
+        let ring_gap = compute_ring_gap(options, &self.node_infos);
         let component_radius =
             compute_component_radius(ring_gap, &self.components, &self.node_infos);
-        let angle_offset = direction_angle_offset(request.options.direction);
+        let angle_offset = direction_angle_offset(options.direction);
         let components = self.components.clone();
         let component_count = components.len().max(1) as f32;
 
         for (index, component) in components.iter().enumerate() {
-            let root_center = if self.context.pinned_nodes.contains(&component.root) {
-                self.node_infos[&component.root].current_center
+            let root_center = if self
+                .node_infos
+                .get(&component.root)
+                .is_some_and(|info| info.pinned)
+            {
+                self.node_infos
+                    .get(&component.root)
+                    .map(|info| info.current_center)
+                    .unwrap_or_default()
             } else if self.components.len() == 1 {
                 CanvasPoint { x: 0.0, y: 0.0 }
             } else {
@@ -167,89 +126,93 @@ impl<'a> MindMapProjection<'a> {
                 )
             };
 
-            self.layout_node(MindMapLayoutNode {
-                node: component.root,
-                center: root_center,
-                start_angle: angle_offset,
-                end_angle: angle_offset + TAU,
-                ring_gap,
+            self.layout_component(
                 component,
-                depth: 0,
-            });
+                ring_gap,
+                MindMapLayoutNode {
+                    node: component.root,
+                    center: root_center,
+                    start_angle: angle_offset,
+                    end_angle: angle_offset + TAU,
+                    depth: 0,
+                },
+            )?;
         }
+
+        Ok(())
     }
 
-    fn layout_node(&mut self, frame: MindMapLayoutNode<'_>) {
-        let MindMapLayoutNode {
-            node,
-            center,
-            start_angle,
-            end_angle,
-            ring_gap,
-            component,
-            depth,
-        } = frame;
-        let Some(info) = self.node_infos.get(&node).copied() else {
-            return;
-        };
-        let final_center = if info.pinned {
-            info.current_center
-        } else {
-            center
-        };
-        let pos = position_from_center(final_center, info.size, info.origin);
+    fn layout_component(
+        &mut self,
+        component: &MindMapComponent,
+        ring_gap: f32,
+        root: MindMapLayoutNode,
+    ) -> Result<(), LayoutError> {
+        let mut stack = vec![root];
 
-        self.placements.insert(
-            node,
-            LayoutNodePosition {
+        while let Some(frame) = stack.pop() {
+            let MindMapLayoutNode {
                 node,
-                pos,
-                center: final_center,
-                size: info.size,
-            },
-        );
+                center,
+                start_angle,
+                end_angle,
+                depth,
+            } = frame;
+            let Some(info) = self.node_infos.get(&node).copied() else {
+                continue;
+            };
+            let final_center = if info.pinned {
+                info.current_center
+            } else {
+                center
+            };
+            self.placements.insert(node, final_center);
 
-        let Some(children) = component.children.get(&node) else {
-            return;
-        };
-        if children.is_empty() {
-            return;
+            let Some(children) = component.children.get(&node) else {
+                continue;
+            };
+            if children.is_empty() {
+                continue;
+            }
+
+            let total_demand = children
+                .iter()
+                .map(|child| component.demand.get(child).copied().unwrap_or(1.0))
+                .sum::<f32>()
+                .max(1.0);
+            let sector_span = end_angle - start_angle;
+            let mut cursor = start_angle;
+            let mut child_frames = Vec::with_capacity(children.len());
+
+            for child in children {
+                let child_demand = component.demand.get(child).copied().unwrap_or(1.0);
+                let child_span = sector_span * (child_demand / total_demand);
+                let child_angle = cursor + child_span * 0.5;
+                let child_center =
+                    polar_point(final_center, ring_gap * (depth as f32 + 1.0), child_angle);
+                child_frames.push(MindMapLayoutNode {
+                    node: *child,
+                    center: child_center,
+                    start_angle: cursor,
+                    end_angle: cursor + child_span,
+                    depth: depth + 1,
+                });
+                cursor += child_span;
+            }
+
+            stack.extend(child_frames.into_iter().rev());
         }
 
-        let total_demand = children
-            .iter()
-            .map(|child| component.demand.get(child).copied().unwrap_or(1.0))
-            .sum::<f32>()
-            .max(1.0);
-        let sector_span = end_angle - start_angle;
-        let mut cursor = start_angle;
-
-        for child in children {
-            let child_demand = component.demand.get(child).copied().unwrap_or(1.0);
-            let child_span = sector_span * (child_demand / total_demand);
-            let child_angle = cursor + child_span * 0.5;
-            let child_center =
-                polar_point(final_center, ring_gap * (depth as f32 + 1.0), child_angle);
-            self.layout_node(MindMapLayoutNode {
-                node: *child,
-                center: child_center,
-                start_angle: cursor,
-                end_angle: cursor + child_span,
-                ring_gap,
-                component,
-                depth: depth + 1,
-            });
-            cursor += child_span;
-        }
+        Ok(())
     }
 
-    fn into_result(mut self) -> Result<LayoutResult, LayoutError> {
-        Ok(result_from_placements(
-            self.graph,
-            self.request.options,
-            &mut self.placements,
-            &self.visible_edges,
-        ))
+    fn into_result(self) -> Result<LayoutPlacements, LayoutError> {
+        let coordinate_frame = if self.preserve_canvas_coordinates {
+            LayoutCoordinateFrame::PreserveCanvasCoordinates
+        } else {
+            LayoutCoordinateFrame::NormalizeToMargin
+        };
+        placements_from_centers(self.placements, &self.visible_edges, coordinate_frame)
     }
 }
 
@@ -258,104 +221,61 @@ fn build_components(
     outgoing: &BTreeMap<NodeId, Vec<NodeId>>,
     node_infos: &BTreeMap<NodeId, MindMapNodeInfo>,
 ) -> Vec<MindMapComponent> {
-    let mut roots = visible_nodes
-        .iter()
-        .copied()
-        .filter(|node| incoming_count(*node, outgoing) == 0)
-        .collect::<Vec<_>>();
-    let root_set = roots.iter().copied().collect::<BTreeSet<_>>();
-    roots.extend(
-        visible_nodes
-            .iter()
-            .copied()
-            .filter(|node| !root_set.contains(node)),
-    );
+    build_spanning_forest(visible_nodes, outgoing)
+        .into_iter()
+        .map(|component| {
+            let max_depth = component.depth.values().copied().max().unwrap_or(0);
+            let demand = compute_subtree_demand(&component, node_infos);
 
-    let mut visited = BTreeSet::new();
-    let mut components = Vec::new();
-
-    for root in roots {
-        if !visited.insert(root) {
-            continue;
-        }
-
-        let mut children: BTreeMap<NodeId, Vec<NodeId>> = BTreeMap::new();
-        let mut depth: BTreeMap<NodeId, usize> = BTreeMap::new();
-        let mut queue = VecDeque::new();
-
-        queue.push_back(root);
-        depth.insert(root, 0);
-
-        while let Some(node) = queue.pop_front() {
-            let child_depth = depth.get(&node).copied().unwrap_or(0) + 1;
-            let next_nodes = outgoing.get(&node).cloned().unwrap_or_default();
-
-            for child in next_nodes {
-                if !visible_nodes.contains(&child) || !visited.insert(child) {
-                    continue;
-                }
-                children.entry(node).or_default().push(child);
-                depth.insert(child, child_depth);
-                queue.push_back(child);
+            MindMapComponent {
+                root: component.root,
+                children: component.children,
+                demand,
+                max_depth,
             }
-        }
-
-        let mut demand = BTreeMap::new();
-        let max_depth = depth.values().copied().max().unwrap_or(0);
-        compute_subtree_demand(root, &children, node_infos, &mut demand);
-
-        components.push(MindMapComponent {
-            root,
-            children,
-            demand,
-            max_depth,
-        });
-    }
-
-    components
+        })
+        .collect()
 }
 
 fn compute_subtree_demand(
-    node: NodeId,
-    children: &BTreeMap<NodeId, Vec<NodeId>>,
+    component: &SpanningForestComponent,
     node_infos: &BTreeMap<NodeId, MindMapNodeInfo>,
-    memo: &mut BTreeMap<NodeId, f32>,
-) -> f32 {
-    if let Some(value) = memo.get(&node) {
-        return *value;
-    }
+) -> BTreeMap<NodeId, f32> {
+    let mut demand = BTreeMap::new();
+    let mut stack = vec![(component.root, false)];
 
-    let mut total = node_infos
-        .get(&node)
-        .map(|info| info.arc_demand)
-        .unwrap_or(1.0);
-    if let Some(next) = children.get(&node) {
-        for child in next {
-            total += compute_subtree_demand(*child, children, node_infos, memo);
+    while let Some((node, expanded)) = stack.pop() {
+        if !expanded {
+            stack.push((node, true));
+            if let Some(children) = component.children.get(&node) {
+                for child in children.iter().rev() {
+                    stack.push((*child, false));
+                }
+            }
+            continue;
         }
+
+        let mut total = node_infos
+            .get(&node)
+            .map(|info| info.arc_demand)
+            .unwrap_or(1.0);
+        if let Some(children) = component.children.get(&node) {
+            for child in children {
+                total += demand.get(child).copied().unwrap_or(1.0);
+            }
+        }
+        demand.insert(node, total);
     }
 
-    memo.insert(node, total);
-    total
+    demand
 }
 
-fn incoming_count(node: NodeId, outgoing: &BTreeMap<NodeId, Vec<NodeId>>) -> usize {
-    outgoing
-        .values()
-        .flat_map(|children| children.iter())
-        .filter(|child| **child == node)
-        .count()
-}
-
-fn compute_ring_gap(
-    request: &LayoutRequest,
-    node_infos: &BTreeMap<NodeId, MindMapNodeInfo>,
-) -> f32 {
+fn compute_ring_gap(options: LayoutOptions, node_infos: &BTreeMap<NodeId, MindMapNodeInfo>) -> f32 {
     let widest = node_infos
         .values()
         .map(|info| info.size.width.max(info.size.height))
         .fold(0.0, f32::max);
-    let spacing = request.options.spacing;
+    let spacing = options.spacing;
     (widest * 1.25 + spacing.ranksep.max(spacing.nodesep.max(24.0))).max(80.0)
 }
 

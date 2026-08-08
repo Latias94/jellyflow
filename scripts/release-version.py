@@ -11,12 +11,22 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PUBLISHABLE_CRATES = (
+PUBLISHABLE_CRATES = tuple(
+    crate
+    for crate in (ROOT / "scripts" / "release-crates.txt").read_text(encoding="utf-8").splitlines()
+    if crate
+)
+if not PUBLISHABLE_CRATES:
+    raise RuntimeError("the ordered release crate set is empty")
+WORKSPACE_INTERNAL_DEPENDENCIES = (
     "jellyflow-core",
-    "jellyflow-layout",
     "jellyflow-runtime",
-    "jellyflow",
-    "jellyflow-egui",
+)
+PRODUCT_MANIFEST = ROOT / "examples" / "canvas-jellyflow" / "Cargo.toml"
+PRODUCT_PACKAGE = "open-gpui-canvas-jellyflow"
+CHANGELOG = ROOT / "CHANGELOG.md"
+CHANGELOG_RELEASE_HEADING = re.compile(
+    r"^## \[(?P<version>[^\]]+)\](?: - (?P<date>.+))?$"
 )
 
 
@@ -32,7 +42,37 @@ def load_toml(path: Path) -> dict:
 
 def cargo_workspace_version() -> str:
     data = load_toml(ROOT / "Cargo.toml")
-    return str(data["workspace"]["package"]["version"])
+    version = data["workspace"]["package"]["version"]
+    if not isinstance(version, str):
+        raise ValueError("Cargo workspace package.version must be a string")
+    return version
+
+
+def workspace_dependency_version(dependency_name: str) -> str:
+    data = load_toml(ROOT / "Cargo.toml")
+    dependency = data["workspace"]["dependencies"].get(dependency_name)
+    if isinstance(dependency, str):
+        return dependency
+    if isinstance(dependency, dict) and isinstance(dependency.get("version"), str):
+        return dependency["version"]
+    raise ValueError(
+        f"workspace dependency {dependency_name!r} must declare a string version constraint"
+    )
+
+
+def product_version() -> str:
+    data = load_toml(PRODUCT_MANIFEST)
+    package = data["package"]
+    package_name = package.get("name")
+    if package_name != PRODUCT_PACKAGE:
+        raise ValueError(
+            f"{PRODUCT_MANIFEST.relative_to(ROOT)} package name {package_name!r} "
+            f"does not match expected {PRODUCT_PACKAGE!r}"
+        )
+    version = package.get("version")
+    if not isinstance(version, str):
+        raise ValueError(f"{PRODUCT_PACKAGE} package.version must be a string")
+    return version
 
 
 def crate_version(crate_name: str) -> str:
@@ -46,29 +86,77 @@ def crate_version(crate_name: str) -> str:
     raise ValueError(f"{crate_name} does not have a supported package.version field")
 
 
+def extract_release_notes(changelog: str, version: str) -> str:
+    """Return one exact, non-empty release section from Keep a Changelog Markdown."""
+
+    validate_semver(version)
+    lines = changelog.splitlines()
+    matching_headings = [
+        index
+        for index, line in enumerate(lines)
+        if (match := CHANGELOG_RELEASE_HEADING.fullmatch(line)) is not None
+        and match.group("version") == version
+    ]
+    if not matching_headings:
+        raise ValueError(f"CHANGELOG.md is missing an exact ## [{version}] release section")
+    if len(matching_headings) != 1:
+        raise ValueError(
+            f"CHANGELOG.md contains duplicate ## [{version}] release sections"
+        )
+
+    start = matching_headings[0] + 1
+    end = next(
+        (index for index in range(start, len(lines)) if lines[index].startswith("## ")),
+        len(lines),
+    )
+    notes = "\n".join(lines[start:end]).strip()
+    if not notes:
+        raise ValueError(f"CHANGELOG.md ## [{version}] release section is empty")
+    return notes
+
+
+def changelog_release_notes(version: str) -> str:
+    return extract_release_notes(CHANGELOG.read_text(encoding="utf-8"), version)
+
+
 def check_versions(version: str) -> int:
     validate_semver(version)
+    release_notes = changelog_release_notes(version)
 
-    actual = {"Cargo workspace": cargo_workspace_version()}
-    actual.update({crate: crate_version(crate) for crate in PUBLISHABLE_CRATES})
+    actual = [("Cargo workspace version", cargo_workspace_version())]
+    actual.extend(
+        (f"{crate} package version", crate_version(crate))
+        for crate in PUBLISHABLE_CRATES
+    )
+    actual.extend(
+        (
+            f"workspace dependency {dependency} version constraint",
+            workspace_dependency_version(dependency),
+        )
+        for dependency in WORKSPACE_INTERNAL_DEPENDENCIES
+    )
+    actual.append((f"{PRODUCT_PACKAGE} package version", product_version()))
 
     failed = False
-    for name, actual_version in actual.items():
+    for label, actual_version in actual:
         if actual_version == version:
-            print(f"{name}: {actual_version}")
+            print(f"{label}: {actual_version}")
             continue
         failed = True
         print(
-            f"::error::{name} version {actual_version!r} does not match expected {version!r}",
+            f"::error::{label} {actual_version!r} does not match expected {version!r}",
             file=sys.stderr,
         )
+
+    non_empty_lines = sum(bool(line.strip()) for line in release_notes.splitlines())
+    print(f"CHANGELOG release section: {version} ({non_empty_lines} non-empty lines)")
 
     return 1 if failed else 0
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["check", "crate-version"])
+    parser.add_argument("command", choices=["check", "crate-version", "release-notes"])
     parser.add_argument("--version")
     parser.add_argument("--crate")
     args = parser.parse_args()
@@ -76,12 +164,29 @@ def main() -> int:
     if args.command == "check":
         if args.version is None:
             parser.error("check requires --version")
-        return check_versions(args.version)
+        try:
+            return check_versions(args.version)
+        except (FileNotFoundError, KeyError, TypeError, ValueError) as error:
+            print(f"::error::{error}", file=sys.stderr)
+            return 1
     if args.command == "crate-version":
         if args.crate is None:
             parser.error("crate-version requires --crate")
-        print(crate_version(args.crate))
-        return 0
+        try:
+            print(crate_version(args.crate))
+            return 0
+        except (FileNotFoundError, KeyError, TypeError, ValueError) as error:
+            print(f"::error::{error}", file=sys.stderr)
+            return 1
+    if args.command == "release-notes":
+        if args.version is None:
+            parser.error("release-notes requires --version")
+        try:
+            print(changelog_release_notes(args.version))
+            return 0
+        except (FileNotFoundError, ValueError) as error:
+            print(f"::error::{error}", file=sys.stderr)
+            return 1
     raise AssertionError(args.command)
 
 

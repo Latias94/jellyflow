@@ -1,10 +1,16 @@
 [workspace]
-members = ["crates/*"]
+members = [
+    "crates/jellyflow-core",
+    "crates/jellyflow-egui",
+    "crates/jellyflow-layout",
+    "crates/jellyflow-open-gpui",
+    "crates/jellyflow-runtime",
+]
 exclude = ["examples/canvas-jellyflow", "repo-ref/*"]
 resolver = "2"
 
 [workspace.package]
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.95"
 authors = ["Mingzhen Zhuang <superfrankie621@gmail.com>"]
@@ -14,15 +20,24 @@ homepage = "https://github.com/Latias94/jellyflow"
 
 [workspace.dependencies]
 dugong = "0.8.0-alpha.1"
-jellyflow = { version = "0.3.0", path = "crates/jellyflow" }
-jellyflow-core = { version = "0.3.0", path = "crates/jellyflow-core" }
-jellyflow-layout = { version = "0.3.0", path = "crates/jellyflow-layout" }
-jellyflow-runtime = { version = "0.3.0", path = "crates/jellyflow-runtime" }
-keyboard-types = { version = "0.8.3", features = ["serde"] }
+futures-util = "0.3"
+jellyflow-core = { version = "0.4.0", path = "crates/jellyflow-core" }
+jellyflow-runtime = { version = "0.4.0", path = "crates/jellyflow-runtime" }
+libc = "0.2"
+lyon = "1.0"
+rpds = { version = "1.2.1", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["unbounded_depth"] }
 thiserror = "2"
+tempfile = "3"
 uuid = { version = "1", features = ["v4", "v5", "serde", "js"] }
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+] }
+xattr = "1"
 
 [profile.dev]
 opt-level = 1

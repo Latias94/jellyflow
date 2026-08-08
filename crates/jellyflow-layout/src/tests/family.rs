@@ -1,7 +1,17 @@
 use crate::{
-    LayoutEngineCapability, LayoutEngineId, LayoutEngineMetadata, LayoutEngineRegistry,
-    LayoutError, LayoutFamilyId, LayoutFamilyMetadata, builtin_layout_engine_registry,
+    LayoutEngine, LayoutEngineCapability, LayoutEngineDescriptor, LayoutEngineId,
+    LayoutEngineMetadata, LayoutEngineRegistry, LayoutError, LayoutFamilyId, LayoutFamilyMetadata,
+    LayoutPlacements, PreparedLayoutInput, builtin_layout_engine_registry,
 };
+
+#[derive(Clone, Copy)]
+struct NoopEngine;
+
+impl LayoutEngine for NoopEngine {
+    fn place(&self, _input: &PreparedLayoutInput<'_>) -> Result<LayoutPlacements, LayoutError> {
+        Ok(LayoutPlacements::normalize_to_margin([]))
+    }
+}
 
 #[test]
 fn builtin_registry_groups_mind_map_engines_by_family() {
@@ -61,32 +71,50 @@ fn builtin_registry_groups_layered_engines_by_family() {
 }
 
 #[test]
-fn registry_rejects_duplicate_family_metadata() {
+fn registry_reuses_equal_family_metadata_and_rejects_conflicts_atomically() {
     let mut registry = LayoutEngineRegistry::new();
     let family = LayoutFamilyMetadata::new("custom.family", "Custom family");
-    registry.insert_family(family.clone()).unwrap();
+    registry
+        .register(descriptor("custom.first", family.clone()))
+        .unwrap();
+    registry
+        .register(descriptor("custom.second", family.clone()))
+        .unwrap();
 
     let err = registry
-        .insert_family(family.clone())
-        .expect_err("duplicate family");
+        .register(descriptor(
+            "custom.conflict",
+            LayoutFamilyMetadata::new(family.id.clone(), "Different family"),
+        ))
+        .expect_err("conflicting family");
 
-    assert_eq!(err, LayoutError::DuplicateLayoutFamily(family.id));
+    assert_eq!(err, LayoutError::ConflictingLayoutFamily(family.id));
+    assert!(!registry.contains(&LayoutEngineId::new("custom.conflict")));
 }
 
 #[test]
-fn registry_rejects_duplicate_engine_metadata() {
+fn registry_rejects_descriptor_family_mismatch_without_partial_registration() {
     let mut registry = LayoutEngineRegistry::new();
-    let metadata = LayoutEngineMetadata::new("custom.engine", "custom.family", "Custom engine");
-    registry.insert_metadata(metadata.clone()).unwrap();
+    let family = LayoutFamilyMetadata::new("custom.family", "Custom family");
+    let metadata = LayoutEngineMetadata::new("custom.engine", "other.family", "Custom engine");
 
     let err = registry
-        .insert_metadata(metadata.clone())
-        .expect_err("duplicate metadata");
+        .register(LayoutEngineDescriptor::new(
+            family.clone(),
+            metadata.clone(),
+            NoopEngine,
+        ))
+        .expect_err("family mismatch");
 
     assert_eq!(
         err,
-        LayoutError::DuplicateLayoutEngineMetadata(metadata.engine)
+        LayoutError::LayoutEngineFamilyMismatch {
+            engine: metadata.engine.clone(),
+            metadata_family: metadata.family,
+            descriptor_family: family.id,
+        }
     );
+    assert!(!registry.contains(&metadata.engine));
 }
 
 #[test]
@@ -112,4 +140,9 @@ fn family_and_metadata_ids_are_deterministic() {
             "tidy_tree"
         ]
     );
+}
+
+fn descriptor(id: &str, family: LayoutFamilyMetadata) -> LayoutEngineDescriptor {
+    let metadata = LayoutEngineMetadata::new(id, family.id.clone(), id);
+    LayoutEngineDescriptor::new(family, metadata, NoopEngine)
 }

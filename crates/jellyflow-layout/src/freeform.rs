@@ -1,125 +1,72 @@
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
-use jellyflow_core::{CanvasPoint, CanvasRect, CanvasSize, Graph, GraphTransaction, NodeId};
+use jellyflow_core::{CanvasPoint, CanvasRect, CanvasSize, NodeId};
 
 use crate::engine::{
-    LayoutContext, LayoutDirection, LayoutEngine, LayoutEngineId, LayoutError, LayoutNodePosition,
-    LayoutOptions, LayoutRequest, LayoutResult, MIND_MAP_FREEFORM_LAYOUT_ENGINE_ID,
-    node_rect_from_position, position_from_center, resolve_node_origin, resolve_node_size,
-    validate_request,
+    LayoutCoordinateFrame, LayoutDirection, LayoutEngine, LayoutError, LayoutOptions,
+    LayoutPlacements, PreparedLayoutEdge, PreparedLayoutInput, checked_canvas_point, checked_f32,
 };
-use crate::projection::{
-    VisibleLayoutEdge, build_visible_edge_list, center_from_position, result_from_placements,
-};
+use crate::projection::placements_from_centers;
 
 /// Built-in freeform mind-map engine that only resolves overlaps.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct MindMapFreeformLayoutEngine;
 
 impl LayoutEngine for MindMapFreeformLayoutEngine {
-    fn id(&self) -> LayoutEngineId {
-        LayoutEngineId::new(MIND_MAP_FREEFORM_LAYOUT_ENGINE_ID)
-    }
-
-    fn layout(
-        &self,
-        graph: &Graph,
-        request: &LayoutRequest,
-        context: &LayoutContext,
-    ) -> Result<LayoutResult, LayoutError> {
-        layout_graph_with_mind_map_freeform_context(graph, request, context)
+    fn place(&self, input: &PreparedLayoutInput<'_>) -> Result<LayoutPlacements, LayoutError> {
+        run_mind_map_freeform_layout(input)
     }
 }
 
-/// Runs the native freeform mind-map engine.
-pub fn layout_graph_with_mind_map_freeform(
-    graph: &Graph,
-    request: &LayoutRequest,
-) -> Result<LayoutResult, LayoutError> {
-    layout_graph_with_mind_map_freeform_context(graph, request, &LayoutContext::default())
-}
-
-/// Runs the native freeform mind-map engine and converts the result into a transaction.
-pub fn layout_graph_to_transaction_with_mind_map_freeform(
-    graph: &Graph,
-    request: &LayoutRequest,
-) -> Result<GraphTransaction, LayoutError> {
-    layout_graph_with_mind_map_freeform(graph, request)?.to_transaction(graph)
-}
-
-fn layout_graph_with_mind_map_freeform_context(
-    graph: &Graph,
-    request: &LayoutRequest,
-    context: &LayoutContext,
-) -> Result<LayoutResult, LayoutError> {
-    validate_request(graph, request)?;
-
-    let mut projection = FreeformProjection::new(graph, request, context)?;
-    projection.layout(request.options);
+fn run_mind_map_freeform_layout(
+    input: &PreparedLayoutInput<'_>,
+) -> Result<LayoutPlacements, LayoutError> {
+    let mut projection = FreeformProjection::new(input);
+    projection.layout(input.options())?;
     projection.into_result()
 }
 
-struct FreeformProjection<'a> {
-    graph: &'a Graph,
-    request: &'a LayoutRequest,
+struct FreeformProjection {
     node_infos: BTreeMap<NodeId, FreeformNodeInfo>,
-    visible_edges: Vec<VisibleLayoutEdge>,
-    placements: BTreeMap<NodeId, LayoutNodePosition>,
+    visible_edges: Vec<PreparedLayoutEdge>,
+    placements: BTreeMap<NodeId, CanvasPoint>,
+    preserve_canvas_coordinates: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
 struct FreeformNodeInfo {
     size: CanvasSize,
-    origin: (f32, f32),
     current_center: CanvasPoint,
     pinned: bool,
 }
 
-impl<'a> FreeformProjection<'a> {
-    fn new(
-        graph: &'a Graph,
-        request: &'a LayoutRequest,
-        context: &'a LayoutContext,
-    ) -> Result<Self, LayoutError> {
+impl FreeformProjection {
+    fn new(input: &PreparedLayoutInput<'_>) -> Self {
         let mut node_infos = BTreeMap::new();
-        let mut visible_nodes = BTreeSet::new();
 
-        for (id, node) in graph.nodes() {
-            if node.hidden || !request.scope.contains(*id) {
-                continue;
-            }
-
-            let size = resolve_node_size(graph, request, context, *id)?;
-            let origin = resolve_node_origin(node.origin, request.options.node_origin, context);
-            let current_center = center_from_position(node.pos, size, origin);
-
+        for node in input.nodes() {
             node_infos.insert(
-                *id,
+                node.id(),
                 FreeformNodeInfo {
-                    size,
-                    origin,
-                    current_center,
-                    pinned: context.pinned_nodes.contains(id),
+                    size: node.size(),
+                    current_center: node.current_center(),
+                    pinned: node.is_pinned(),
                 },
             );
-            visible_nodes.insert(*id);
         }
 
-        let visible_edges = build_visible_edge_list(graph, &visible_nodes)?;
-
-        Ok(Self {
-            graph,
-            request,
+        Self {
             node_infos,
-            visible_edges,
+            visible_edges: input.edges().to_vec(),
             placements: BTreeMap::new(),
-        })
+            preserve_canvas_coordinates: input.has_pinned_nodes(),
+        }
     }
 
-    fn layout(&mut self, options: LayoutOptions) {
+    fn layout(&mut self, options: LayoutOptions) -> Result<(), LayoutError> {
         if self.node_infos.is_empty() {
-            return;
+            return Ok(());
         }
 
         let gap = freeform_gap(options);
@@ -134,25 +81,20 @@ impl<'a> FreeformProjection<'a> {
             let center = if info.pinned {
                 info.current_center
             } else {
-                self.resolve_node_center(info, gap, options.direction)
+                self.resolve_node_center(node, info, gap, options.direction)?
             };
-            let pos = position_from_center(center, info.size, info.origin);
-
-            self.placements.insert(
-                node,
-                LayoutNodePosition {
-                    node,
-                    pos,
-                    center,
-                    size: info.size,
-                },
-            );
+            self.placements.insert(node, center);
         }
+
+        Ok(())
     }
 
     fn compare_nodes(&self, left: NodeId, right: NodeId, direction: LayoutDirection) -> Ordering {
-        let left_info = self.node_infos.get(&left).expect("left node info");
-        let right_info = self.node_infos.get(&right).expect("right node info");
+        let (Some(left_info), Some(right_info)) =
+            (self.node_infos.get(&left), self.node_infos.get(&right))
+        else {
+            return left.cmp(&right);
+        };
 
         right_info
             .pinned
@@ -184,37 +126,54 @@ impl<'a> FreeformProjection<'a> {
 
     fn resolve_node_center(
         &self,
+        node: NodeId,
         info: FreeformNodeInfo,
         gap: f32,
         direction: LayoutDirection,
-    ) -> CanvasPoint {
+    ) -> Result<CanvasPoint, LayoutError> {
         let mut center = info.current_center;
+        let max_shifts = self.placements.len();
 
-        for _ in 0..64 {
-            let rect = rect_from_center(center, info.size, info.origin);
-            let Some(other) = self
-                .placements
-                .values()
-                .map(node_rect_from_position)
-                .find(|other| rects_overlap_with_gap(rect, *other, gap))
-            else {
-                break;
+        for attempt in 0..=max_shifts {
+            let rect = rect_from_center(center, info.size)
+                .ok_or(LayoutError::InvalidResultNodeGeometry(node))?;
+            let mut collision = None;
+            for (placed_node, placed_center) in &self.placements {
+                let placed_size = self
+                    .node_infos
+                    .get(placed_node)
+                    .map(|info| info.size)
+                    .ok_or(LayoutError::InvalidResultNodeGeometry(*placed_node))?;
+                let other = rect_from_center(*placed_center, placed_size)
+                    .ok_or(LayoutError::InvalidResultNodeGeometry(*placed_node))?;
+                if rects_overlap_with_gap(rect, other, gap)
+                    .ok_or(LayoutError::InvalidResultNodeGeometry(node))?
+                {
+                    collision = Some(other);
+                    break;
+                }
+            }
+            let Some(other) = collision else {
+                return Ok(center);
             };
+            if attempt == max_shifts {
+                return Err(LayoutError::UnresolvedOverlap(node));
+            }
 
-            center =
-                shift_center_out_of_rect(center, info.size, info.origin, other, direction, gap);
+            center = shift_center_out_of_rect(center, info.size, other, direction, gap)
+                .ok_or(LayoutError::InvalidResultNodeGeometry(node))?;
         }
 
-        center
+        Err(LayoutError::UnresolvedOverlap(node))
     }
 
-    fn into_result(mut self) -> Result<LayoutResult, LayoutError> {
-        Ok(result_from_placements(
-            self.graph,
-            self.request.options,
-            &mut self.placements,
-            &self.visible_edges,
-        ))
+    fn into_result(self) -> Result<LayoutPlacements, LayoutError> {
+        let coordinate_frame = if self.preserve_canvas_coordinates {
+            LayoutCoordinateFrame::PreserveCanvasCoordinates
+        } else {
+            LayoutCoordinateFrame::NormalizeToMargin
+        };
+        placements_from_centers(self.placements, &self.visible_edges, coordinate_frame)
     }
 }
 
@@ -222,66 +181,75 @@ fn freeform_gap(options: LayoutOptions) -> f32 {
     options.spacing.nodesep.max(24.0)
 }
 
-fn rect_from_center(center: CanvasPoint, size: CanvasSize, origin: (f32, f32)) -> CanvasRect {
-    CanvasRect {
-        origin: position_from_center(center, size, origin),
+fn rect_from_center(center: CanvasPoint, size: CanvasSize) -> Option<CanvasRect> {
+    let rect = CanvasRect {
+        origin: checked_canvas_point(
+            f64::from(center.x) - f64::from(size.width) * 0.5,
+            f64::from(center.y) - f64::from(size.height) * 0.5,
+        )?,
         size,
-    }
+    };
+    rect.is_positive_finite().then_some(rect)
 }
 
 fn shift_center_out_of_rect(
     center: CanvasPoint,
     size: CanvasSize,
-    origin: (f32, f32),
     other: CanvasRect,
     direction: LayoutDirection,
     gap: f32,
-) -> CanvasPoint {
-    let rect = rect_from_center(center, size, origin);
-    let expanded = expand_rect(other, gap);
+) -> Option<CanvasPoint> {
+    let rect = rect_from_center(center, size)?;
+    let expanded = expand_rect(other, gap)?;
+    let rect_max = rect.checked_max()?;
+    let expanded_max = expanded.checked_max()?;
 
     match direction {
-        LayoutDirection::TopToBottom => CanvasPoint {
-            x: center.x,
-            y: center.y + (expanded.origin.y + expanded.size.height - rect.origin.y),
-        },
-        LayoutDirection::BottomToTop => CanvasPoint {
-            x: center.x,
-            y: center.y - (rect.origin.y + rect.size.height - expanded.origin.y),
-        },
-        LayoutDirection::LeftToRight => CanvasPoint {
-            x: center.x + (expanded.origin.x + expanded.size.width - rect.origin.x),
-            y: center.y,
-        },
-        LayoutDirection::RightToLeft => CanvasPoint {
-            x: center.x - (rect.origin.x + rect.size.width - expanded.origin.x),
-            y: center.y,
-        },
+        LayoutDirection::TopToBottom => checked_canvas_point(
+            f64::from(center.x),
+            f64::from(center.y) + f64::from(expanded_max.y) - f64::from(rect.origin.y),
+        ),
+        LayoutDirection::BottomToTop => checked_canvas_point(
+            f64::from(center.x),
+            f64::from(center.y) - (f64::from(rect_max.y) - f64::from(expanded.origin.y)),
+        ),
+        LayoutDirection::LeftToRight => checked_canvas_point(
+            f64::from(center.x) + f64::from(expanded_max.x) - f64::from(rect.origin.x),
+            f64::from(center.y),
+        ),
+        LayoutDirection::RightToLeft => checked_canvas_point(
+            f64::from(center.x) - (f64::from(rect_max.x) - f64::from(expanded.origin.x)),
+            f64::from(center.y),
+        ),
     }
 }
 
-fn rects_overlap_with_gap(candidate: CanvasRect, other: CanvasRect, gap: f32) -> bool {
-    let other = expand_rect(other, gap);
-    let candidate_right = candidate.origin.x + candidate.size.width;
-    let candidate_bottom = candidate.origin.y + candidate.size.height;
-    let other_right = other.origin.x + other.size.width;
-    let other_bottom = other.origin.y + other.size.height;
+fn rects_overlap_with_gap(candidate: CanvasRect, other: CanvasRect, gap: f32) -> Option<bool> {
+    let other = expand_rect(other, gap)?;
+    let candidate_max = candidate.checked_max()?;
+    let other_max = other.checked_max()?;
 
-    candidate.origin.x < other_right
-        && candidate_right > other.origin.x
-        && candidate.origin.y < other_bottom
-        && candidate_bottom > other.origin.y
+    Some(
+        candidate.origin.x < other_max.x
+            && candidate_max.x > other.origin.x
+            && candidate.origin.y < other_max.y
+            && candidate_max.y > other.origin.y,
+    )
 }
 
-fn expand_rect(rect: CanvasRect, gap: f32) -> CanvasRect {
-    CanvasRect {
-        origin: CanvasPoint {
-            x: rect.origin.x - gap,
-            y: rect.origin.y - gap,
-        },
+fn expand_rect(rect: CanvasRect, gap: f32) -> Option<CanvasRect> {
+    if !gap.is_finite() || gap < 0.0 {
+        return None;
+    }
+    let expanded = CanvasRect {
+        origin: checked_canvas_point(
+            f64::from(rect.origin.x) - f64::from(gap),
+            f64::from(rect.origin.y) - f64::from(gap),
+        )?,
         size: CanvasSize {
-            width: rect.size.width + gap * 2.0,
-            height: rect.size.height + gap * 2.0,
+            width: checked_f32(f64::from(rect.size.width) + f64::from(gap) * 2.0)?,
+            height: checked_f32(f64::from(rect.size.height) + f64::from(gap) * 2.0)?,
         },
-    }
+    };
+    expanded.is_positive_finite().then_some(expanded)
 }

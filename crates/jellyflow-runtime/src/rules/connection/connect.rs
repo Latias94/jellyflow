@@ -1,29 +1,13 @@
-use crate::io::NodeGraphInteractionState;
 use crate::rules::ConnectPlan;
-use jellyflow_core::core::{EdgeId, Graph, PortId};
+use crate::runtime::policy::GraphRuntimePolicy;
+use jellyflow_core::core::{Edge, EdgeId, Graph, PortId};
 use jellyflow_core::interaction::NodeGraphConnectionMode;
 
 use super::common::{
-    ConnectionEndpoints, ConnectionOpBuilder, add_existing_ports_edge_op, connection_exists,
-    edge_between, resolve_policy_checked_connection,
+    ConnectionEndpoints, ConnectionPlanningContext, add_existing_ports_edge_op,
+    connection_exists_using, disconnect_for_endpoint_capacity_using,
+    resolve_policy_checked_connection,
 };
-
-/// Plans connecting two ports.
-///
-/// This is a rules-driven decision point used by the UI interaction loop.
-/// The returned ops are intended to be applied as part of a single transaction.
-pub fn plan_connect_with_mode_and_policy(
-    graph: &Graph,
-    a: PortId,
-    b: PortId,
-    mode: NodeGraphConnectionMode,
-    state: &NodeGraphInteractionState,
-) -> ConnectPlan {
-    match plan_resolved_connect(graph, a, b, mode, state) {
-        Ok(planned) => planned.into_plan(),
-        Err(plan) => plan,
-    }
-}
 
 pub(in crate::rules::connection) struct ResolvedConnectPlan<'a> {
     endpoints: ConnectionEndpoints<'a>,
@@ -40,19 +24,22 @@ impl<'a> ResolvedConnectPlan<'a> {
     }
 }
 
-pub(in crate::rules::connection) fn plan_resolved_connect<'a>(
+pub(in crate::rules::connection) fn plan_resolved_connect_using<'a>(
     graph: &'a Graph,
     a: PortId,
     b: PortId,
     mode: NodeGraphConnectionMode,
-    state: &NodeGraphInteractionState,
+    policy: &GraphRuntimePolicy,
+    edge_id: EdgeId,
+    query: &mut dyn ConnectionPlanningContext,
 ) -> Result<ResolvedConnectPlan<'a>, ConnectPlan> {
-    let endpoints = match resolve_policy_checked_connection(graph, a, b, mode, state) {
+    let endpoints = match resolve_policy_checked_connection(graph, a, b, mode, policy) {
         Ok(endpoints) => endpoints,
         Err(plan) => return Err(plan),
     };
 
-    if connection_exists(
+    if connection_exists_using(
+        query,
         graph,
         endpoints.edge_kind,
         endpoints.from_id,
@@ -65,12 +52,12 @@ pub(in crate::rules::connection) fn plan_resolved_connect<'a>(
         });
     }
 
-    let mut ops = ConnectionOpBuilder::with_endpoint_capacity_disconnects(graph, &endpoints, None);
+    let mut ops = disconnect_for_endpoint_capacity_using(query, graph, &endpoints, None, policy)?;
 
     let add_edge = match add_existing_ports_edge_op(
         graph,
-        EdgeId::new(),
-        edge_between(endpoints.edge_kind, endpoints.from_id, endpoints.to_id),
+        edge_id,
+        Edge::new(endpoints.edge_kind, endpoints.from_id, endpoints.to_id),
     ) {
         Ok(op) => op,
         Err(plan) => return Err(plan),
@@ -79,21 +66,6 @@ pub(in crate::rules::connection) fn plan_resolved_connect<'a>(
 
     Ok(ResolvedConnectPlan {
         endpoints,
-        plan: ConnectPlan::from_ops(ops.into_ops()),
+        plan: ConnectPlan::from_ops(ops),
     })
-}
-
-/// Plans connecting two ports with default interaction policy.
-pub fn plan_connect_with_mode(
-    graph: &Graph,
-    a: PortId,
-    b: PortId,
-    mode: NodeGraphConnectionMode,
-) -> ConnectPlan {
-    plan_connect_with_mode_and_policy(graph, a, b, mode, &NodeGraphInteractionState::default())
-}
-
-/// Plans connecting two ports (strict mode).
-pub fn plan_connect(graph: &Graph, a: PortId, b: PortId) -> ConnectPlan {
-    plan_connect_with_mode(graph, a, b, NodeGraphConnectionMode::Strict)
 }

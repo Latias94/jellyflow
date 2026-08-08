@@ -9,15 +9,16 @@ repository.workspace = true
 homepage.workspace = true
 documentation = "https://docs.rs/jellyflow-egui"
 readme = "README.md"
-description = "Immediate-mode egui adapter for Jellyflow node graphs."
+description = "Immediate-mode egui protocol witness for Jellyflow node graphs."
 keywords = ["egui", "graph", "node-graph", "adapter"]
 categories = ["gui", "visualization"]
 
 [dependencies]
-eframe = "0.34.3"
-jellyflow.workspace = true
-serde_json.workspace = true
+egui = "0.34.3"
+jellyflow-core.workspace = true
+jellyflow-runtime.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-egui_kittest = { version = "0.34.3", features = ["eframe", "snapshot", "wgpu"] }
+egui_kittest = "0.34.3"
+serde_json.workspace = true

@@ -1,0 +1,368 @@
+use std::collections::BTreeMap;
+
+use jellyflow_core::{CanvasPoint, NodeId, PortId};
+use jellyflow_runtime::{
+    graph::GraphRevision, graph::PortConnectionSummary, interaction::CanvasInteractionPhase,
+    interaction::CanvasInteractionPresentation, interaction::ConnectionProbe,
+    interaction::KeyboardConnectionFeedback, interaction::KeyboardConnectionPort,
+    view::ViewSession, view::ViewSessionError,
+};
+use open_gpui::{Context, Window};
+
+use crate::binding::{
+    OpenGpuiConnectionCandidateInput, OpenGpuiNodePresentationInputSignature,
+    OpenGpuiPortCandidateInput, OpenGpuiPortPresentationInput, OpenGpuiProjectedInteractionInput,
+};
+use crate::presentation::{OpenGpuiNodeInteractionState, OpenGpuiNodeLod, OpenGpuiSettlementState};
+use crate::semantic_zoom::OpenGpuiNodePresentation;
+
+use super::OpenGpuiSceneHost;
+
+#[derive(Default)]
+pub(super) struct OpenGpuiPresentationPortCache {
+    revision: Option<GraphRevision>,
+    requested: Vec<PortId>,
+    entries: Vec<(PortId, Option<PortConnectionSummary>)>,
+}
+
+impl OpenGpuiPresentationPortCache {
+    pub(super) fn refresh(
+        &mut self,
+        view: &ViewSession,
+        revision: GraphRevision,
+        requested: &[PortId],
+    ) -> Result<bool, OpenGpuiPresentationSyncError> {
+        if self.revision == Some(revision) && self.requested == requested {
+            return Ok(false);
+        }
+        let batch = view.port_connection_summaries(requested)?.into_outcome();
+        if batch.revision() != revision {
+            return Err(OpenGpuiPresentationSyncError::IncoherentRevision {
+                graph_revision: revision,
+                summary_revision: batch.revision(),
+            });
+        }
+        let entries = batch.into_entries();
+        if let Some((index, (actual, _))) = entries
+            .iter()
+            .enumerate()
+            .find(|(index, (actual, _))| requested.get(*index) != Some(actual))
+        {
+            return Err(OpenGpuiPresentationSyncError::IncoherentOrder {
+                index,
+                expected: requested[index],
+                actual: *actual,
+            });
+        }
+        self.revision = Some(revision);
+        self.requested.clear();
+        self.requested.extend_from_slice(requested);
+        self.entries = entries;
+        Ok(true)
+    }
+
+    pub(super) fn entries(&self) -> &[(PortId, Option<PortConnectionSummary>)] {
+        &self.entries
+    }
+
+    pub(super) fn clear(&mut self) {
+        self.revision = None;
+        self.requested.clear();
+        self.entries.clear();
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(super) enum OpenGpuiPresentationSyncError {
+    #[error(transparent)]
+    Session(#[from] ViewSessionError),
+    #[error(
+        "port-summary revision {summary_revision} does not match graph revision {graph_revision}"
+    )]
+    IncoherentRevision {
+        graph_revision: GraphRevision,
+        summary_revision: GraphRevision,
+    },
+    #[error("port-summary order diverged at {index}: expected {expected:?}, received {actual:?}")]
+    IncoherentOrder {
+        index: usize,
+        expected: PortId,
+        actual: PortId,
+    },
+    #[error("port-summary batch is missing graph port {port:?}")]
+    MissingPort { port: PortId },
+    #[error("presentation binding references missing graph node {node:?}")]
+    MissingNode { node: NodeId },
+}
+
+struct OpenGpuiBindingPresentationUpdate {
+    binding: open_gpui::Entity<crate::binding::OpenGpuiNodeBinding>,
+    input: OpenGpuiNodePresentationInputSignature,
+    presentation: Option<crate::presentation::OpenGpuiNodePresentationSnapshot>,
+}
+
+impl OpenGpuiSceneHost {
+    pub(super) fn sync_binding_presentations(
+        &mut self,
+        presentation_offsets: &BTreeMap<NodeId, CanvasPoint>,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), OpenGpuiPresentationSyncError> {
+        if self.interaction_owner.presentation().phase() == CanvasInteractionPhase::Idle
+            && (self.retained_nodes.hovered_node().is_some()
+                || self.retained_nodes.hovered_port().is_some())
+        {
+            self.reconcile_retained_hover_at(window.mouse_position(), cx);
+        }
+        let graph = self.view.graph_snapshot()?;
+        if self.retained_nodes.hovered_node().is_some_and(|hovered| {
+            !self
+                .retained_nodes
+                .active_in_order()
+                .any(|(instance, _)| instance == hovered)
+        }) {
+            self.retained_nodes.clear_hover();
+        }
+        if self.retained_nodes.hovered_port().is_some_and(|hovered| {
+            graph.port_instance_key(hovered.port()) != Some(hovered)
+                || self
+                    .retained_nodes
+                    .hovered_node()
+                    .is_none_or(|node| node.lifetime() != hovered.owner())
+                || self
+                    .view
+                    .geometry_snapshot()
+                    .ok()
+                    .is_none_or(|geometry| geometry.port(hovered.port()).is_none())
+        }) {
+            self.retained_nodes.clear_hovered_port(
+                self.retained_nodes
+                    .hovered_port()
+                    .expect("validated hovered port remains present"),
+            );
+        }
+
+        let mut requested_ports = Vec::new();
+        for (_, mounted) in self.retained_nodes.active_in_order() {
+            let Some(binding) = mounted.binding.as_ref() else {
+                continue;
+            };
+            requested_ports.extend(binding.read(cx).port_ids());
+        }
+        self.retained_nodes.refresh_port_presentations(
+            &self.view,
+            graph.revision(),
+            requested_ports.as_slice(),
+        )?;
+
+        let interaction = self.interaction_owner.presentation();
+        let connection = interaction.connection();
+        let keyboard_source = self.interaction_owner.retained_keyboard_connection_source();
+        let keyboard_feedback = self
+            .interaction_owner
+            .keyboard_connection_feedback()
+            .cloned();
+        let node_drag = interaction.node_drag();
+        let projected_interaction = projected_interaction_input(&interaction);
+        let summaries = self.retained_nodes.port_presentations();
+        let mut summary_cursor = 0_usize;
+        let mut updates = Vec::new();
+
+        for (instance, mounted) in self.retained_nodes.active_in_order() {
+            let Some(binding) = mounted.binding.clone() else {
+                continue;
+            };
+            let node_focused = mounted.focus.contains_focused(window, cx);
+            let binding_state = binding.read(cx);
+            let node = graph.graph().node(&instance.node()).ok_or(
+                OpenGpuiPresentationSyncError::MissingNode {
+                    node: instance.node(),
+                },
+            )?;
+            let lod = match mounted.graph_presentation() {
+                OpenGpuiNodePresentation::Detail => OpenGpuiNodeLod::Detail,
+                OpenGpuiNodePresentation::Overview if mounted.has_pinned_detail_surface() => {
+                    OpenGpuiNodeLod::PinnedDetail
+                }
+                OpenGpuiNodePresentation::Overview => OpenGpuiNodeLod::Overview,
+            };
+            let dragging = presentation_offsets.contains_key(&instance.node());
+            let node_pending = dragging && node_drag.is_some_and(|drag| drag.ticket().is_some());
+            let node_state = OpenGpuiNodeInteractionState::idle()
+                .with_selected(mounted.selected)
+                .with_hovered(self.retained_nodes.hovered_node() == Some(instance))
+                .with_focused(node_focused)
+                .with_dragging(dragging)
+                .with_disabled(!node.selectable.unwrap_or(true))
+                .with_lod(lod)
+                .with_settlement(if node_pending {
+                    OpenGpuiSettlementState::Pending
+                } else {
+                    OpenGpuiSettlementState::Idle
+                });
+
+            let port_ids = binding_state.port_ids().collect::<Vec<_>>();
+            let mut port_inputs = Vec::with_capacity(port_ids.len());
+            let mut interaction_relevant = dragging;
+            for port in port_ids {
+                let (requested, summary) = summaries
+                    .get(summary_cursor)
+                    .copied()
+                    .ok_or(OpenGpuiPresentationSyncError::MissingPort { port })?;
+                summary_cursor = summary_cursor.saturating_add(1);
+                if requested != port {
+                    return Err(OpenGpuiPresentationSyncError::IncoherentOrder {
+                        index: summary_cursor - 1,
+                        expected: port,
+                        actual: requested,
+                    });
+                }
+                let summary = summary.ok_or(OpenGpuiPresentationSyncError::MissingPort { port })?;
+                let (candidate, pending) = port_candidate_input(
+                    port,
+                    connection,
+                    keyboard_source,
+                    keyboard_feedback.as_ref(),
+                    &projected_interaction,
+                );
+                interaction_relevant |= !candidate.is_idle()
+                    || interaction
+                        .connection_intent()
+                        .is_some_and(|binding| binding_owns_port(&binding, port));
+                port_inputs.push(OpenGpuiPortPresentationInput::new(
+                    port,
+                    summary,
+                    interaction.phase() == CanvasInteractionPhase::Idle
+                        && binding_state.port_instance(port) == self.retained_nodes.hovered_port(),
+                    binding_state
+                        .port_focus_handle(port)
+                        .is_some_and(|focus| focus.is_focused(window)),
+                    candidate,
+                    pending,
+                ));
+            }
+
+            let binding_interaction = if interaction_relevant {
+                projected_interaction.clone()
+            } else {
+                OpenGpuiProjectedInteractionInput::default()
+            };
+            let input = OpenGpuiNodePresentationInputSignature::new(
+                graph.revision(),
+                binding_state.facts_revision(),
+                node_state,
+                binding_interaction,
+                port_inputs,
+            );
+            let identical = binding_state.presentation_input() == Some(&input);
+            let semantically_equal = binding_state
+                .presentation_input()
+                .is_some_and(|current| current.semantically_eq(&input));
+            if identical {
+                continue;
+            }
+            let presentation = (!semantically_equal).then(|| input.materialize());
+            updates.push(OpenGpuiBindingPresentationUpdate {
+                binding,
+                input,
+                presentation,
+            });
+        }
+        debug_assert_eq!(summary_cursor, summaries.len());
+        for update in updates {
+            update.binding.update(cx, |binding, cx| {
+                binding.set_presentation_input(update.input);
+                if let Some(presentation) = update.presentation
+                    && binding.set_presentation(presentation)
+                {
+                    cx.notify();
+                }
+            });
+        }
+        Ok(())
+    }
+}
+
+fn binding_owns_port(
+    binding: &jellyflow_runtime::interaction::ConnectionGestureBinding,
+    port: PortId,
+) -> bool {
+    binding.fixed_port_instance().port() == port
+        || binding
+            .detached_port_instance()
+            .is_some_and(|detached| detached.port() == port)
+}
+
+fn port_candidate_input(
+    port: PortId,
+    connection: Option<&jellyflow_runtime::interaction::ConnectionPresentation>,
+    keyboard_source: Option<KeyboardConnectionPort>,
+    keyboard_feedback: Option<&KeyboardConnectionFeedback>,
+    projected: &OpenGpuiProjectedInteractionInput,
+) -> (OpenGpuiPortCandidateInput, bool) {
+    let Some(connection) = connection else {
+        if keyboard_source.is_some_and(|source| source.port() == port) {
+            return (
+                OpenGpuiPortCandidateInput::Source,
+                projected.phase() == CanvasInteractionPhase::Committing,
+            );
+        }
+        if let Some(feedback) = keyboard_feedback.filter(|feedback| feedback.target() == port) {
+            return (
+                OpenGpuiPortCandidateInput::invalid(feedback.diagnostics()),
+                false,
+            );
+        }
+        return (OpenGpuiPortCandidateInput::Idle, false);
+    };
+    let binding = connection.binding();
+    let source = binding
+        .detached_port_instance()
+        .map(|detached| detached.port())
+        .unwrap_or_else(|| binding.fixed_port_instance().port());
+    if source == port {
+        return (
+            OpenGpuiPortCandidateInput::Source,
+            connection.ticket().is_some(),
+        );
+    }
+    if connection.probe().target().map(|target| target.port()) != Some(port) {
+        return (OpenGpuiPortCandidateInput::Idle, false);
+    }
+    let candidate = projected
+        .candidate_for_port(port)
+        .unwrap_or(OpenGpuiPortCandidateInput::Idle);
+    (candidate, connection.ticket().is_some())
+}
+
+fn projected_interaction_input(
+    interaction: &CanvasInteractionPresentation,
+) -> OpenGpuiProjectedInteractionInput {
+    let connection = interaction.connection();
+    let candidate = connection.and_then(|connection| {
+        let target = connection.probe().target()?;
+        let candidate = match connection.probe() {
+            ConnectionProbe::None => OpenGpuiPortCandidateInput::Idle,
+            ConnectionProbe::Deferred { .. } | ConnectionProbe::Valid { .. } => {
+                OpenGpuiPortCandidateInput::ValidTarget
+            }
+            ConnectionProbe::Invalid { diagnostics, .. } => {
+                OpenGpuiPortCandidateInput::invalid(diagnostics)
+            }
+        };
+        Some(OpenGpuiConnectionCandidateInput::new(
+            target.port(),
+            connection.probe().revision(),
+            candidate,
+        ))
+    });
+    OpenGpuiProjectedInteractionInput::new(
+        interaction.phase(),
+        interaction.generation(),
+        interaction.connection_intent(),
+        connection
+            .and_then(|connection| connection.ticket())
+            .or_else(|| interaction.node_drag().and_then(|drag| drag.ticket())),
+        candidate,
+    )
+}

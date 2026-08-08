@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-use jellyflow_core::ops::GraphOp;
+use crate::graph_kernel::GraphOp;
 
-use super::{Diagnostic, DiagnosticTarget};
+use super::Diagnostic;
 
 /// Connection decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -11,16 +11,6 @@ pub enum ConnectDecision {
     /// Accept the connection.
     Accept,
     /// Reject the connection.
-    Reject,
-}
-
-/// Delete decision.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DeleteDecision {
-    /// Accept the deletion.
-    Accept,
-    /// Reject the deletion.
     Reject,
 }
 
@@ -48,20 +38,8 @@ pub struct ConnectPlan {
 }
 
 impl ConnectPlan {
-    pub fn is_accept(&self) -> bool {
-        self.decision == ConnectDecision::Accept
-    }
-
     pub fn is_reject(&self) -> bool {
         self.decision == ConnectDecision::Reject
-    }
-
-    pub fn diagnostics(&self) -> &[Diagnostic] {
-        &self.diagnostics
-    }
-
-    pub fn ops(&self) -> &[GraphOp] {
-        &self.ops
     }
 
     pub fn into_ops(self) -> Vec<GraphOp> {
@@ -86,15 +64,6 @@ impl ConnectPlan {
         }
     }
 
-    /// Creates a rejected plan with a single error diagnostic.
-    pub fn reject(message: impl Into<String>) -> Self {
-        Self::reject_with_diagnostic(Diagnostic::error(
-            "connect.rejected",
-            DiagnosticTarget::Graph,
-            message,
-        ))
-    }
-
     pub fn reject_with_diagnostic(diagnostic: Diagnostic) -> Self {
         Self::reject_with_diagnostics(vec![diagnostic])
     }
@@ -102,85 +71,6 @@ impl ConnectPlan {
     pub fn reject_with_diagnostics(diagnostics: Vec<Diagnostic>) -> Self {
         Self {
             decision: ConnectDecision::Reject,
-            diagnostics,
-            ops: Vec::new(),
-        }
-    }
-}
-
-/// A rules-driven plan for deleting graph elements.
-///
-/// Delete planning is atomic: if any explicitly requested element is missing or not deletable under
-/// the effective interaction policy, the plan is rejected and contains no ops. Edges that are
-/// removed as a consequence of deleting a node are treated as cascaded consistency edits rather
-/// than separate direct edge deletions.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DeletePlan {
-    /// Decision.
-    pub decision: DeleteDecision,
-    /// Diagnostics explaining the decision.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub diagnostics: Vec<Diagnostic>,
-    /// Optional edits to apply if accepted.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub ops: Vec<GraphOp>,
-}
-
-impl DeletePlan {
-    pub fn is_accept(&self) -> bool {
-        self.decision == DeleteDecision::Accept
-    }
-
-    pub fn is_reject(&self) -> bool {
-        self.decision == DeleteDecision::Reject
-    }
-
-    pub fn diagnostics(&self) -> &[Diagnostic] {
-        &self.diagnostics
-    }
-
-    pub fn ops(&self) -> &[GraphOp] {
-        &self.ops
-    }
-
-    pub fn into_ops(self) -> Vec<GraphOp> {
-        self.ops
-    }
-
-    /// Creates an accepted plan with no side effects.
-    pub fn accept() -> Self {
-        Self {
-            decision: DeleteDecision::Accept,
-            diagnostics: Vec::new(),
-            ops: Vec::new(),
-        }
-    }
-
-    /// Creates an accepted plan with planned delete ops.
-    pub fn from_ops(ops: impl IntoIterator<Item = GraphOp>) -> Self {
-        Self {
-            decision: DeleteDecision::Accept,
-            diagnostics: Vec::new(),
-            ops: ops.into_iter().collect(),
-        }
-    }
-
-    /// Creates a rejected plan with a single graph-level error diagnostic.
-    pub fn reject(message: impl Into<String>) -> Self {
-        Self::reject_with_diagnostic(Diagnostic::error(
-            "delete.rejected",
-            DiagnosticTarget::Graph,
-            message,
-        ))
-    }
-
-    pub fn reject_with_diagnostic(diagnostic: Diagnostic) -> Self {
-        Self::reject_with_diagnostics(vec![diagnostic])
-    }
-
-    pub fn reject_with_diagnostics(diagnostics: Vec<Diagnostic>) -> Self {
-        Self {
-            decision: DeleteDecision::Reject,
             diagnostics,
             ops: Vec::new(),
         }

@@ -19,60 +19,45 @@ pub struct Node {
     /// Top-left position in canvas space.
     pub pos: CanvasPoint,
 
-    /// Optional node origin override (XyFlow `node.origin`).
-    ///
-    /// When omitted, runtime uses the global `NodeGraphInteractionState.node_origin`.
+    /// Optional node origin override. Omitted nodes use top-left origin.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<NodeOrigin>,
 
-    /// Whether the node can be selected (XyFlow `node.selectable`).
-    ///
-    /// When omitted, the global `NodeGraphInteractionState.elements_selectable` decides.
+    /// Optional adapter-facing selection override.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selectable: Option<bool>,
 
-    /// Whether the node can receive keyboard focus (XyFlow `node.focusable`).
-    ///
-    /// When omitted, the global `NodeGraphInteractionState.nodes_focusable` decides.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub focusable: Option<bool>,
-
-    /// Whether the node can be dragged with pointer interactions (XyFlow `node.draggable`).
-    ///
-    /// When omitted, the global `NodeGraphInteractionState.nodes_draggable` decides.
+    /// Optional adapter-facing drag override.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub draggable: Option<bool>,
 
-    /// Whether the node can be used for creating connections via editor interactions (XyFlow
-    /// `node.connectable`).
-    ///
-    /// When omitted, the global `NodeGraphInteractionState.nodes_connectable` decides.
+    /// Whether graph connections may use this node. Runtime policy supplies the fallback.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connectable: Option<bool>,
 
-    /// Whether the node can be deleted via editor interactions (XyFlow `node.deletable`).
-    ///
-    /// When omitted, the global `NodeGraphInteractionState.nodes_deletable` decides.
+    /// Whether graph commands may delete this node. Runtime policy supplies the fallback.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deletable: Option<bool>,
 
     /// Optional group container id (subflow / parent frame).
     ///
     /// This is an editor-structure concept (XyFlow `parentId` mental model) and is intentionally
-    /// orthogonal to semantic subgraphs (see ADR 0126).
+    /// orthogonal to semantic subgraphs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<GroupId>,
 
-    /// Optional per-node movement/resize extent override.
+    /// Optional adapter-facing movement/resize extent preference.
     ///
-    /// This mirrors XyFlow's `node.extent` concept. It is an editor-structure constraint (UI-facing),
-    /// not a semantic graph rule.
+    /// Core and runtime preserve this editor-structure fact but do not interpret it as a graph
+    /// invariant. A view adapter may resolve it against current native measurements before issuing
+    /// an explicit geometry command.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extent: Option<NodeExtent>,
 
-    /// Whether moving/resizing this node can expand its parent container (if any).
+    /// Whether an adapter may offer parent expansion while moving or resizing this node.
     ///
-    /// This mirrors XyFlow's `node.expandParent` behavior.
+    /// This is a persisted interaction preference, not an implicit side effect of runtime geometry
+    /// commands. Atomic parent expansion requires an explicit future group-geometry edit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expand_parent: Option<bool>,
 
@@ -95,7 +80,9 @@ pub struct Node {
     #[serde(default)]
     pub collapsed: bool,
 
-    /// Stable port ordering for this node (UI-facing).
+    /// Stable graph-member ordering for this node.
+    ///
+    /// Product and adapter presentation order is intentionally independent from this sequence.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ports: Vec<PortId>,
 
@@ -107,6 +94,28 @@ pub struct Node {
 }
 
 impl Node {
+    /// Projects this node's anchored position into a top-left canvas rectangle for `size`.
+    ///
+    /// Invalid origin components fall back to zero and finite components are clamped to the
+    /// normalized `[0, 1]` range. Invalid positions or non-positive sizes have no bounds.
+    pub fn bounds_for_size(&self, size: CanvasSize) -> Option<CanvasRect> {
+        if !self.pos.is_finite() || !size.is_positive_finite() {
+            return None;
+        }
+
+        let (origin_x, origin_y) = self.origin.map(NodeOrigin::as_tuple).unwrap_or((0.0, 0.0));
+        let origin_x = normalized_origin_component(origin_x);
+        let origin_y = normalized_origin_component(origin_y);
+        let bounds = CanvasRect {
+            origin: CanvasPoint {
+                x: projected_top_left(self.pos.x, origin_x, size.width)?,
+                y: projected_top_left(self.pos.y, origin_y, size.height)?,
+            },
+            size,
+        };
+        bounds.is_positive_finite().then_some(bounds)
+    }
+
     /// Clears the ordered port list.
     pub fn clear_ports(&mut self) {
         self.ports.clear();
@@ -116,6 +125,20 @@ impl Node {
     pub fn retain_ports(&mut self, f: impl FnMut(&PortId) -> bool) {
         self.ports.retain(f);
     }
+}
+
+fn normalized_origin_component(value: f32) -> f32 {
+    if value.is_finite() {
+        value.clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
+}
+
+fn projected_top_left(position: f32, origin: f32, size: f32) -> Option<f32> {
+    let projected = position as f64 - origin as f64 * size as f64;
+    (projected.is_finite() && projected >= f32::MIN as f64 && projected <= f32::MAX as f64)
+        .then_some(projected as f32)
 }
 
 /// Per-node origin override, expressed as a normalized fraction of the node rect.
@@ -135,7 +158,7 @@ impl NodeOrigin {
     }
 }
 
-/// Per-node movement/resize extent.
+/// Adapter-facing per-node movement/resize extent preference.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum NodeExtent {
@@ -143,4 +166,91 @@ pub enum NodeExtent {
     Parent,
     /// Constrain to the given rect in canvas space.
     Rect { rect: CanvasRect },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn node_with_origin(origin: Option<NodeOrigin>) -> Node {
+        Node {
+            kind: crate::core::NodeKindKey::new("test.node"),
+            kind_version: 1,
+            pos: CanvasPoint { x: 20.0, y: 10.0 },
+            origin,
+            selectable: None,
+            draggable: None,
+            connectable: None,
+            deletable: None,
+            parent: None,
+            extent: None,
+            expand_parent: None,
+            size: None,
+            hidden: false,
+            collapsed: false,
+            ports: Vec::new(),
+            data: Value::Null,
+        }
+    }
+
+    #[test]
+    fn bounds_for_size_projects_normalized_origin_and_rejects_invalid_geometry() {
+        let size = CanvasSize {
+            width: 10.0,
+            height: 6.0,
+        };
+        let centered = node_with_origin(Some(NodeOrigin { x: 0.5, y: 0.5 }));
+        assert_eq!(
+            centered.bounds_for_size(size),
+            Some(CanvasRect {
+                origin: CanvasPoint { x: 15.0, y: 7.0 },
+                size,
+            }),
+        );
+
+        let normalized = node_with_origin(Some(NodeOrigin {
+            x: f32::NAN,
+            y: 2.0,
+        }));
+        assert_eq!(
+            normalized.bounds_for_size(size),
+            Some(CanvasRect {
+                origin: CanvasPoint { x: 20.0, y: 4.0 },
+                size,
+            }),
+        );
+
+        assert_eq!(
+            centered.bounds_for_size(CanvasSize {
+                width: 0.0,
+                height: 6.0,
+            }),
+            None,
+        );
+
+        let mut non_finite_position = centered.clone();
+        non_finite_position.pos.x = f32::INFINITY;
+        assert_eq!(non_finite_position.bounds_for_size(size), None);
+
+        let mut overflowing_anchor = centered.clone();
+        overflowing_anchor.pos.x = -f32::MAX;
+        assert_eq!(
+            overflowing_anchor.bounds_for_size(CanvasSize {
+                width: f32::MAX,
+                height: 6.0,
+            }),
+            None,
+        );
+
+        let mut overflowing_endpoint = centered;
+        overflowing_endpoint.origin = None;
+        overflowing_endpoint.pos.x = f32::MAX;
+        assert_eq!(
+            overflowing_endpoint.bounds_for_size(CanvasSize {
+                width: f32::MAX,
+                height: 6.0,
+            }),
+            None,
+        );
+    }
 }

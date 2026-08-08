@@ -1,94 +1,93 @@
-# Publishing To crates.io
+# crates.io Release Guide
 
-Jellyflow is a Cargo workspace with five publishable crates:
+Jellyflow publishes the crates listed in `scripts/release-crates.txt` in dependency order. Release
+automation deliberately stays small: CI proves the source, the release workflow validates the tag
+and version, Cargo publishes each crate, and the workflow waits for registry visibility before
+continuing.
 
-1. `jellyflow-core`
-2. `jellyflow-layout`
-3. `jellyflow-runtime`
-4. `jellyflow`
-5. `jellyflow-egui`
+## Local release gates
 
-`jellyflow-layout` depends on `jellyflow-core`, `jellyflow-runtime` depends on
-`jellyflow-core` and `jellyflow-layout`, and the top-level `jellyflow` facade
-depends on all three lower-level crates. `jellyflow-egui` depends on the facade
-crate and must publish after it. Publish and dry-run checks must respect that
-order.
-
-## Release Gates
-
-Run these before any publish attempt:
+Run from the repository root:
 
 ```text
 cargo fmt --all --check
-cargo check --workspace --locked
-cargo nextest run --workspace
-cargo clippy --workspace --all-targets -- -D warnings
-cargo bench -p jellyflow-layout --features benchmark-internals --bench layout_engines -- --test
-cargo bench -p jellyflow-runtime --bench rendering_query -- --test
-cargo bench -p jellyflow-runtime --bench schema_create_node -- --test
-cargo bench -p jellyflow-runtime --bench layout_pipeline -- --test
+cargo nextest run --workspace --locked
+cargo test --workspace --doc --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
 python3 tools/check_no_fret_dependencies.py
+python3 -m unittest discover -s tools/tests -p "test_*.py"
 python3 tools/check_external_consumer_smoke.py
-git diff --check
 ```
 
-The CI workflow runs common gates on pull requests and pushes. The manual
-release preflight workflow additionally verifies versions and writes package
-file lists as artifacts for release review. The crates publishing workflow
-publishes in dependency order from a `v*` tag or manual dispatch. The GitHub
-Release workflow creates or updates release notes for the same tag.
+The dependency check delegates graph resolution to `cargo tree`; it only enforces Jellyflow's
+headless, adapter-separation, and no-Fret policies. It does not implement a second Cargo resolver.
 
-## Package Contents
+The external consumer smoke packages the release crates, extracts the locally produced `.crate`
+archives, patches three small consumers to those sources, and runs `cargo check`. It verifies the
+actual package boundary on default-branch push CI without maintaining a provenance engine or
+duplicating adapter behavior tests. Pull requests rely on the normal workspace gates; the release
+workflow later requires a successful push CI run for the exact source SHA.
 
-Review the files Cargo would package:
+## Version preparation
+
+Before tagging a release:
+
+1. Move the release notes from `Unreleased` into a non-empty `## [<version>]` section.
+2. Update the workspace version, internal dependency constraints, and the nested Open GPUI example
+   version.
+3. Refresh both lockfiles.
+4. Run:
 
 ```text
-cargo package --locked --no-verify --list -p jellyflow-core
-cargo package --locked --no-verify --list -p jellyflow-layout
-cargo package --locked --no-verify --list -p jellyflow-runtime
-cargo package --locked --no-verify --list -p jellyflow
-cargo package --locked --no-verify --list -p jellyflow-egui
+python3 scripts/release-version.py check --version <version>
+cargo metadata --locked --format-version 1
+cargo metadata --manifest-path examples/canvas-jellyflow/Cargo.toml \
+  --locked --format-version 1
 ```
 
-The package list should not include Trellis task files, `repo-ref`, historical
-workstream archives, or renderer/platform assets. Each crate package should
-include its crate README and the files needed to build that crate from crates.io.
-`--no-verify` is used for package-list review so same-version dependent crates
-do not fail only because earlier Jellyflow crates are not visible on crates.io
-yet.
-
-## Dry Runs
-
-Run dry-runs in dependency order:
+Review package contents when release metadata changes:
 
 ```text
-cargo publish --dry-run -p jellyflow-core
-cargo publish --dry-run -p jellyflow-layout
-cargo publish --dry-run -p jellyflow-runtime
-cargo publish --dry-run -p jellyflow
-cargo publish --dry-run -p jellyflow-egui
+cargo package --locked --list -p jellyflow-core
+cargo package --locked --list -p jellyflow-layout
+cargo package --locked --list -p jellyflow-runtime
+cargo package --locked --list -p jellyflow-egui
+cargo package --locked --list -p jellyflow-open-gpui
 ```
 
-Cargo rewrites workspace path dependencies into registry dependencies during
-packaging and publishing. For a first release or same-version multi-crate
-release, dry-runs for crates that depend on unpublished workspace crates may
-fail because those dependency versions are not available on crates.io yet. Treat
-that as an expected dependency-order blocker only after confirming no unrelated
-metadata or packaging error appears earlier in the output.
+## Trust boundary
 
-## Publish Order
+The release workflow is triggered only by a `release-crates` repository dispatch carrying an
+existing `v<version>` tag. It resolves that tag to a full source commit, requires the commit to be
+an ancestor of the trusted default-branch workflow commit, verifies the default branch is
+protected, and requires a successful CI push run for the exact source SHA.
 
-Publish leaf crates first:
+GitHub Actions remain pinned to full commit SHAs. This is a supply-chain control, not an archive
+digest protocol. Configure the `crates.io` environment with required reviewers, prevent
+self-review, keep `CARGO_REGISTRY_TOKEN` as an environment secret, and protect `refs/tags/v*`
+against update and deletion.
+
+Trigger a reviewed tag with:
 
 ```text
-cargo publish -p jellyflow-core
-cargo publish -p jellyflow-layout
-cargo publish -p jellyflow-runtime
-cargo publish -p jellyflow
-cargo publish -p jellyflow-egui
+gh api repos/OWNER/REPOSITORY/dispatches \
+  -f event_type=release-crates \
+  -F 'client_payload[release_tag]=v0.4.0'
 ```
 
-Actual crates.io publishing is handled by
-`.github/workflows/release-crates.yml`. It waits for each published crate
-version to become visible before publishing the next dependent crate. GitHub
-Release notes are handled separately by `.github/workflows/release.yml`.
+## Publication behavior
+
+The workflow:
+
+1. checks out the immutable source SHA;
+2. validates the version and changelog;
+3. publishes each crate from `scripts/release-crates.txt` with `cargo publish --locked`;
+4. waits for that version to become visible before publishing its dependents;
+5. verifies the protected tag still resolves to the guarded source SHA;
+6. creates one GitHub Release from the matching changelog section.
+
+The workflow does not rebuild candidate archives, download crates.io archives, compare SHA-256
+digests, classify retryable GraphQL errors, or reconcile partial releases automatically. If a run
+publishes only part of the crate set, stop and assess the registry state explicitly; do not hide the
+incident behind a growing recovery engine. Usually the safe resolution is to fix the cause and
+publish a new version.

@@ -1,242 +1,291 @@
 # jellyflow-open-gpui
 
-First-class Open GPUI adapter boundary for Jellyflow.
+`jellyflow-open-gpui` is Jellyflow's retained Open GPUI adapter. It connects one headless
+`ViewSession` to ordinary Open GPUI `Entity<V: Render>` node components without introducing a
+portable widget tree or a cross-framework node UI DSL.
 
-The crate maps Jellyflow's headless semantic node contracts to Open GPUI
-adapter plans, authoring decisions, stable ids, measurement facts, and product
-fixture gates. Runtime and core crates stay toolkit-free. Concrete Open GPUI
-widgets, focus/popup lifecycle, app state refresh, demo item factories, and
-visual layout remain host-owned.
+## Adapter-owned pieces
 
-Current capability reporting is deliberately conservative. Projection fallback
-can prove controls, repeatables, menus, inspector state, and product fixture
-geometry, but full layout-pass measurement is only valid when coverage shows
-the required regions came from Open GPUI `measured_element` bounds without
-fallback, missing, stale, partial, or duplicate regions.
+- `OpenGpuiNodeRegistry` stores sealed renderer-key registrations and mounts retained entities.
+- `OpenGpuiSceneHost` reconciles frames, parks and evicts inactive instances, releases retired
+  entities, publishes native layer order, and submits one ordered feedback log per frame.
+- `authoring::OpenGpuiNodeBinding` is the long-lived capability for one exact retained mount. It
+  owns activity, drag, overlay, content measurement, and layout-invalidation capabilities, but it
+  does not expose a mutable or independently refreshable graph view.
+- `OpenGpuiNodeBinding::authoring` opens one owned, immutable
+  `authoring::OpenGpuiNodeAuthoring` for the current graph revision. Its ordered ports pair graph
+  facts, constant-work connection summaries, and an `authoring::OpenGpuiPortHandle` from that same
+  revision. A mount-scoped `authoring::OpenGpuiManagedMutation` consumes the view when it
+  dispatches a command, validates mount and version authority, and owns asynchronous admission,
+  feedback correlation, settlement, and retry eligibility. Graph mutation is never synchronous and
+  stale commands are never silently retried.
+- `authoring::OpenGpuiPortHandle` measures a native element after layout and can add pointer, keyboard, and
+  accessibility activation while leaving the child as an ordinary Open GPUI element.
+- Ordinary Open GPUI controls and scroll areas are safe inside nodes without wrappers.
+  `OpenGpuiOverlayInteractionBoundary` owns popup hit-testing outside node bounds. Focus, IME,
+  popup state, and application services remain in the node component.
+- The scene host's internal connection coordinator manages generation-bound drag, search,
+  reconnect, cancellation, freshness checks, and version-checked command creation. The host performs
+  the graph query and dispatches the returned command.
+- Retained-field and activity owners model dirty composition, conflict resolution, focus/capture
+  leases, culling, and terminal retirement without persisting framework state in the graph.
 
-## Authoring Facade
+## Register a native node
 
-`jellyflow-open-gpui` owns reusable adapter infrastructure that Open GPUI hosts
-should not copy from `canvas-jellyflow`:
+```rust,ignore
+use jellyflow_open_gpui::authoring::OpenGpuiNodeBinding;
+use jellyflow_open_gpui::registry::{
+    OpenGpuiNodeAdapterPresentation, OpenGpuiNodeRendererDescriptor,
+};
+use jellyflow_runtime::view::RendererStamp;
 
-- JSON binding rules for control, inspector, and repeatable edits live in one
-  adapter-local module. Dot paths, JSON pointers, `Slot` lookup, field-row
-  fallback, scalar repeatable item ids, and non-writable graph/port controls now
-  share the same behavior.
-- `OpenGpuiAuthoringController` plans control events from the current
-  `NodeGraphStore`, so fast consecutive edits do not rely on stale node-data
-  snapshots captured by a widget callback.
-- Semantic action dispatch can map repeatable add/remove/reorder intents into
-  `OpenGpuiRepeatableActionPlan` values, with explicit skipped outcomes for
-  unsupported actions and a host-supplied factory for rich add-item defaults.
-- `element_ids` exports stable scoped ids for controls, menus, action buttons,
-  slot badges/values, repeatable rows/actions, blackboard rows/status, and
-  fallback chrome. Node ids are part of node-internal ids; graph-level actions
-  use the graph scope.
-- `OpenGpuiNodeRendererRegistry::render_with_host` passes custom renderers a
-  generic `OpenGpuiNodeRendererHostContext` containing semantic slots,
-  repeatables, action menus, measurement id helpers, scoped id helpers, fallback
-  reasons, and host-owned services. The output type remains generic, so this
-  crate does not expose Open GPUI element types upstream.
-
-`canvas-jellyflow` is still the live host fixture. It owns `Button`, `Menu`,
-`TextInput`, `Textarea`, `Select`, `Switch`, `Slider`, `measured_element`,
-weak-entity dispatch, focus/event arbitration, refresh notifications, and demo
-visual policy. That split is intentional: Jellyflow provides the semantic and
-adapter authoring contract, while each Open GPUI app maps the contract into its
-own component tree.
-
-## Node Component Kit Recipe
-
-Open GPUI node-internal UI is now proven through a host-local component kit in
-`examples/canvas-jellyflow/src/node_component_kit.rs`.
-That module is intentionally not a shared widget crate. It is the reference
-consumer for Open GPUI apps that want Dify-style cards, shader/material rows,
-ERD fields, or mind-map previews while keeping runtime descriptors headless.
-
-The minimal recipe is:
-
-1. Define the semantic node in runtime or a node kit. The descriptor should
-   publish slots, controls, repeatables, actions, anchors, and a renderer key.
-2. Register the renderer key with `OpenGpuiNodeRendererRegistry::with_renderer`
-   or `with_renderers`. In `canvas-jellyflow`, `demo_node_renderer_registry`
-   declares `decision-card`, `shader-card`, `table-card`, `topic-card`, and
-   `source-card`.
-3. Keep concrete Open GPUI renderers host-local. The example stores renderer
-   closures in `demo_custom_node_renderers` and resolves them through
-   `OpenGpuiNodeRendererRegistry::render_with_host`.
-4. In the renderer, read semantic data from
-   `OpenGpuiNodeRendererHostContext::semantic()` and compose real Open GPUI
-   elements through the local kit:
-   `render_control_plan`, `render_action_menu`,
-   `render_dispatch_action_button`, `repeatable_action_button`,
-   `render_node_internal_interaction_region`, and `render_measured_region`.
-5. Route edits through adapter plans instead of mutating captured widget state.
-   Controls use `OpenGpuiAuthoringController` against the live
-   `NodeGraphStore`; repeatables use `OpenGpuiRepeatableActionPlan` with
-   explicit host factories for product defaults.
-6. Wrap every visible slot, control, repeatable row, and handle anchor that can
-   drive ports, inspectors, or edge endpoints in `render_measured_region`.
-   Missing, stale, hidden, partial, or duplicate regions must downgrade the
-   capability report rather than claiming full layout-pass coverage.
-
-Native controls currently include text input, textarea, number input, select,
-multiselect-as-select, switch, and slider. Code editor and color controls render
-as partial badge states; asset picker, variable picker, and port-binding picker
-render as disabled stub/display states until a later Open GPUI product pass.
-
-## Adapter Maturity Boundary
-
-Open GPUI is the mature adapter target for the current stage. The mature surface
-is not a cross-framework widget library: it is the combination of semantic
-Jellyflow node kits, this crate's widget-free Open GPUI adapter contracts, and
-the concrete `canvas-jellyflow` Open GPUI consumer that maps those contracts to
-local components.
-
-The boundary is:
-
-- `jellyflow-runtime` owns semantic descriptors: slots, controls, repeatable
-  collections, anchors, action/menu/inspector/blackboard metadata, validation,
-  and measurement invalidation intent.
-- `jellyflow-open-gpui` owns adapter facts: renderer registration, stable ids,
-  authoring plans, measurement ids, coverage reports, product fixture reports,
-  graph affordance evidence, and hard regression gates.
-- `examples/canvas-jellyflow` owns concrete Open GPUI
-  widgets, focus/popup lifecycle, pointer shielding, `measured_element`
-  collection, local node component atoms, renderer layout, screenshots, and
-  native app lifecycle smoke tests.
-
-egui and Dioxus remain semantic-contract targets, not mature adapter peers for
-this Open GPUI product-polish stage. They should map Jellyflow's descriptors
-locally rather than importing Open GPUI component atoms or sharing a widget
-crate.
-
-Promote `node_component_kit` ideas out of the example only when they are proven
-by at least two real Open GPUI hosts, have stable focus/popup and pointer
-arbitration rules, preserve full layout-pass measurement coverage, and no longer
-depend on demo fixture copy or product-specific visual policy.
-
-## Layout-Pass Measurement
-
-`canvas-jellyflow` is the live Open GPUI consumer. It renders node internals
-from Jellyflow semantic descriptors, wraps visible slots, controls, repeatable
-items, anchors, drag-exclusion surfaces, and overflow indicators with Open GPUI
-`measured_element`, and reports those bounds into `OpenGpuiBoundsCollector`
-using stable `OpenGpuiMeasurementId` values.
-
-`jellyflow-open-gpui` owns the reusable conversion contract:
-
-- `OpenGpuiMeasurementId` creates descriptor-backed ids for slots, scoped
-  controls, repeatable items, and anchors.
-- `OpenGpuiMeasurementContext` converts GPUI view-space bounds into
-  node-local `NodeMeasurement` slots and anchors.
-- `layout_pass_measurement_from_regions` merges live layout-pass regions with
-  explicit projection fallback anchors and returns `OpenGpuiMeasurementCoverage`.
-- `OpenGpuiAdapter::layout_pass(coverage)` can only report full layout-pass
-  support when coverage has layout-pass regions and no projection fallback,
-  missing, stale, partial, or duplicate regions.
-
-Projection remains a first-class degrade path. When live bounds are missing,
-dirty after a node-internal edit, duplicated, zero-sized, or hidden by density,
-the adapter must report projection/partial coverage instead of presenting the
-data as full layout-pass support. Runtime/core/layout crates remain toolkit-free;
-Open GPUI-specific widgets and measurement plumbing stay in this crate and the
-`examples/canvas-jellyflow` consumer fixture.
-
-Product visual proof must be sourced from measured regions, not inferred from
-semantic projection, renderer presets, control counts, or string/fit estimates.
-Readable regions, control regions, drag-exclusion regions, and
-component-declared overflow each have distinct evidence. In particular,
-`OpenGpuiMeasuredInternalsEvidence::drag_exclusion_region_count` is complete
-only when Open GPUI reports `OpenGpuiMeasurementId::drag_exclusion` regions from
-a layout pass; graph drag-region policy and measured control bounds do not
-substitute for it. Projection-only visual reports are expected to stay degraded
-with `MeasuredInternalsEvidenceIncomplete` and
-`MeasuredInternalsProjectionFallback` gaps.
-
-## Graph Affordance Evidence
-
-Open GPUI graph interaction polish is also reported through widget-free evidence.
-`OpenGpuiGraphAffordanceEvidence` records:
-
-- committed wire route family (`Orthogonal` or `Bezier` for product routes);
-- whether connection previews mirror committed route policy instead of falling
-  back to direct lines;
-- port placement, endpoint hit, and reconnect affordance budgets;
-- drag-region coverage for product nodes;
-- readable layout-region coverage for node-internal UI.
-
-`assert_product_interaction_report_gates` fails if this evidence is missing, if
-previews use `DirectLineFallback`, if port/reconnect budgets are too small, or if
-hidden repeatable rows have no visible overflow indicator. The concrete canvas
-implementation still lives in Open GPUI: route geometry, hit testing, pointer
-capture, reconnect handles, and connection release events belong to
-`repo-ref/open-gpui/crates/canvas`. This crate only defines the Jellyflow adapter
-contract and report gates.
-
-The host-local product renderer layer may use layout primitives from
-`examples/canvas-jellyflow/src/node_component_kit.rs`, but
-those primitives are product component code. They can decide how Dify, shader,
-ERD, topic, and source cards degrade, clamp, or reveal overflow, while the
-adapter only consumes explicit measured internals and component-declared
-overflow. Jellyflow does not expose a shared cross-framework widget crate or an
-arbitrary text/control fit oracle.
-
-## Native UX Evidence
-
-Native polish is gated with structured reports before screenshots or manual
-review are considered. `OpenGpuiNativeLifecycleEvidence` proves that the product
-gallery rendered real Jellyflow content, that product node dragging was checked,
-and that the closest available Open GPUI last-window-close path observes quit.
-Skipped close automation and blank-window smokes fail the hard gate.
-
-`OpenGpuiMeasuredInternalsEvidence` is the hard visual proof for product node
-internals. It records node-bound source, handle coverage, readable-region
-coverage, drag-exclusion coverage, stale regions, and component-declared
-overflow. The visual gate rejects missing or incomplete measured internals,
-projection fallback used as hard proof, hidden repeatables without explicit
-overflow declaration, stale regions, and endpoints that do not follow measured
-handles.
-
-`OpenGpuiReconnectSequenceEvidence` proves selected-edge reconnect is actionable,
-not only visible. The product interaction gate requires source and target endpoint
-switches, edge-id preservation, invalid rollback, empty reconnect drop reporting,
-and a second gesture after rejection without stale planning noise.
-
-## Product Gates
-
-The test helpers in `jellyflow_open_gpui::testing` cover Dify-style workflow
-nodes, shader/blueprint repeatables, ERD field rows, and mind-map shells. They
-keep projection fixture coverage separate from layout-pass fixture coverage, so
-a projection-only report cannot satisfy full layout-pass capability. The same
-helpers now expose structured authoring interaction evidence for dropped-wire
-insert actions, inspector target sources, repeatable add/remove/reorder/edit,
-blackboard actions, invalid hover rejection, editable control regions, scoped
-element ids, renderer host-context routing, product-gallery host rendering,
-visual interaction geometry, and dynamic repeatable port lifecycle honesty.
-They also require graph affordance evidence for product route/preview policy,
-port and reconnect hit budgets, drag-region coverage, and readable adaptive
-layout coverage.
-
-The Open GPUI gallery lives in `examples/canvas-jellyflow`.
-It is outside the root Jellyflow workspace and currently uses a pinned Open GPUI
-git revision until the required `open-gpui-*` 0.2 crates are available from the
-registry.
-Run it with:
-
-```sh
-cargo run --manifest-path examples/canvas-jellyflow/Cargo.toml -p open-gpui-canvas-jellyflow
+let mut registry = OpenGpuiNodeRegistry::builder();
+registry.register(OpenGpuiNodeRendererDescriptor::new(
+    "workflow.llm",
+    1,
+    RendererStamp::new("open-gpui.workflow.llm", 1),
+    OpenGpuiNodeAdapterPresentation::new("Language model"),
+    |binding, _window, cx| Ok(cx.new(|cx| MyLlmNode::new(binding, cx))),
+))?;
+let registry = registry.seal(&catalog)?;
+let host = OpenGpuiSceneHost::new(view, registry, viewport);
 ```
 
-The hard structured gate is:
+`MyLlmNode` is free to compose text inputs, selects, scroll views, menus, async services, and
+product-specific state. The registry accepts any `Entity<V>` where `V: Render + 'static`, so a node
+is an ordinary retained Open GPUI component tree rather than a Jellyflow widget DSL. Applications
+still initialize the themes, globals, and services required by their chosen Open GPUI components.
 
-```sh
-RUSTFLAGS='-Awarnings' cargo nextest run -p jellyflow-open-gpui --no-fail-fast --status-level fail --final-status-level fail
-RUSTFLAGS='-Awarnings' cargo nextest run --manifest-path examples/canvas-jellyflow/Cargo.toml -p open-gpui-canvas-jellyflow --no-fail-fast --status-level fail --final-status-level fail -E 'not test(gallery_screenshot::product_gallery_screenshot_exporter_writes_nonblank_pngs_or_skips)'
+## Authoring facts, ports, and commands
+
+Open a fresh authoring view inside a render pass or input callback and do not retain it as component
+state. Every item returned by `ports()` is a real graph port in node order. A dynamic marker only
+exists after the corresponding `Port` has entered the graph and a newer authoring view observes it.
+
+```rust,ignore
+let binding = self.binding.read(cx);
+let authoring = binding.authoring()?;
+let input = authoring.port(self.input_port).ok_or(NodeUiError::MissingInput)?;
+let marker = input.handle().clone().interactive(my_custom_port_marker());
+let content = binding.measure_content(
+    div()
+        .child(binding.drag_handle().wrap(my_header()))
+        .child(my_application_controls())
+        .child(marker),
+);
 ```
 
-The gallery also has a test-only screenshot smoke exporter. When the platform
-has a headless renderer, the bin tests write nonblank PNG review artifacts under
-`target/open-gpui-jellyflow-gallery/`. These screenshots are
-supporting evidence only; structured geometry, capability, and interaction
-reports remain the correctness gate.
+Use `measure(child)` for a non-interactive semantic port and `interactive(child)` for a custom
+component with host-owned pointer, keyboard, and accessibility behavior. Use
+`interactive_marker(OpenGpuiPortMarker::new(...))` for Jellyflow's native marker; it applies the
+resolved marker hit target atomically. Every path enforces a minimum 22-logical-pixel hit diameter
+without changing marker layout or route-anchor geometry. Only use `interactive_with_observer` when
+the application actually needs to observe the host-reduced port event; an empty observer is
+unnecessary.
+
+Create one managed mutation supervisor when the component is mounted:
+
+```rust,ignore
+use jellyflow_open_gpui::authoring::OpenGpuiManagedMutation;
+
+struct MyNode {
+    binding: Entity<OpenGpuiNodeBinding>,
+    mutation: OpenGpuiManagedMutation<MyTopologyIntent>,
+}
+
+let mutation = binding.read(cx).managed_mutation::<MyTopologyIntent>();
+```
+
+Build an application command from one fresh authoring view and consume that same view when
+dispatching the intent:
+
+```rust,ignore
+let authoring = self.binding.read(cx).authoring()?;
+let port = authoring
+    .port(self.output_port)
+    .ok_or(NodeUiError::MissingOutput)?
+    .facts()
+    .clone();
+let command = GraphCommand::topology(
+    authoring.version(),
+    TopologyEdit::new().replace_node_ports(
+        authoring.node_id(),
+        [TopologyPort::new(self.output_port, port)],
+        IncidentEdgePolicy::Reject,
+    ),
+);
+self.mutation.dispatch(
+    authoring,
+    command,
+    MutationRequest::new(MyTopologyIntent::ReplaceOutput),
+    MutationLayoutEffect::InvalidateWhenSatisfied,
+    cx,
+)?;
+```
+
+Drain completion and reconcile satisfaction against every newer authoritative authoring view. This
+belongs in the component's normal render/update path, not in a detached task:
+
+```rust,ignore
+let authoring = self.binding.read(cx).authoring()?;
+let settlement = self.mutation.observe(
+    &authoring,
+    |intent| {
+        matches!(intent, MyTopologyIntent::ReplaceOutput)
+            && authoring.port(self.output_port).is_some()
+    },
+    cx,
+);
+if let Some(diagnostic) = settlement.diagnostic() {
+    self.show_mutation_diagnostic(diagnostic);
+}
+match settlement {
+    MutationSettlement::Ready | MutationSettlement::Pending { .. } => {}
+    MutationSettlement::Satisfied { .. } => self.clear_local_draft(),
+    MutationSettlement::Retryable { .. } => self.show_explicit_retry(),
+    MutationSettlement::Uncertain { .. } => self.show_authoritative_refresh_action(),
+    MutationSettlement::Retired { .. } | MutationSettlement::Closed { .. } => {
+        self.stop_authoring()
+    }
+}
+```
+
+Opening a later authoring view does not update an older one. Dispatch rejects a retired mount, a
+reincarnated node, a terminally closed view, a mismatched command version, or a graph revision that
+changed before journal admission. Product code observes authoritative snapshots through the managed
+mutation and explicitly chooses whether a retryable intent should be retried. Queueing two commands
+from the same committed revision is allowed; normal runtime ordering may apply the first and return a
+conflict for the second. `settlement()` only reads the last cached projection; it does not poll or
+drain asynchronous completion, so a live component must continue calling `observe` (or
+`observe_unavailable` when no authoring view can be opened).
+
+The binding remains the lifecycle boundary. Keep an `activity::OpenGpuiActivityLease` while the
+component owns focus, IME composition, a popup, an async task, or another retained resource. A
+component that captures the native pointer must use
+`binding.activity().capture_pointer(hitbox, window)` and keep the returned exact-capture lease until
+it finishes. Open GPUI assigns a replacement `HitboxId` during prepaint, so an active component must
+call `lease.rebind(replacement_hitbox, window)` before registering the replacement listeners. A
+`false` result means capture ownership was lost and the component must stop without reclaiming it.
+Normal completion must call `lease.release(window)`; terminal host cleanup remains the fallback and
+releases only the registered hitbox.
+Wrap a popup rendered outside node bounds with `binding.overlay_boundary()`. After application state
+changes intrinsic content geometry, update the binding entity and call
+`binding.invalidate_layout(cx)` from that binding context. The request is mount-scoped and cannot
+invalidate a replacement incarnation:
+
+```rust,ignore
+self.binding.update(cx, |binding, cx| binding.invalidate_layout(cx))??;
+```
+
+## Scale and size authority
+
+The default `SemanticLod` policy uses hysteresis: detail enters overview at zoom 0.85 and overview
+returns to detail at zoom 1.0. Detail stays at native logical-pixel metrics because Open GPUI 0.2
+cannot transform an arbitrary retained subtree coherently across layout, paint, hitboxes, focus,
+IME, and overlays. Overview owns canonical projected node and port geometry outside the detail
+band. A focused, composing, pointer-capturing, or overlay-owning node may also render a fixed-pixel
+`PinnedDetail` surface; that surface cannot publish graph geometry, arm node or connection gestures,
+or expose semantic graph ports. Graph-interaction and draft leases protect retention without
+pinning native detail.
+
+An application can replace the generic semantic-LOD overview with one ordinary Open GPUI entity for
+a renderer key. The detail and overview entities share the same binding, node instance, mount
+lifetime, host selection chrome, and real-port capabilities. This remains an adapter-local native
+factory, not a renderer-neutral UI description:
+
+```rust,ignore
+registry.register(
+    OpenGpuiNodeRendererDescriptor::new(
+        "shader.multiply",
+        1,
+        RendererStamp::new("open-gpui.shader.multiply", 3),
+        OpenGpuiNodeAdapterPresentation::new("Multiply"),
+        |binding, _window, cx| Ok(cx.new(|_| MultiplyNode::new(binding))),
+    )
+    .with_overview(|mount, _window, cx| {
+        Ok(cx.new(|_| MultiplyOverview::new(mount)))
+    }),
+)?;
+```
+
+An overview component requests `mount.port_handle(port_id, cx)` during each render and wraps its
+native marker with `measure` or `interactive`. That handle shares the underlying semantic capability
+with detail while publishing overview geometry; requesting it again observes dynamic port topology
+and presentation changes. Each factory returns `Result<Entity<V: Render>,
+OpenGpuiNodeMountError>`. The overview is
+created at most once per retained mount, survives zoom transitions and parking, and is released with
+that mount. If no overview factory is registered, or if the factory returns an error or panics while
+mounting, the existing generic overview is used. A healthy detail entity is never replaced by an
+overview failure. `ComponentManaged` registrations do not create an unused overview entity.
+
+`ComponentManaged` keeps the registered renderer in detail and gives it full responsibility for
+continuous native metrics. The component can read
+`binding.authoring()?.viewport_transform()` from its coherent authoring view; the host does not
+synthesize a subtree transform.
+
+Document size is authoritative by default. A renderer may opt into fixed-width `ContentHeight` or
+bounded two-axis `Content` sizing at registration:
+
+```rust,ignore
+let policy = OpenGpuiNodeRegistrationPolicy::default()
+    .with_size_policy(OpenGpuiNodeSizePolicy::ContentHeight(
+        OpenGpuiContentHeightPolicy::new(96.0, 720.0)?,
+    ));
+registry.register(
+    OpenGpuiNodeRendererDescriptor::new(
+        "workflow.condition",
+        1,
+        RendererStamp::new("open-gpui.workflow.condition", 2),
+        OpenGpuiNodeAdapterPresentation::new("Condition"),
+        |binding, _window, cx| Ok(cx.new(|_| ConditionNode::new(binding))),
+    )
+    .with_policy(policy),
+)?;
+```
+
+The component wraps one naturally sized native root with `binding.measure_content(content)`. Two
+stable 1:1 samples are required before the host queues a version-checked geometry command. One
+command may be pending, newer targets coalesce, and bounded cycle detection freezes a non-convergent
+epoch. Call `binding.invalidate_layout(cx)` when product state changes intrinsic layout; environment
+changes start a separate convergence epoch. No graph mutation occurs during render or prepaint.
+
+## Lifecycle and fallback
+
+Renderer registrations are validated and sealed against the semantic catalog before a view is
+attached. Empty fields and duplicate semantic kind/version or exact renderer stamps are rejected
+atomically during registration. Alias, unknown-kind, and version mismatches reject sealing as one
+deterministic configuration error. Catalog kinds without a native descriptor and factories that
+fail while mounting produce an adapter-local diagnostic fallback while the runtime's opaque node
+data and real ports remain intact. A retained instance is identified by view,
+node, renderer, and incarnation. Normal culling may park an eligible instance; renderer replacement,
+node retirement, document replacement, and terminal view closure revoke leases, focus, registered
+exact capture, overlays, subscriptions, and geometry. The first render also installs a window-scoped
+lifecycle bridge, so terminal cleanup does not depend on another render or on releasing the final
+`Entity` handle after the host is removed from its parent tree.
+
+The adapter keeps a bounded cache (256 eligible parked entries and 64 protected activity owners by
+default). Focused, composing, captured, overlay, and dirty retained-field nodes are protected or
+explicitly externalized/cancelled before eviction.
+
+Applications that preserve dirty product fields across protected-capacity overflow own a shared
+`RetainedFieldStore<T>` and pass clones into their node factories. Each mounted `RetainedField<T>`
+binds that store to its weak view capability automatically and owns edit activity, ticket
+settlement, externalization, and restoration. Restore is keyed by the exact view, node, renderer,
+incarnation, and field identity; it reports `RetainedFieldRecovery` without recreating IME ownership
+or replaying an interrupted graph command. Node reincarnation and terminal view closure remove
+retired snapshots automatically.
+
+## Product example and tests
+
+The retained workflow and typed shader fixtures live in
+`examples/canvas-jellyflow`; this crate deliberately contains no product gallery. Run the adapter
+tests with:
+
+```sh
+cargo nextest run -p jellyflow-open-gpui --cargo-quiet
+```
+
+Open GPUI 0.2's test platform does not expose captured AccessKit tree updates or an action-injection
+hook. The adapter tests verify the production semantic element builders through
+`Element::write_a11y_info` and cover keyboard activation, while platform `TreeUpdate` and
+`ActionRequest` integration awaits upstream test-support coverage.

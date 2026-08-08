@@ -14,13 +14,11 @@ keywords = ["graph", "node-graph", "flow", "headless"]
 categories = ["data-structures", "gui"]
 
 [dependencies]
+rpds.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
-
-[lints.rust]
-dead_code = "allow"
 
 [lints.clippy]
 doc_lazy_continuation = "allow"

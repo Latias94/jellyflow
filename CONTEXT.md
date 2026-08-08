@@ -1,73 +1,72 @@
 # Jellyflow Project Context
 
-Last updated: 2026-06-02
+Last updated: 2026-08-08
 
-This file is the high-signal navigation context for agents working in this repository. It does not
-replace ADRs, closeout audits, or workstream evidence. When there is a conflict, accepted ADRs
-outrank this file, and workstream evidence outranks session memory.
+This file is the high-signal navigation context for agents working in this repository. Shipped code
+and executable tests define current behavior. The adapter-authoring guide records the current
+ownership boundary; plans and research are historical implementation evidence.
 
 ## Product Intent
 
-Jellyflow is a headless Rust node/flow graph engine extracted from Fret. It owns the portable graph
-document model, transactions, runtime rules, schema/profile pipeline, view state, store primitives,
-renderer-neutral interaction helpers, geometry, and reusable conformance fixtures.
+Jellyflow is a headless Rust node/flow graph engine extracted from Fret. It owns portable graph
+documents, version-checked commands, graph policies, persistence, and renderer-neutral protocol
+contracts.
+Framework adapters own native node component trees, input, focus, layout, and measurement.
 
-The reference product is `repo-ref/xyflow`. Jellyflow should preserve XyFlow-like editor feel at the
-headless runtime boundary: graph operation semantics, store commit ordering, interaction policy,
-viewport behavior, gesture lifecycle callbacks, node/edge change projections, and geometry/hit-test
-contracts. It should not copy XyFlow's DOM, React, or renderer architecture.
+The reference product is `repo-ref/xyflow`. Jellyflow should preserve XyFlow-like editor behavior
+at the headless boundary without copying its DOM, React, or renderer architecture. The active target
+is native Dify- and Shader Graph-class node authoring: portable graph facts and an owned view protocol,
+with Open GPUI as the first native host and other frameworks supported through independent adapters.
 
 ## Crate Boundaries
 
-- `jellyflow-core` owns stable IDs, the serializable graph document model, type descriptors,
-  interaction-policy value types, and undoable graph operations/transactions.
-- `jellyflow-runtime` owns headless I/O payloads, `NodeGraphStore`, rules, schema/profile hooks,
-  policy resolution, fit-view math, selection, node drag, viewport pan/zoom, auto-pan, geometry,
-  XyFlow-compatible projections, and conformance fixtures.
-- `templates/headless-adapter` is a non-workspace external adapter skeleton that proves third-party
-  consumers can run conformance checks without Fret or renderer dependencies.
-- Future adapter crates such as `jellyflow-wgpu`, `jellyflow-egui`, or `jellyflow-fret` may own
-  windowing, input capture, renderer integration, screenshot checks, and pixel tests.
+- `jellyflow-core` owns stable IDs, the canonical in-memory graph model, validation, type
+  descriptors, interaction-policy value types, and mutation footprints. It has no raw Serde graph
+  representation or public operation journal.
+- `jellyflow-runtime` exposes an authoritative `GraphRuntime` plus independent `ViewSession`s.
+  The runtime owns opaque-version graph commands, the private reversible mutation/history kernel,
+  persistence, and renderer-neutral graph facts; sessions own transform, selection, geometry,
+  routing, culling, and frame/feedback state.
+- `jellyflow-open-gpui` is the first real native adapter. It may depend on Open GPUI and owns the
+  retained registry, component lifecycle, measurement bridge, and input arbitration.
+- `jellyflow-egui` is the second native adapter and an independent immediate-mode witness. Future
+  adapters consume the same owned protocol but keep their framework types and widget lifecycles
+  local.
 
-`jellyflow-core` and `jellyflow-runtime` must stay free of Fret UI, renderer, platform, `wgpu`, and
-`winit` dependencies. Use the dependency smoke scripts when changing manifests or public boundaries.
+`jellyflow-core`, `jellyflow-layout`, and `jellyflow-runtime` must stay free of UI framework,
+windowing, focus, IME, popup, and platform dependencies. Use dependency smoke checks when changing
+manifests or public boundaries.
 
-## ADR Index
+## Current Architecture
 
-- `docs/adr/0001-jellyflow-headless-node-graph-engine-boundary.md`: Jellyflow is the reusable
-  engine boundary; Fret-specific UI and compatibility wrappers belong outside the headless crates.
-- `docs/adr/0002-jellyflow-model-policy-boundary.md`: v1 keeps persisted policy/layout/presentation
-  fields in `Graph`; effective interaction policy is resolved through `runtime::policy`; schema
-  migration is deferred until a versioned migration plan exists.
-- `docs/adr/0003-headless-adapter-testing-and-renderer-boundary.md`: XyFlow feel is tested through
-  layered headless contracts first; renderer smoke tests belong in adapter crates, not the runtime.
-- `docs/adr/0007-knowledge-canvas-foundations.md`: first-class bindings persist graph/source
-  relationships in core, runtime resolves anchor facts, layout family metadata is discovery-only,
-  and query optimization must preserve the linear read contract.
+The active architecture keeps graph semantics in direct core/runtime dependencies and native UI in
+independent adapters. Its contracts live in public types, runtime owner tests, adapter-local native
+tests, and migration tests. Real-window evidence belongs to the dedicated
+`open-gpui-real-window-smoke` binary, which is excluded from ordinary product builds. CI runs one
+Shader process and one Workflow process. Each process only proves that the production native window
+can reach a valid first scene; deterministic adapter tests own interaction semantics and visual
+geometry.
 
 ## Runtime Interaction Strategy
 
-Adapters should translate platform input into renderer-neutral Jellyflow calls, then validate the
-runtime traces before adding renderer smoke tests.
+Adapters consume an owned render frame, render ordinary framework-native components, collect
+complete node and real-port geometry after layout, append version-checked commands and layouts to the
+frame's ordered feedback log, then submit it once. They must not expose framework widgets through
+the headless crates or recreate a cross-framework UI DSL.
 
-- Use `runtime::selection` and `NodeGraphStore::apply_selection_box` for canvas-space selection.
-- Use `runtime::drag`, `NodeGraphStore::plan_node_drag`, and `NodeGraphStore::apply_node_drag` for
-  deterministic node drag behavior.
-- Use `runtime::delete`, `runtime::keyboard`, and `NodeGraphStore::apply_delete_selection_for_key`
-  for deterministic selection deletion after adapters normalize platform key input.
-- Use `runtime::viewport` and store viewport helpers for drag-pan and zoom-around-pointer behavior.
-- Use `runtime::auto_pan` and `NodeGraphStore::apply_auto_pan` for deterministic auto-pan frames.
-- Use `runtime::rendering`, `NodeGraphStore::visible_node_ids`, and
-  `NodeGraphStore::visible_node_render_order` for renderer-neutral render order and XyFlow-style
-  visible-node culling before adapter rendering.
+- Use `GraphRuntime` for authoritative graph snapshots, version-checked commands, history, and fan-out.
+- Attach one `ViewSession` per native canvas; transform, selection, geometry, routing, and frame
+  admission remain view-local.
+- Use `GraphCommand::set_node_geometry` for atomic multi-node drag, resize, and layout commits.
+- Use `ViewSession::evaluate_connection`, `port_connection_facts`, and
+  `create_from_wire_candidates` for authoritative connection UI decisions.
+- Use `FrameRequest`, `FeedbackCollector`, and complete real-port `NodeLayout` reports for native
+  frame and measurement integration.
 - Use `runtime::geometry` for handle endpoints, edge paths, and numeric hit testing.
-- Use `runtime::policy` for effective node, port, and edge interaction policy.
-- Use `runtime::xyflow` only for XyFlow-shaped compatibility vocabulary: node/edge changes,
-  callback adapters, and controlled-mode projections.
-- Use `runtime::conformance` for durable pre-render adapter fixtures and suite reports.
-
-`ConformanceAction::dispatch_transaction` is a low-level graph fixture escape hatch. Prefer
-interaction-specific actions for adapter feel fixtures.
+- Use `GraphRuntimePolicy` for authoritative connection, deletion, and reconnection fallbacks.
+  Raw framework input, focus, pointer capture, gesture recognition, and hit-target mechanics stay in
+  each adapter. Normalized selection and drag decisions and their state transitions stay in the
+  runtime interaction session.
 
 ## Testing And Validation
 
@@ -77,81 +76,45 @@ workstream.
 Common gates:
 
 ```text
-cargo fmt --check
-cargo check --workspace
-cargo nextest run --workspace
-cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --all --check
+cargo nextest run --workspace --locked --cargo-quiet
+cargo test --workspace --doc --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
 python3 tools/check_no_fret_dependencies.py
-python3 tools/check_external_consumer_smoke.py
+python3 -m unittest discover -s tools/tests -p "test_*.py"
 git diff --check
 ```
 
 Adapter-facing gates:
 
 ```text
-cargo run -p jellyflow-runtime --example conformance_harness -- check <fixture-dir>
-cargo run -p jellyflow-runtime --example conformance_harness -- approve <fixture-dir>
-cargo test --manifest-path templates/headless-adapter/Cargo.toml
-cargo run --manifest-path templates/headless-adapter/Cargo.toml -- check
+cargo fmt --manifest-path examples/canvas-jellyflow/Cargo.toml --all -- --check
+cargo nextest run --manifest-path examples/canvas-jellyflow/Cargo.toml \
+  --workspace --all-features --locked --no-fail-fast
+cargo test --manifest-path examples/canvas-jellyflow/Cargo.toml \
+  --workspace --all-features --doc --locked
+cargo clippy --manifest-path examples/canvas-jellyflow/Cargo.toml \
+  --workspace --all-targets --all-features --locked -- -D warnings
+cargo build --manifest-path examples/canvas-jellyflow/Cargo.toml \
+  -p open-gpui-canvas-jellyflow --bin open-gpui-real-window-smoke \
+  --locked --features real-window-smoke
+examples/canvas-jellyflow/target/debug/open-gpui-real-window-smoke
+examples/canvas-jellyflow/target/debug/open-gpui-real-window-smoke --workflow
 ```
 
 Do not add `wgpu`, egui, Fret, screenshot, or pixel dependencies to `jellyflow-core` or
 `jellyflow-runtime` to prove headless behavior.
 
-## Trellis Task State
-
-The old `docs/workstreams/jellyflow-*` lane system has been removed. New medium
-or cross-crate changes should use Trellis tasks under `.trellis/tasks/`; small
-documentation or local cleanup can stay direct when the Trellis workflow allows
-it.
-
-Historical closed-lane themes that shaped the current codebase include:
-
-- runtime public-surface cleanup and XyFlow compatibility isolation;
-- model policy boundary and `runtime::policy`;
-- geometry/spatial extraction into renderer-neutral runtime APIs;
-- interaction harness, node drag, delete selection, viewport, and auto-pan kernels;
-- renderer-neutral node resize planning and conformance/template coverage;
-- conformance module splits, fixture format, golden approval, CLI harness, fixture discovery, and
-  file-backed fixture loading;
-- adapter conformance suite runner and copyable headless adapter template;
-- visible node id planning through `runtime::rendering`, `NodeGraphStore::visible_node_ids`, and
-  `ConformanceAction::assert_visible_node_ids`;
-- ordered visible node render planning through `runtime::rendering`,
-  `NodeGraphStore::visible_node_render_order`, and
-  `ConformanceAction::assert_visible_node_render_order`;
-- runtime test surface/module split cleanup.
-
 ## Refactor Guardrails
 
-Preserve intentional compatibility surfaces that support adapter behavior:
+Preserve only contracts exercised by current tests or required by the active Product Contract. The
+refactor is allowed to break public Rust APIs and delete former UI DSL surfaces, but graph-document
+migration must be explicit, lossless where supported, and rejection-based where not.
 
-- keep `runtime::xyflow` as the explicit XyFlow-compatible projection and callback home;
-- keep low-level conformance transaction dispatch as a documented fixture escape hatch;
-- keep renderer/platform work outside the headless crates.
+`GraphFile` writes envelope V2. Released Jellyflow 0.3 V1 documents are an intentional
+incompatibility boundary and fail with structured `UnsupportedEnvelopeVersion` before payload
+decoding; no lossy focusability migration is supported.
 
-Good fearless-refactor candidates are accidental pass-through modules, stale legacy metadata,
-duplicated pure runtime math, private modules with too-wide public surfaces, and test fixtures that
-can move from implementation detail tests to public contract tests.
-
-Do not move persisted fields out of `Graph` without a new ADR-backed schema migration plan.
-
-## Likely Follow-On Lanes
-
-- Exact pointer-resize session parity for XyFlow parent/child extent clamps and keep-aspect-ratio
-  behavior only after adapter evidence proves the current target-size resize contract is
-  insufficient.
-- Nested parent cascading or parent-relative coordinate semantics only after adapter evidence proves
-  the v1 canvas-space drag/resize contracts are insufficient.
-- Selection-specific auto-pan policy only after integration evidence proves the generic kernel is
-  insufficient.
-- Visible edge culling only after adapter evidence settles endpoint/path/AABB semantics.
-- Full scene render plans or render batches only after adapter evidence proves ordered visible
-  node ids plus existing group/edge order helpers are insufficient.
-- Real spatial indexing behind `NodeGraphSpatialIndexTuning` after visible-node contract or adapter
-  workloads show linear scans are too slow.
-- Async pre-delete or confirmation-dialog parity only after adapter evidence proves normalized
-  `runtime::delete`/`runtime::keyboard` calls are insufficient.
-- Renderer smoke harnesses in future adapter crates.
-- Schema migration only after policy facade usage proves which persisted fields should leave
-  `jellyflow_core::core::Graph`.
+Do not add broad re-export layers merely to preserve stale APIs. Keep renderer/platform work outside
+headless crates and prove boundaries through protocol, persistence, direct external consumers, and
+native adapter tests.

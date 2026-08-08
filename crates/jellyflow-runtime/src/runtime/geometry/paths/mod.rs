@@ -1,5 +1,7 @@
 mod bezier;
 mod label;
+mod orthogonal;
+mod sample;
 mod smoothstep;
 mod straight;
 mod types;
@@ -8,6 +10,8 @@ mod types;
 mod tests;
 
 pub use bezier::{BezierEdgeOptions, bezier_edge_path};
+pub use orthogonal::{OrthogonalEdgeOptions, orthogonal_edge_path};
+pub use sample::{EdgePathAnchor, EdgePathSample, EdgePathSampleError};
 pub use smoothstep::{SmoothStepEdgeOptions, smoothstep_edge_path};
 pub use straight::straight_edge_path;
 pub use types::{EdgePath, EdgePathLabel, PathCommand};

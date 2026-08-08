@@ -4,25 +4,16 @@
 
 mod diagnostic;
 mod plans;
-mod template;
 
 mod connection;
 mod delete;
 
-pub use connection::{
-    plan_connect, plan_connect_by_inserting_node, plan_connect_by_inserting_node_with_policy,
-    plan_connect_typed, plan_connect_typed_with_mode_and_policy, plan_connect_typed_with_policy,
-    plan_connect_with_mode, plan_connect_with_mode_and_policy, plan_reconnect_edge,
-    plan_reconnect_edge_with_mode, plan_reconnect_edge_with_mode_and_policy,
-    plan_split_edge_by_inserting_node,
+pub(crate) use connection::{
+    ConnectionPlanningContext, ConnectionPortFacts, connection_semantics_accepts,
+    edge_type_compatibility_diagnostic, plan_connect_typed_with_mode_and_policy_using,
+    plan_reconnect_edge_typed_with_mode_and_policy_using,
 };
-pub use delete::{
-    plan_delete_edge, plan_delete_edge_with_policy, plan_delete_elements,
-    plan_delete_elements_with_policy, plan_delete_node, plan_delete_node_with_policy,
-};
+pub(crate) use delete::{validate_delete_edge_policy, validate_delete_node_policy};
 pub use diagnostic::{Diagnostic, DiagnosticSeverity, DiagnosticTarget};
-pub use plans::{ConnectDecision, ConnectPlan, DeleteDecision, DeletePlan, EdgeEndpoint};
-pub use template::{InsertNodeSpec, InsertNodeTemplate, PortTemplate};
-
-#[cfg(test)]
-mod tests;
+pub(crate) use plans::ConnectPlan;
+pub use plans::{ConnectDecision, EdgeEndpoint};

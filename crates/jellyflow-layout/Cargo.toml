@@ -31,9 +31,6 @@ serde_json.workspace = true
 name = "layout_engines"
 harness = false
 
-[lints.rust]
-dead_code = "allow"
-
 [lints.clippy]
 doc_lazy_continuation = "allow"
 new_without_default = "allow"

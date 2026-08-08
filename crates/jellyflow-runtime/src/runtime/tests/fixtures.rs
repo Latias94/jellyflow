@@ -1,216 +1,83 @@
-use jellyflow_core::core::{
-    Binding, BindingId, CanvasPoint, Edge, EdgeId, EdgeKind, Graph, GraphBuilder, Group, GroupId,
-    Node, NodeId, NodeKindKey, Port, PortId, StickyNote, StickyNoteId,
-};
+use jellyflow_core::core::{EdgeId, Graph, GraphBuilder, GroupId, NodeId, PortId};
 
-use crate::io::NodeGraphViewState;
-use crate::runtime::store::NodeGraphStore;
+use crate::runtime::graph_runtime::{NodeLifetimeKey, PortConnectionDragIntent, PortInstanceKey};
+use crate::runtime::interaction::{KeyboardConnectionPort, NodeDragStart, SelectionMode};
+use crate::runtime::view_session::{ViewSession, ViewSessionError};
 
-pub(super) fn default_editor_config() -> crate::io::NodeGraphEditorConfig {
-    crate::io::NodeGraphEditorConfig::default()
+pub(super) trait GraphFixtureMutExt {
+    fn with_detached_builder<R>(&mut self, f: impl FnOnce(&mut GraphBuilder) -> R) -> R;
 }
 
-pub(super) fn make_store(graph: impl Into<Graph>) -> NodeGraphStore {
-    NodeGraphStore::new(
-        graph.into(),
-        NodeGraphViewState::default(),
-        default_editor_config(),
-    )
-}
-
-pub(super) fn fixture_insert_node(graph: &mut Graph, id: NodeId, node: Node) {
-    let mut builder = graph_builder_from_snapshot(graph);
-    builder.insert_node(id, node);
-    *graph = builder.build_unchecked();
-}
-
-pub(super) fn fixture_insert_port(graph: &mut Graph, id: PortId, port: Port) {
-    let mut builder = graph_builder_from_snapshot(graph);
-    builder.insert_port(id, port);
-    *graph = builder.build_unchecked();
-}
-
-pub(super) fn fixture_insert_group(graph: &mut Graph, id: GroupId, group: Group) {
-    let mut builder = graph_builder_from_snapshot(graph);
-    builder.insert_group(id, group);
-    *graph = builder.build_unchecked();
-}
-
-pub(super) fn fixture_insert_sticky_note(graph: &mut Graph, id: StickyNoteId, note: StickyNote) {
-    let mut builder = graph_builder_from_snapshot(graph);
-    builder.insert_sticky_note(id, note);
-    *graph = builder.build_unchecked();
-}
-
-pub(super) fn fixture_insert_binding(graph: &mut Graph, id: BindingId, binding: Binding) {
-    let mut builder = graph_builder_from_snapshot(graph);
-    builder.insert_binding(id, binding);
-    *graph = builder.build_unchecked();
-}
-
-pub(super) trait GraphFixtureUpdateExt {
-    fn update_node<R>(&mut self, id: &NodeId, f: impl FnOnce(&mut Node) -> R) -> Option<R>;
-    fn update_port<R>(&mut self, id: &PortId, f: impl FnOnce(&mut Port) -> R) -> Option<R>;
-    fn update_edge<R>(&mut self, id: &EdgeId, f: impl FnOnce(&mut Edge) -> R) -> Option<R>;
-}
-
-impl GraphFixtureUpdateExt for Graph {
-    fn update_node<R>(&mut self, id: &NodeId, f: impl FnOnce(&mut Node) -> R) -> Option<R> {
-        let mut builder = graph_builder_from_snapshot(self);
-        let updated = builder.update_node(id, f);
+impl GraphFixtureMutExt for Graph {
+    fn with_detached_builder<R>(&mut self, f: impl FnOnce(&mut GraphBuilder) -> R) -> R {
+        let mut builder = GraphBuilder::from_detached_graph(self.clone());
+        let result = f(&mut builder);
         *self = builder.build_unchecked();
-        updated
-    }
-
-    fn update_port<R>(&mut self, id: &PortId, f: impl FnOnce(&mut Port) -> R) -> Option<R> {
-        let mut builder = graph_builder_from_snapshot(self);
-        let updated = builder.update_port(id, f);
-        *self = builder.build_unchecked();
-        updated
-    }
-
-    fn update_edge<R>(&mut self, id: &EdgeId, f: impl FnOnce(&mut Edge) -> R) -> Option<R> {
-        let mut builder = graph_builder_from_snapshot(self);
-        let updated = builder.update_edge(id, f);
-        *self = builder.build_unchecked();
-        updated
+        result
     }
 }
 
-pub(super) fn fixture_remove_edge(graph: &mut Graph, id: &EdgeId) -> Option<Edge> {
-    let mut builder = graph_builder_from_snapshot(graph);
-    let removed = builder.remove_edge(id);
-    *graph = builder.build_unchecked();
-    removed
+pub(crate) fn current_node_lifetime(view: &ViewSession, node: NodeId) -> NodeLifetimeKey {
+    view.graph_snapshot()
+        .expect("test view snapshot")
+        .node_lifetime_key(node)
+        .expect("test node is current")
 }
 
-pub(super) fn fixture_clear_edges(graph: &mut Graph) {
-    let mut builder = graph_builder_from_snapshot(graph);
-    builder.clear_edges();
-    *graph = builder.build_unchecked();
+pub(crate) fn current_port_instance(view: &ViewSession, port: PortId) -> PortInstanceKey {
+    view.graph_snapshot()
+        .expect("test view snapshot")
+        .port_instance_key(port)
+        .expect("test port is current")
 }
 
-fn graph_builder_from_snapshot(graph: &Graph) -> GraphBuilder {
-    let mut builder = GraphBuilder::new(graph.graph_id());
-
-    for (id, import) in graph.imports() {
-        builder.insert_import(*id, import.clone());
-    }
-    for (id, symbol) in graph.symbols() {
-        builder.insert_symbol(*id, symbol.clone());
-    }
-    for (id, node) in graph.nodes() {
-        builder.insert_node(*id, node.clone());
-    }
-    for (id, port) in graph.ports() {
-        builder.insert_port(*id, port.clone());
-    }
-    for (id, edge) in graph.edges() {
-        builder.insert_edge(*id, edge.clone());
-    }
-    for (id, group) in graph.groups() {
-        builder.insert_group(*id, group.clone());
-    }
-    for (id, note) in graph.sticky_notes() {
-        builder.insert_sticky_note(*id, note.clone());
-    }
-    for (id, binding) in graph.bindings() {
-        builder.insert_binding(*id, binding.clone());
-    }
-
-    builder
+pub(crate) fn set_selection_by_id(
+    view: &ViewSession,
+    nodes: impl IntoIterator<Item = NodeId>,
+    edges: impl IntoIterator<Item = EdgeId>,
+    groups: Vec<GroupId>,
+) -> Result<(), ViewSessionError> {
+    let snapshot = view.graph_snapshot()?;
+    let nodes = nodes
+        .into_iter()
+        .map(|node| {
+            snapshot
+                .node_lifetime_key(node)
+                .expect("selected test node is current")
+        })
+        .collect();
+    let edges = edges
+        .into_iter()
+        .map(|edge| {
+            snapshot
+                .edge_instance_key(edge)
+                .expect("selected test edge is current")
+        })
+        .collect();
+    view.set_selection(nodes, edges, groups)
 }
 
-pub(super) fn make_graph() -> (
-    Graph,
-    NodeId,
-    NodeId,
-    jellyflow_core::core::PortId,
-    jellyflow_core::core::PortId,
-    EdgeId,
-) {
-    let mut g = GraphBuilder::new(jellyflow_core::core::GraphId::from_u128(1));
+pub(crate) fn node_drag_start_by_id(
+    view: &ViewSession,
+    node: NodeId,
+    selection_mode: SelectionMode,
+) -> Result<Option<NodeDragStart>, ViewSessionError> {
+    view.node_drag_start(current_node_lifetime(view, node), selection_mode)
+}
 
-    let a = NodeId::new();
-    let b = NodeId::new();
+pub(crate) fn port_connection_drag_intent_by_id(
+    view: &ViewSession,
+    port: PortId,
+) -> Result<PortConnectionDragIntent, ViewSessionError> {
+    view.port_connection_drag_intent(current_port_instance(view, port))?
+        .into_outcome()
+        .ready()
+        .ok_or(ViewSessionError::StaleInteractionFacts)
+}
 
-    let out_port = jellyflow_core::core::PortId::new();
-    let in_port = jellyflow_core::core::PortId::new();
-
-    let node_a = Node {
-        kind: NodeKindKey::new("demo.a"),
-        kind_version: 1,
-        pos: CanvasPoint { x: 0.0, y: 0.0 },
-        origin: None,
-        selectable: None,
-        focusable: None,
-        draggable: None,
-        connectable: None,
-        deletable: None,
-        parent: None,
-        extent: None,
-        expand_parent: None,
-        size: None,
-        hidden: false,
-        collapsed: false,
-        ports: vec![out_port],
-        data: serde_json::Value::Null,
-    };
-    let node_b = Node {
-        kind: NodeKindKey::new("demo.b"),
-        kind_version: 1,
-        pos: CanvasPoint { x: 100.0, y: 0.0 },
-        origin: None,
-        selectable: None,
-        focusable: None,
-        draggable: None,
-        connectable: None,
-        deletable: None,
-        parent: None,
-        extent: None,
-        expand_parent: None,
-        size: None,
-        hidden: false,
-        collapsed: false,
-        ports: vec![in_port],
-        data: serde_json::Value::Null,
-    };
-
-    g.insert_node(a, node_a);
-    g.insert_node(b, node_b);
-    g.insert_port(
-        out_port,
-        Port {
-            node: a,
-            key: jellyflow_core::core::PortKey::new("out"),
-            dir: jellyflow_core::core::PortDirection::Out,
-            kind: jellyflow_core::core::PortKind::Data,
-            capacity: jellyflow_core::core::PortCapacity::Multi,
-            connectable: None,
-            connectable_start: None,
-            connectable_end: None,
-            ty: None,
-            data: serde_json::Value::Null,
-        },
-    );
-    g.insert_port(
-        in_port,
-        Port {
-            node: b,
-            key: jellyflow_core::core::PortKey::new("in"),
-            dir: jellyflow_core::core::PortDirection::In,
-            kind: jellyflow_core::core::PortKind::Data,
-            capacity: jellyflow_core::core::PortCapacity::Single,
-            connectable: None,
-            connectable_start: None,
-            connectable_end: None,
-            ty: None,
-            data: serde_json::Value::Null,
-        },
-    );
-
-    let eid = EdgeId::new();
-    g.insert_edge(eid, Edge::new(EdgeKind::Data, out_port, in_port));
-
-    (g.into(), a, b, out_port, in_port, eid)
+pub(crate) fn keyboard_connection_port_by_id(
+    view: &ViewSession,
+    port: PortId,
+) -> Result<KeyboardConnectionPort, ViewSessionError> {
+    view.keyboard_connection_port(current_port_instance(view, port))
 }

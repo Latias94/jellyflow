@@ -1,8 +1,8 @@
 //! Optional headless layout adapters for Jellyflow.
 //!
 //! This crate keeps automatic layout outside the core document model. Layout engines receive a
-//! projection of a Jellyflow graph and return normal [`GraphTransaction`] values that hosts can
-//! apply explicitly.
+//! projection of a Jellyflow graph and return [`LayoutResult`] values. A runtime or host owns the
+//! revision-checked command that applies those results.
 
 #![deny(unsafe_code)]
 
@@ -16,34 +16,25 @@ mod preset;
 mod projection;
 mod tidy_tree;
 
+pub use dugong::DugongLayoutEngine;
 #[cfg(feature = "benchmark-internals")]
 pub use dugong::benchmark_internals;
-pub use dugong::{
-    DugongLayoutEngine, layout_graph_to_transaction_with_dugong, layout_graph_with_dugong,
-};
 pub use engine::{
-    DUGONG_LAYOUT_ENGINE_ID, LayoutContext, LayoutDirection, LayoutEdgeRoute, LayoutEngine,
-    LayoutEngineId, LayoutEngineRegistry, LayoutEngineRequest, LayoutError, LayoutNodePosition,
-    LayoutOptions, LayoutRequest, LayoutResult, LayoutScope, LayoutSpacing,
-    MIND_MAP_FREEFORM_LAYOUT_ENGINE_ID, MIND_MAP_RADIAL_LAYOUT_ENGINE_ID,
-    TIDY_TREE_LAYOUT_ENGINE_ID, layout_graph_to_transaction_with_engine, layout_graph_with_engine,
+    DUGONG_LAYOUT_ENGINE_ID, LayoutContext, LayoutCoordinateFrame, LayoutDirection,
+    LayoutEdgeRoute, LayoutEngine, LayoutEngineDescriptor, LayoutEngineId, LayoutEngineRegistry,
+    LayoutEngineRequest, LayoutError, LayoutNodePlacement, LayoutNodePosition, LayoutOptions,
+    LayoutPlacements, LayoutRequest, LayoutResult, LayoutScope, LayoutSpacing,
+    MIND_MAP_FREEFORM_LAYOUT_ENGINE_ID, MIND_MAP_RADIAL_LAYOUT_ENGINE_ID, PreparedLayoutEdge,
+    PreparedLayoutInput, PreparedLayoutNode, TIDY_TREE_LAYOUT_ENGINE_ID,
 };
 pub use family::{
     LAYERED_DAG_LAYOUT_FAMILY_ID, LayoutEngineCapability, LayoutEngineMetadata, LayoutFamilyId,
     LayoutFamilyMetadata, MIND_MAP_LAYOUT_FAMILY_ID,
 };
-pub use freeform::{
-    MindMapFreeformLayoutEngine, layout_graph_to_transaction_with_mind_map_freeform,
-    layout_graph_with_mind_map_freeform,
-};
-pub use mind_map::{
-    MindMapRadialLayoutEngine, layout_graph_to_transaction_with_mind_map_radial,
-    layout_graph_with_mind_map_radial,
-};
+pub use freeform::MindMapFreeformLayoutEngine;
+pub use mind_map::MindMapRadialLayoutEngine;
 pub use preset::LayoutPresetBuilder;
-pub use tidy_tree::{
-    TidyTreeLayoutEngine, layout_graph_to_transaction_with_tidy_tree, layout_graph_with_tidy_tree,
-};
+pub use tidy_tree::TidyTreeLayoutEngine;
 
 /// Returns a registry containing Jellyflow's built-in layout engines.
 pub fn builtin_layout_engine_registry() -> &'static LayoutEngineRegistry {

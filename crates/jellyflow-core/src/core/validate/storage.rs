@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::core::{
-    BindingId, CanvasSize, EdgeId, Graph, GraphLocalBindingTarget, Node, NodeId, PortId,
+    BindingId, CanvasSize, Edge, EdgeId, Graph, GraphLocalBindingTarget, Node, NodeExtent, NodeId,
+    PortId,
 };
 
 use super::{GraphValidationError, GraphValidationReport};
@@ -35,7 +36,9 @@ impl<'a> StorageValidator<'a> {
         self.validate_ports_reference_nodes();
         self.validate_ports_are_listed_by_owner();
         self.validate_nodes();
-        self.validate_edges_reference_ports();
+        self.validate_groups();
+        self.validate_sticky_notes();
+        self.validate_edges();
         self.validate_bindings_reference_graph_local_targets();
         self.report
     }
@@ -88,8 +91,36 @@ impl<'a> StorageValidator<'a> {
 
     fn validate_node(&mut self, node_id: NodeId, node: &Node) {
         self.validate_node_parent(node_id, node);
+        self.validate_node_geometry(node_id, node);
         self.validate_node_size(node_id, node.size);
         self.validate_node_port_list(node_id, node);
+    }
+
+    fn validate_node_geometry(&mut self, node_id: NodeId, node: &Node) {
+        if !node.pos.is_finite() {
+            self.report
+                .push(GraphValidationError::NodePositionNotFinite { node: node_id });
+        }
+        if node.origin.is_some_and(|origin| !origin.is_finite()) {
+            self.report
+                .push(GraphValidationError::NodeOriginNotFinite { node: node_id });
+        }
+        if node.pos.is_finite()
+            && node.origin.is_none_or(|origin| origin.is_finite())
+            && let Some(size) = node.size
+            && size.is_positive_finite()
+            && node.bounds_for_size(size).is_none()
+        {
+            self.report
+                .push(GraphValidationError::NodeBoundsNotFinite { node: node_id });
+        }
+        if matches!(
+            node.extent,
+            Some(NodeExtent::Rect { rect }) if !rect.is_finite()
+        ) {
+            self.report
+                .push(GraphValidationError::NodeExtentNotFinite { node: node_id });
+        }
     }
 
     fn validate_node_parent(&mut self, node_id: NodeId, node: &Node) {
@@ -144,10 +175,48 @@ impl<'a> StorageValidator<'a> {
         }
     }
 
-    fn validate_edges_reference_ports(&mut self) {
+    fn validate_groups(&mut self) {
+        for (group_id, group) in self.graph.groups() {
+            if !group.rect.is_finite() {
+                self.report
+                    .push(GraphValidationError::GroupRectNotFinite { group: *group_id });
+            }
+        }
+    }
+
+    fn validate_sticky_notes(&mut self) {
+        for (sticky_note_id, sticky_note) in self.graph.sticky_notes() {
+            if !sticky_note.rect.is_finite() {
+                self.report
+                    .push(GraphValidationError::StickyNoteRectNotFinite {
+                        sticky_note: *sticky_note_id,
+                    });
+            }
+        }
+    }
+
+    fn validate_edges(&mut self) {
         for (edge_id, edge) in self.graph.edges() {
             self.validate_edge_endpoint(*edge_id, edge.from);
             self.validate_edge_endpoint(*edge_id, edge.to);
+            self.validate_edge_geometry(*edge_id, edge);
+        }
+    }
+
+    fn validate_edge_geometry(&mut self, edge_id: EdgeId, edge: &Edge) {
+        if edge
+            .interaction_width
+            .is_some_and(|interaction_width| !interaction_width.is_finite())
+        {
+            self.report
+                .push(GraphValidationError::EdgeInteractionWidthNotFinite { edge: edge_id });
+        }
+        if let Some(source) = edge.view.route.and_then(|route| route.validate().err()) {
+            self.report
+                .push(GraphValidationError::EdgeRouteSpecInvalid {
+                    edge: edge_id,
+                    source,
+                });
         }
     }
 

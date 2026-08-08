@@ -23,5 +23,5 @@ impl TypeCompatibilityResult {
 ///
 /// The direction is `from -> to` (assignability), matching edge direction for data flow.
 pub trait TypeCompatibility {
-    fn compatible(&mut self, from: &TypeDesc, to: &TypeDesc) -> TypeCompatibilityResult;
+    fn compatible(&self, from: &TypeDesc, to: &TypeDesc) -> TypeCompatibilityResult;
 }

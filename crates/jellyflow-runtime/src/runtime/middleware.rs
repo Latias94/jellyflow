@@ -1,58 +1,41 @@
-//! Store middleware hooks for `NodeGraphStore`.
+//! Middleware hooks for authoritative graph commands.
 //!
 //! This module is intentionally headless-safe (no `fret-ui` dependency).
 
 use crate::profile::ApplyPipelineError;
-use crate::runtime::commit::NodeGraphPatch;
-use crate::runtime::events::NodeGraphStoreSnapshot;
-use jellyflow_core::ops::GraphTransaction;
+use crate::runtime::commands::GraphCommand;
+use crate::runtime::graph_runtime::{GraphSnapshot, HistoryState, RuntimePatch};
 
-pub trait NodeGraphStoreMiddleware: 'static {
-    fn before_dispatch(
-        &mut self,
-        _snapshot: NodeGraphStoreSnapshot<'_>,
-        _tx: &mut GraphTransaction,
-    ) -> Result<(), ApplyPipelineError> {
-        Ok(())
-    }
-
-    fn after_dispatch(&mut self, _snapshot: NodeGraphStoreSnapshot<'_>, _patch: &NodeGraphPatch) {}
-}
-
-#[derive(Debug, Default, Clone, Copy)]
-pub struct NoopNodeGraphStoreMiddleware;
-
-impl NodeGraphStoreMiddleware for NoopNodeGraphStoreMiddleware {}
-
+/// Owned graph-runtime state exposed to middleware without borrowing live runtime storage.
 #[derive(Debug, Clone)]
-pub struct NodeGraphStoreMiddlewareChain<A, B> {
-    pub first: A,
-    pub second: B,
+pub struct GraphRuntimeMiddlewareSnapshot {
+    graph: GraphSnapshot,
+    history: HistoryState,
 }
 
-impl<A, B> NodeGraphStoreMiddlewareChain<A, B> {
-    pub fn new(first: A, second: B) -> Self {
-        Self { first, second }
+impl GraphRuntimeMiddlewareSnapshot {
+    pub(crate) fn new(graph: GraphSnapshot, history: HistoryState) -> Self {
+        Self { graph, history }
+    }
+
+    pub fn graph(&self) -> &GraphSnapshot {
+        &self.graph
+    }
+
+    pub fn history(&self) -> HistoryState {
+        self.history
     }
 }
 
-impl<A, B> NodeGraphStoreMiddleware for NodeGraphStoreMiddlewareChain<A, B>
-where
-    A: NodeGraphStoreMiddleware,
-    B: NodeGraphStoreMiddleware,
-{
-    fn before_dispatch(
+/// Runtime-owned command hooks used by every externally initiated graph mutation path.
+pub trait GraphRuntimeMiddleware: 'static {
+    fn before_command(
         &mut self,
-        snapshot: NodeGraphStoreSnapshot<'_>,
-        tx: &mut GraphTransaction,
+        _snapshot: GraphRuntimeMiddlewareSnapshot,
+        _command: &GraphCommand,
     ) -> Result<(), ApplyPipelineError> {
-        self.first.before_dispatch(snapshot, tx)?;
-        self.second.before_dispatch(snapshot, tx)?;
         Ok(())
     }
 
-    fn after_dispatch(&mut self, snapshot: NodeGraphStoreSnapshot<'_>, patch: &NodeGraphPatch) {
-        self.first.after_dispatch(snapshot, patch);
-        self.second.after_dispatch(snapshot, patch);
-    }
+    fn after_command(&mut self, _snapshot: GraphRuntimeMiddlewareSnapshot, _patch: &RuntimePatch) {}
 }

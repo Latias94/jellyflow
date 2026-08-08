@@ -131,7 +131,7 @@ impl StickyNoteId {
     }
 }
 
-/// Stable identifier for a knowledge-canvas binding.
+/// Stable identifier for a graph binding.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct BindingId(pub Uuid);

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use jellyflow_core::{
     BindingEndpoint, CanvasPoint, CanvasRect, CanvasSize, EdgeId, Graph, GraphMutationFootprint,
-    GraphOp, GraphTransaction, NodeId,
+    Node, NodeId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -114,8 +114,6 @@ pub struct LayoutOptions {
     pub spacing: LayoutSpacing,
     pub margin: CanvasSize,
     pub default_node_size: CanvasSize,
-    /// Fallback node origin used when a node has no per-node origin override.
-    pub node_origin: (f32, f32),
 }
 
 impl Default for LayoutOptions {
@@ -131,7 +129,6 @@ impl Default for LayoutOptions {
                 width: 172.0,
                 height: 36.0,
             },
-            node_origin: (0.0, 0.0),
         }
     }
 }
@@ -146,12 +143,6 @@ impl LayoutOptions {
     /// Uses a different layered layout direction.
     pub fn with_direction(mut self, direction: LayoutDirection) -> Self {
         self.direction = direction;
-        self
-    }
-
-    /// Uses a different fallback node origin.
-    pub fn with_node_origin(mut self, node_origin: (f32, f32)) -> Self {
-        self.node_origin = node_origin;
         self
     }
 }
@@ -174,6 +165,10 @@ impl LayoutScope {
     /// nodes when that information is available in the current graph snapshot. Node ids that no
     /// longer exist in the supplied graph are omitted.
     pub fn from_footprint(graph: &Graph, footprint: &GraphMutationFootprint) -> Self {
+        if footprint.graph {
+            return Self::All;
+        }
+
         let mut nodes = footprint
             .nodes
             .iter()
@@ -202,11 +197,6 @@ impl LayoutScope {
         }
 
         Self::Nodes { nodes }
-    }
-
-    /// Derives a conservative node scope from a transaction and the current graph.
-    pub fn from_transaction(graph: &Graph, tx: &GraphTransaction) -> Self {
-        Self::from_footprint(graph, &tx.footprint())
     }
 
     /// Returns `true` when this scope selects no nodes.
@@ -267,14 +257,6 @@ impl LayoutRequest {
         }
     }
 
-    /// Creates a request scoped to nodes affected by a transaction.
-    pub fn from_transaction(graph: &Graph, tx: &GraphTransaction) -> Self {
-        Self {
-            scope: LayoutScope::from_transaction(graph, tx),
-            ..Self::default()
-        }
-    }
-
     /// Adds adapter-reported node sizes.
     pub fn with_measured_node_sizes(
         mut self,
@@ -287,16 +269,6 @@ impl LayoutRequest {
     /// Sets layout options.
     pub fn with_options(mut self, options: LayoutOptions) -> Self {
         self.options = options;
-        self
-    }
-
-    /// Replaces this request's scope with nodes affected by a transaction.
-    pub fn with_dirty_scope_from_transaction(
-        mut self,
-        graph: &Graph,
-        tx: &GraphTransaction,
-    ) -> Self {
-        self.scope = LayoutScope::from_transaction(graph, tx);
         self
     }
 
@@ -378,9 +350,6 @@ pub struct LayoutContext {
     /// Nodes that engines should treat as fixed when they support pinning.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub pinned_nodes: BTreeSet<NodeId>,
-    /// Runtime fallback node origin, usually resolved from interaction state.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub node_origin: Option<(f32, f32)>,
 }
 
 impl LayoutContext {
@@ -403,20 +372,134 @@ impl LayoutContext {
         self.pinned_nodes.extend(nodes);
         self
     }
+}
 
-    /// Sets the runtime fallback node origin.
-    pub fn with_node_origin(mut self, node_origin: (f32, f32)) -> Self {
-        self.node_origin = Some(node_origin);
-        self
+/// One validated, visible node supplied to a layout engine.
+#[derive(Debug, Clone, Copy)]
+pub struct PreparedLayoutNode<'graph> {
+    pub(crate) id: NodeId,
+    pub(crate) node: &'graph Node,
+    pub(crate) size: CanvasSize,
+    pub(crate) origin: (f32, f32),
+    pub(crate) current_center: CanvasPoint,
+    pub(crate) pinned: bool,
+}
+
+impl<'graph> PreparedLayoutNode<'graph> {
+    /// Returns this node's graph identity.
+    pub fn id(&self) -> NodeId {
+        self.id
+    }
+
+    /// Returns the underlying semantic graph node.
+    pub fn node(&self) -> &'graph Node {
+        self.node
+    }
+
+    /// Returns the resolved size used for this layout run.
+    pub fn size(&self) -> CanvasSize {
+        self.size
+    }
+
+    /// Returns the normalized graph-node origin.
+    pub fn origin(&self) -> (f32, f32) {
+        self.origin
+    }
+
+    /// Returns the node's current physical center in canvas space.
+    pub fn current_center(&self) -> CanvasPoint {
+        self.current_center
+    }
+
+    /// Returns whether this node is pinned for this layout run.
+    pub fn is_pinned(&self) -> bool {
+        self.pinned
+    }
+}
+
+/// One validated edge whose endpoints are both present in the prepared layout input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PreparedLayoutEdge {
+    pub(crate) id: EdgeId,
+    pub(crate) source: NodeId,
+    pub(crate) target: NodeId,
+}
+
+impl PreparedLayoutEdge {
+    /// Returns this edge's graph identity.
+    pub fn id(&self) -> EdgeId {
+        self.id
+    }
+
+    /// Returns the source node.
+    pub fn source(&self) -> NodeId {
+        self.source
+    }
+
+    /// Returns the target node.
+    pub fn target(&self) -> NodeId {
+        self.target
+    }
+}
+
+/// Validated graph projection supplied to one layout engine invocation.
+///
+/// The registry constructs this value once per run. Engines cannot reinterpret scope, size
+/// precedence, hidden nodes, pinning, or edge endpoint validity.
+#[derive(Debug)]
+pub struct PreparedLayoutInput<'graph> {
+    pub(crate) options: LayoutOptions,
+    pub(crate) nodes: Vec<PreparedLayoutNode<'graph>>,
+    pub(crate) node_indices: BTreeMap<NodeId, usize>,
+    pub(crate) edges: Vec<PreparedLayoutEdge>,
+    pub(crate) outgoing: BTreeMap<NodeId, Vec<NodeId>>,
+}
+
+impl PreparedLayoutInput<'_> {
+    /// Returns the options for this layout run.
+    pub fn options(&self) -> LayoutOptions {
+        self.options
+    }
+
+    /// Iterates visible nodes in deterministic graph order.
+    pub fn nodes(&self) -> impl ExactSizeIterator<Item = PreparedLayoutNode<'_>> + '_ {
+        self.nodes.iter().copied()
+    }
+
+    /// Returns one prepared node by identity.
+    pub fn node(&self, node: NodeId) -> Option<PreparedLayoutNode<'_>> {
+        self.node_indices
+            .get(&node)
+            .and_then(|index| self.nodes.get(*index))
+            .copied()
+    }
+
+    /// Returns visible edges in deterministic graph order.
+    pub fn edges(&self) -> &[PreparedLayoutEdge] {
+        &self.edges
+    }
+
+    /// Returns visible outgoing neighbors for one node.
+    pub fn outgoing(&self, node: NodeId) -> &[NodeId] {
+        self.outgoing.get(&node).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    /// Returns whether any visible node is pinned.
+    pub fn has_pinned_nodes(&self) -> bool {
+        self.nodes.iter().any(|node| node.pinned)
     }
 }
 
 /// A node position produced by a layout run.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct LayoutNodePosition {
+    /// Node receiving this placement.
     pub node: NodeId,
+    /// Canvas anchor position using the graph node's normalized origin.
     pub pos: CanvasPoint,
+    /// Center of the node's physical canvas rectangle.
     pub center: CanvasPoint,
+    /// Size of the node's physical canvas rectangle.
     pub size: CanvasSize,
 }
 
@@ -427,11 +510,67 @@ pub struct LayoutEdgeRoute {
     pub points: Vec<CanvasPoint>,
 }
 
+/// One engine-produced center placement.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct LayoutNodePlacement {
+    pub node: NodeId,
+    pub center: CanvasPoint,
+}
+
+/// Whether the registry should normalize the result to the requested margin.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LayoutCoordinateFrame {
+    /// Translate nodes and routes together so result bounds begin at the requested margin.
+    #[default]
+    NormalizeToMargin,
+    /// Preserve the engine's canvas coordinates exactly.
+    PreserveCanvasCoordinates,
+}
+
+/// Minimal output produced by a layout engine before registry finalization.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LayoutPlacements {
+    pub nodes: Vec<LayoutNodePlacement>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub edge_routes: Vec<LayoutEdgeRoute>,
+    #[serde(default)]
+    pub coordinate_frame: LayoutCoordinateFrame,
+}
+
+impl LayoutPlacements {
+    /// Creates placements normalized to the request margin.
+    pub fn normalize_to_margin(nodes: impl IntoIterator<Item = LayoutNodePlacement>) -> Self {
+        Self {
+            nodes: nodes.into_iter().collect(),
+            edge_routes: Vec::new(),
+            coordinate_frame: LayoutCoordinateFrame::NormalizeToMargin,
+        }
+    }
+
+    /// Creates placements that preserve their canvas coordinates.
+    pub fn preserve_canvas_coordinates(
+        nodes: impl IntoIterator<Item = LayoutNodePlacement>,
+    ) -> Self {
+        Self {
+            nodes: nodes.into_iter().collect(),
+            edge_routes: Vec::new(),
+            coordinate_frame: LayoutCoordinateFrame::PreserveCanvasCoordinates,
+        }
+    }
+
+    /// Adds engine-produced edge routes.
+    pub fn with_edge_routes(mut self, routes: impl IntoIterator<Item = LayoutEdgeRoute>) -> Self {
+        self.edge_routes.extend(routes);
+        self
+    }
+}
+
 /// Result of a headless layout run.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LayoutResult {
-    /// Engine-produced results contain at most one entry per node. If a caller manually constructs a
-    /// result with duplicates, lookup returns the first entry and transaction conversion fails.
+    /// Results returned through a [`LayoutEngineRegistry`] contain one valid entry for every
+    /// visible node in the requested scope.
     pub nodes: Vec<LayoutNodePosition>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub edge_routes: Vec<LayoutEdgeRoute>,
@@ -447,44 +586,23 @@ impl LayoutResult {
             .find(|position| position.node == node)
             .copied()
     }
-
-    /// Converts node position changes into a Jellyflow transaction.
-    pub fn to_transaction(&self, graph: &Graph) -> Result<GraphTransaction, LayoutError> {
-        let mut seen = BTreeSet::new();
-        let mut ops = Vec::new();
-
-        for node in &self.nodes {
-            if !seen.insert(node.node) {
-                return Err(LayoutError::DuplicateResultNode(node.node));
-            }
-
-            let from = graph
-                .nodes()
-                .get(&node.node)
-                .ok_or(LayoutError::MissingTransactionNode(node.node))?
-                .pos;
-            if from != node.pos {
-                ops.push(GraphOp::SetNodePos {
-                    id: node.node,
-                    from,
-                    to: node.pos,
-                });
-            }
-        }
-
-        Ok(GraphTransaction::from_ops(ops).with_label("Layout graph"))
-    }
 }
 
-/// Errors reported by layout projection, registry lookup, or layout output conversion.
+/// Errors reported by layout projection, registry lookup, or layout result validation.
 #[derive(Debug, thiserror::Error, PartialEq)]
 pub enum LayoutError {
     #[error("layout engine id is already registered: {0}")]
     DuplicateLayoutEngine(LayoutEngineId),
-    #[error("layout family id is already registered: {0}")]
-    DuplicateLayoutFamily(LayoutFamilyId),
-    #[error("layout engine metadata is already registered: {0}")]
-    DuplicateLayoutEngineMetadata(LayoutEngineId),
+    #[error("layout family metadata conflicts with an existing family: {0}")]
+    ConflictingLayoutFamily(LayoutFamilyId),
+    #[error(
+        "layout engine {engine} declares family {metadata_family}, but its descriptor carries {descriptor_family}"
+    )]
+    LayoutEngineFamilyMismatch {
+        engine: LayoutEngineId,
+        metadata_family: LayoutFamilyId,
+        descriptor_family: LayoutFamilyId,
+    },
     #[error("layout engine is not registered: {0}")]
     MissingLayoutEngine(LayoutEngineId),
     #[error("layout default node size must be positive and finite: {0:?}")]
@@ -509,32 +627,88 @@ pub enum LayoutError {
     MissingNodePosition(NodeId),
     #[error("layout result contains a duplicate node position for node {0:?}")]
     DuplicateResultNode(NodeId),
-    #[error("layout result references missing graph node: {0:?}")]
-    MissingTransactionNode(NodeId),
+    #[error("layout placements reference a node outside the active scope: {0:?}")]
+    UnexpectedResultNode(NodeId),
+    #[error("layout result contains invalid geometry for node {0:?}")]
+    InvalidResultNodeGeometry(NodeId),
+    #[error("layout result contains a duplicate edge route for edge {0:?}")]
+    DuplicateResultEdgeRoute(EdgeId),
+    #[error("layout result contains an invalid edge route for edge {0:?}")]
+    InvalidResultEdgeRoute(EdgeId),
+    #[error("layout result contains invalid bounds")]
+    InvalidResultBounds,
+    #[error("freeform layout could not resolve overlap for node {0:?}")]
+    UnresolvedOverlap(NodeId),
     #[error("layout engine returned a non-finite node position for node {node:?}: ({x}, {y})")]
     NonFiniteNodePosition { node: NodeId, x: f64, y: f64 },
 }
 
 /// Headless layout engine contract.
 pub trait LayoutEngine: Send + Sync {
-    /// Stable engine id.
-    fn id(&self) -> LayoutEngineId;
+    /// Produces center placements from one validated graph projection.
+    fn place(&self, input: &PreparedLayoutInput<'_>) -> Result<LayoutPlacements, LayoutError>;
+}
 
-    /// Runs this layout engine.
-    fn layout(
-        &self,
-        graph: &Graph,
-        request: &LayoutRequest,
-        context: &LayoutContext,
-    ) -> Result<LayoutResult, LayoutError>;
+/// Atomically registered layout engine and discovery metadata.
+#[derive(Clone)]
+pub struct LayoutEngineDescriptor {
+    family: LayoutFamilyMetadata,
+    metadata: LayoutEngineMetadata,
+    engine: Arc<dyn LayoutEngine>,
+}
+
+impl fmt::Debug for LayoutEngineDescriptor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LayoutEngineDescriptor")
+            .field("family", &self.family)
+            .field("metadata", &self.metadata)
+            .finish_non_exhaustive()
+    }
+}
+
+impl LayoutEngineDescriptor {
+    /// Creates a descriptor from one concrete engine.
+    pub fn new<E>(family: LayoutFamilyMetadata, metadata: LayoutEngineMetadata, engine: E) -> Self
+    where
+        E: LayoutEngine + 'static,
+    {
+        Self::from_shared(family, metadata, Arc::new(engine))
+    }
+
+    /// Creates a descriptor from one shared engine object.
+    pub fn from_shared(
+        family: LayoutFamilyMetadata,
+        metadata: LayoutEngineMetadata,
+        engine: Arc<dyn LayoutEngine>,
+    ) -> Self {
+        Self {
+            family,
+            metadata,
+            engine,
+        }
+    }
+
+    /// Returns this engine's stable identity.
+    pub fn id(&self) -> &LayoutEngineId {
+        &self.metadata.engine
+    }
+
+    /// Returns this engine's family metadata.
+    pub fn family(&self) -> &LayoutFamilyMetadata {
+        &self.family
+    }
+
+    /// Returns this engine's discovery metadata.
+    pub fn metadata(&self) -> &LayoutEngineMetadata {
+        &self.metadata
+    }
 }
 
 /// Caller-owned registry of layout engines.
 #[derive(Default, Clone)]
 pub struct LayoutEngineRegistry {
-    engines: BTreeMap<LayoutEngineId, Arc<dyn LayoutEngine>>,
+    engines: BTreeMap<LayoutEngineId, LayoutEngineDescriptor>,
     families: BTreeMap<LayoutFamilyId, LayoutFamilyMetadata>,
-    metadata: BTreeMap<LayoutEngineId, LayoutEngineMetadata>,
 }
 
 impl fmt::Debug for LayoutEngineRegistry {
@@ -552,47 +726,37 @@ impl LayoutEngineRegistry {
         Self::default()
     }
 
-    /// Registers an engine.
-    pub fn insert<E>(&mut self, engine: E) -> Result<(), LayoutError>
-    where
-        E: LayoutEngine + 'static,
-    {
-        self.insert_shared(Arc::new(engine))
-    }
-
-    /// Registers a shared engine object.
-    pub fn insert_shared(&mut self, engine: Arc<dyn LayoutEngine>) -> Result<(), LayoutError> {
-        let id = engine.id();
+    /// Atomically registers an engine together with its family and discovery metadata.
+    pub fn register(&mut self, descriptor: LayoutEngineDescriptor) -> Result<(), LayoutError> {
+        let id = descriptor.id().clone();
         if self.engines.contains_key(&id) {
             return Err(LayoutError::DuplicateLayoutEngine(id));
         }
-        self.engines.insert(id, engine);
-        Ok(())
-    }
-
-    /// Registers layout family metadata.
-    pub fn insert_family(&mut self, family: LayoutFamilyMetadata) -> Result<(), LayoutError> {
-        let id = family.id.clone();
-        if self.families.contains_key(&id) {
-            return Err(LayoutError::DuplicateLayoutFamily(id));
+        if descriptor.metadata.family != descriptor.family.id {
+            return Err(LayoutError::LayoutEngineFamilyMismatch {
+                engine: id,
+                metadata_family: descriptor.metadata.family.clone(),
+                descriptor_family: descriptor.family.id.clone(),
+            });
         }
-        self.families.insert(id, family);
-        Ok(())
-    }
-
-    /// Registers layout engine discovery metadata.
-    pub fn insert_metadata(&mut self, metadata: LayoutEngineMetadata) -> Result<(), LayoutError> {
-        let id = metadata.engine.clone();
-        if self.metadata.contains_key(&id) {
-            return Err(LayoutError::DuplicateLayoutEngineMetadata(id));
+        if let Some(existing) = self.families.get(&descriptor.family.id)
+            && existing != &descriptor.family
+        {
+            return Err(LayoutError::ConflictingLayoutFamily(
+                descriptor.family.id.clone(),
+            ));
         }
-        self.metadata.insert(id, metadata);
+
+        self.families
+            .entry(descriptor.family.id.clone())
+            .or_insert_with(|| descriptor.family.clone());
+        self.engines.insert(id, descriptor);
         Ok(())
     }
 
-    /// Returns an engine by id.
-    pub fn get(&self, id: &LayoutEngineId) -> Option<&dyn LayoutEngine> {
-        self.engines.get(id).map(Arc::as_ref)
+    /// Returns whether one engine is registered.
+    pub fn contains(&self, id: &LayoutEngineId) -> bool {
+        self.engines.contains_key(id)
     }
 
     /// Returns family metadata by id.
@@ -602,7 +766,7 @@ impl LayoutEngineRegistry {
 
     /// Returns engine discovery metadata by engine id.
     pub fn metadata(&self, id: &LayoutEngineId) -> Option<&LayoutEngineMetadata> {
-        self.metadata.get(id)
+        self.engines.get(id).map(LayoutEngineDescriptor::metadata)
     }
 
     /// Returns registered engine ids in deterministic order.
@@ -622,7 +786,7 @@ impl LayoutEngineRegistry {
 
     /// Returns registered engine metadata in deterministic order.
     pub fn engine_metadata(&self) -> impl Iterator<Item = &LayoutEngineMetadata> {
-        self.metadata.values()
+        self.engines.values().map(LayoutEngineDescriptor::metadata)
     }
 
     /// Returns engine metadata for one family in deterministic engine-id order.
@@ -630,8 +794,9 @@ impl LayoutEngineRegistry {
         &self,
         family: &LayoutFamilyId,
     ) -> impl Iterator<Item = &LayoutEngineMetadata> {
-        self.metadata
+        self.engines
             .values()
+            .map(LayoutEngineDescriptor::metadata)
             .filter(move |metadata| &metadata.family == family)
     }
 
@@ -642,31 +807,14 @@ impl LayoutEngineRegistry {
         request: &LayoutEngineRequest,
         context: &LayoutContext,
     ) -> Result<LayoutResult, LayoutError> {
-        let engine = self
+        let descriptor = self
+            .engines
             .get(&request.engine)
             .ok_or_else(|| LayoutError::MissingLayoutEngine(request.engine.clone()))?;
-        engine.layout(graph, &request.layout, context)
+        let run = crate::projection::PreparedLayoutRun::prepare(graph, &request.layout, context)?;
+        let placements = descriptor.engine.place(run.input())?;
+        run.finish(placements)
     }
-}
-
-/// Runs a layout engine by id.
-pub fn layout_graph_with_engine(
-    graph: &Graph,
-    request: &LayoutEngineRequest,
-    registry: &LayoutEngineRegistry,
-    context: &LayoutContext,
-) -> Result<LayoutResult, LayoutError> {
-    registry.layout(graph, request, context)
-}
-
-/// Runs a layout engine and converts the node positions into a Jellyflow transaction.
-pub fn layout_graph_to_transaction_with_engine(
-    graph: &Graph,
-    request: &LayoutEngineRequest,
-    registry: &LayoutEngineRegistry,
-    context: &LayoutContext,
-) -> Result<GraphTransaction, LayoutError> {
-    layout_graph_with_engine(graph, request, registry, context)?.to_transaction(graph)
 }
 
 pub(crate) fn validate_request(graph: &Graph, request: &LayoutRequest) -> Result<(), LayoutError> {
@@ -754,13 +902,8 @@ pub(crate) fn resolve_node_size(
     }
 }
 
-pub(crate) fn resolve_node_origin(
-    origin: Option<jellyflow_core::NodeOrigin>,
-    request_fallback: (f32, f32),
-    context: &LayoutContext,
-) -> (f32, f32) {
-    let fallback = context.node_origin.unwrap_or(request_fallback);
-    let (x, y) = origin.map(|origin| origin.as_tuple()).unwrap_or(fallback);
+pub(crate) fn normalized_node_origin(origin: Option<jellyflow_core::NodeOrigin>) -> (f32, f32) {
+    let (x, y) = origin.map(|origin| origin.as_tuple()).unwrap_or((0.0, 0.0));
     (normalize_origin_component(x), normalize_origin_component(y))
 }
 
@@ -768,43 +911,68 @@ pub(crate) fn position_from_center(
     center: CanvasPoint,
     size: CanvasSize,
     origin: (f32, f32),
-) -> CanvasPoint {
-    CanvasPoint {
-        x: center.x - size.width * (0.5 - origin.0),
-        y: center.y - size.height * (0.5 - origin.1),
-    }
+) -> Option<CanvasPoint> {
+    checked_canvas_point(
+        f64::from(center.x) - f64::from(size.width) * (0.5 - f64::from(origin.0)),
+        f64::from(center.y) - f64::from(size.height) * (0.5 - f64::from(origin.1)),
+    )
 }
 
-pub(crate) fn node_rect_from_position(node: &LayoutNodePosition) -> CanvasRect {
-    CanvasRect {
-        origin: CanvasPoint {
-            x: node.center.x - node.size.width * 0.5,
-            y: node.center.y - node.size.height * 0.5,
-        },
+pub(crate) fn node_rect_from_position(node: &LayoutNodePosition) -> Option<CanvasRect> {
+    let rect = CanvasRect {
+        origin: checked_canvas_point(
+            f64::from(node.center.x) - f64::from(node.size.width) * 0.5,
+            f64::from(node.center.y) - f64::from(node.size.height) * 0.5,
+        )?,
         size: node.size,
-    }
+    };
+    rect.is_positive_finite().then_some(rect)
 }
 
 pub(crate) fn union_bounds(bounds: Option<CanvasRect>, next: CanvasRect) -> Option<CanvasRect> {
     if !next.is_positive_finite() {
-        return bounds;
+        return None;
     }
-
     let Some(bounds) = bounds else {
         return Some(next);
     };
+    if !bounds.is_positive_finite() {
+        return None;
+    }
 
     let min_x = bounds.origin.x.min(next.origin.x);
     let min_y = bounds.origin.y.min(next.origin.y);
-    let max_x = (bounds.origin.x + bounds.size.width).max(next.origin.x + next.size.width);
-    let max_y = (bounds.origin.y + bounds.size.height).max(next.origin.y + next.size.height);
+    let bounds_max = bounds.checked_max()?;
+    let next_max = next.checked_max()?;
+    let max_x = bounds_max.x.max(next_max.x);
+    let max_y = bounds_max.y.max(next_max.y);
 
-    Some(CanvasRect {
+    let rect = CanvasRect {
         origin: CanvasPoint { x: min_x, y: min_y },
         size: CanvasSize {
-            width: max_x - min_x,
-            height: max_y - min_y,
+            width: checked_f32(f64::from(max_x) - f64::from(min_x))?,
+            height: checked_f32(f64::from(max_y) - f64::from(min_y))?,
         },
+    };
+    rect.is_positive_finite().then_some(rect)
+}
+
+pub(crate) fn translate_point(point: CanvasPoint, delta: CanvasPoint) -> Option<CanvasPoint> {
+    checked_canvas_point(
+        f64::from(point.x) + f64::from(delta.x),
+        f64::from(point.y) + f64::from(delta.y),
+    )
+}
+
+pub(crate) fn checked_f32(value: f64) -> Option<f32> {
+    (value.is_finite() && value >= f64::from(f32::MIN) && value <= f64::from(f32::MAX))
+        .then_some(value as f32)
+}
+
+pub(crate) fn checked_canvas_point(x: f64, y: f64) -> Option<CanvasPoint> {
+    Some(CanvasPoint {
+        x: checked_f32(x)?,
+        y: checked_f32(y)?,
     })
 }
 

@@ -12,7 +12,7 @@ use super::{TypeCompatibility, TypeCompatibilityResult};
 pub struct DefaultTypeCompatibility;
 
 impl TypeCompatibility for DefaultTypeCompatibility {
-    fn compatible(&mut self, from: &TypeDesc, to: &TypeDesc) -> TypeCompatibilityResult {
+    fn compatible(&self, from: &TypeDesc, to: &TypeDesc) -> TypeCompatibilityResult {
         use TypeCompatibilityResult::Compatible;
         use TypeDesc::*;
 
@@ -84,7 +84,7 @@ impl TypeCompatibility for DefaultTypeCompatibility {
 
 impl DefaultTypeCompatibility {
     fn compatible_union_source(
-        &mut self,
+        &self,
         types: &[TypeDesc],
         other: &TypeDesc,
     ) -> TypeCompatibilityResult {
@@ -97,7 +97,7 @@ impl DefaultTypeCompatibility {
     }
 
     fn compatible_union_target(
-        &mut self,
+        &self,
         other: &TypeDesc,
         types: &[TypeDesc],
     ) -> TypeCompatibilityResult {
@@ -110,7 +110,7 @@ impl DefaultTypeCompatibility {
     }
 
     fn compatible_map(
-        &mut self,
+        &self,
         source_key: &TypeDesc,
         source_value: &TypeDesc,
         target_key: &TypeDesc,
@@ -123,7 +123,7 @@ impl DefaultTypeCompatibility {
     }
 
     fn compatible_object(
-        &mut self,
+        &self,
         source_fields: &BTreeMap<String, TypeDesc>,
         source_open: bool,
         target_fields: &BTreeMap<String, TypeDesc>,
@@ -154,7 +154,7 @@ impl DefaultTypeCompatibility {
     }
 
     fn compatible_opaque(
-        &mut self,
+        &self,
         source_key: &str,
         source_params: &[TypeDesc],
         target_key: &str,
@@ -194,7 +194,7 @@ mod tests {
     use super::*;
 
     fn compatibility(from: TypeDesc, to: TypeDesc) -> TypeCompatibilityResult {
-        let mut compat = DefaultTypeCompatibility;
+        let compat = DefaultTypeCompatibility;
         compat.compatible(&from, &to)
     }
 

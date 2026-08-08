@@ -1,0 +1,846 @@
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize, NodeId, PortDirection};
+use jellyflow_core::interaction::NodeGraphConnectionMode;
+
+use crate::rules::EdgeEndpoint;
+use crate::runtime::adapter_protocol::{
+    AdapterFrame, FrameRequest, LayoutNodeStatus, NodeLayout, RendererStamp, ViewPoint, ViewRect,
+    ViewSize, side_anchor,
+};
+use crate::runtime::commands::{GraphCommand, GraphCommandOutcome};
+use crate::runtime::geometry::HandlePosition;
+use crate::runtime::graph_runtime::{GraphRuntime, RuntimePatch};
+use crate::runtime::view_session::{
+    RuntimePatchReconciliationReceipt, ViewSession, ViewSessionEvent, ViewSessionOptions,
+    ViewSubscriptionToken,
+};
+
+use super::fixtures::{graph_with_nodes, graph_with_routed_edge};
+
+fn request() -> FrameRequest {
+    FrameRequest::new(
+        CanvasRect {
+            origin: CanvasPoint {
+                x: -200.0,
+                y: -200.0,
+            },
+            size: CanvasSize {
+                width: 1_200.0,
+                height: 800.0,
+            },
+        },
+        RendererStamp::new("test.node", 1),
+    )
+}
+
+fn layout_for(frame: &AdapterFrame, node: NodeId) -> NodeLayout {
+    let record = frame
+        .nodes()
+        .iter()
+        .find(|record| record.id() == node)
+        .expect("fixture node is materialized");
+    layout_for_bounds(frame, node, record.bounds())
+}
+
+fn layout_for_bounds(frame: &AdapterFrame, node: NodeId, canvas: CanvasRect) -> NodeLayout {
+    let record = frame
+        .nodes()
+        .iter()
+        .find(|record| record.id() == node)
+        .expect("fixture node is materialized");
+    let transform = frame.transform();
+    let origin = transform
+        .screen_point_for_canvas(canvas.origin)
+        .expect("fixture bounds are finite");
+    let bounds = ViewRect::new(
+        origin,
+        ViewSize::new(
+            canvas.size.width * transform.zoom,
+            canvas.size.height * transform.zoom,
+        ),
+    );
+    let mut layout = record.begin_layout(bounds);
+    for (index, port) in record.ports().iter().enumerate() {
+        let direction = port.port().expect("fixture port exists").dir;
+        let outward = match direction {
+            PortDirection::In => HandlePosition::Left,
+            PortDirection::Out => HandlePosition::Right,
+        };
+        let x = match outward {
+            HandlePosition::Left => bounds.origin.x - 6.0,
+            HandlePosition::Right => bounds.origin.x + bounds.size.width - 6.0,
+            HandlePosition::Top | HandlePosition::Bottom => unreachable!(),
+        };
+        let visual = ViewRect::new(
+            ViewPoint::new(x, bounds.origin.y + 32.0 + index as f32 * 18.0),
+            ViewSize::new(12.0, 12.0),
+        );
+        layout
+            .port_rendered(
+                port.layout_target(),
+                visual,
+                visual,
+                side_anchor(visual, outward).expect("fixture port bounds are valid"),
+                outward,
+            )
+            .unwrap();
+    }
+    layout.finish().unwrap()
+}
+
+fn applied_patch(runtime: &GraphRuntime, command: GraphCommand) -> RuntimePatch {
+    match runtime.execute(command).into_result().unwrap() {
+        GraphCommandOutcome::Applied(receipt) => receipt.patch().clone(),
+        other => panic!("fixture command must apply: {other:?}"),
+    }
+}
+
+fn collect_patch_receipts(
+    session: &ViewSession,
+) -> (
+    ViewSubscriptionToken,
+    Rc<RefCell<Vec<RuntimePatchReconciliationReceipt>>>,
+) {
+    let receipts = Rc::new(RefCell::new(Vec::new()));
+    let callback_receipts = receipts.clone();
+    let subscription = session
+        .subscribe(move |event| {
+            if let ViewSessionEvent::RuntimePatched { reconciliation, .. } = event {
+                callback_receipts.borrow_mut().push(reconciliation);
+            }
+        })
+        .unwrap();
+    (subscription, receipts)
+}
+
+#[test]
+fn runtime_patch_geometry_impact_covers_payload_move_size_and_topology() {
+    let (graph, ids) = graph_with_routed_edge();
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .unwrap();
+
+    let payload = applied_patch(
+        &runtime,
+        GraphCommand::set_node_data(
+            runtime.snapshot().unwrap().version(),
+            ids.source,
+            serde_json::json!({ "expanded": true }),
+        ),
+    );
+    assert!(!payload.geometry_impact().is_global());
+    assert!(payload.geometry_impact().nodes().contains(&ids.source));
+
+    let position = applied_patch(
+        &runtime,
+        GraphCommand::set_node_position(
+            runtime.snapshot().unwrap().version(),
+            ids.source,
+            CanvasPoint { x: 30.0, y: 40.0 },
+        ),
+    );
+    assert!(!position.geometry_impact().is_global());
+    assert!(position.geometry_impact().nodes().contains(&ids.source));
+
+    let size = applied_patch(
+        &runtime,
+        GraphCommand::set_node_size(
+            runtime.snapshot().unwrap().version(),
+            ids.target,
+            Some(CanvasSize {
+                width: 220.0,
+                height: 140.0,
+            }),
+        ),
+    );
+    assert!(!size.geometry_impact().is_global());
+    assert!(size.geometry_impact().nodes().contains(&ids.target));
+    assert!(
+        size.geometry_impact()
+            .retains_last_complete_layout(ids.target)
+    );
+
+    let topology = applied_patch(
+        &runtime,
+        GraphCommand::reconnect(
+            runtime.snapshot().unwrap().version(),
+            ids.edge,
+            EdgeEndpoint::From,
+            ids.alternate_source_port,
+            NodeGraphConnectionMode::Strict,
+        ),
+    );
+    let impact = topology.geometry_impact();
+    assert!(!impact.is_global());
+    assert!(impact.nodes().contains(&ids.source));
+    assert!(impact.nodes().contains(&ids.target));
+    assert!(impact.nodes().contains(&ids.alternate_source));
+    assert!(impact.ports().contains(&ids.source_port));
+    assert!(impact.ports().contains(&ids.target_port));
+    assert!(impact.ports().contains(&ids.alternate_source_port));
+    assert!(impact.incident_edges().contains(&ids.edge));
+}
+
+#[test]
+fn unrelated_external_patch_publishes_only_unaffected_layout_and_counts_work() {
+    let (graph, nodes) = graph_with_nodes(2);
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .unwrap();
+    let session = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    let (_subscription, patch_receipts) = collect_patch_receipts(&session);
+    let frame = session.frame(request()).unwrap();
+
+    applied_patch(
+        &runtime,
+        GraphCommand::set_node_data(
+            runtime.snapshot().unwrap().version(),
+            nodes[1],
+            serde_json::json!({ "expanded": true }),
+        ),
+    );
+
+    let collector = frame.collector();
+    collector.layout(layout_for(&frame, nodes[0])).unwrap();
+    collector.layout(layout_for(&frame, nodes[1])).unwrap();
+    let receipt = session
+        .submit_feedback(collector.finish().unwrap())
+        .unwrap();
+
+    let layouts = receipt.layout_receipts().collect::<Vec<_>>();
+    assert_eq!(layouts[0].status().unwrap(), LayoutNodeStatus::Published);
+    assert_eq!(layouts[1].status().unwrap(), LayoutNodeStatus::Stale);
+    assert_eq!(
+        receipt.publication().unwrap().published_nodes(),
+        &[nodes[0]]
+    );
+    let patch_receipts = patch_receipts.borrow();
+    assert_eq!(patch_receipts.len(), 1);
+    let patch_work = patch_receipts[0]
+        .pending_frame_impact()
+        .expect("the external patch must merge into the outstanding frame");
+    assert_eq!(patch_work.patches_merged(), 1);
+    assert_eq!(patch_work.records_merged(), 1);
+    assert_eq!(patch_work.global_fallbacks(), 0);
+    let feedback_work = *receipt.work();
+    assert_eq!(feedback_work.command_impact().patches_merged(), 0);
+    assert_eq!(feedback_work.layout().layouts_examined(), 2);
+    assert_eq!(feedback_work.layout().layouts_stale(), 1);
+    assert_eq!(feedback_work.layout().impact_candidates_checked(), 2);
+    assert_eq!(feedback_work.layout().impact_candidates_invalidated(), 1);
+}
+
+#[test]
+fn same_frame_applied_command_stales_only_intersecting_candidate() {
+    let (graph, nodes) = graph_with_nodes(2);
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .unwrap();
+    let session = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    let frame = session.frame(request()).unwrap();
+    let collector = frame.collector();
+    collector.layout(layout_for(&frame, nodes[0])).unwrap();
+    collector.layout(layout_for(&frame, nodes[1])).unwrap();
+    let command = GraphCommand::set_node_data(
+        frame.graph_version(),
+        nodes[0],
+        serde_json::json!({ "expanded": true }),
+    );
+    let command_identity = command.identity().clone();
+    collector.command(command).unwrap();
+
+    let receipt = session
+        .submit_feedback(collector.finish().unwrap())
+        .unwrap();
+
+    let layouts = receipt.layout_receipts().collect::<Vec<_>>();
+    assert_eq!(layouts[0].status().unwrap(), LayoutNodeStatus::Stale);
+    assert_eq!(layouts[1].status().unwrap(), LayoutNodeStatus::Published);
+    assert!(matches!(
+        receipt
+            .command_completion(&command_identity)
+            .unwrap()
+            .result(),
+        Ok(GraphCommandOutcome::Applied(_))
+    ));
+    assert_eq!(
+        receipt.publication().unwrap().published_nodes(),
+        &[nodes[1]]
+    );
+    let work = *receipt.work();
+    assert_eq!(work.command_impact().patches_merged(), 1);
+    assert_eq!(work.command_impact().records_merged(), 1);
+    assert_eq!(work.command_impact().global_fallbacks(), 0);
+    assert_eq!(work.layout().layouts_examined(), 2);
+    assert_eq!(work.layout().layouts_stale(), 1);
+    assert_eq!(work.layout().impact_candidates_checked(), 2);
+    assert_eq!(work.layout().impact_candidates_invalidated(), 1);
+}
+
+#[test]
+fn same_frame_size_command_keeps_complete_geometry_until_refresh_publication() {
+    let (graph, ids) = graph_with_routed_edge();
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .unwrap();
+    let session = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+
+    let initial = session.frame(request()).unwrap();
+    let collector = initial.collector();
+    for node in initial.nodes() {
+        collector.layout(layout_for(&initial, node.id())).unwrap();
+    }
+    session
+        .submit_feedback(collector.finish().unwrap())
+        .unwrap();
+    let before = session.geometry_snapshot().unwrap();
+    let before_source = before.node(ids.source).unwrap().clone();
+    let before_port = before.port(ids.source_port).unwrap().clone();
+    let before_route = before.route(ids.edge).unwrap().clone();
+
+    let stale_frame = session.frame(request()).unwrap();
+    let collector = stale_frame.collector();
+    for node in stale_frame.nodes() {
+        collector
+            .layout(layout_for(&stale_frame, node.id()))
+            .unwrap();
+    }
+    let command = GraphCommand::set_node_size(
+        stale_frame.graph_version(),
+        ids.source,
+        Some(CanvasSize {
+            width: 220.0,
+            height: 140.0,
+        }),
+    );
+    collector.command(command).unwrap();
+    let receipt = session
+        .submit_feedback(collector.finish().unwrap())
+        .unwrap();
+
+    assert_eq!(
+        receipt
+            .layout_receipts()
+            .find(|layout| layout.node() == ids.source)
+            .unwrap()
+            .status()
+            .unwrap(),
+        LayoutNodeStatus::Stale
+    );
+    let pending = session.geometry_snapshot().unwrap();
+    assert_eq!(pending.node(ids.source), Some(&before_source));
+    assert_eq!(pending.port(ids.source_port), Some(&before_port));
+    assert_eq!(pending.route(ids.edge), Some(&before_route));
+
+    let invalid_frame = session.frame(request()).unwrap();
+    let collector = invalid_frame.collector();
+    for node in invalid_frame.nodes() {
+        let layout = if node.id() == ids.source {
+            let mut bounds = node.bounds();
+            bounds.size.width = -1.0;
+            layout_for_bounds(&invalid_frame, node.id(), bounds)
+        } else {
+            layout_for(&invalid_frame, node.id())
+        };
+        collector.layout(layout).unwrap();
+    }
+    let invalid_receipt = session
+        .submit_feedback(collector.finish().unwrap())
+        .unwrap();
+    assert_eq!(
+        invalid_receipt
+            .layout_receipts()
+            .find(|layout| layout.node() == ids.source)
+            .unwrap()
+            .status()
+            .unwrap(),
+        LayoutNodeStatus::InvalidBounds
+    );
+    let still_pending = session.geometry_snapshot().unwrap();
+    assert_eq!(still_pending.node(ids.source), Some(&before_source));
+    assert_eq!(still_pending.port(ids.source_port), Some(&before_port));
+    assert_eq!(still_pending.route(ids.edge), Some(&before_route));
+
+    let replacement_frame = session.frame(request()).unwrap();
+    let collector = replacement_frame.collector();
+    for node in replacement_frame.nodes() {
+        let layout = if node.id() == ids.source {
+            let mut bounds = node.bounds();
+            bounds.size = CanvasSize {
+                width: 220.0,
+                height: 140.0,
+            };
+            layout_for_bounds(&replacement_frame, node.id(), bounds)
+        } else {
+            layout_for(&replacement_frame, node.id())
+        };
+        collector.layout(layout).unwrap();
+    }
+    session
+        .submit_feedback(collector.finish().unwrap())
+        .unwrap();
+
+    let replacement = session.geometry_snapshot().unwrap();
+    assert_eq!(
+        replacement.node(ids.source).unwrap().bounds().size,
+        CanvasSize {
+            width: 220.0,
+            height: 140.0,
+        }
+    );
+    assert_ne!(replacement.port(ids.source_port), Some(&before_port));
+    assert_ne!(replacement.route(ids.edge), Some(&before_route));
+}
+
+#[test]
+fn non_size_layout_impact_poisoning_is_order_independent_across_frames() {
+    for size_first in [true, false] {
+        let (graph, ids) = graph_with_routed_edge();
+        let runtime = GraphRuntime::builder(Default::default())
+            .build(graph)
+            .unwrap();
+        let session = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+        let initial = session.frame(request()).unwrap();
+        let collector = initial.collector();
+        for node in initial.nodes() {
+            collector.layout(layout_for(&initial, node.id())).unwrap();
+        }
+        session
+            .submit_feedback(collector.finish().unwrap())
+            .unwrap();
+
+        let resize = |runtime: &GraphRuntime| {
+            applied_patch(
+                runtime,
+                GraphCommand::set_node_size(
+                    runtime.snapshot().unwrap().version(),
+                    ids.source,
+                    Some(CanvasSize {
+                        width: 220.0,
+                        height: 140.0,
+                    }),
+                ),
+            );
+        };
+        let change_data = |runtime: &GraphRuntime| {
+            applied_patch(
+                runtime,
+                GraphCommand::set_node_data(
+                    runtime.snapshot().unwrap().version(),
+                    ids.source,
+                    serde_json::json!({ "expanded": true }),
+                ),
+            );
+        };
+        if size_first {
+            resize(&runtime);
+            change_data(&runtime);
+        } else {
+            change_data(&runtime);
+            resize(&runtime);
+        }
+
+        let invalid_frame = session.frame(request()).unwrap();
+        let collector = invalid_frame.collector();
+        for node in invalid_frame.nodes() {
+            let layout = if node.id() == ids.source {
+                let mut bounds = node.bounds();
+                bounds.size.width = -1.0;
+                layout_for_bounds(&invalid_frame, node.id(), bounds)
+            } else {
+                layout_for(&invalid_frame, node.id())
+            };
+            collector.layout(layout).unwrap();
+        }
+        session
+            .submit_feedback(collector.finish().unwrap())
+            .unwrap();
+
+        let withdrawn = session.geometry_snapshot().unwrap();
+        assert!(!withdrawn.node(ids.source).unwrap().is_fresh());
+        assert!(withdrawn.port(ids.source_port).is_none());
+        assert!(withdrawn.route(ids.edge).is_none());
+    }
+}
+
+#[test]
+fn same_frame_node_translation_rejects_old_layout_without_withdrawing_geometry() {
+    let (graph, ids) = graph_with_routed_edge();
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .unwrap();
+    let session = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+
+    let initial = session.frame(request()).unwrap();
+    let initial_collector = initial.collector();
+    for node in [ids.source, ids.target, ids.alternate_source] {
+        initial_collector
+            .layout(layout_for(&initial, node))
+            .unwrap();
+    }
+    session
+        .submit_feedback(initial_collector.finish().unwrap())
+        .unwrap();
+    let before = session.geometry_snapshot().unwrap();
+    let before_source_anchor = before
+        .port(ids.source_port)
+        .expect("source port is initially published")
+        .route_anchor();
+    let before_route = before
+        .route(ids.edge)
+        .expect("incident route is initially published")
+        .facts()
+        .path
+        .clone();
+
+    let frame = session.frame(request()).unwrap();
+    let collector = frame.collector();
+    let command = GraphCommand::set_node_position(
+        frame.graph_version(),
+        ids.source,
+        CanvasPoint { x: 80.0, y: 40.0 },
+    );
+    let command_identity = command.identity().clone();
+    collector.command(command).unwrap();
+    collector.layout(layout_for(&frame, ids.source)).unwrap();
+    let receipt = session
+        .submit_feedback(collector.finish().unwrap())
+        .unwrap();
+
+    assert!(matches!(
+        receipt
+            .command_completion(&command_identity)
+            .unwrap()
+            .result(),
+        Ok(GraphCommandOutcome::Applied(_))
+    ));
+    assert_eq!(
+        receipt.layout_receipts().next().unwrap().status().unwrap(),
+        LayoutNodeStatus::Stale,
+        "the measurement belongs to the pre-command frame and must still be rejected",
+    );
+    assert!(receipt.publication().is_none());
+
+    let after = session.geometry_snapshot().unwrap();
+    let source = after
+        .node(ids.source)
+        .expect("translated node geometry remains published");
+    assert!(source.is_fresh());
+    assert_eq!(source.bounds().origin, CanvasPoint { x: 80.0, y: 40.0 });
+    let after_source_anchor = after
+        .port(ids.source_port)
+        .expect("translated port geometry remains published")
+        .route_anchor();
+    assert_eq!(after_source_anchor.x - before_source_anchor.x, 80.0);
+    assert_eq!(after_source_anchor.y - before_source_anchor.y, 40.0);
+    let after_route = after
+        .route(ids.edge)
+        .expect("incident route remains continuously published");
+    assert_ne!(after_route.facts().path, before_route);
+}
+
+#[test]
+fn noop_rejected_and_conflicting_commands_do_not_create_geometry_impact() {
+    let (graph, nodes) = graph_with_nodes(1);
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .unwrap();
+    let stale_version = runtime.snapshot().unwrap().version();
+    runtime
+        .execute(GraphCommand::set_node_data(
+            stale_version,
+            nodes[0],
+            serde_json::json!({ "advance": true }),
+        ))
+        .into_result()
+        .unwrap()
+        .applied()
+        .unwrap();
+    let session = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    let frame = session.frame(request()).unwrap();
+    let collector = frame.collector();
+    let noop = GraphCommand::set_node_data(
+        frame.graph_version(),
+        nodes[0],
+        serde_json::json!({ "advance": true }),
+    );
+    let noop_identity = noop.identity().clone();
+    collector.command(noop).unwrap();
+    let rejected = GraphCommand::set_node_data(
+        frame.graph_version(),
+        NodeId::from_u128(0xffff),
+        serde_json::json!({ "missing": true }),
+    );
+    let rejected_identity = rejected.identity().clone();
+    collector.command(rejected).unwrap();
+    let conflicted = GraphCommand::set_node_data(
+        stale_version,
+        nodes[0],
+        serde_json::json!({ "conflict": true }),
+    );
+    let conflicted_identity = conflicted.identity().clone();
+    collector.command(conflicted).unwrap();
+    collector.layout(layout_for(&frame, nodes[0])).unwrap();
+
+    let receipt = session
+        .submit_feedback(collector.finish().unwrap())
+        .unwrap();
+
+    assert!(matches!(
+        receipt.command_completion(&noop_identity).unwrap().result(),
+        Ok(GraphCommandOutcome::Noop(_))
+    ));
+    assert!(matches!(
+        receipt
+            .command_completion(&rejected_identity)
+            .unwrap()
+            .result(),
+        Ok(GraphCommandOutcome::Rejected(_))
+    ));
+    assert!(matches!(
+        receipt
+            .command_completion(&conflicted_identity)
+            .unwrap()
+            .result(),
+        Ok(GraphCommandOutcome::Conflict(_))
+    ));
+    assert_eq!(
+        receipt.layout_receipts().next().unwrap().status().unwrap(),
+        LayoutNodeStatus::Published
+    );
+    let work = *receipt.work();
+    assert_eq!(work.command_impact().patches_merged(), 0);
+    assert_eq!(work.command_impact().records_merged(), 0);
+    assert_eq!(work.command_impact().global_fallbacks(), 0);
+    assert_eq!(work.layout().layouts_examined(), 1);
+    assert_eq!(work.layout().layouts_stale(), 0);
+    assert_eq!(work.layout().impact_candidates_checked(), 1);
+    assert_eq!(work.layout().impact_candidates_invalidated(), 0);
+}
+
+#[test]
+fn multi_view_pending_impacts_are_scoped_per_candidate() {
+    let (graph, nodes) = graph_with_nodes(2);
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .unwrap();
+    let first = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    let second = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    let (_first_subscription, first_patch_receipts) = collect_patch_receipts(&first);
+    let (_second_subscription, second_patch_receipts) = collect_patch_receipts(&second);
+    let first_frame = first.frame(request()).unwrap();
+    let second_frame = second.frame(request()).unwrap();
+
+    applied_patch(
+        &runtime,
+        GraphCommand::set_node_data(
+            runtime.snapshot().unwrap().version(),
+            nodes[0],
+            serde_json::json!({ "expanded": true }),
+        ),
+    );
+
+    let first_collector = first_frame.collector();
+    first_collector
+        .layout(layout_for(&first_frame, nodes[0]))
+        .unwrap();
+    let first_receipt = first
+        .submit_feedback(first_collector.finish().unwrap())
+        .unwrap();
+    assert_eq!(
+        first_receipt
+            .layout_receipts()
+            .next()
+            .unwrap()
+            .status()
+            .unwrap(),
+        LayoutNodeStatus::Stale
+    );
+
+    let second_collector = second_frame.collector();
+    second_collector
+        .layout(layout_for(&second_frame, nodes[1]))
+        .unwrap();
+    let second_receipt = second
+        .submit_feedback(second_collector.finish().unwrap())
+        .unwrap();
+    assert_eq!(
+        second_receipt
+            .layout_receipts()
+            .next()
+            .unwrap()
+            .status()
+            .unwrap(),
+        LayoutNodeStatus::Published
+    );
+    for receipts in [&first_patch_receipts, &second_patch_receipts] {
+        let receipts = receipts.borrow();
+        assert_eq!(receipts.len(), 1);
+        let merge = receipts[0]
+            .pending_frame_impact()
+            .expect("each view has an outstanding frame");
+        assert_eq!(merge.patches_merged(), 1);
+        assert_eq!(merge.records_merged(), 1);
+        assert_eq!(merge.global_fallbacks(), 0);
+    }
+    assert_eq!(
+        first_receipt
+            .work()
+            .layout()
+            .impact_candidates_invalidated(),
+        1,
+        "the first view's candidate intersects the patch",
+    );
+    assert_eq!(
+        second_receipt
+            .work()
+            .layout()
+            .impact_candidates_invalidated(),
+        0,
+        "the second view's candidate remains independent",
+    );
+}
+
+#[test]
+fn pending_single_node_patches_merge_each_affected_record_once() {
+    const PATCH_COUNT: usize = 4;
+    let (graph, nodes) = graph_with_nodes(PATCH_COUNT);
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .unwrap();
+    let session = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    let (_subscription, patch_receipts) = collect_patch_receipts(&session);
+    let _pending_frame = session.frame(request()).unwrap();
+
+    for (revision, node) in nodes.iter().copied().enumerate() {
+        let outcome = runtime
+            .execute(GraphCommand::set_node_data(
+                runtime.snapshot().unwrap().version(),
+                node,
+                serde_json::json!({ "revision": revision }),
+            ))
+            .into_result()
+            .unwrap();
+        assert!(matches!(outcome, GraphCommandOutcome::Applied(_)));
+    }
+
+    let receipts = patch_receipts.borrow();
+    assert_eq!(receipts.len(), PATCH_COUNT);
+    let merge_work = receipts
+        .iter()
+        .map(|receipt| {
+            receipt
+                .pending_frame_impact()
+                .expect("the frame remains outstanding for every patch")
+        })
+        .fold((0_u64, 0_u64, 0_u64), |totals, work| {
+            (
+                totals.0.saturating_add(work.patches_merged()),
+                totals.1.saturating_add(work.records_merged()),
+                totals.2.saturating_add(work.global_fallbacks()),
+            )
+        });
+    assert_eq!(merge_work, (PATCH_COUNT as u64, PATCH_COUNT as u64, 0));
+}
+
+#[test]
+fn new_edge_route_is_removed_when_impacted_endpoint_layout_is_withdrawn() {
+    let (graph, ids) = graph_with_routed_edge();
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .unwrap();
+    applied_patch(
+        &runtime,
+        GraphCommand::disconnect(runtime.snapshot().unwrap().version(), ids.edge),
+    );
+    let session = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+
+    let initial = session.frame(request()).unwrap();
+    let initial_collector = initial.collector();
+    for node in [ids.source, ids.target, ids.alternate_source] {
+        initial_collector
+            .layout(layout_for(&initial, node))
+            .unwrap();
+    }
+    session
+        .submit_feedback(initial_collector.finish().unwrap())
+        .unwrap();
+    assert!(
+        session
+            .geometry_snapshot()
+            .unwrap()
+            .route(ids.edge)
+            .is_none()
+    );
+
+    let frame = session.frame(request()).unwrap();
+    let collector = frame.collector();
+    collector.layout(layout_for(&frame, ids.source)).unwrap();
+    let command = GraphCommand::connect(
+        frame.graph_version(),
+        ids.edge,
+        ids.source_port,
+        ids.target_port,
+        NodeGraphConnectionMode::Strict,
+    );
+    let command_identity = command.identity().clone();
+    collector.command(command).unwrap();
+    let receipt = session
+        .submit_feedback(collector.finish().unwrap())
+        .unwrap();
+
+    assert_eq!(
+        receipt.layout_receipts().next().unwrap().status().unwrap(),
+        LayoutNodeStatus::Stale
+    );
+    assert!(matches!(
+        receipt
+            .command_completion(&command_identity)
+            .unwrap()
+            .result(),
+        Ok(GraphCommandOutcome::Applied(_))
+    ));
+    let geometry = session.geometry_snapshot().unwrap();
+    assert!(geometry.port(ids.source_port).is_none());
+    assert!(geometry.port(ids.target_port).is_some());
+    assert!(geometry.route(ids.edge).is_none());
+}
+
+#[test]
+fn document_reset_patch_has_global_geometry_impact() {
+    let (graph, _) = graph_with_nodes(1);
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .unwrap();
+    let (replacement, _) = graph_with_nodes(2);
+    let replacement = runtime.catalog().canonicalize_graph(&replacement).unwrap();
+
+    let patch = runtime.replace_document(replacement).unwrap();
+
+    assert!(patch.geometry_impact().is_global());
+    assert!(patch.geometry_impact().nodes().is_empty());
+    assert!(patch.geometry_impact().ports().is_empty());
+    assert!(patch.geometry_impact().incident_edges().is_empty());
+}
+
+#[test]
+fn geometry_impact_is_available_from_the_public_runtime_surface() {
+    fn assert_public_value(_: &crate::graph::GeometryImpact) {}
+
+    let (graph, nodes) = graph_with_nodes(1);
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .unwrap();
+    let patch = applied_patch(
+        &runtime,
+        GraphCommand::set_node_data(
+            runtime.snapshot().unwrap().version(),
+            nodes[0],
+            serde_json::json!({ "expanded": true }),
+        ),
+    );
+
+    assert_public_value(patch.geometry_impact());
+}

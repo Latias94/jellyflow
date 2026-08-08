@@ -1,155 +1,191 @@
 name: Release Crates (crates.io)
 
 on:
-  push:
-    tags:
-      - 'v*'
-  workflow_dispatch:
-    inputs:
-      release_tag:
-        description: "Release tag to publish, for example v0.1.0"
-        required: true
-        type: string
-      source_ref:
-        description: "Git ref to publish from"
-        required: true
-        default: "main"
-        type: string
+  repository_dispatch:
+    types: [release-crates]
 
 permissions:
+  actions: read
   contents: read
+
+concurrency:
+  group: crates-io-release
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_HTTP_TIMEOUT: "60"
 
 jobs:
-  publish:
+  resolve:
+    name: resolve-and-guard-source
     runs-on: ubuntu-24.04
-    environment: crates.io
+    timeout-minutes: 15
+    outputs:
+      release_tag: ${{ steps.release.outputs.tag }}
+      source_sha: ${{ steps.source.outputs.sha }}
+      version: ${{ steps.release.outputs.version }}
     steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_ref || github.ref }}
-
-      - name: Read version from tag
-        id: version
+      - name: Read release tag
+        id: release
         env:
-          RELEASE_TAG_INPUT: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || '' }}
+          RELEASE_TAG: ${{ github.event.client_payload.release_tag }}
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            release_tag="$RELEASE_TAG_INPUT"
-          else
-            release_tag="${GITHUB_REF_NAME}"
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Release tag '$RELEASE_TAG' must look like v0.1.0 or v0.1.0-alpha.1."
+            exit 1
           fi
+          {
+            echo "tag=$RELEASE_TAG"
+            echo "version=${RELEASE_TAG#v}"
+          } >> "$GITHUB_OUTPUT"
 
-          if [[ ! "$release_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-            echo "::error::Release tag '$release_tag' must look like v0.1.0 or v0.1.0-alpha.1."
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Resolve immutable release source
+        id: source
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          TRUSTED_WORKFLOW_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git check-ref-format --branch "$DEFAULT_BRANCH" >/dev/null
+          git fetch --force --no-tags origin \
+            "+refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/release-default" \
+            "+refs/tags/$RELEASE_TAG:refs/release-tags/$RELEASE_TAG"
+          source_sha="$(git rev-parse "refs/release-tags/$RELEASE_TAG^{commit}")"
+          if ! git merge-base --is-ancestor "$TRUSTED_WORKFLOW_SHA" refs/remotes/origin/release-default; then
+            echo "::error::Workflow commit is not reachable from origin/$DEFAULT_BRANCH."
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$source_sha" "$TRUSTED_WORKFLOW_SHA"; then
+            echo "::error::Release tag is newer than or unrelated to the trusted workflow commit."
+            exit 1
+          fi
+          echo "sha=$source_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Require protected source and successful CI
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        run: bash scripts/verify-release-source-trust.sh
+
+  preflight:
+    name: release-preflight
+    needs: resolve
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          ref: ${{ needs.resolve.outputs.source_sha }}
+
+      - name: Verify release versions
+        env:
+          RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
+        run: python3 scripts/release-version.py check --version "$RELEASE_VERSION"
+
+  publish:
+    name: publish-crates
+    needs: [resolve, preflight]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    environment: crates.io
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          ref: ${{ needs.resolve.outputs.source_sha }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@f133eefe930d61f0d9371efd474daf0125ed3dd1 # 1.95.0
+
+      - name: Publish crates in dependency order
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          published=0
+          while IFS= read -r crate; do
+            [ -n "$crate" ] || continue
+            crate_version="$(python3 scripts/release-version.py crate-version --crate "$crate")"
+            if [ "$crate_version" != "$RELEASE_VERSION" ]; then
+              echo "::error::$crate is $crate_version, expected $RELEASE_VERSION."
+              exit 1
+            fi
+
+            cargo publish --locked --package "$crate"
+            published=$((published + 1))
+
+            visible=false
+            for attempt in $(seq 1 20); do
+              if cargo info "$crate@$crate_version" --registry crates-io >/dev/null 2>&1; then
+                visible=true
+                break
+              fi
+              echo "Waiting for crates.io to expose $crate $crate_version ($attempt/20)."
+              sleep 15
+            done
+            if [ "$visible" != "true" ]; then
+              echo "::error::$crate $crate_version was not visible after publication."
+              exit 1
+            fi
+          done < scripts/release-crates.txt
+
+          if [ "$published" -eq 0 ]; then
+            echo "::error::The ordered release crate set is empty."
             exit 1
           fi
 
-          version="${release_tag#v}"
-          echo "tag=$release_tag" >> "$GITHUB_OUTPUT"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "Tag version: $version"
-
-      - name: Verify release versions
-        run: python3 scripts/release-version.py check --version "${{ steps.version.outputs.version }}"
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.95.0
-
-      - name: Rust cache
-        uses: Swatinem/rust-cache@v2
+  github-release:
+    name: create-github-release
+    needs: [resolve, publish]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          cache-targets: false
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ needs.resolve.outputs.source_sha }}
 
-      - name: Publish crates in dependency order
-        shell: bash
+      - name: Verify tag and create GitHub Release
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
+          RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
         run: |
           set -euo pipefail
-          version="$RELEASE_VERSION"
+          git fetch --force --no-tags origin \
+            "+refs/tags/$RELEASE_TAG:refs/release-tags/$RELEASE_TAG"
+          tag_sha="$(git rev-parse "refs/release-tags/$RELEASE_TAG^{commit}")"
+          if [ "$tag_sha" != "$SOURCE_SHA" ]; then
+            echo "::error::Release tag no longer resolves to the guarded source commit."
+            exit 1
+          fi
 
-          crate_version_available() {
-            local crate="$1"
-            local crate_version="$2"
-            local tmpdir="${RUNNER_TEMP:-/tmp}"
-
-            (
-              cd "$tmpdir"
-              cargo info "$crate@$crate_version" --registry crates-io >/dev/null 2>&1
-            )
-          }
-
-          wait_for_crate_version() {
-            local crate="$1"
-            local crate_version="$2"
-
-            for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
-              if crate_version_available "$crate" "$crate_version"; then
-                echo "$crate $crate_version is visible in crates.io"
-                return 0
-              fi
-
-              if [ "$attempt" = 12 ]; then
-                echo "::error::$crate $crate_version was published but did not become visible in crates.io in time."
-                return 1
-              fi
-
-              sleep 15
-            done
-          }
-
-          workspace_crate_version() {
-            local crate="$1"
-
-            python3 scripts/release-version.py crate-version --crate "$crate"
-          }
-
-          publish_crate_version() {
-            local crate="$1"
-            local crate_version="$2"
-
-            if crate_version_available "$crate" "$crate_version"; then
-              echo "Skipping $crate $crate_version because it is already published"
-              return 0
-            fi
-
-            echo "Publishing $crate $crate_version"
-            for attempt in 1 2 3; do
-              if cargo publish -p "$crate" --locked --registry crates-io --token "$CARGO_REGISTRY_TOKEN"; then
-                wait_for_crate_version "$crate" "$crate_version"
-                return 0
-              fi
-
-              if crate_version_available "$crate" "$crate_version"; then
-                echo "$crate $crate_version became visible after a failed publish attempt; continuing"
-                return 0
-              fi
-
-              if [ "$attempt" = 3 ]; then
-                return 1
-              fi
-              sleep $((attempt * 30))
-            done
-          }
-
-          crates=(
-            jellyflow-core
-            jellyflow-layout
-            jellyflow-runtime
-            jellyflow
-            jellyflow-egui
-          )
-
-          for crate in "${crates[@]}"; do
-            crate_version="$(workspace_crate_version "$crate")"
-            if [ "$crate_version" != "$version" ]; then
-              echo "::error::$crate version '$crate_version' does not match tag version '$version'"
-              exit 1
-            fi
-            publish_crate_version "$crate" "$crate_version"
-          done
+          notes="$RUNNER_TEMP/release-notes.md"
+          python3 scripts/release-version.py release-notes \
+            --version "$RELEASE_VERSION" > "$notes"
+          prerelease=()
+          if [[ "$RELEASE_VERSION" == *-* ]]; then
+            prerelease=(--prerelease)
+          fi
+          gh release create "$RELEASE_TAG" \
+            --verify-tag \
+            --target "$SOURCE_SHA" \
+            --title "Jellyflow $RELEASE_VERSION" \
+            --notes-file "$notes" \
+            "${prerelease[@]}"

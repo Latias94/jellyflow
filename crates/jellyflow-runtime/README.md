@@ -1,320 +1,118 @@
 # jellyflow-runtime
 
-`jellyflow-runtime` builds on `jellyflow-core` with the headless runtime layer:
+`jellyflow-runtime` is the renderer-neutral graph and view protocol for Jellyflow. It sits between
+the portable document model in `jellyflow-core` and framework-native adapters.
 
-- editor and view-state payloads;
-- persistence file payloads without owning a project directory policy;
-- effective interaction policy resolution under `runtime::policy`;
-- validation rules and diagnostics, including connect/reconnect/delete planners;
-- schema/profile pipeline hooks;
-- renderer-neutral node-kind view descriptors for adapter palettes, inspectors, and custom node
-  renderer lookup;
-- undo/redo store dispatch;
-- XyFlow-style node/edge change projections and ordered adapter-array apply helpers under
-  `runtime::xyflow`;
-- renderer-neutral selection-box helpers under `runtime::selection`;
-- renderer-neutral node drag planning, parent expansion, and commit helpers under `runtime::drag`;
-- renderer-neutral node resize planning, parent expansion, and commit helpers under
-  `runtime::resize`;
-- renderer-neutral viewport pan/zoom helpers under `runtime::viewport`;
-- renderer-neutral viewport animation and double-click zoom planning under `runtime::viewport`;
-- renderer-neutral viewport pan inertia planning under `runtime::viewport`;
-- renderer-neutral auto-pan frame helpers under `runtime::auto_pan`;
-- renderer-neutral store-level rendering reads through `NodeGraphStore::rendering_query` and
-  `runtime::rendering::RenderingQueryResult`;
-- renderer-neutral binding reads through `NodeGraphStore::binding_query` and binding-derived layout
-  context through `NodeGraphStore::layout_context_with_binding_pins`;
-- renderer-neutral delete selection planning under `runtime::delete` and key-bound routing under
-  `runtime::keyboard`;
-- fit-view math that uses Jellyflow canvas geometry;
-- renderer-neutral geometry under `runtime::geometry`, including handle endpoints, edge path
-  commands, and numeric hit testing;
-- reusable headless conformance fixtures and a runner under `runtime::conformance`.
+```text
+GraphRuntime -> ViewSession -> native adapter
+```
 
-The crate stays UI-agnostic. Fret-specific conversions, widgets, rendering, and event binding remain
-adapter responsibilities.
+## Responsibilities
+
+- `GraphRuntime` owns the canonical graph, document revision, profiles, connection policy,
+  version-checked commands, subscriptions, and undo/redo history.
+- `ViewSession` owns view-local viewport state, selection, culling, routing, geometry, frame
+  tokens, and feedback lifecycle. Multiple sessions can observe one runtime without sharing view
+  state.
+- `AdapterFrame` and `FeedbackCollector` form the native adapter boundary. An adapter requests an
+  owned frame, renders its own components, records complete node and real-port geometry, appends
+  graph intents in host order, and submits the feedback once.
+- `NodeCatalog` and `NodeKindSpec` contain semantic kind identity and migration, default node data,
+  and stable graph-bearing port declarations including direction, capacity, type, and defaults.
+  Product palettes own titles, search terms, creation geometry, and port presentation; adapter
+  registries independently map semantic nodes to native renderers.
+- `io` persists canonical graph files and sanitized editor-state seeds. Framework focus, IME,
+  drafts, retained entities, overlays, geometry caches, and themes are not document fields.
+
+## Minimal setup
+
+For a graph created programmatically in the current process:
 
 ```rust
 use jellyflow_core::{Graph, GraphId};
-use jellyflow_runtime::io::{NodeGraphEditorConfig, NodeGraphViewState};
-use jellyflow_runtime::NodeGraphStore;
+use jellyflow_runtime::graph::GraphRuntime;
+use jellyflow_runtime::schema::NodeCatalog;
+use jellyflow_runtime::view::ViewSessionOptions;
 
-let store = NodeGraphStore::new(
-    Graph::new(GraphId::new()),
-    NodeGraphViewState::default(),
-    NodeGraphEditorConfig::default(),
-);
-
-assert_eq!(store.graph().nodes().len(), 0);
+let runtime = GraphRuntime::builder(NodeCatalog::new()).build(Graph::new(GraphId::new()))?;
+let view = runtime.attach_view(ViewSessionOptions::default())?;
+assert_eq!(view.graph_snapshot()?.revision(), 0);
+# Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-## Headless Interaction Contracts
-
-Renderer adapters should translate pointer and keyboard input into Jellyflow runtime calls, then
-validate behavior before rendering. The runtime crate supports that split with:
-
-- `NodeGraphStore::apply_selection_box` and `runtime::selection::compute_selection_box` for
-  deterministic canvas-space selection. The default selection mode selects nodes that intersect the
-  marquee; configure `NodeGraphSelectionMode::Full` for strict containment selection;
-- `NodeGraphStore::plan_delete_selection`, `NodeGraphStore::apply_delete_selection`,
-  `NodeGraphStore::apply_delete_selection_for_key`, and `runtime::keyboard::KeyboardIntent` for
-  deterministic selected node/edge deletion through effective policy, configured delete keys,
-  cascaded connected-edge deletion, normal graph transactions, selection cleanup, and
-  adapter-owned pre-delete `Accept`/`Veto`/`Replace` decisions;
-- `runtime::connection::{resolve_connection_target_from_handles, ConnectionTargetCandidate}` for
-  resolving adapter-provided handle geometry and connectability into XyFlow-style target feedback
-  without owning DOM hit testing;
-- `runtime::gesture::{PointerSessionClaimInput, PointerSessionClaimOutcome}` plus
-  `NodeGraphStore::resolve_pointer_session_claim` for deterministic pointer ownership arbitration
-  with stable rejection reasons, and `NodeGraphStore::{apply_node_drag_session,
-  apply_connect_edge_session, apply_viewport_drag_pan_session}` for ordinary adapter gesture
-  lifecycles through store commits and gesture events;
-- `NodeGraphStore::plan_node_drag`, `NodeGraphStore::apply_node_drag`, and `runtime::drag` for
-  deterministic canvas-space node dragging with selected-node co-dragging, policy filtering,
-  snap-to-grid, global/per-node extents, node-origin-aware clamping, and parent group expansion;
-- `NodeGraphStore::plan_node_resize`, `NodeGraphStore::apply_node_resize`, and `runtime::resize`
-  for deterministic target-size node resizing with min/max bounds, XyFlow-style control directions,
-  node-origin-aware position updates for left/top controls, normal graph transactions, and
-  pointer-resize session lifecycle helpers;
-- `runtime::viewport::{ViewportTransform, ViewportPanRequest, ViewportZoomRequest}` plus
-  `NodeGraphStore::apply_viewport_pan` and `NodeGraphStore::apply_viewport_zoom` for deterministic
-  drag-pan and zoom-around-pointer state changes;
-- `runtime::viewport::{ViewportAnimationRequest, ViewportAnimationOptions,
-  ViewportAnimationPlan, ViewportAnimationFrame, ViewportDoubleClickZoomInput}` plus
-  `runtime::viewport::resolve_viewport_double_click_zoom` for deterministic animation sampling and
-  normalized double-click zoom planning without runtime-owned timers or raw platform event
-  detection;
-- `runtime::viewport::{ViewportPanInertiaRequest, ViewportPanInertiaPlan,
-  ViewportPanInertiaFrame}` plus `runtime::viewport::plan_viewport_pan_inertia` for deterministic
-  pan inertia sampling from adapter-provided logical screen px/s release velocity and
-  `NodeGraphPanInertiaTuning`;
-- `runtime::auto_pan::{AutoPanRequest, SelectionAutoPanRequest, AutoPanPlan}` plus
-  `NodeGraphStore::{apply_auto_pan, apply_selection_auto_pan}` for deterministic edge-proximity
-  auto-pan frames that feed the normal viewport publication path;
-- `NodeGraphStore::layout_facts_query` for adapter-facing report-once/read-many layout facts after
-  measurement publication. It returns the current layout-facts revision, renderer-facing
-  `rendering_query` result, visible edge endpoints, and connection target candidates; selector
-  subscriptions can track `layout_facts_revision` for redraw/re-query decisions.
-  `NodeGraphStore::rendering_query` is the narrow read path for deterministic group/node/edge order
-  and visible node/edge lists;
-- `NodeGraphStore::binding_query` for renderer-neutral knowledge-canvas binding facts. Core
-  persists the binding records, while runtime resolves graph-local endpoints with measurements,
-  node origin, and handle geometry. Source anchors remain opaque host-owned payloads;
-- `runtime::events::NodeGraphGestureEvent` node drag start/update/end payloads for adapters that
-  want XyFlow-style drag lifecycle callbacks without coupling the runtime to pointer capture;
-- `runtime::events::NodeGraphGestureEvent` viewport move start/update/end payloads for adapters
-  that want XyFlow-style `onMoveStart`, `onMove`, and `onMoveEnd` callbacks around pan/zoom
-  gestures;
-- rules-derived connect/reconnect/delete planners for graph transactions;
-- `runtime::xyflow` projections for XyFlow-style node/edge changes, callbacks, and exact
-  adapter-owned ordered-array apply helpers;
-- `runtime::conformance::{ConformanceScenario, ConformanceSuite, ConformanceFixtureDirectory,
-  ConformanceBehavior, ConformanceAction, ConformanceTraceEvent, run_conformance_scenario,
-  run_conformance_suite}` for reusable behavior contracts, fixture checks, fixture discovery, and
-  explicit golden approval updates around a real `NodeGraphStore`.
-
-Adapters that need XyFlow-style custom nodes should register semantic node kinds through
-`schema::NodeRegistry`, then read `NodeRegistry::view_descriptors()` to build their own
-framework-local renderer registry. `NodeKindViewDescriptor.renderer_key` is adapter-owned data
-rather than a component reference, so React, Svelte, native, and future adapters can map the same
-headless schema to different renderer implementations while preserving node `kind`, ports, default
-data, default size, category, and search metadata.
-For create-node palettes, adapters can call
-`NodeGraphStore::apply_create_node_from_schema(registry, CreateNodeRequest::new(kind, pos))`. The
-store uses the same dispatch/history/profile path as other graph edits while `NodeRegistry`
-resolves aliases, canonical kind, default data, default size, and schema-declared ports.
-
-Store dispatch outcomes expose both the committed transaction and its mutation footprint. Prefer
-the accessors over public fields so adapters stay compatible with future indexing, collaboration,
-and incremental-layout internals:
+For a persisted document, register known kinds and migrators first, then publish only the canonical
+result:
 
 ```rust
-let outcome = store.dispatch_transaction(&tx)?;
-let tx = outcome.committed();
-let footprint = outcome.footprint();
+use jellyflow_runtime::graph::GraphRuntime;
+use jellyflow_runtime::io::GraphFile;
+use jellyflow_runtime::schema::NodeCatalog;
+
+let catalog = NodeCatalog::new(); // Register application kinds and migrators here.
+let document = GraphFile::load_canonical_json("workflow.jellyflow.json", &catalog)?;
+let runtime = GraphRuntime::from_canonical(document)?;
+
+let replacement =
+    GraphFile::load_canonical_json("next-workflow.jellyflow.json", runtime.catalog())?;
+runtime.replace_document(replacement)?;
+# Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-For a standalone patch, use `patch.transaction()` and `patch.footprint()`. If the caller needs to
-take ownership, use `patch.into_parts()` instead of reading fields directly.
+The persisted-file API does not expose a raw graph load or `Deserialize` path. This keeps exact
+file-version dispatch, storage validation, and atomic known-kind migration ahead of runtime
+publication. `GraphRuntime::replace_document` accepts only a `CanonicalGraph` produced by the same
+catalog provenance. On success it advances the graph revision and document epoch, clears history,
+retires every prior node lifetime, and fans out one document reset. Finalize registration before
+runtime publication and use `runtime.catalog()` for later loads; an independently rebuilt or
+subsequently modified catalog is rejected without side effects.
 
-Layout callers can turn that footprint into a conservative dirty scope:
+`GraphFile::save_json` writes the current V2 envelope and applies the default `PersistenceLimits`
+before atomically replacing the target. Released Jellyflow 0.3 V1 graph documents are intentionally
+incompatible and return `GraphFileError::UnsupportedEnvelopeVersion` before payload decoding; the
+runtime rejects V1 instead of discarding removed focusability fields. Applications with
+custom persistence budgets should pass the same limits to `save_json_with_limits` and
+`load_canonical_json_with_limits`. `ViewSessionSeedFile` decode and load operations accept only the
+current versioned seed format and return a sanitized `ViewSessionSeed`.
 
-```rust
-let request = LayoutRequest::all()
-    .with_dirty_scope_from_footprint(store.graph(), outcome.footprint());
-```
+Graph writes use `GraphCommand` and the opaque `GraphVersion` issued by the planning snapshot. A
+stale command is rejected with the current owned snapshot and affected footprint; the runtime never
+silently merges application intent.
+Topology edits replace the complete ordered real-port set atomically and apply their declared
+incident-edge policy in the same history boundary.
 
-The scope includes directly changed nodes and expands port, edge, and binding changes to their
-owning endpoint nodes when the current graph snapshot can resolve them. See the runnable example:
+## Connection and layout facts
 
-```text
-cargo run -p jellyflow-runtime --example dirty_scope_layout
-```
+Adapters should query `ViewSession::port_connection_facts` and
+`ViewSession::create_from_wire_candidates` for candidate filtering, then submit `GraphCommand`
+connection or reconnect edits. Direction, type compatibility, capacity, replacement, cycle policy,
+and rejection reasons remain runtime-owned.
 
-For renderer loops, keep subscriptions narrow and treat read models as pull queries. A typical
-adapter subscribes to graph/layout revisions, then calls `rendering_query` with its current
-viewport. The result contains stable visible node IDs, visible edge IDs, and render order; the
-adapter maps each node kind or descriptor `renderer_key` to framework-local components.
+Layout feedback must include the node root and every real port admitted by the frame. The runtime
+validates each node independently and publishes accepted bounds and port hit geometry under one
+view layout revision. Missing, foreign, duplicate, non-finite, stale, or replayed feedback has no
+partial side effect.
 
-```rust
-let _token = store.subscribe_selector(
-    |snapshot| (snapshot.graph_revision, snapshot.layout_facts_revision),
-    |_| {
-        // Schedule a renderer-side read. Jellyflow does not own the frame loop.
-    },
-);
+## Boundary guarantees
 
-let rendering = store.rendering_query(CanvasSize {
-    width: 1280.0,
-    height: 720.0,
-});
-```
+The crate has no dependency on Open GPUI, egui, windowing, focus, IME, GPU, or platform APIs. A
+native adapter owns its framework component tree, input arbitration, accessibility, measurement
+implementation, and application services. Jellyflow only supplies graph semantics, stable IDs,
+version-checked commands, and geometry facts.
 
-Run conformance fixture suites before renderer smoke tests. They prove the adapter is translating
-intent into the same runtime actions and callback ordering that Jellyflow expects, and they return
-aggregate reports that separate trace mismatches from scenario execution errors. Suites can be saved
-and loaded as pretty JSON files through `ConformanceSuite::save_json`, `load_json`, and
-`load_json_if_exists`; directories can be discovered recursively through
-`ConformanceFixtureDirectory::load_json` and `load_json_if_exists`, so adapters and agents can keep
-durable golden fixture assets in their own repos. Approval is explicit: `approve_actual_traces`
-returns an updated suite/report, while file and directory `approve_actual_traces_to_json` helpers
-write back only when every scenario executes without errors. GPU, windowing, screenshot, and pixel
-smoke tests should live in adapter crates such as future wgpu, egui, or Fret integrations, where
-they can verify input capture, platform wiring, and rendered pixels.
+## Native adapter verification
 
-Drag parent expansion is runtime-owned: a child with effective `expand_parent = true` can expand
-its parent group rect through `GraphOp::SetGroupRect`, while `NodeExtent::Parent` with
-`expand_parent = false` still clamps to the current parent group rect. Jellyflow stores node
-positions in canvas space, so left/top group expansion does not add sibling compensation ops. Raw
-pointer capture, drag handles, resize handles, renderer-specific grouping UI, screenshots, and
-pixels remain adapter responsibilities.
+The runtime owns interaction phases, command settlement, graph mutation semantics, selection, and
+published geometry. Native adapters should test only the framework boundary they add: real event
+mapping, focus and capture ownership, frame feedback, command admission, and lifecycle cleanup.
+They should not reproduce the runtime state machine through a shared scenario DSL.
 
-Resize planning is runtime-owned: adapters provide normalized canvas-space `NodeResizeRequest` or
-`NodePointerResizeRequest` values, and the runtime produces `node resize` transactions from existing
-`GraphOp::SetNodeSize`, `GraphOp::SetNodePos` for left/top controls, and `GraphOp::SetGroupRect`
-when `expand_parent = true` expands a parent group. `NodeExtent::Parent` with
-`expand_parent = false` still clamps to the current parent group rect. Adapters still own resize
-handle UI, raw pointer capture, cursor policy, renderer feedback, and pixels. Exact XyFlow
-node-owned child containment is intentionally not modeled as a renderer or DOM dependency in
-`jellyflow-runtime`.
+Use one focused native test for each distinct gesture shape, one representative test for
+pre-admission `NotDispatched` and post-admission `OutcomeUnknown`, and adapter-local tests for
+capture loss, retirement, and close. Completion classification and mutation outcome matrices remain
+runtime tests because they do not vary by UI framework.
 
-Delete selection planning is runtime-owned: adapters maintain view-state selection and translate
-platform keyboard input into direct delete calls or `KeyboardIntent`. The runtime resolves the
-configured delete key, effective `deletable` policy, selected nodes/edges, cascaded connected-edge
-deletion, `delete selection` transactions, XyFlow-style callback projections, and stale selection
-cleanup. For XyFlow-style `onBeforeDelete`, adapters call `prepare_delete_selection` or
-`prepare_delete_selection_for_key`, await their own hook/UI, then call `apply_pre_delete_resolution`
-with `PreDeleteResolution::Accept`, `Veto`, or `Replace`. Adapters still own raw key capture,
-focus/input suppression, confirmation dialogs, async scheduling, renderer feedback, screenshots,
-and pixels.
+Run the runtime-owned semantic tests with:
 
-`ConformanceAction::dispatch_transaction` is intentionally kept as a low-level graph-operation
-fixture escape hatch; adapter feel fixtures should prefer `ConformanceBehavior` session contracts
-or interaction-specific actions such as node drag, node resize, connect/reconnect, delete,
-viewport gestures, viewport animation frames, and double-click zoom plan or rejection assertions.
-Rendering fixtures should use `ConformanceRenderingQueryContract` or
-`ConformanceAction::assert_rendering_query`, which assert `NodeGraphStore::rendering_query` without
-producing renderer traces. Pan inertia fixtures
-should use the sampled-frame actions and rejection assertion so adapters can prove release-momentum
-traces without moving frame loops into runtime. Parent expansion fixtures should use
-`ConformanceAction::apply_node_drag`, which exercises the same runtime interaction boundary and
-records `set_group_rect` graph-commit traces when parent expansion occurs. Resize fixtures should
-use `ConformanceAction::apply_node_resize` or `apply_node_pointer_resize`, which exercises the same
-runtime interaction boundary and records `set_node_size`, `set_node_pos` plus `set_node_size`, and
-`set_group_rect` graph-commit traces when parent expansion occurs. Delete fixtures should use
-`ConformanceAction::apply_delete_selection` or `apply_delete_selection_for_key`, which records
-`remove_node` or `remove_edge` graph commits, XyFlow-style delete/disconnect callbacks, and
-selection cleanup traces.
-
-The runtime crate also includes a thin renderer-free example harness for agents and CI:
-
-```text
-cargo run -p jellyflow-runtime --example conformance_harness -- check <fixture-dir>
-cargo run -p jellyflow-runtime --example conformance_harness -- approve <fixture-dir>
-cargo run -p jellyflow-runtime --example knowledge_canvas
-```
-
-`NodeGraphStore::rendering_query` uses the deterministic linear read backend by default. Large graph
-adapters can opt into the snapshot-built spatial backend for local measurement while keeping the
-same public query result contract:
-
-```rust
-let editor_config = NodeGraphEditorConfig::default().with_spatial_index_enabled(true);
-```
-
-Measure local workloads before enabling it broadly. The current spatial backend keeps a store-local
-node index cache and rebuilds it when graph/layout facts, node origin, zoom, or spatial tuning
-changes. Pan-only queries reuse the same index. The runtime crate includes benchmarks for
-rendering-query, schema creation, and layout pipeline workloads:
-
-```text
-cargo bench -p jellyflow-runtime --bench rendering_query
-cargo bench -p jellyflow-runtime --bench schema_create_node
-cargo bench -p jellyflow-runtime --bench layout_pipeline
-```
-
-For a copyable external adapter skeleton, start with the non-workspace headless template:
-
-```text
-cargo test --manifest-path templates/headless-adapter/Cargo.toml
-cargo run --manifest-path templates/headless-adapter/Cargo.toml -- check
-```
-
-Viewport conformance is also headless. Runtime tests cover:
-
-- screen-delta pan conversion at the current zoom;
-- anchored zoom that keeps the pointer's canvas coordinate stable;
-- auto-pan conversion from pointer-edge proximity and elapsed frame time into viewport pan frames;
-- `NodeGraphStore` view-state publication for viewport intent;
-- viewport move gesture callback ordering;
-- fixture-runner traces for pan, zoom, auto-pan, view changes, gestures, and XyFlow-style callbacks;
-- conformance assertions for viewport animation frame sampling, sampled-frame viewport traces, and
-  double-click zoom plan or rejection outcomes.
-- conformance assertions for pan inertia frame sampling, sampled-frame viewport traces, and rejected
-  below-threshold inertia plans.
-- conformance assertions for visible node ids, visible edge ids, and render order before
-  renderer-specific draw batching.
-
-Adapters still own raw wheel delta normalization, pinch detection, pointer capture, cursor policy,
-raw double-click detection, release velocity estimation, frame scheduling, animation and inertia
-cancellation policy, sampled-frame commits, edge routing and draw batching, resize handles, window
-event loops, screenshots, and pixel assertions. For selection workflows, adapters own the
-screen-space selection rectangle and pointer/session ownership, then call `SelectionAutoPanRequest`
-for the shared edge-proximity viewport motion. Low-level geometry helpers remain available for
-custom routing and hit testing; adapters that need store-derived endpoints after reporting
-measurements should prefer `NodeGraphStore::layout_facts_query`.
-
-```rust
-use jellyflow_core::{CanvasPoint, CanvasRect, CanvasSize};
-use jellyflow_runtime::runtime::geometry::{
-    edge_path_contains_point, edge_position, straight_edge_path, EdgeEndpointInput,
-    EdgeHitTestOptions, HandlePosition,
-};
-
-let endpoints = edge_position(
-    EdgeEndpointInput {
-        node_rect: CanvasRect {
-            origin: CanvasPoint { x: 0.0, y: 0.0 },
-            size: CanvasSize { width: 120.0, height: 80.0 },
-        },
-        handle: None,
-        fallback_position: HandlePosition::Right,
-    },
-    EdgeEndpointInput {
-        node_rect: CanvasRect {
-            origin: CanvasPoint { x: 240.0, y: 40.0 },
-            size: CanvasSize { width: 120.0, height: 80.0 },
-        },
-        handle: None,
-        fallback_position: HandlePosition::Left,
-    },
-)
-.expect("edge endpoints");
-
-let path = straight_edge_path(endpoints.source, endpoints.target).expect("path");
-assert!(edge_path_contains_point(
-    &path,
-    CanvasPoint { x: 180.0, y: 40.0 },
-    EdgeHitTestOptions::default(),
-));
+```sh
+cargo nextest run -p jellyflow-runtime --cargo-quiet
 ```

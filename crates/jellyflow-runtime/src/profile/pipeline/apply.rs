@@ -1,124 +1,97 @@
-use crate::rules::{ConnectPlan, Diagnostic, DiagnosticSeverity};
-use jellyflow_core::core::Graph;
-use jellyflow_core::ops::{GraphOp, GraphTransaction};
+use std::collections::{BTreeMap, BTreeSet};
+
+use crate::rules::{
+    Diagnostic, DiagnosticSeverity, DiagnosticTarget, edge_type_compatibility_diagnostic,
+};
+use jellyflow_core::core::{EdgeKind, Graph, NodeId};
 
 use super::super::GraphProfile;
 use super::error::ApplyPipelineError;
 
-/// Applies a transaction and runs profile-driven concretization/validation to a fixed point.
-///
-/// Returns the committed transaction (original ops + derived concretization ops).
-pub fn apply_transaction_with_profile(
-    graph: &mut Graph,
-    profile: &mut dyn GraphProfile,
-    tx: &GraphTransaction,
-) -> Result<GraphTransaction, ApplyPipelineError> {
-    let mut scratch = graph.clone();
-    let committed = apply_transaction_with_profile_in_place(&mut scratch, profile, tx)?;
-    *graph = scratch;
-    Ok(committed)
-}
-
-pub(crate) fn apply_transaction_with_profile_in_place(
-    graph: &mut Graph,
-    profile: &mut dyn GraphProfile,
-    tx: &GraphTransaction,
-) -> Result<GraphTransaction, ApplyPipelineError> {
-    let mut committed = CommittedTransactionBuilder::new(tx);
-    apply_original_transaction(graph, tx, &mut committed)?;
-
-    concretize_to_fixed_point(graph, profile, committed)
-}
-
-fn apply_original_transaction(
-    graph: &mut Graph,
-    tx: &GraphTransaction,
-    committed: &mut CommittedTransactionBuilder,
-) -> Result<(), ApplyPipelineError> {
-    tx.apply_to(graph)?;
-    committed.extend_original(tx);
-    Ok(())
-}
-
-fn concretize_to_fixed_point(
-    graph: &mut Graph,
-    profile: &mut dyn GraphProfile,
-    mut committed: CommittedTransactionBuilder,
-) -> Result<GraphTransaction, ApplyPipelineError> {
-    let bound = profile.concretize_bound();
-    for _ in 0..bound {
-        let derived_ops: Vec<GraphOp> = profile.concretize(graph);
-        if derived_ops.is_empty() {
-            validate_profile_graph(profile, graph)?;
-            return Ok(committed.finish());
-        }
-
-        apply_derived_ops(graph, &derived_ops)?;
-        committed.extend_derived(derived_ops);
-    }
-
-    Err(ApplyPipelineError::ConcretizeNonConvergent { bound })
-}
-
-struct CommittedTransactionBuilder {
-    tx: GraphTransaction,
-}
-
-impl CommittedTransactionBuilder {
-    fn new(source: &GraphTransaction) -> Self {
-        Self {
-            tx: GraphTransaction::new().with_optional_label(source.label().map(str::to_owned)),
-        }
-    }
-
-    fn extend_original(&mut self, source: &GraphTransaction) {
-        self.tx.extend(source.ops().iter().cloned());
-    }
-
-    fn extend_derived(&mut self, ops: impl IntoIterator<Item = GraphOp>) {
-        self.tx.extend(ops);
-    }
-
-    fn finish(self) -> GraphTransaction {
-        self.tx
-    }
-}
-
-fn apply_derived_ops(graph: &mut Graph, ops: &[GraphOp]) -> Result<(), ApplyPipelineError> {
-    let derived_tx = GraphTransaction::from_ops(ops.iter().cloned());
-    derived_tx.apply_to(graph)?;
-    Ok(())
-}
-
-fn validate_profile_graph(
-    profile: &mut dyn GraphProfile,
+pub(crate) fn validate_profile_graph(
+    profile: &dyn GraphProfile,
     graph: &Graph,
 ) -> Result<(), ApplyPipelineError> {
-    let diagnostics = profile.validate_graph(graph);
-    if diagnostics
-        .iter()
-        .any(|d| d.severity == DiagnosticSeverity::Error)
-    {
-        return Err(rejected_diagnostics(diagnostics, "transaction rejected"));
-    }
-    Ok(())
+    reject_error_diagnostics(profile.validate_graph(graph), "transaction rejected")
 }
 
-/// Helper for UI loops: apply a `ConnectPlan` as a transaction via the profile pipeline.
-pub fn apply_connect_plan_with_profile(
-    graph: &mut Graph,
-    profile: &mut dyn GraphProfile,
-    plan: &ConnectPlan,
-) -> Result<GraphTransaction, ApplyPipelineError> {
-    if plan.is_accept() {
-        let tx = GraphTransaction::from_ops(plan.ops().iter().cloned());
-        apply_transaction_with_profile(graph, profile, &tx)
-    } else {
-        Err(rejected_diagnostics(
-            plan.diagnostics().to_vec(),
-            "connect rejected",
-        ))
+pub(crate) fn validate_profile_document(
+    profile: &dyn GraphProfile,
+    graph: &Graph,
+) -> Result<(), ApplyPipelineError> {
+    validate_profile_graph(profile, graph)?;
+
+    let mut diagnostics = Vec::new();
+    let compatibility = profile.type_compatibility();
+    for edge in graph.edges().keys().copied() {
+        if let Some(diagnostic) = edge_type_compatibility_diagnostic(
+            graph,
+            edge,
+            |graph, port| profile.type_of_port(graph, port),
+            compatibility,
+        ) {
+            diagnostics.push(diagnostic);
+        }
     }
+    for kind in [EdgeKind::Data, EdgeKind::Exec] {
+        if !profile.allow_cycles(kind) && contains_cycle(graph, kind) {
+            diagnostics.push(Diagnostic::error(
+                "connect.cycle",
+                DiagnosticTarget::Graph,
+                format!("{kind:?} edges contain a cycle disallowed by the graph profile"),
+            ));
+        }
+    }
+
+    reject_error_diagnostics(diagnostics, "graph profile rejected document")
+}
+
+fn contains_cycle(graph: &Graph, kind: EdgeKind) -> bool {
+    let mut indegree = BTreeMap::<NodeId, usize>::new();
+    let mut successors = BTreeMap::<NodeId, Vec<NodeId>>::new();
+    for edge in graph.edges().values().filter(|edge| edge.kind == kind) {
+        let Some(from) = graph.port(&edge.from).map(|port| port.node) else {
+            continue;
+        };
+        let Some(to) = graph.port(&edge.to).map(|port| port.node) else {
+            continue;
+        };
+        indegree.entry(from).or_default();
+        *indegree.entry(to).or_default() += 1;
+        successors.entry(from).or_default().push(to);
+    }
+
+    let mut ready = indegree
+        .iter()
+        .filter_map(|(node, degree)| (*degree == 0).then_some(*node))
+        .collect::<BTreeSet<_>>();
+    let mut visited = 0;
+    while let Some(node) = ready.pop_first() {
+        visited += 1;
+        for successor in successors.get(&node).into_iter().flatten() {
+            let Some(degree) = indegree.get_mut(successor) else {
+                continue;
+            };
+            *degree -= 1;
+            if *degree == 0 {
+                ready.insert(*successor);
+            }
+        }
+    }
+    visited != indegree.len()
+}
+
+fn reject_error_diagnostics(
+    diagnostics: Vec<Diagnostic>,
+    fallback_message: &str,
+) -> Result<(), ApplyPipelineError> {
+    if diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == DiagnosticSeverity::Error)
+    {
+        return Err(rejected_diagnostics(diagnostics, fallback_message));
+    }
+    Ok(())
 }
 
 fn rejected_diagnostics(

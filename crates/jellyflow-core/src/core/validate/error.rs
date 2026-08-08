@@ -1,6 +1,7 @@
 use crate::core::{
-    BindingId, EdgeId, EdgeKind, GraphId, GraphLocalBindingTarget, GroupId, NodeId, PortCapacity,
-    PortId, PortKind, SubgraphNodeError, SymbolId, SymbolRefNodeError,
+    BindingId, EdgeId, EdgeKind, EdgeRouteSpecValidationError, GraphId, GraphLocalBindingTarget,
+    GroupId, NodeId, PortCapacity, PortId, PortKind, StickyNoteId, SubgraphNodeError, SymbolId,
+    SymbolRefNodeError,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -24,6 +25,18 @@ pub enum GraphValidationError {
         height: f32,
     },
 
+    #[error("node position must be finite: node={node:?}")]
+    NodePositionNotFinite { node: NodeId },
+
+    #[error("node origin must be finite: node={node:?}")]
+    NodeOriginNotFinite { node: NodeId },
+
+    #[error("node explicit bounds exceed the finite canvas domain: node={node:?}")]
+    NodeBoundsNotFinite { node: NodeId },
+
+    #[error("node extent rect must be finite: node={node:?}")]
+    NodeExtentNotFinite { node: NodeId },
+
     #[error("node ports list references missing port: node={node:?} port={port:?}")]
     NodePortsMissingPort { node: NodeId, port: PortId },
 
@@ -41,6 +54,16 @@ pub enum GraphValidationError {
 
     #[error("edge references missing port: edge={edge:?} port={port:?}")]
     EdgeMissingPort { edge: EdgeId, port: PortId },
+
+    #[error("edge interaction width must be finite: edge={edge:?}")]
+    EdgeInteractionWidthNotFinite { edge: EdgeId },
+
+    #[error("edge route specification is invalid: edge={edge:?}: {source}")]
+    EdgeRouteSpecInvalid {
+        edge: EdgeId,
+        #[source]
+        source: EdgeRouteSpecValidationError,
+    },
 
     #[error(
         "edge port kinds are incompatible: edge={edge:?} from_kind={from_kind:?} to_kind={to_kind:?}"
@@ -105,6 +128,12 @@ pub enum GraphValidationError {
         binding: BindingId,
         target: GraphLocalBindingTarget,
     },
+
+    #[error("group rect must be finite: group={group:?}")]
+    GroupRectNotFinite { group: GroupId },
+
+    #[error("sticky note rect must be finite: sticky_note={sticky_note:?}")]
+    StickyNoteRectNotFinite { sticky_note: StickyNoteId },
 }
 
 impl From<SubgraphNodeError> for GraphValidationError {

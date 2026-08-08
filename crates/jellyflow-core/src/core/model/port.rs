@@ -59,10 +59,9 @@ pub struct Port {
     /// Capacity rule.
     pub capacity: PortCapacity,
 
-    /// Whether this port can be used for creating/accepting connections via editor interactions.
+    /// Whether this port can create or accept graph connections.
     ///
-    /// This mirrors XyFlow handle-level `isConnectable`. When omitted, the owning node's
-    /// `Node.connectable` / global `NodeGraphInteractionState.nodes_connectable` decides.
+    /// When omitted, the owning node and runtime connection policy decide.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connectable: Option<bool>,
 
