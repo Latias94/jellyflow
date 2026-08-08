@@ -6,7 +6,7 @@ The format is based on *Keep a Changelog*, and this project adheres to *Semantic
 
 ## [Unreleased]
 
-## [0.4.0] - 2026-08-01
+## [0.4.0] - 2026-08-08
 
 ### Breaking Changes
 
