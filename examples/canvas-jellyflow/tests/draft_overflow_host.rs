@@ -405,7 +405,7 @@ fn sixty_fifth_workflow_focus_is_rejected_before_the_node_can_park(
 
 fn draw(cx: &mut open_gpui::VisualTestContext) {
     cx.update(|window, cx| {
-        window.draw(cx).clear();
+        window.draw(cx).clear(cx);
     });
     cx.run_until_parked();
 }

@@ -324,7 +324,7 @@ impl Render for ShaderMultiplyNode {
         .variant(ButtonVariant::Ghost)
         .xsmall()
         .selected(self.preview_expanded)
-        .on_click(move |_, _, cx| {
+        .on_activate(move |_, _, cx| {
             let _ = node.update(cx, |node, cx| {
                 node.preview_expanded = !node.preview_expanded;
                 cx.notify();
@@ -463,7 +463,7 @@ impl Render for ShaderMultiplyNode {
                                     .variant(ButtonVariant::Ghost)
                                     .xsmall()
                                     .disabled(conflict_resolution_disabled)
-                                    .on_click(
+                                    .on_activate(
                                         move |_, window, cx| {
                                             let _ = accept_node.update(cx, |node, cx| {
                                                 node.accept_remote_factor(cx)
@@ -486,7 +486,7 @@ impl Render for ShaderMultiplyNode {
                                         .variant(ButtonVariant::Ghost)
                                         .xsmall()
                                         .disabled(conflict_resolution_disabled)
-                                        .on_click(
+                                        .on_activate(
                                             move |_, window, cx| {
                                                 let _ = reapply_node.update(cx, |node, cx| {
                                                     node.reapply_local_factor(cx)
@@ -1118,7 +1118,7 @@ mod tests {
 
     fn draw_pending_factor_host(cx: &mut open_gpui::VisualTestContext) {
         cx.update(|window, cx| {
-            window.draw(cx).clear();
+            window.draw(cx).clear(cx);
         });
         cx.run_until_parked();
     }

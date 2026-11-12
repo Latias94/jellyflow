@@ -18,8 +18,7 @@ use jellyflow_runtime::schema::{NodeKindSpec, NodePortSpec};
 use jellyflow_runtime::view::NodeInstanceKey;
 use jellyflow_runtime::view::RendererStamp;
 use open_gpui::{
-    AppContext, Context, Entity, InteractiveElement, ParentElement, Render,
-    StatefulInteractiveElement, Styled, Window, div, px,
+    AppContext, Context, Entity, InteractiveElement, ParentElement, Render, Styled, Window, div, px,
 };
 use open_gpui_ui_components::{Button, ButtonVariant};
 
@@ -374,7 +373,7 @@ impl Render for BlueprintCallNode {
                 )
                 .variant(ButtonVariant::Secondary)
                 .disabled(commands_locked)
-                .on_click(move |_, window, cx| {
+                .on_activate(move |_, window, cx| {
                     let _ = add_node.update(cx, |node, cx| node.add_input(cx));
                     window.refresh();
                 }),
@@ -412,7 +411,7 @@ impl Render for BlueprintCallNode {
                         Button::new(format!("jellyflow-blueprint-up-{}", port_id.0), "Up")
                             .variant(ButtonVariant::Secondary)
                             .disabled(commands_locked)
-                            .on_click(move |_, window, cx| {
+                            .on_activate(move |_, window, cx| {
                                 let intent = BlueprintIntent::reorder(pin_id.clone(), index - 1);
                                 let _ =
                                     move_node.update(cx, |node, cx| node.apply_intent(intent, cx));
@@ -430,7 +429,7 @@ impl Render for BlueprintCallNode {
                         Button::new(format!("jellyflow-blueprint-down-{}", port_id.0), "Down")
                             .variant(ButtonVariant::Secondary)
                             .disabled(commands_locked)
-                            .on_click(move |_, window, cx| {
+                            .on_activate(move |_, window, cx| {
                                 let intent = BlueprintIntent::reorder(pin_id.clone(), index + 1);
                                 let _ =
                                     move_node.update(cx, |node, cx| node.apply_intent(intent, cx));
@@ -450,7 +449,7 @@ impl Render for BlueprintCallNode {
                     )
                     .variant(ButtonVariant::Secondary)
                     .disabled(commands_locked)
-                    .on_click(move |_, window, cx| {
+                    .on_activate(move |_, window, cx| {
                         let intent =
                             BlueprintIntent::remove(pin_id.clone(), IncidentEdgePolicy::Cascade);
                         let _ = remove_node.update(cx, |node, cx| node.apply_intent(intent, cx));
@@ -562,7 +561,7 @@ impl Render for BlueprintCallNode {
                         },
                     )
                     .variant(ButtonVariant::Secondary)
-                    .on_click(move |_, window, cx| {
+                    .on_activate(move |_, window, cx| {
                         let _ = retry_node.update(cx, |node, cx| node.retry(cx));
                         window.refresh();
                     }),
@@ -580,7 +579,7 @@ impl Render for BlueprintCallNode {
                             "Discard change",
                         )
                         .variant(ButtonVariant::Secondary)
-                        .on_click(move |_, window, cx| {
+                        .on_activate(move |_, window, cx| {
                             let _ =
                                 discard_node.update(cx, |node, cx| node.discard_unobservable(cx));
                             window.refresh();

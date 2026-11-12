@@ -22,11 +22,12 @@ use jellyflow_runtime::commands::GraphCommand;
 use jellyflow_runtime::schema::{NodeKindSpec, NodePortSpec};
 use jellyflow_runtime::view::RendererStamp;
 use open_gpui::{
-    App, AppContext, Context, Entity, Focusable, InteractiveElement, ParentElement, Render,
-    StatefulInteractiveElement, Styled, Subscription, Window, div, px,
+    App, AppContext, Context, Entity, Focusable, InteractiveElement, ParentElement, Render, Styled,
+    Subscription, Window, div, px,
 };
+use open_gpui_ui_components::listbox::ListboxOption;
 use open_gpui_ui_components::{
-    Button, ButtonVariant, ListboxOption, Select, TextInput, gpui_adapter::TextInputController,
+    Button, ButtonVariant, Select, TextInput, gpui_adapter::TextInputController,
 };
 
 use crate::model_options::{
@@ -459,7 +460,7 @@ impl WorkflowLlmNode {
             .update(cx, |controller, cx| controller.set_value(value, cx));
         self.focus_lease.take();
         self.ime_lease.take();
-        window.blur();
+        window.blur(cx);
         cx.notify();
     }
 
@@ -581,7 +582,7 @@ impl Render for WorkflowLlmNode {
                         )
                         .variant(ButtonVariant::Secondary)
                         .disabled(!self.prompt.can_submit())
-                        .on_click(move |_, window, cx| {
+                        .on_activate(move |_, window, cx| {
                             let _ = apply_node.update(cx, |node, cx| node.apply_prompt(cx));
                             window.refresh();
                         }),
@@ -591,11 +592,12 @@ impl Render for WorkflowLlmNode {
                 Select::new(select_id, "Model")
                     .options(model_options)
                     .placeholder(self.model.local().clone())
-                    .selected(self.model.local().clone())
+                    .selected(Some(self.model.local().clone()))
                     .open(self.model_menu_open.get())
                     .full_width(true)
                     .disabled(model_select_disabled)
-                    .on_open_change(move |open, window, cx| {
+                    .on_open_change(move |intent, window, cx| {
+                        let open = intent.desired_open();
                         let _ = model_open_node
                             .update(cx, |node, cx| node.set_model_menu_open(open, cx));
                         window.refresh();
@@ -656,7 +658,7 @@ impl Render for WorkflowLlmNode {
                             "Retry",
                         )
                         .variant(ButtonVariant::Secondary)
-                        .on_click(move |_, window, cx| {
+                        .on_activate(move |_, window, cx| {
                             let _retry = retry_options.update(cx, |state, cx| state.retry(cx));
                             window.refresh();
                         }),
@@ -737,11 +739,13 @@ impl Render for WorkflowLlmNode {
                                     "Use remote",
                                 )
                                 .variant(ButtonVariant::Secondary)
-                                .on_click(move |_, window, cx| {
-                                    let _ = accept_node
-                                        .update(cx, |node, cx| node.accept_remote_prompt(cx));
-                                    window.refresh();
-                                }),
+                                .on_activate(
+                                    move |_, window, cx| {
+                                        let _ = accept_node
+                                            .update(cx, |node, cx| node.accept_remote_prompt(cx));
+                                        window.refresh();
+                                    },
+                                ),
                             ),
                         )
                         .child(
@@ -754,7 +758,7 @@ impl Render for WorkflowLlmNode {
                                     )
                                     .variant(ButtonVariant::Secondary)
                                     .disabled(reapply_disabled)
-                                    .on_click(
+                                    .on_activate(
                                         move |_, window, cx| {
                                             let _ = reapply_node.update(cx, |node, cx| {
                                                 node.reapply_local_prompt(cx)
@@ -804,11 +808,13 @@ impl Render for WorkflowLlmNode {
                                     "Use remote",
                                 )
                                 .variant(ButtonVariant::Secondary)
-                                .on_click(move |_, window, cx| {
-                                    let _ = accept_node
-                                        .update(cx, |node, cx| node.accept_remote_model(cx));
-                                    window.refresh();
-                                }),
+                                .on_activate(
+                                    move |_, window, cx| {
+                                        let _ = accept_node
+                                            .update(cx, |node, cx| node.accept_remote_model(cx));
+                                        window.refresh();
+                                    },
+                                ),
                             ),
                         )
                         .child(
@@ -821,7 +827,7 @@ impl Render for WorkflowLlmNode {
                                     )
                                     .variant(ButtonVariant::Secondary)
                                     .disabled(self.model.attempt_state().blocks_submission())
-                                    .on_click(
+                                    .on_activate(
                                         move |_, window, cx| {
                                             let _ = reapply_node.update(cx, |node, cx| {
                                                 node.reapply_local_model(cx)
@@ -1236,7 +1242,7 @@ mod tests {
     use jellyflow_runtime::graph::GraphRuntime;
     use jellyflow_runtime::view::ViewSessionOptions;
     use open_gpui::{
-        AppContext, EntityInputHandler, ScrollDelta, ScrollWheelEvent, TouchPhase, point,
+        AppContext, EntityInputHandler, ScrollDelta, ScrollEvent, ScrollSource, TouchPhase, point,
     };
     use open_gpui_ui_components::gpui_adapter::init_text_input;
 
@@ -1439,11 +1445,12 @@ mod tests {
             if reached.into_iter().all(|visible| visible) {
                 break;
             }
-            cx.simulate_event(ScrollWheelEvent {
+            cx.simulate_event(ScrollEvent {
                 position: body_bounds.center(),
                 delta: ScrollDelta::Pixels(point(px(0.0), px(-120.0))),
                 modifiers: Default::default(),
                 touch_phase: TouchPhase::Moved,
+                source: ScrollSource::Pointer,
             });
             draw_transient_host(cx);
             let current_bounds =
@@ -1856,7 +1863,7 @@ mod tests {
 
     fn draw_transient_host(cx: &mut open_gpui::VisualTestContext) {
         cx.update(|window, cx| {
-            window.draw(cx).clear();
+            window.draw(cx).clear(cx);
         });
         cx.run_until_parked();
     }

@@ -7,8 +7,7 @@ use jellyflow_core::SymbolId;
 use jellyflow_runtime::commands::GraphCommand;
 use jellyflow_runtime::graph::GraphSnapshot;
 use open_gpui::{
-    Context, InteractiveElement, ParentElement, Render, StatefulInteractiveElement, Styled, Task,
-    Window, div, px,
+    Context, InteractiveElement, ParentElement, Render, Styled, Task, Window, div, px,
 };
 use open_gpui_ui_components::prelude::Sizable;
 use open_gpui_ui_components::{Button, ButtonVariant, TextInput};
@@ -477,14 +476,12 @@ impl Render for NativeBlackboard {
                                             })
                                             .xsmall()
                                             .disabled(apply_action.is_none())
-                                            .on_click(
-                                                move |_, window, cx| {
-                                                    let _ = apply_panel.update(cx, |panel, cx| {
-                                                        panel.apply_name(id, cx)
-                                                    });
-                                                    window.refresh();
-                                                },
-                                            ),
+                                            .on_activate(move |_, window, cx| {
+                                                let _ = apply_panel.update(cx, |panel, cx| {
+                                                    panel.apply_name(id, cx)
+                                                });
+                                                window.refresh();
+                                            }),
                                         ),
                                 ),
                         )
@@ -500,7 +497,7 @@ impl Render for NativeBlackboard {
                                     )
                                     .variant(ButtonVariant::Ghost)
                                     .xsmall()
-                                    .on_click(
+                                    .on_activate(
                                         move |_, window, cx| {
                                             let _ = accept_panel.update(cx, |panel, cx| {
                                                 panel.accept_remote_name(id, cx)
@@ -517,7 +514,7 @@ impl Render for NativeBlackboard {
                             )
                             .variant(ButtonVariant::Ghost)
                             .xsmall()
-                            .on_click(move |_, window, cx| {
+                            .on_activate(move |_, window, cx| {
                                 let _ = discard_panel
                                     .update(cx, |panel, cx| panel.discard_name_submission(id, cx));
                                 window.refresh();
@@ -567,7 +564,7 @@ impl Render for NativeBlackboard {
                                     Button::new("jellyflow-blackboard-retry", "Retry")
                                         .variant(ButtonVariant::Secondary)
                                         .xsmall()
-                                        .on_click(move |_, window, cx| {
+                                        .on_activate(move |_, window, cx| {
                                             let _ = retry_panel.update(cx, |panel, cx| {
                                                 panel.retry_source(cx);
                                             });

@@ -1626,7 +1626,7 @@ impl NativeGraphSurface {
                     .child(
                         Button::new(NATIVE_CONNECTION_SEARCH_RETRY_SELECTOR, "Retry")
                             .variant(ButtonVariant::Secondary)
-                            .on_click(move |_, window, cx| {
+                            .on_activate(move |_, window, cx| {
                                 let _ = retry_surface
                                     .update(cx, |surface, cx| surface.retry_search(window, cx));
                             }),
@@ -2040,7 +2040,7 @@ mod tests {
             hidden_search_input: cx.focus_handle(),
         });
         cx.update(|window, cx| {
-            window.draw(cx).clear();
+            window.draw(cx).clear(cx);
         });
 
         cx.update_window_entity(&fixture, |fixture, window, cx| {

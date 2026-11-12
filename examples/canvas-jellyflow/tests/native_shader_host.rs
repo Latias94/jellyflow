@@ -1458,7 +1458,7 @@ fn compact_product_canvas_keeps_search_error_retry_ready_and_empty_states_in_bou
         Default::default(),
     );
     cx.update(|window, cx| {
-        window.draw(cx).clear();
+        window.draw(cx).clear(cx);
     });
     let loading = cx
         .debug_bounds(NATIVE_CONNECTION_SEARCH_LOADING_SELECTOR)
@@ -2286,7 +2286,7 @@ fn blueprint_semantic_zoom_preserves_sparse_dynamic_port_geometry_without_remoun
 
 fn draw(cx: &mut open_gpui::VisualTestContext) {
     cx.update(|window, cx| {
-        window.draw(cx).clear();
+        window.draw(cx).clear(cx);
     });
     cx.run_until_parked();
 }

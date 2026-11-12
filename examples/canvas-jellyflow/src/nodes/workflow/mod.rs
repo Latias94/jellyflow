@@ -561,7 +561,7 @@ mod tests {
         cx: &mut open_gpui::TestAppContext,
     ) {
         let (_fixture, cx) = cx.add_window_view(|_, _| LongHeaderFixture);
-        cx.update(|window, cx| window.draw(cx).clear());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
         cx.run_until_parked();
 
         let header = cx

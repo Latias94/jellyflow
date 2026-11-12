@@ -352,7 +352,7 @@ fn viewport() -> CanvasRect {
 }
 
 fn draw(cx: &mut open_gpui::VisualTestContext) {
-    cx.update(|window, cx| window.draw(cx).clear());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.run_until_parked();
 }
 

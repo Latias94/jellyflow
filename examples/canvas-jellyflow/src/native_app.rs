@@ -19,7 +19,7 @@ use open_gpui_canvas_jellyflow::nodes::{
 };
 use open_gpui_canvas_jellyflow::product_domain::blackboard::GraphRuntimeBlackboardSource;
 use open_gpui_ui_components::ThemeMode;
-use open_gpui_ui_components::theme::set_active_theme_mode;
+use open_gpui_ui_components::theme::set_app_theme_mode;
 
 use crate::demo_fixture::shader_demo_graph;
 
@@ -106,7 +106,7 @@ where
             NativeProductTheme,
         ) + 'static,
 {
-    set_active_theme_mode(cx, ThemeMode::Dark)
+    set_app_theme_mode(cx, ThemeMode::Dark)
         .map_err(|error| NativeLaunchError::new("theme_initialization", format!("{error:?}")))?;
     let catalog = native_node_catalog()
         .map_err(|error| NativeLaunchError::new("catalog_initialization", format!("{error:?}")))?;

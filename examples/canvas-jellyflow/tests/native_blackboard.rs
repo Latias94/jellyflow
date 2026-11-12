@@ -6,7 +6,7 @@ use jellyflow_core::types::TypeDesc;
 use jellyflow_core::{GraphBuilder, GraphId, Symbol, SymbolId};
 use jellyflow_runtime::commands::GraphCommand;
 use jellyflow_runtime::graph::GraphRuntime;
-use open_gpui::{ScrollDelta, ScrollWheelEvent, TouchPhase, point};
+use open_gpui::{ScrollDelta, ScrollEvent, ScrollSource, TouchPhase, point};
 use open_gpui_canvas_jellyflow::blackboard::{
     NativeBlackboard, blackboard_empty_selector, blackboard_failed_selector,
     blackboard_loading_selector, blackboard_retry_selector, blackboard_scroll_selector,
@@ -109,11 +109,12 @@ fn blackboard_scroll_keeps_large_symbol_sets_reachable(cx: &mut open_gpui::TestA
         .debug_bounds(blackboard_scroll_selector())
         .expect("blackboard scroll region");
 
-    cx.simulate_event(ScrollWheelEvent {
+    cx.simulate_event(ScrollEvent {
         position: scroll.center(),
         delta: ScrollDelta::Lines(point(0.0, -30.0)),
         modifiers: Default::default(),
         touch_phase: TouchPhase::Moved,
+        source: ScrollSource::Pointer,
     });
     draw(cx);
 
@@ -596,7 +597,7 @@ fn symbol(name: &str) -> Symbol {
 
 fn draw(cx: &mut open_gpui::VisualTestContext) {
     cx.update(|window, cx| {
-        window.draw(cx).clear();
+        window.draw(cx).clear(cx);
     });
     cx.run_until_parked();
 }

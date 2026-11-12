@@ -15,8 +15,8 @@ use jellyflow_runtime::io::GraphFile;
 use jellyflow_runtime::view::{PublishedPortGeometry, ViewSessionOptions};
 use jellyflow_runtime::viewport::ViewportTransform;
 use open_gpui::{
-    AppContext, Bounds, Entity, MouseButton, Pixels, ScrollDelta, ScrollWheelEvent, TouchPhase,
-    VisualTestContext, point, px, size,
+    AppContext, Bounds, Entity, MouseButton, Pixels, ScrollDelta, ScrollEvent, ScrollSource,
+    TouchPhase, VisualTestContext, point, px, size,
 };
 use open_gpui_canvas_jellyflow::nodes::{
     NativeNodeResources, WORKFLOW_CONDITION_KIND, WORKFLOW_LLM_KIND, native_node_catalog,
@@ -876,11 +876,12 @@ fn native_condition_case_list_scrolls_without_changing_the_canvas_viewport(
         .expect("first branch geometry before scrolling");
     assert!(first_before_geometry.hit_bounds().is_some());
 
-    cx.simulate_event(ScrollWheelEvent {
+    cx.simulate_event(ScrollEvent {
         position: scroll.center(),
         delta: ScrollDelta::Lines(point(0.0, -3.0)),
         modifiers: Default::default(),
         touch_phase: TouchPhase::Moved,
+        source: ScrollSource::Pointer,
     });
     draw(cx);
 
@@ -907,11 +908,12 @@ fn native_condition_case_list_scrolls_without_changing_the_canvas_viewport(
         );
     }
 
-    cx.simulate_event(ScrollWheelEvent {
+    cx.simulate_event(ScrollEvent {
         position: scroll.center(),
         delta: ScrollDelta::Lines(point(0.0, 3.0)),
         modifiers: Default::default(),
         touch_phase: TouchPhase::Moved,
+        source: ScrollSource::Pointer,
     });
     draw(cx);
 
@@ -1195,7 +1197,7 @@ fn stale_condition_add_waits_for_refresh_and_explicit_retry_without_render_resub
 
     let condition = workflow_condition_node_id();
     enter_condition_case_value(cx, condition, "local retry");
-    cx.update(|window, _| window.blur());
+    cx.update(|window, cx| window.blur(cx));
     draw(cx);
     let remote_snapshot = remote_view.graph_snapshot().unwrap();
     let concurrent = ConditionCase::new(
@@ -1672,7 +1674,7 @@ fn controlled_model_select_outside_press_dismisses_without_reaching_the_graph_un
 
         cx.simulate_mouse_down(position, MouseButton::Left, Default::default());
 
-        assert!(cx.update(|window, _| window.captured_hitbox()).is_none());
+        assert!(cx.update(|window, _| window.captured_pointer()).is_none());
         cx.read_entity(&host, |host, _| {
             assert_eq!(
                 host.interaction_presentation().phase(),
@@ -2074,7 +2076,7 @@ fn draw(cx: &mut open_gpui::VisualTestContext) {
 }
 
 fn draw_once(cx: &mut open_gpui::VisualTestContext) {
-    cx.update(|window, cx| window.draw(cx).clear());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
 }
 
 fn assert_workflow_port_profile(

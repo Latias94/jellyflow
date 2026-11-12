@@ -33,13 +33,13 @@ futures-util = "0.3"
 jellyflow-core = { path = "../../crates/jellyflow-core" }
 jellyflow-open-gpui = { path = "../../crates/jellyflow-open-gpui" }
 jellyflow-runtime = { path = "../../crates/jellyflow-runtime" }
-open_gpui = { package = "open-gpui", version = "0.2.0", default-features = false }
-open_gpui_platform = { package = "open-gpui-platform", version = "0.2.0", default-features = false, features = ["font-kit"] }
-open_gpui_ui_components = { package = "open-gpui-ui-components", version = "0.2.0" }
+open_gpui = { package = "open-gpui", git = "https://github.com/Latias94/open-gpui", rev = "f75c10b2a9bf7b4dcb2c8c2aa446203997601369", default-features = false }
+open_gpui_platform = { package = "open-gpui-platform", git = "https://github.com/Latias94/open-gpui", rev = "f75c10b2a9bf7b4dcb2c8c2aa446203997601369", default-features = false, features = ["font-kit"] }
+open_gpui_ui_components = { package = "open-gpui-ui-components", git = "https://github.com/Latias94/open-gpui", rev = "f75c10b2a9bf7b4dcb2c8c2aa446203997601369" }
 serde_json = "1"
 thiserror = "2"
 uuid = "1"
 
 [dev-dependencies]
-open_gpui = { package = "open-gpui", version = "0.2.0", default-features = false, features = ["test-support"] }
-open_gpui_platform = { package = "open-gpui-platform", version = "0.2.0", default-features = false, features = ["font-kit", "test-support"] }
+open_gpui = { package = "open-gpui", git = "https://github.com/Latias94/open-gpui", rev = "f75c10b2a9bf7b4dcb2c8c2aa446203997601369", default-features = false, features = ["test-support"] }
+open_gpui_platform = { package = "open-gpui-platform", git = "https://github.com/Latias94/open-gpui", rev = "f75c10b2a9bf7b4dcb2c8c2aa446203997601369", default-features = false, features = ["font-kit", "test-support"] }

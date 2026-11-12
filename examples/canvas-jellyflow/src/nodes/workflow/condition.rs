@@ -25,10 +25,11 @@ use jellyflow_runtime::view::NodeInstanceKey;
 use jellyflow_runtime::view::RendererStamp;
 use open_gpui::{
     App, AppContext, Context, Entity, Focusable, InteractiveElement, IntoElement, ParentElement,
-    Render, StatefulInteractiveElement, Styled, Task, Window, div, px,
+    Render, Styled, Task, Window, div, px,
 };
+use open_gpui_ui_components::listbox::ListboxOption;
 use open_gpui_ui_components::{
-    Button, ButtonVariant, ListboxOption, Select, TextInput, gpui_adapter::TextInputController,
+    Button, ButtonVariant, Select, TextInput, gpui_adapter::TextInputController,
 };
 
 use super::{
@@ -524,7 +525,7 @@ impl WorkflowConditionNode {
             .update(cx, |controller, cx| controller.set_value(value, cx));
         self.focus_lease.take();
         self.ime_lease.take();
-        window.blur();
+        window.blur(cx);
     }
 }
 
@@ -623,11 +624,12 @@ impl Render for WorkflowConditionNode {
             } else {
                 "Select a field"
             })
-            .selected(self.selected_operand.clone())
+            .selected(Some(self.selected_operand.clone()))
             .open(self.operand_menu_open.get())
             .full_width(true)
             .disabled(!field_enabled)
-            .on_open_change(move |open, window, cx| {
+            .on_open_change(move |intent, window, cx| {
+                let open = intent.desired_open();
                 let _ = open_node.update(cx, |node, cx| node.set_operand_menu_open(open, cx));
                 window.refresh();
             })
@@ -657,7 +659,7 @@ impl Render for WorkflowConditionNode {
                 Button::new(workflow_condition_add_id(node_id), "Add case")
                     .variant(ButtonVariant::Secondary)
                     .disabled(!add_enabled)
-                    .on_click(move |_, window, cx| {
+                    .on_activate(move |_, window, cx| {
                         let _ = add_node.update(cx, |node, cx| node.add_case(cx));
                         window.refresh();
                     }),
@@ -734,7 +736,7 @@ impl Render for WorkflowConditionNode {
                         )
                         .variant(ButtonVariant::Secondary)
                         .disabled(commands_locked)
-                        .on_click(move |_, window, cx| {
+                        .on_activate(move |_, window, cx| {
                             let intent = ConditionIntent::reorder(case_id.clone(), index - 1);
                             let _ = move_node.update(cx, |node, cx| {
                                 node.apply_intent(intent, cx);
@@ -755,7 +757,7 @@ impl Render for WorkflowConditionNode {
                     )
                     .variant(ButtonVariant::Secondary)
                     .disabled(commands_locked)
-                    .on_click(move |_, window, cx| {
+                    .on_activate(move |_, window, cx| {
                         let intent =
                             ConditionIntent::remove(case_id.clone(), IncidentEdgePolicy::Cascade);
                         let _ = remove_node.update(cx, |node, cx| {
@@ -911,7 +913,7 @@ impl Render for WorkflowConditionNode {
                         label,
                     )
                     .variant(ButtonVariant::Secondary)
-                    .on_click(move |_, window, cx| {
+                    .on_activate(move |_, window, cx| {
                         let _ = retry_node.update(cx, |node, cx| node.retry(cx));
                         window.refresh();
                     }),
@@ -934,7 +936,7 @@ impl Render for WorkflowConditionNode {
                                 "Discard change",
                             )
                             .variant(ButtonVariant::Secondary)
-                            .on_click(move |_, window, cx| {
+                            .on_activate(move |_, window, cx| {
                                 let _ = discard_node
                                     .update(cx, |node, cx| node.discard_unobservable(cx));
                                 window.refresh();
