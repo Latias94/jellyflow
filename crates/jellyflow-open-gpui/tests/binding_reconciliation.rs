@@ -155,7 +155,7 @@ fn one_node_change_updates_only_its_binding_across_independent_views(
 
 fn draw(cx: &mut open_gpui::VisualTestContext) {
     cx.update(|window, cx| {
-        window.draw(cx).clear();
+        window.draw(cx).clear(cx);
     });
     cx.run_until_parked();
 }

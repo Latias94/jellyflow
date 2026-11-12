@@ -6,6 +6,21 @@ The format is based on *Keep a Changelog*, and this project adheres to *Semantic
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Pin the retained adapter and native product example to maintained Open-GPUI Git revision
+  `f75c10b2a9bf7b4dcb2c8c2aa446203997601369`. Applications must use that same framework source;
+  the earlier registry `0.2.0` API is not interchangeable with the maintained packages.
+- Capture native pointer activity with a stable `PointerCaptureHandle` and explicit button.
+  Bind replacement elements with `track_pointer_capture`; capture leases no longer expose or
+  rebind transient hitboxes.
+
+### Changed
+
+- Publish node, port and content measurements only through the original accepted-frame callbacks
+  before submitting the complete view feedback. Targeted input and explicit wheel intent retain
+  framework ownership of event routing, focus and pointer capture.
+
 ## [0.4.0] - 2026-08-08
 
 ### Breaking Changes

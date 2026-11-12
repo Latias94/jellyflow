@@ -518,17 +518,25 @@ impl Element for OpenGpuiPortMeasurementElement {
         child.prepaint(window, cx);
         let hit_bounds = minimum_hit_pixel_bounds(bounds, self.minimum_hit_diameter);
         let interaction_bounds =
-            clipped_interaction_pixel_bounds(bounds, hit_bounds, window.content_mask().bounds);
-        let _ = self.sink.record_port(
-            self.source,
-            self.wrapper,
-            self.port_instance,
-            bounds,
-            hit_bounds,
-            interaction_bounds,
-            self.side,
-            self.anchor,
-        );
+            clipped_interaction_pixel_bounds(bounds, hit_bounds, window.clip_bounds());
+        let sink = self.sink.clone();
+        let source = self.source;
+        let wrapper = self.wrapper;
+        let port_instance = self.port_instance;
+        let side = self.side;
+        let anchor = self.anchor;
+        window.record_prepaint_commit(move |_, _| {
+            let _ = sink.record_port(
+                source,
+                wrapper,
+                port_instance,
+                bounds,
+                hit_bounds,
+                interaction_bounds,
+                side,
+                anchor,
+            );
+        });
         interaction_bounds.map(|bounds| window.insert_hitbox(bounds, HitboxBehavior::Normal))
     }
 
@@ -615,17 +623,25 @@ impl Element for OpenGpuiPortInteractionElement {
         child.prepaint(window, cx);
         let hit_bounds = minimum_hit_pixel_bounds(bounds, self.minimum_hit_diameter);
         let interaction_bounds =
-            clipped_interaction_pixel_bounds(bounds, hit_bounds, window.content_mask().bounds);
-        let _ = self.sink.record_port(
-            self.source,
-            self.wrapper,
-            self.port_instance,
-            bounds,
-            hit_bounds,
-            interaction_bounds,
-            self.side,
-            self.anchor,
-        );
+            clipped_interaction_pixel_bounds(bounds, hit_bounds, window.clip_bounds());
+        let sink = self.sink.clone();
+        let source = self.source;
+        let wrapper = self.wrapper;
+        let port_instance = self.port_instance;
+        let side = self.side;
+        let anchor = self.anchor;
+        window.record_prepaint_commit(move |_, _| {
+            let _ = sink.record_port(
+                source,
+                wrapper,
+                port_instance,
+                bounds,
+                hit_bounds,
+                interaction_bounds,
+                side,
+                anchor,
+            );
+        });
         let hitbox = if self.interaction_enabled {
             // Passive hover remains scene-owned; the port consumes accepted presses in bubble.
             interaction_bounds.map(|bounds| window.insert_hitbox(bounds, HitboxBehavior::Normal))
@@ -634,11 +650,10 @@ impl Element for OpenGpuiPortInteractionElement {
         };
         if self.sink.mount.is_live() {
             if self.interaction_enabled {
-                if let Some(hitbox) = hitbox.as_ref() {
-                    self.interactions.rebind_port(
+                if hitbox.is_some() {
+                    self.interactions.validate_port_capture(
                         &self.owner,
                         &self.sink.mount,
-                        hitbox.id,
                         window,
                         cx,
                     );
@@ -678,13 +693,12 @@ impl Element for OpenGpuiPortInteractionElement {
         window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
             if phase == DispatchPhase::Bubble
                 && event.button == MouseButton::Left
-                && hitbox.is_hovered(window)
+                && hitbox.is_mouse_event_target(window)
                 && interactions.begin_port_drag(
                     owner.clone(),
                     mount.clone(),
                     listener.clone(),
                     activity.clone(),
-                    hitbox.id,
                     event,
                     window,
                     cx,
@@ -748,7 +762,10 @@ impl Element for OpenGpuiContentMeasurementElement {
         cx: &mut App,
     ) {
         child.prepaint(window, cx);
-        let _ = self.sink.record_content(bounds);
+        let sink = self.sink.clone();
+        window.record_prepaint_commit(move |_, _| {
+            let _ = sink.record_content(bounds);
+        });
     }
 
     fn paint(
@@ -2088,7 +2105,7 @@ mod tests {
         assert_eq!(disabled.label(), Some("Interactive value output"));
         assert!(disabled.is_disabled());
         assert!(!disabled.supports_action(Action::Click));
-        assert!(disabled.supports_action(Action::Focus));
+        assert!(!disabled.supports_action(Action::Focus));
     }
 
     #[test]

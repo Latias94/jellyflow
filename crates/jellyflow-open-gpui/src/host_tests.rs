@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
@@ -24,13 +24,17 @@ use jellyflow_runtime::{
     view::ViewSessionEvent, view::ViewSessionOptions,
 };
 use open_gpui::{
-    App, AppContext, Context, CursorStyle, Entity, FocusHandle, HitboxId, InteractiveElement,
-    KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent,
-    ParentElement, PinchEvent, Render, RequestFrameOptions, ScrollDelta, ScrollWheelEvent,
-    StatefulInteractiveElement, Styled, TouchPhase, VisualContext, Window, div, point, px,
+    App, AppContext, Context, CursorStyle, Entity, FocusHandle, InteractiveElement, KeyDownEvent,
+    KeyUpEvent, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, ParentElement,
+    PinchEvent, PointerCaptureHandle, Render, RequestFrameOptions, ScrollDelta, ScrollEvent,
+    ScrollSource, StatefulInteractiveElement, Styled, TouchPhase, VisualContext, Window, div,
+    point, px,
 };
 
-use crate::activity::{OpenGpuiActivityKind, OpenGpuiActivityLease};
+use crate::activity::{
+    OpenGpuiActivityKind, OpenGpuiActivityLease, OpenGpuiNodeActivityHandle,
+    OpenGpuiPointerCaptureLease,
+};
 use crate::authoring::OpenGpuiPortHandle;
 use crate::chrome::OpenGpuiEdgeVisualFacts;
 use crate::command_journal::OPEN_GPUI_COMMAND_JOURNAL_CAPACITY;
@@ -269,6 +273,40 @@ struct RoutedNode {
 
 struct RootOnlyNode;
 
+struct RegisteredPointerCaptureNode {
+    activity: Option<OpenGpuiNodeActivityHandle>,
+    handle: PointerCaptureHandle,
+    capture: Rc<RefCell<Option<OpenGpuiPointerCaptureLease>>>,
+}
+
+impl Render for RegisteredPointerCaptureNode {
+    fn render(
+        &mut self,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> impl open_gpui::IntoElement {
+        let Some(activity) = self.activity.clone() else {
+            return div().size_full();
+        };
+        let handle = self.handle;
+        let capture = self.capture.clone();
+        div()
+            .size_full()
+            .debug_selector(|| "jellyflow-test-third-party-pointer-capture".to_owned())
+            .track_pointer_capture(&handle)
+            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                assert!(capture.borrow().is_none());
+                *capture.borrow_mut() = Some(
+                    activity
+                        .capture_pointer(&handle, MouseButton::Left, window)
+                        .expect("registered third-party pointer capture"),
+                );
+                window.prevent_default();
+                cx.stop_propagation();
+            })
+    }
+}
+
 struct NativeTextControlNode {
     focus: FocusHandle,
     id: String,
@@ -379,6 +417,9 @@ struct InteractiveScene {
 
 struct ReplaceableInteractiveScene {
     host: Option<Entity<OpenGpuiSceneHost>>,
+    pointer_capture: PointerCaptureHandle,
+    detached_capture: Option<PointerCaptureHandle>,
+    focus: FocusHandle,
 }
 
 struct OffsetInteractiveScene {
@@ -404,8 +445,31 @@ impl Render for ReplaceableInteractiveScene {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> impl open_gpui::IntoElement {
-        div().size_full().children(self.host.clone())
+        div()
+            .size_full()
+            .track_focus(&self.focus)
+            .tab_stop(false)
+            .track_pointer_capture(&self.pointer_capture)
+            .children(self.host.clone())
+            .children(
+                self.detached_capture
+                    .map(|handle| div().size_full().track_pointer_capture(&handle)),
+            )
     }
+}
+
+fn install_pointer_capture_successor(
+    host: &Entity<OpenGpuiSceneHost>,
+    cx: &mut open_gpui::VisualTestContext,
+) -> PointerCaptureHandle {
+    let scene = cx.replace_root_view(|window, cx| ReplaceableInteractiveScene {
+        host: Some(host.clone()),
+        pointer_capture: window.new_pointer_capture_handle(),
+        detached_capture: None,
+        focus: cx.focus_handle(),
+    });
+    let _ = cx.update(|window, _| window.activate_window());
+    cx.read_entity(&scene, |scene, _| scene.pointer_capture)
 }
 
 impl Render for OffsetInteractiveScene {
@@ -2124,6 +2188,7 @@ fn blueprint_pending_context_is_cancelled_when_pointer_capture_is_replaced(
         Rc::new(move |request, _window, _cx| captured_requests.borrow_mut().push(request));
     let (_runtime, host, cx) =
         mount_connection_scene_for_graph_with_context_handler(cx, routed_graph(), Some(handler));
+    let successor = install_pointer_capture_successor(&host, cx);
     draw(cx);
     draw(cx);
     cx.update_entity(&host, |host, cx| {
@@ -2145,8 +2210,9 @@ fn blueprint_pending_context_is_cancelled_when_pointer_capture_is_replaced(
     });
     cx.simulate_mouse_down(blank, MouseButton::Right, Default::default());
     let jellyflow_capture = cx
-        .update(|window, _| window.captured_hitbox())
+        .update(|window, _| window.captured_pointer())
         .expect("right-pan arbitration owns pointer capture");
+    assert_eq!(jellyflow_capture.button(), MouseButton::Right);
     cx.read_entity(&host, |host, _| {
         assert!(host.pending_blank_canvas_context.is_some());
         assert_eq!(
@@ -2155,9 +2221,17 @@ fn blueprint_pending_context_is_cancelled_when_pointer_capture_is_replaced(
         );
     });
 
-    let successor = HitboxId::placeholder();
-    assert_ne!(successor, jellyflow_capture);
-    cx.update(|window, _| window.capture_pointer(successor));
+    assert_ne!(successor, jellyflow_capture.handle());
+    cx.update(|window, _| {
+        assert!(
+            window
+                .release_pointer(&jellyflow_capture.handle())
+                .expect("release right-pan capture before replacement"),
+        );
+        window
+            .capture_pointer(&successor, MouseButton::Right)
+            .expect("bound successor owns the right-button capture");
+    });
     draw_once(cx);
     cx.run_until_parked();
 
@@ -2169,7 +2243,19 @@ fn blueprint_pending_context_is_cancelled_when_pointer_capture_is_replaced(
             CanvasInteractionPhase::Idle
         );
     });
-    cx.update(|window, _| window.release_pointer());
+    cx.update(|window, _| {
+        assert_eq!(
+            window
+                .captured_pointer()
+                .map(|capture| (capture.handle(), capture.button())),
+            Some((successor, MouseButton::Right)),
+        );
+        assert!(
+            window
+                .release_pointer(&successor)
+                .expect("release successor capture"),
+        );
+    });
 }
 
 #[open_gpui::test]
@@ -2434,7 +2520,7 @@ fn binding_presentation_projects_real_node_and_port_focus(cx: &mut open_gpui::Te
             binding,
         )
     });
-    cx.update(|window, _| window.blur());
+    cx.update(|window, cx| window.blur(cx));
 
     cx.update(|window, cx| {
         window.focus_next(cx);
@@ -4002,7 +4088,7 @@ fn space_plus_left_drag_pans_only_while_the_graph_root_owns_focus(
     cx.read_entity(&host, |host, _| {
         assert!(host.interaction_owner.space_pan_held())
     });
-    cx.update(|window, _| window.blur());
+    cx.update(|window, cx| window.blur(cx));
     draw(cx);
     cx.read_entity(&host, |host, _| {
         assert!(!host.interaction_owner.space_pan_held())
@@ -4094,11 +4180,12 @@ fn explicit_node_drag_and_dify_wheel_pan_and_pinch_zoom_stay_view_local(
     });
     assert_ne!(transform_after_pan.pan, transform_before.pan);
 
-    cx.simulate_event(ScrollWheelEvent {
+    cx.simulate_event(ScrollEvent {
         position: point(px(420.0), px(280.0)),
         delta: ScrollDelta::Lines(point(0.0, 1.0)),
         modifiers: Default::default(),
         touch_phase: TouchPhase::Moved,
+        source: ScrollSource::Pointer,
     });
     cx.run_until_parked();
     draw(cx);
@@ -4920,6 +5007,7 @@ fn close_before_render_discards_ready_tick_without_mutating_node_drag(
 #[open_gpui::test]
 fn terminal_finish_does_not_release_successor_pointer_or_focus(cx: &mut open_gpui::TestAppContext) {
     let (_runtime, host, cx) = mount_gesture_scene(cx);
+    let successor_capture = install_pointer_capture_successor(&host, cx);
     draw(cx);
     cx.simulate_mouse_down(
         point(px(100.0), px(100.0)),
@@ -4927,40 +5015,72 @@ fn terminal_finish_does_not_release_successor_pointer_or_focus(cx: &mut open_gpu
         Default::default(),
     );
     let jellyflow_capture = cx
-        .update(|window, _| window.captured_hitbox())
+        .update(|window, _| window.captured_pointer())
         .expect("Jellyflow owns the active gesture capture");
+    assert_eq!(jellyflow_capture.button(), MouseButton::Left);
 
-    let successor_capture = HitboxId::placeholder();
-    assert_ne!(successor_capture, jellyflow_capture);
+    assert_ne!(successor_capture, jellyflow_capture.handle());
     let successor_focus = cx.update(|window, cx| {
-        let focus = cx.focus_handle();
+        let focus = window
+            .root::<ReplaceableInteractiveScene>()
+            .flatten()
+            .expect("successor scene root")
+            .read(cx)
+            .focus
+            .clone();
         host.update(cx, |host, cx| {
             host.enter_terminal(ViewCloseReason::HostClosed);
             assert_eq!(host.interaction_owner.terminal_window_transition_count(), 0);
 
-            window.capture_pointer(successor_capture);
+            assert!(
+                window
+                    .release_pointer(&jellyflow_capture.handle())
+                    .expect("release Jellyflow capture before successor"),
+            );
+            window
+                .capture_pointer(&successor_capture, MouseButton::Left)
+                .expect("bound successor owns pointer capture");
             window.focus(&focus, cx);
             assert!(
                 host.interaction_owner
                     .finish_terminal_window_transition(window, cx)
             );
         });
-        assert_eq!(window.captured_hitbox(), Some(successor_capture));
+        assert_eq!(
+            window
+                .captured_pointer()
+                .map(|capture| (capture.handle(), capture.button())),
+            Some((successor_capture, MouseButton::Left)),
+        );
         assert_eq!(window.focused(cx), Some(focus.clone()));
         focus
     });
 
     cx.update(|window, cx| {
-        assert_eq!(window.captured_hitbox(), Some(successor_capture));
+        assert_eq!(
+            window
+                .captured_pointer()
+                .map(|capture| (capture.handle(), capture.button())),
+            Some((successor_capture, MouseButton::Left)),
+        );
         assert_eq!(window.focused(cx), Some(successor_focus.clone()));
     });
     cx.run_until_parked();
 
     cx.update(|window, cx| {
-        assert_eq!(window.captured_hitbox(), Some(successor_capture));
+        assert_eq!(
+            window
+                .captured_pointer()
+                .map(|capture| (capture.handle(), capture.button())),
+            Some((successor_capture, MouseButton::Left)),
+        );
         assert_eq!(window.focused(cx), Some(successor_focus));
-        window.release_pointer();
-        window.blur();
+        assert!(
+            window
+                .release_pointer(&successor_capture)
+                .expect("release successor capture"),
+        );
+        window.blur(cx);
     });
     cx.read_entity(&host, |host, _| {
         assert_eq!(host.interaction_owner.terminal_window_transition_count(), 1);
@@ -4974,6 +5094,7 @@ fn port_redraw_cancels_instead_of_reclaiming_replacement_pointer_capture(
     cx: &mut open_gpui::TestAppContext,
 ) {
     let (runtime, host, cx) = mount_interactive_gesture_scene(cx);
+    let successor = install_pointer_capture_successor(&host, cx);
     draw(cx);
     let output = cx
         .debug_bounds("jellyflow-test-output-port")
@@ -4987,8 +5108,9 @@ fn port_redraw_cancels_instead_of_reclaiming_replacement_pointer_capture(
 
     cx.simulate_mouse_down(output.center(), MouseButton::Left, Default::default());
     let jellyflow_capture = cx
-        .update(|window, _| window.captured_hitbox())
+        .update(|window, _| window.captured_pointer())
         .expect("port drag owns pointer capture");
+    assert_eq!(jellyflow_capture.button(), MouseButton::Left);
     cx.read_entity(&host, |host, _| {
         assert_eq!(
             host.interaction_presentation().phase(),
@@ -4996,14 +5118,26 @@ fn port_redraw_cancels_instead_of_reclaiming_replacement_pointer_capture(
         );
     });
 
-    let successor = HitboxId::placeholder();
-    assert_ne!(successor, jellyflow_capture);
-    cx.update(|window, _| window.capture_pointer(successor));
+    assert_ne!(successor, jellyflow_capture.handle());
+    cx.update(|window, _| {
+        assert!(
+            window
+                .release_pointer(&jellyflow_capture.handle())
+                .expect("release port capture before replacement"),
+        );
+        window
+            .capture_pointer(&successor, MouseButton::Left)
+            .expect("bound successor owns pointer capture");
+    });
     draw_once(cx);
     assert_eq!(
-        cx.update(|window, _| window.captured_hitbox()),
-        Some(successor),
-        "port rebind must not reclaim another component's capture",
+        cx.update(|window, _| {
+            window
+                .captured_pointer()
+                .map(|capture| (capture.handle(), capture.button()))
+        }),
+        Some((successor, MouseButton::Left)),
+        "port redraw must not reclaim another component's capture",
     );
     cx.run_until_parked();
 
@@ -5022,7 +5156,19 @@ fn port_redraw_cancels_instead_of_reclaiming_replacement_pointer_capture(
         runtime.history_state().expect("history after capture loss"),
         history_before,
     );
-    cx.update(|window, _| window.release_pointer());
+    cx.update(|window, _| {
+        assert_eq!(
+            window
+                .captured_pointer()
+                .map(|capture| (capture.handle(), capture.button())),
+            Some((successor, MouseButton::Left)),
+        );
+        assert!(
+            window
+                .release_pointer(&successor)
+                .expect("release successor capture"),
+        );
+    });
 }
 
 #[open_gpui::test]
@@ -5030,6 +5176,7 @@ fn scene_redraw_cancels_instead_of_reclaiming_replacement_pointer_capture(
     cx: &mut open_gpui::TestAppContext,
 ) {
     let (runtime, host, cx) = mount_gesture_scene(cx);
+    let successor = install_pointer_capture_successor(&host, cx);
     draw(cx);
     let graph_before = runtime
         .snapshot()
@@ -5044,21 +5191,34 @@ fn scene_redraw_cancels_instead_of_reclaiming_replacement_pointer_capture(
         Default::default(),
     );
     let jellyflow_capture = cx
-        .update(|window, _| window.captured_hitbox())
+        .update(|window, _| window.captured_pointer())
         .expect("scene gesture owns pointer capture");
+    assert_eq!(jellyflow_capture.button(), MouseButton::Left);
     assert_ne!(
         cx.read_entity(&host, |host, _| { host.interaction_presentation().phase() }),
         CanvasInteractionPhase::Idle,
     );
 
-    let successor = HitboxId::placeholder();
-    assert_ne!(successor, jellyflow_capture);
-    cx.update(|window, _| window.capture_pointer(successor));
+    assert_ne!(successor, jellyflow_capture.handle());
+    cx.update(|window, _| {
+        assert!(
+            window
+                .release_pointer(&jellyflow_capture.handle())
+                .expect("release scene capture before replacement"),
+        );
+        window
+            .capture_pointer(&successor, MouseButton::Left)
+            .expect("bound successor owns pointer capture");
+    });
     draw_once(cx);
     assert_eq!(
-        cx.update(|window, _| window.captured_hitbox()),
-        Some(successor),
-        "scene rebind must not reclaim another component's capture",
+        cx.update(|window, _| {
+            window
+                .captured_pointer()
+                .map(|capture| (capture.handle(), capture.button()))
+        }),
+        Some((successor, MouseButton::Left)),
+        "scene redraw must not reclaim another component's capture",
     );
     cx.run_until_parked();
 
@@ -5076,7 +5236,19 @@ fn scene_redraw_cancels_instead_of_reclaiming_replacement_pointer_capture(
         runtime.history_state().expect("history after capture loss"),
         history_before,
     );
-    cx.update(|window, _| window.release_pointer());
+    cx.update(|window, _| {
+        assert_eq!(
+            window
+                .captured_pointer()
+                .map(|capture| (capture.handle(), capture.button())),
+            Some((successor, MouseButton::Left)),
+        );
+        assert!(
+            window
+                .release_pointer(&successor)
+                .expect("release successor capture"),
+        );
+    });
 }
 
 #[open_gpui::test]
@@ -5127,7 +5299,11 @@ fn sixty_fifth_real_node_gesture_cancels_without_side_effects_then_retries_after
     assert_eq!(leases.borrow().len(), OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY);
 
     let previous_focus = cx.update(|window, cx| {
-        let focus = cx.focus_handle();
+        let focus = host
+            .read(cx)
+            .interaction_owner
+            .focus_handle()
+            .expect("painted graph focus");
         window.focus(&focus, cx);
         focus
     });
@@ -5143,7 +5319,7 @@ fn sixty_fifth_real_node_gesture_cancels_without_side_effects_then_retries_after
     cx.simulate_mouse_up(pointer, MouseButton::Left, Default::default());
     cx.run_until_parked();
 
-    assert!(cx.update(|window, _| window.captured_hitbox()).is_none());
+    assert!(cx.update(|window, _| window.captured_pointer()).is_none());
     cx.update(|window, cx| assert_eq!(window.focused(cx), Some(previous_focus.clone())));
     cx.read_entity(&host, |host, _| {
         assert!(!host.active_scene_gesture());
@@ -5162,7 +5338,7 @@ fn sixty_fifth_real_node_gesture_cancels_without_side_effects_then_retries_after
     drop(leases.borrow_mut().remove(&released_node));
     cx.simulate_mouse_down(pointer, MouseButton::Left, Default::default());
 
-    assert!(cx.update(|window, _| window.captured_hitbox()).is_some());
+    assert!(cx.update(|window, _| window.captured_pointer()).is_some());
     cx.read_entity(&host, |host, _| {
         assert!(host.active_scene_gesture());
         assert_eq!(
@@ -5174,7 +5350,7 @@ fn sixty_fifth_real_node_gesture_cancels_without_side_effects_then_retries_after
     cx.simulate_mouse_up(pointer, MouseButton::Left, Default::default());
     cx.run_until_parked();
 
-    assert!(cx.update(|window, _| window.captured_hitbox()).is_none());
+    assert!(cx.update(|window, _| window.captured_pointer()).is_none());
     cx.update(|window, cx| assert_eq!(window.focused(cx), Some(previous_focus)));
     cx.read_entity(&host, |host, _| {
         assert!(!host.active_scene_gesture());
@@ -5273,7 +5449,8 @@ fn explicit_node_drag_handle_additive_modifiers_preserve_selection_and_release_c
     });
     let pointer = point(px(100.0), px(100.0));
 
-    for modifiers in [Modifiers::shift(), Modifiers::secondary_key()] {
+    let secondary = cx.update(|_, cx| Modifiers::secondary_key(cx));
+    for modifiers in [Modifiers::shift(), secondary] {
         cx.read_entity(&host, |host, _| {
             set_selection_by_id(&host.view, vec![target], Vec::new())
                 .expect("seed additive selection");
@@ -5281,7 +5458,7 @@ fn explicit_node_drag_handle_additive_modifiers_preserve_selection_and_release_c
 
         cx.simulate_mouse_down(pointer, MouseButton::Left, modifiers);
         assert!(
-            cx.update(|window, _| window.captured_hitbox()).is_some(),
+            cx.update(|window, _| window.captured_pointer()).is_some(),
             "node chrome owns pointer capture while the gesture is active",
         );
         cx.read_entity(&host, |host, _| {
@@ -5299,7 +5476,7 @@ fn explicit_node_drag_handle_additive_modifiers_preserve_selection_and_release_c
         cx.simulate_mouse_up(pointer, MouseButton::Left, modifiers);
         cx.run_until_parked();
 
-        assert!(cx.update(|window, _| window.captured_hitbox()).is_none());
+        assert!(cx.update(|window, _| window.captured_pointer()).is_none());
         assert!(
             cx.debug_bounds(super::OPEN_GPUI_SELECTION_RECTANGLE_SELECTOR)
                 .is_none(),
@@ -5375,14 +5552,15 @@ fn box_selection_additive_modifiers_preserve_existing_selection_and_release_over
     let start = point(px(10.0), px(50.0));
     let end = point(px(250.0), px(200.0));
 
-    for modifiers in [Modifiers::shift(), Modifiers::secondary_key()] {
+    let secondary = cx.update(|_, cx| Modifiers::secondary_key(cx));
+    for modifiers in [Modifiers::shift(), secondary] {
         cx.read_entity(&host, |host, _| {
             set_selection_by_id(&host.view, vec![target], Vec::new())
                 .expect("seed additive box selection");
         });
 
         cx.simulate_mouse_down(start, MouseButton::Left, modifiers);
-        assert!(cx.update(|window, _| window.captured_hitbox()).is_some());
+        assert!(cx.update(|window, _| window.captured_pointer()).is_some());
         cx.simulate_mouse_move(end, Some(MouseButton::Left), modifiers);
         draw(cx);
         assert!(
@@ -5399,7 +5577,7 @@ fn box_selection_additive_modifiers_preserve_existing_selection_and_release_over
         cx.run_until_parked();
         draw(cx);
 
-        assert!(cx.update(|window, _| window.captured_hitbox()).is_none());
+        assert!(cx.update(|window, _| window.captured_pointer()).is_none());
         assert!(
             cx.debug_bounds(super::OPEN_GPUI_SELECTION_RECTANGLE_SELECTOR)
                 .is_none(),
@@ -5750,7 +5928,7 @@ fn runtime_drop_cancels_detached_active_port_capture(cx: &mut open_gpui::TestApp
     drop(runtime);
     cx.run_until_parked();
 
-    assert!(cx.update(|window, _| window.captured_hitbox()).is_none());
+    assert!(cx.update(|window, _| window.captured_pointer()).is_none());
     cx.read_entity(&host, |host, _| {
         assert_eq!(host.close_reason(), Some(ViewCloseReason::RuntimeDropped));
         assert!(host.active_port_drag().is_none());
@@ -5777,7 +5955,7 @@ fn runtime_drop_cancels_detached_active_node_capture(cx: &mut open_gpui::TestApp
     drop(runtime);
     cx.run_until_parked();
 
-    assert!(cx.update(|window, _| window.captured_hitbox()).is_none());
+    assert!(cx.update(|window, _| window.captured_pointer()).is_none());
     cx.read_entity(&host, |host, _| {
         assert_eq!(host.close_reason(), Some(ViewCloseReason::RuntimeDropped));
         assert!(!host.active_scene_gesture());
@@ -5804,7 +5982,7 @@ fn runtime_drop_cancels_detached_active_scene_capture(cx: &mut open_gpui::TestAp
     drop(runtime);
     cx.run_until_parked();
 
-    assert!(cx.update(|window, _| window.captured_hitbox()).is_none());
+    assert!(cx.update(|window, _| window.captured_pointer()).is_none());
     cx.read_entity(&host, |host, _| {
         assert_eq!(host.close_reason(), Some(ViewCloseReason::RuntimeDropped));
         assert!(!host.active_scene_gesture());
@@ -6717,7 +6895,7 @@ fn windowless_close_rejects_active_pointer_ownership_before_closing_the_view(
         Some(MouseButton::Left),
         Default::default(),
     );
-    assert!(cx.update(|window, _| window.captured_hitbox()).is_some());
+    assert!(cx.update(|window, _| window.captured_pointer()).is_some());
     cx.read_entity(&host, |host, _| {
         assert!(host.interaction_presentation().connection().is_some())
     });
@@ -6727,12 +6905,12 @@ fn windowless_close_rejects_active_pointer_ownership_before_closing_the_view(
         Err(super::OpenGpuiSceneHostCloseError::WindowCleanupRequired)
     ));
     cx.read_entity(&host, |host, _| assert_eq!(host.close_reason(), None));
-    assert!(cx.update(|window, _| window.captured_hitbox()).is_some());
+    assert!(cx.update(|window, _| window.captured_pointer()).is_some());
 
     cx.update(|window, cx| {
         host.update(cx, |host, cx| host.close_in_window(window, cx))
             .expect("window-aware close");
-        assert!(window.captured_hitbox().is_none());
+        assert!(window.captured_pointer().is_none());
     });
     cx.read_entity(&host, |host, _| {
         assert_eq!(
@@ -7763,7 +7941,7 @@ fn deferred_real_port_terminal_event_cannot_settle_the_next_native_generation(
 
     cx.update(|window, cx| {
         assert!(window.dispatch_keystroke(Keystroke::parse("escape").unwrap(), cx));
-        assert!(window.captured_hitbox().is_none());
+        assert!(window.captured_pointer().is_none());
     });
     draw(cx);
     cx.simulate_mouse_down(output.center(), MouseButton::Left, Default::default());
@@ -7799,7 +7977,7 @@ fn deferred_real_port_terminal_event_cannot_settle_the_next_native_generation(
         });
     });
     cx.run_until_parked();
-    assert!(cx.update(|window, _| window.captured_hitbox()).is_some());
+    assert!(cx.update(|window, _| window.captured_pointer()).is_some());
     cx.read_entity(&host, |host, _| {
         let presentation = host.interaction_presentation();
         assert_eq!(presentation.phase(), CanvasInteractionPhase::Armed);
@@ -7812,7 +7990,7 @@ fn deferred_real_port_terminal_event_cannot_settle_the_next_native_generation(
     cx.simulate_mouse_up(outside, MouseButton::Left, Default::default());
     cx.run_until_parked();
 
-    assert!(cx.update(|window, _| window.captured_hitbox()).is_none());
+    assert!(cx.update(|window, _| window.captured_pointer()).is_none());
     cx.read_entity(&host, |host, _| {
         assert!(host.active_port_drag().is_none());
         assert_ne!(
@@ -10077,13 +10255,13 @@ fn runtime_drop_during_input_reconnect_retires_the_preview_without_mutating_the_
             assert!(host.interaction_presentation().connection().is_some());
         },
     );
-    assert!(cx.update(|window, _| window.captured_hitbox()).is_some());
+    assert!(cx.update(|window, _| window.captured_pointer()).is_some());
 
     let host = captured_host.borrow().clone().expect("captured host");
     drop(runtime);
     cx.run_until_parked();
 
-    assert!(cx.update(|window, _| window.captured_hitbox()).is_none());
+    assert!(cx.update(|window, _| window.captured_pointer()).is_none());
     cx.read_entity(&host, |host, _| {
         assert_eq!(host.close_reason(), Some(ViewCloseReason::RuntimeDropped));
         assert_eq!(
@@ -10112,24 +10290,21 @@ fn runtime_drop_releases_registered_third_party_capture_while_host_is_detached(
     let factory_lease = capture_lease.clone();
     let mut registry = OpenGpuiNodeRegistry::builder();
     register_test_renderer(&mut registry, move |binding, window, cx| {
-        if binding
+        let captures_pointer = binding
             .read(cx)
             .authoring()
             .expect("live node authoring")
             .node_id()
-            == source
-        {
-            *factory_lease.borrow_mut() = Some(
-                binding
-                    .read(cx)
-                    .activity()
-                    .capture_pointer(HitboxId::placeholder(), window)
-                    .expect("registered third-party pointer capture"),
-            );
-        }
-        cx.new(|_| RootOnlyNode)
+            == source;
+        let activity = captures_pointer.then(|| binding.read(cx).activity());
+        let handle = window.new_pointer_capture_handle();
+        cx.new(|_| RegisteredPointerCaptureNode {
+            activity,
+            handle,
+            capture: factory_lease.clone(),
+        })
     });
-    let (scene, cx) = cx.add_window_view(move |_, cx| {
+    let (scene, cx) = cx.add_window_view(move |window, cx| {
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new(
                 view,
@@ -10138,21 +10313,45 @@ fn runtime_drop_releases_registered_third_party_capture_while_host_is_detached(
             )
             .expect("valid Open GPUI scene host")
         });
-        ReplaceableInteractiveScene { host: Some(host) }
+        ReplaceableInteractiveScene {
+            host: Some(host),
+            pointer_capture: window.new_pointer_capture_handle(),
+            detached_capture: None,
+            focus: cx.focus_handle(),
+        }
     });
     let host = cx.read_entity(&scene, |scene, _| {
         scene.host.clone().expect("mounted scene host")
     });
+    let successor = cx.read_entity(&scene, |scene, _| scene.pointer_capture);
+    let _ = cx.update(|window, _| window.activate_window());
     draw(cx);
+    let bounds = cx
+        .debug_bounds("jellyflow-test-third-party-pointer-capture")
+        .expect("registered third-party pointer control bounds");
+    cx.simulate_mouse_down(bounds.center(), MouseButton::Left, Default::default());
 
-    assert!(capture_lease.borrow().is_some());
-    assert!(cx.update(|window, _| window.captured_hitbox()).is_some());
+    let registered_capture = {
+        let capture = capture_lease.borrow();
+        let capture = capture.as_ref().expect("registered third-party capture");
+        (capture.handle(), capture.button())
+    };
+    assert_eq!(
+        cx.update(|window, _| {
+            window
+                .captured_pointer()
+                .map(|capture| (capture.handle(), capture.button()))
+        }),
+        Some(registered_capture),
+    );
+    assert_eq!(registered_capture.1, MouseButton::Left);
+    assert_ne!(registered_capture.0, successor);
 
     detach_host_but_retain_entity(&scene, &host, cx);
     drop(runtime);
     cx.run_until_parked();
 
-    assert!(cx.update(|window, _| window.captured_hitbox()).is_none());
+    assert!(cx.update(|window, _| window.captured_pointer()).is_none());
     cx.read_entity(&host, |host, _| {
         assert_eq!(host.close_reason(), Some(ViewCloseReason::RuntimeDropped));
         assert_eq!(host.resource_snapshot().protected_instances(), 0);
@@ -10161,12 +10360,20 @@ fn runtime_drop_releases_registered_third_party_capture_while_host_is_detached(
         assert!(!host.interaction_owner.has_focus_state());
     });
 
+    cx.simulate_mouse_down(bounds.center(), MouseButton::Left, Default::default());
     cx.update(|window, _| {
-        window.capture_pointer(HitboxId::placeholder());
+        window
+            .capture_pointer(&successor, MouseButton::Left)
+            .expect("bound successor captures the pressed pointer");
     });
     cx.run_until_parked();
-    assert!(
-        cx.update(|window, _| window.captured_hitbox()).is_some(),
+    assert_eq!(
+        cx.update(|window, _| {
+            window
+                .captured_pointer()
+                .map(|capture| (capture.handle(), capture.button()))
+        }),
+        Some((successor, MouseButton::Left)),
         "completed terminal cleanup must not release a successor capture",
     );
     cx.read_entity(&host, |host, _| {
@@ -10174,7 +10381,13 @@ fn runtime_drop_releases_registered_third_party_capture_while_host_is_detached(
         assert!(host.interaction_owner.terminal());
         assert!(!host.interaction_owner.has_focus_state());
     });
-    cx.update(|window, _| window.release_pointer());
+    cx.update(|window, _| {
+        assert!(
+            window
+                .release_pointer(&successor)
+                .expect("release successor capture"),
+        );
+    });
 }
 
 fn assert_settled_host_has_no_pending_work(host: &OpenGpuiSceneHost) {
@@ -10206,6 +10419,12 @@ fn assert_settled_host_has_no_pending_work(host: &OpenGpuiSceneHost) {
 }
 
 fn draw(cx: &mut open_gpui::VisualTestContext) {
+    cx.update(|window, _| {
+        if !window.is_window_active() {
+            let _ = window.activate_window();
+        }
+    });
+    cx.run_until_parked();
     draw_once(cx);
     cx.run_until_parked();
 }
@@ -10218,8 +10437,9 @@ fn test_canvas_rect_contains(bounds: CanvasRect, point: CanvasPoint) -> bool {
 }
 
 fn simulate_key_down(cx: &mut open_gpui::VisualTestContext, key: &str, is_held: bool) {
+    let os = cx.read(|cx| cx.platform_info().os);
     cx.simulate_event(KeyDownEvent {
-        keystroke: Keystroke::parse(key)
+        keystroke: Keystroke::parse_with_os(key, os)
             .expect("valid test keystroke")
             .with_simulated_ime(),
         is_held,
@@ -10228,8 +10448,9 @@ fn simulate_key_down(cx: &mut open_gpui::VisualTestContext, key: &str, is_held: 
 }
 
 fn simulate_key_up(cx: &mut open_gpui::VisualTestContext, key: &str) {
+    let os = cx.read(|cx| cx.platform_info().os);
     cx.simulate_event(KeyUpEvent {
-        keystroke: Keystroke::parse(key)
+        keystroke: Keystroke::parse_with_os(key, os)
             .expect("valid test keystroke")
             .with_simulated_ime(),
     });
@@ -10242,7 +10463,7 @@ fn simulate_key_press(cx: &mut open_gpui::VisualTestContext, key: &str) {
 
 fn draw_once(cx: &mut open_gpui::VisualTestContext) {
     cx.update(|window, cx| {
-        window.draw(cx).clear();
+        window.draw(cx).clear(cx);
     });
 }
 
@@ -10458,7 +10679,7 @@ fn mount_replaceable_gesture_scene(
             events: Rc::new(Cell::new(0)),
         })
     });
-    let (scene, cx) = cx.add_window_view(move |_, cx| {
+    let (scene, cx) = cx.add_window_view(move |window, cx| {
         let host = cx.new(|_| {
             OpenGpuiSceneHost::new(
                 view,
@@ -10467,7 +10688,12 @@ fn mount_replaceable_gesture_scene(
             )
             .expect("valid Open GPUI scene host")
         });
-        ReplaceableInteractiveScene { host: Some(host) }
+        ReplaceableInteractiveScene {
+            host: Some(host),
+            pointer_capture: window.new_pointer_capture_handle(),
+            detached_capture: None,
+            focus: cx.focus_handle(),
+        }
     });
     let host = cx.read_entity(&scene, |scene, _| {
         scene.host.clone().expect("mounted scene host")
@@ -10480,22 +10706,28 @@ fn release_last_host_entity(
     host: Entity<OpenGpuiSceneHost>,
     cx: &mut open_gpui::VisualTestContext,
 ) {
-    assert!(cx.update(|window, _| window.captured_hitbox()).is_some());
+    let captured = cx
+        .update(|window, _| window.captured_pointer())
+        .expect("host owns pointer capture before detaching");
     let weak_host = host.downgrade();
     cx.update_entity(scene, |scene, cx| {
+        scene.detached_capture = Some(captured.handle());
         scene.host = None;
         cx.notify();
     });
     draw(cx);
     assert!(weak_host.upgrade().is_some());
-    assert!(cx.update(|window, _| window.captured_hitbox()).is_some());
+    assert_eq!(
+        cx.update(|window, _| window.captured_pointer()),
+        Some(captured)
+    );
 
     drop(host);
     cx.update(|_, _| {});
     cx.run_until_parked();
 
     assert!(weak_host.upgrade().is_none());
-    assert!(cx.update(|window, _| window.captured_hitbox()).is_none());
+    assert!(cx.update(|window, _| window.captured_pointer()).is_none());
 }
 
 fn detach_host_but_retain_entity(
@@ -10503,14 +10735,20 @@ fn detach_host_but_retain_entity(
     host: &Entity<OpenGpuiSceneHost>,
     cx: &mut open_gpui::VisualTestContext,
 ) {
-    assert!(cx.update(|window, _| window.captured_hitbox()).is_some());
+    let captured = cx
+        .update(|window, _| window.captured_pointer())
+        .expect("host owns pointer capture before detaching");
     cx.update_entity(scene, |scene, cx| {
+        scene.detached_capture = Some(captured.handle());
         scene.host = None;
         cx.notify();
     });
     draw(cx);
     assert!(host.downgrade().upgrade().is_some());
-    assert!(cx.update(|window, _| window.captured_hitbox()).is_some());
+    assert_eq!(
+        cx.update(|window, _| window.captured_pointer()),
+        Some(captured)
+    );
 }
 
 fn mount_gesture_scene_for_graph(
@@ -10805,12 +11043,12 @@ fn close_active_scene_gesture(
     cx: &mut open_gpui::VisualTestContext,
 ) {
     cx.read_entity(host, |host, _| assert!(host.active_scene_gesture()));
-    assert!(cx.update(|window, _| window.captured_hitbox()).is_some());
+    assert!(cx.update(|window, _| window.captured_pointer()).is_some());
 
     cx.update(|window, cx| {
         host.update(cx, |host, cx| host.close_in_window(window, cx))
             .expect("window-aware close");
-        assert!(window.captured_hitbox().is_none());
+        assert!(window.captured_pointer().is_none());
         assert!(window.focused(cx).is_none());
     });
     cx.read_entity(host, |host, _| {

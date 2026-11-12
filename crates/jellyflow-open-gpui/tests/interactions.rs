@@ -22,8 +22,8 @@ use jellyflow_runtime::{
 };
 use open_gpui::{
     AppContext, Context, Entity, KeyUpEvent, Keystroke, Modifiers, MouseButton, ParentElement,
-    Render, ScrollDelta, ScrollWheelEvent, Styled, TouchPhase, WeakFocusHandle, Window, div, point,
-    prelude::*, px,
+    Render, ScrollDelta, ScrollEvent, ScrollSource, ScrollWheelIntent, Styled, TouchPhase,
+    WeakFocusHandle, Window, div, point, prelude::*, px,
 };
 
 const KIND: &str = "test.interactive-node";
@@ -64,6 +64,7 @@ impl PortProbe {
 struct InteractionScene {
     host: Entity<OpenGpuiSceneHost>,
     canvas_events: Rc<RefCell<Vec<&'static str>>>,
+    outside_focus: open_gpui::FocusHandle,
 }
 
 impl Render for InteractiveNode {
@@ -103,7 +104,7 @@ impl Render for InteractiveNode {
             .size_full()
             .on_any_mouse_down(move |_, _, _| down_events.borrow_mut().push("down"))
             .on_mouse_move(move |event, _, _| {
-                if event.pressed_button.is_some() {
+                if event.window_event().pressed_button.is_some() {
                     move_events.borrow_mut().push("move");
                 }
             })
@@ -115,7 +116,10 @@ impl Render for InteractiveNode {
                     events.push("up");
                 }
             })
-            .on_scroll_wheel(move |_, _, _| node_scroll_events.borrow_mut().push("scroll"))
+            .on_scroll_wheel(move |_, _, _| {
+                node_scroll_events.borrow_mut().push("scroll");
+                ScrollWheelIntent::allow_default()
+            })
             .child(
                 div().absolute().left(px(12.0)).top(px(12.0)).child(
                     div()
@@ -146,9 +150,9 @@ impl Render for InteractiveNode {
                         .debug_selector(|| SCROLL_SELECTOR.to_owned())
                         .w(px(72.0))
                         .h(px(24.0))
-                        .on_scroll_wheel(move |_, window, _| {
+                        .on_scroll_wheel(move |_, _, _| {
                             scroll_events.borrow_mut().push("scroll");
-                            window.prevent_default();
+                            ScrollWheelIntent::handled()
                         }),
                 ),
             )
@@ -200,11 +204,12 @@ impl Render for InteractionScene {
         let up_events = self.canvas_events.clone();
         let scroll_events = self.canvas_events.clone();
         div()
+            .relative()
             .size_full()
             .on_key_down(|_, _, _| {})
             .on_any_mouse_down(move |_, _, _| down_events.borrow_mut().push("down"))
             .on_mouse_move(move |event, _, _| {
-                if event.pressed_button.is_some() {
+                if event.window_event().pressed_button.is_some() {
                     move_events.borrow_mut().push("move");
                 }
             })
@@ -216,8 +221,20 @@ impl Render for InteractionScene {
                     events.push("up");
                 }
             })
-            .on_scroll_wheel(move |_, _, _| scroll_events.borrow_mut().push("scroll"))
+            .on_scroll_wheel(move |_, _, _| {
+                scroll_events.borrow_mut().push("scroll");
+                ScrollWheelIntent::allow_default()
+            })
             .child(self.host.clone())
+            .child(
+                div()
+                    .absolute()
+                    .left(px(730.0))
+                    .top_0()
+                    .track_focus(&self.outside_focus)
+                    .tab_stop(false)
+                    .child("Outside graph"),
+            )
     }
 }
 
@@ -517,7 +534,7 @@ fn disabling_an_active_port_drag_cancels_only_that_owner_and_releases_resources(
     );
     assert!(node_events.borrow().is_empty());
     assert!(canvas_events.borrow().is_empty());
-    assert!(cx.update(|window, _| window.captured_hitbox()).is_none());
+    assert!(cx.update(|window, _| window.captured_pointer()).is_none());
     cx.update(|window, cx| assert_eq!(window.focused(cx), Some(control_focus)));
     cx.read_entity(&host, |host, _| {
         assert!(host.active_port_drag().is_none());
@@ -539,7 +556,7 @@ fn removing_a_captured_dynamic_port_cancels_capture_after_the_topology_patch(
 
     let port = cx.debug_bounds(PORT_SELECTOR).expect("port bounds");
     cx.simulate_mouse_down(port.center(), MouseButton::Left, Default::default());
-    assert!(cx.update(|window, _| window.captured_hitbox()).is_some());
+    assert!(cx.update(|window, _| window.captured_pointer()).is_some());
 
     runtime
         .execute(GraphCommand::topology(
@@ -569,7 +586,7 @@ fn removing_a_captured_dynamic_port_cancels_capture_after_the_topology_patch(
     );
     assert!(node_events.borrow().is_empty());
     assert!(canvas_events.borrow().is_empty());
-    assert!(cx.update(|window, _| window.captured_hitbox()).is_none());
+    assert!(cx.update(|window, _| window.captured_pointer()).is_none());
     cx.read_entity(&host, |host, _| {
         assert!(host.active_port_drag().is_none());
         assert_eq!(
@@ -711,7 +728,7 @@ fn port_capture_survives_redraw_and_transfers_out_of_bounds_release_to_search(
         .expect("control focus")
         .clone();
     let port = cx.debug_bounds(PORT_SELECTOR).expect("port bounds");
-    let modifiers = Modifiers::shift() | Modifiers::secondary_key();
+    let modifiers = cx.update(|_, cx| Modifiers::shift() | Modifiers::secondary_key(cx));
     let graph_before = runtime.snapshot().expect("snapshot before port capture");
     let history_before = runtime
         .history_state()
@@ -730,8 +747,8 @@ fn port_capture_survives_redraw_and_transfers_out_of_bounds_release_to_search(
     );
     assert!(node_events.borrow().is_empty());
     assert!(canvas_events.borrow().is_empty());
-    let first_hitbox = cx
-        .update(|window, _| window.captured_hitbox())
+    let first_capture = cx
+        .update(|window, _| window.captured_pointer())
         .expect("port captured pointer");
     cx.read_entity(&host, |host, _| {
         let owner = host.active_port_drag().expect("active port owner");
@@ -742,10 +759,13 @@ fn port_capture_survives_redraw_and_transfers_out_of_bounds_release_to_search(
 
     cx.update_entity(&host, |_, cx| cx.notify());
     draw(cx);
-    let rebound_hitbox = cx
-        .update(|window, _| window.captured_hitbox())
+    let rebound_capture = cx
+        .update(|window, _| window.captured_pointer())
         .expect("capture rebound after redraw");
-    assert_ne!(rebound_hitbox, first_hitbox);
+    assert_eq!(
+        rebound_capture, first_capture,
+        "redraw preserves the original pointer capture owner and initiating button",
+    );
 
     let outside = point(px(700.0), px(500.0));
     cx.simulate_mouse_move(outside, Some(MouseButton::Left), modifiers);
@@ -767,7 +787,7 @@ fn port_capture_survives_redraw_and_transfers_out_of_bounds_release_to_search(
     );
     assert!(node_events.borrow().is_empty());
     assert!(canvas_events.borrow().is_empty());
-    assert!(cx.update(|window, _| window.captured_hitbox()).is_none());
+    assert!(cx.update(|window, _| window.captured_pointer()).is_none());
     cx.update(|window, cx| {
         assert_ne!(window.focused(cx), control_focus.upgrade());
         assert!(window.focused(cx).is_some());
@@ -828,7 +848,7 @@ fn escape_cancels_port_capture_and_consumes_the_key(cx: &mut open_gpui::TestAppC
     );
     assert!(node_events.borrow().is_empty());
     assert!(canvas_events.borrow().is_empty());
-    assert!(cx.update(|window, _| window.captured_hitbox()).is_none());
+    assert!(cx.update(|window, _| window.captured_pointer()).is_none());
     cx.update(|window, cx| {
         assert_eq!(window.focused(cx), control_focus.upgrade());
     });
@@ -884,23 +904,27 @@ fn hard_retirement_cancels_capture_and_suppresses_late_pointer_events(
     );
     assert!(node_events.borrow().is_empty());
     assert!(canvas_events.borrow().is_empty());
-    assert!(cx.update(|window, _| window.captured_hitbox()).is_none());
+    assert!(cx.update(|window, _| window.captured_pointer()).is_none());
 }
 
 #[open_gpui::test]
 fn hard_retirement_does_not_steal_focus_acquired_after_drag_started(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    let (runtime, host, cx, port_events, _, _, _, _, control_focus, _) = mount_scene(cx);
+    let (runtime, host, cx, port_events, _, _, _, _, _, _) = mount_scene(cx);
     draw(cx);
     let port = cx.debug_bounds(PORT_SELECTOR).expect("port bounds");
     cx.simulate_mouse_down(port.center(), MouseButton::Left, Default::default());
 
-    let new_focus = control_focus
-        .borrow()
-        .as_ref()
-        .and_then(WeakFocusHandle::upgrade)
-        .expect("mounted control focus");
+    let new_focus = cx.update(|window, cx| {
+        window
+            .root::<InteractionScene>()
+            .flatten()
+            .expect("interaction scene root")
+            .read(cx)
+            .outside_focus
+            .clone()
+    });
     cx.update(|window, cx| {
         window.focus(&new_focus, cx);
         assert_eq!(window.focused(cx), Some(new_focus.clone()));
@@ -963,11 +987,12 @@ fn native_control_and_scroll_keep_component_bubbling_without_graph_gestures(
     assert!(canvas_events.borrow().is_empty());
 
     let scroll = cx.debug_bounds(SCROLL_SELECTOR).expect("scroll bounds");
-    cx.simulate_event(ScrollWheelEvent {
+    cx.simulate_event(ScrollEvent {
         position: scroll.center(),
         delta: ScrollDelta::Lines(point(0.0, -1.0)),
         modifiers: Default::default(),
         touch_phase: TouchPhase::Moved,
+        source: ScrollSource::Pointer,
     });
     assert_eq!(scroll_events.borrow().as_slice(), ["scroll"]);
     assert_eq!(node_events.borrow().as_slice(), ["down", "up", "scroll"]);
@@ -979,7 +1004,7 @@ fn native_control_and_scroll_keep_component_bubbling_without_graph_gestures(
     assert_eq!(runtime.history_state().unwrap(), history_before);
     assert_eq!(view.viewport_transform().unwrap(), viewport_before);
     assert_eq!(view.selection().unwrap(), selection_before);
-    assert!(cx.update(|window, _| window.captured_hitbox()).is_none());
+    assert!(cx.update(|window, _| window.captured_pointer()).is_none());
     cx.read_entity(&host, |host, _| {
         assert_eq!(
             host.interaction_presentation().phase(),
@@ -1099,7 +1124,7 @@ fn window_aware_close_releases_capture_before_returning(cx: &mut open_gpui::Test
     cx.update(|window, cx| {
         host.update(cx, |host, cx| host.close_in_window(window, cx))
             .expect("host close");
-        assert!(window.captured_hitbox().is_none());
+        assert!(window.captured_pointer().is_none());
         assert!(window.focused(cx).is_none());
     });
 
@@ -1125,12 +1150,12 @@ fn runtime_drop_during_connection_drag_releases_capture_and_terminalizes_the_own
     draw(cx);
     let port = cx.debug_bounds(PORT_SELECTOR).expect("port bounds");
     cx.simulate_mouse_down(port.center(), MouseButton::Left, Default::default());
-    assert!(cx.update(|window, _| window.captured_hitbox()).is_some());
+    assert!(cx.update(|window, _| window.captured_pointer()).is_some());
 
     drop(runtime);
     cx.run_until_parked();
 
-    assert!(cx.update(|window, _| window.captured_hitbox()).is_none());
+    assert!(cx.update(|window, _| window.captured_pointer()).is_none());
     assert_eq!(
         port_events.pointer.borrow().as_slice(),
         [OpenGpuiPortDragPhase::Start],
@@ -1320,6 +1345,7 @@ fn mount_scene_with_port_observer(
         InteractionScene {
             host,
             canvas_events: scene_canvas_events,
+            outside_focus: cx.focus_handle(),
         }
     });
     let host = captured_host.borrow().clone().expect("captured scene host");
@@ -1338,15 +1364,22 @@ fn mount_scene_with_port_observer(
 }
 
 fn draw(cx: &mut open_gpui::VisualTestContext) {
+    cx.update(|window, _| {
+        if !window.is_window_active() {
+            let _ = window.activate_window();
+        }
+    });
+    cx.run_until_parked();
     cx.update(|window, cx| {
-        window.draw(cx).clear();
+        window.draw(cx).clear(cx);
     });
     cx.run_until_parked();
 }
 
 fn simulate_key_up(cx: &mut open_gpui::VisualTestContext, key: &str) {
+    let os = cx.read(|cx| cx.platform_info().os);
     cx.simulate_event(KeyUpEvent {
-        keystroke: Keystroke::parse(key)
+        keystroke: Keystroke::parse_with_os(key, os)
             .expect("valid test keystroke")
             .with_simulated_ime(),
     });

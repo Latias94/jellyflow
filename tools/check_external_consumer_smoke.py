@@ -104,6 +104,12 @@ def package_crate(crate: str, package_root: Path) -> PackagedCrate:
 
 
 def consumers(versions: dict[str, str]) -> tuple[Consumer, ...]:
+    framework = tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))[
+        "workspace"
+    ]["dependencies"]["open_gpui"]
+    framework_source = (
+        f'git = {json.dumps(framework["git"])}, rev = {json.dumps(framework["rev"])}'
+    )
     dependency = lambda name: (
         f'{name} = {{ version = "={versions[name]}", default-features = false }}'
     )
@@ -132,10 +138,10 @@ def consumers(versions: dict[str, str]) -> tuple[Consumer, ...]:
                 )
             )
             + (
-                'open_gpui = { package = "open-gpui", version = "=0.2.0", '
-                "default-features = false }",
+                'open_gpui = { package = "open-gpui", '
+                f'{framework_source}, default-features = false }}',
                 'open_gpui_ui_components = { package = "open-gpui-ui-components", '
-                'version = "=0.2.0", default-features = false }',
+                f'{framework_source}, default-features = false }}',
             ),
             "open-gpui-adoption",
         ),

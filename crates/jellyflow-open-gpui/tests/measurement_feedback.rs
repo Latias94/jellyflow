@@ -898,7 +898,7 @@ fn native_content_mask_removes_and_restores_only_port_interaction_geometry(
         Default::default(),
     );
     assert_eq!(output_events.get(), 1);
-    assert!(cx.update(|window, _| window.captured_hitbox()).is_some());
+    assert!(cx.update(|window, _| window.captured_pointer()).is_some());
     cx.read_entity(&host, |host, _| {
         assert_eq!(
             host.active_port_drag().map(|owner| owner.port()),
@@ -916,7 +916,7 @@ fn native_content_mask_removes_and_restores_only_port_interaction_geometry(
     });
     draw(cx);
 
-    assert!(cx.update(|window, _| window.captured_hitbox()).is_some());
+    assert!(cx.update(|window, _| window.captured_pointer()).is_some());
     cx.read_entity(&host, |host, _| {
         assert_eq!(
             host.active_port_drag().map(|owner| owner.port()),
@@ -944,7 +944,7 @@ fn native_content_mask_removes_and_restores_only_port_interaction_geometry(
     });
     draw(cx);
 
-    assert!(cx.update(|window, _| window.captured_hitbox()).is_some());
+    assert!(cx.update(|window, _| window.captured_pointer()).is_some());
     cx.read_entity(&host, |host, _| {
         assert_eq!(
             host.active_port_drag().map(|owner| owner.port()),
@@ -968,7 +968,7 @@ fn native_content_mask_removes_and_restores_only_port_interaction_geometry(
         Default::default(),
     );
     cx.run_until_parked();
-    assert!(cx.update(|window, _| window.captured_hitbox()).is_none());
+    assert!(cx.update(|window, _| window.captured_pointer()).is_none());
     cx.read_entity(&host, |host, _| {
         assert!(host.active_port_drag().is_none());
     });
@@ -1864,8 +1864,14 @@ fn graph_interaction_protects_retention_without_pinning_native_detail(
 }
 
 fn draw(cx: &mut open_gpui::VisualTestContext) {
+    cx.update(|window, _| {
+        if !window.is_window_active() {
+            let _ = window.activate_window();
+        }
+    });
+    cx.run_until_parked();
     cx.update(|window, cx| {
-        window.draw(cx).clear();
+        window.draw(cx).clear(cx);
     });
     cx.run_until_parked();
 }

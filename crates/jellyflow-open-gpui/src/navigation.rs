@@ -3,7 +3,7 @@ use jellyflow_runtime::{
     interaction::AlignmentSnapConfig, interaction::CanvasInteractionConfig,
     interaction::SelectionMode,
 };
-use open_gpui::Modifiers;
+use open_gpui::{App, Modifiers};
 
 const DEFAULT_MIN_ZOOM: f32 = 0.1;
 const DEFAULT_MAX_ZOOM: f32 = 4.0;
@@ -47,10 +47,10 @@ pub enum OpenGpuiSelectionModifier {
 }
 
 impl OpenGpuiSelectionModifier {
-    fn is_pressed(self, modifiers: Modifiers) -> bool {
+    fn is_pressed(self, modifiers: Modifiers, cx: &App) -> bool {
         match self {
             Self::Shift => modifiers.shift,
-            Self::Secondary => modifiers.secondary(),
+            Self::Secondary => modifiers.secondary(cx),
             Self::Alt => modifiers.alt,
         }
     }
@@ -82,15 +82,15 @@ impl OpenGpuiSelectionBindings {
         self.toggle
     }
 
-    pub(crate) fn selection_mode(self, modifiers: Modifiers) -> SelectionMode {
+    pub(crate) fn selection_mode(self, modifiers: Modifiers, cx: &App) -> SelectionMode {
         if self
             .toggle
-            .is_some_and(|modifier| modifier.is_pressed(modifiers))
+            .is_some_and(|modifier| modifier.is_pressed(modifiers, cx))
         {
             SelectionMode::Toggle
         } else if self
             .add
-            .is_some_and(|modifier| modifier.is_pressed(modifiers))
+            .is_some_and(|modifier| modifier.is_pressed(modifiers, cx))
         {
             SelectionMode::Add
         } else {
@@ -500,27 +500,29 @@ mod tests {
         assert!(!blueprint.input_bindings().connects_on_click());
     }
 
-    #[test]
-    fn selection_policy_is_shared_and_toggle_has_precedence() {
-        let selection = OpenGpuiSelectionBindings::default();
-        assert_eq!(
-            selection.selection_mode(Modifiers::default()),
-            SelectionMode::Replace
-        );
-        assert_eq!(
-            selection.selection_mode(Modifiers::shift()),
-            SelectionMode::Add
-        );
-        assert_eq!(
-            selection.selection_mode(Modifiers::secondary_key()),
-            SelectionMode::Toggle
-        );
+    #[open_gpui::test]
+    fn selection_policy_is_shared_and_toggle_has_precedence(cx: &mut open_gpui::TestAppContext) {
+        cx.update(|cx| {
+            let selection = OpenGpuiSelectionBindings::default();
+            assert_eq!(
+                selection.selection_mode(Modifiers::default(), cx),
+                SelectionMode::Replace
+            );
+            assert_eq!(
+                selection.selection_mode(Modifiers::shift(), cx),
+                SelectionMode::Add
+            );
+            assert_eq!(
+                selection.selection_mode(Modifiers::secondary_key(cx), cx),
+                SelectionMode::Toggle
+            );
 
-        let mut both = Modifiers::shift();
-        let secondary = Modifiers::secondary_key();
-        both.control |= secondary.control;
-        both.platform |= secondary.platform;
-        assert_eq!(selection.selection_mode(both), SelectionMode::Toggle);
+            let mut both = Modifiers::shift();
+            let secondary = Modifiers::secondary_key(cx);
+            both.control |= secondary.control;
+            both.platform |= secondary.platform;
+            assert_eq!(selection.selection_mode(both, cx), SelectionMode::Toggle);
+        });
     }
 
     #[test]

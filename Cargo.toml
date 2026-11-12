@@ -25,6 +25,8 @@ jellyflow-core = { version = "0.4.0", path = "crates/jellyflow-core" }
 jellyflow-runtime = { version = "0.4.0", path = "crates/jellyflow-runtime" }
 libc = "0.2"
 lyon = "1.0"
+open_gpui = { package = "open-gpui", git = "https://github.com/Latias94/open-gpui", rev = "f75c10b2a9bf7b4dcb2c8c2aa446203997601369", default-features = false }
+open_gpui_ui_components = { package = "open-gpui-ui-components", git = "https://github.com/Latias94/open-gpui", rev = "f75c10b2a9bf7b4dcb2c8c2aa446203997601369" }
 rpds = { version = "1.2.1", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["unbounded_depth"] }

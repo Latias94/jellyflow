@@ -40,6 +40,7 @@ const RENDERER: &str = "test.native.resource-node";
 const REPLACEMENT_KIND: &str = "test.replacement-resource-node";
 const REPLACEMENT_RENDERER: &str = "test.native.replacement-resource-node";
 const CYCLE_PORT_SELECTOR: &str = "jellyflow-cycle-resource-port";
+const CYCLE_OVERLAY_SELECTOR: &str = "jellyflow-cycle-resource-overlay";
 const CAPACITY_PORT_SELECTOR: &str = "jellyflow-protected-capacity-port";
 
 fn renderer_descriptor<F, V>(
@@ -74,6 +75,8 @@ struct CycleResourceNode {
     binding: Entity<OpenGpuiNodeBinding>,
     focus: open_gpui::FocusHandle,
     overlay: Entity<CycleOverlay>,
+    overlay_lease: Option<OpenGpuiActivityLease>,
+    revocations: Rc<Cell<u64>>,
     pointer_starts: Rc<Cell<u64>>,
     owner_retirements: Rc<Cell<u64>>,
     host_closures: Rc<Cell<u64>>,
@@ -106,6 +109,7 @@ struct CycleResourceProbes {
     owner_retirements: Rc<Cell<u64>>,
     host_closures: Rc<Cell<u64>>,
     subscription_source: Entity<CycleSubscriptionSource>,
+    open_overlay_on_mount: bool,
 }
 
 impl Drop for TaskDropProbe {
@@ -143,6 +147,22 @@ impl Render for ActivityResourceNode {
     }
 }
 
+impl CycleResourceNode {
+    fn open_overlay(&mut self, cx: &App) {
+        assert!(self.overlay_lease.is_none());
+        let revocations = self.revocations.clone();
+        self.overlay_lease = Some(
+            self.binding
+                .read(cx)
+                .activity()
+                .acquire_with_revocation(OpenGpuiActivityKind::Overlay, move || {
+                    revocations.set(revocations.get().saturating_add(1));
+                })
+                .expect("live cycle overlay owner"),
+        );
+    }
+}
+
 impl Render for CycleResourceNode {
     fn render(
         &mut self,
@@ -153,6 +173,7 @@ impl Render for CycleResourceNode {
         let pointer_starts = self.pointer_starts.clone();
         let owner_retirements = self.owner_retirements.clone();
         let host_closures = self.host_closures.clone();
+        let weak_node = cx.weak_entity();
         let binding = self.binding.read(cx);
         let port = binding.authoring().ok().and_then(|authoring| {
             authoring
@@ -179,13 +200,20 @@ impl Render for CycleResourceNode {
                             .debug_selector(|| CYCLE_PORT_SELECTOR.to_owned())
                             .w(px(14.0))
                             .h(px(14.0)),
-                        move |event, _, _| {
+                        move |event, window, cx| {
                             let OpenGpuiPortEvent::Pointer(event) = event else {
                                 return;
                             };
                             match event.phase() {
                                 OpenGpuiPortDragPhase::Start => {
                                     pointer_starts.set(pointer_starts.get().saturating_add(1));
+                                    assert!(window.captured_pointer().is_some());
+                                    weak_node
+                                        .update(cx, |node, cx| {
+                                            node.open_overlay(cx);
+                                            cx.notify();
+                                        })
+                                        .expect("live captured cycle node");
                                 }
                                 OpenGpuiPortDragPhase::Cancel(
                                     OpenGpuiPortDragCancelReason::OwnerRetired,
@@ -204,7 +232,11 @@ impl Render for CycleResourceNode {
                     ),
                 )
             }))
-            .child(deferred(overlay_boundary.wrap(self.overlay.clone())))
+            .children(
+                self.overlay_lease
+                    .as_ref()
+                    .map(|_| deferred(overlay_boundary.wrap(self.overlay.clone()))),
+            )
     }
 }
 
@@ -250,6 +282,7 @@ impl Render for CycleOverlay {
         _cx: &mut Context<Self>,
     ) -> impl open_gpui::IntoElement {
         div()
+            .debug_selector(|| CYCLE_OVERLAY_SELECTOR.to_owned())
             .absolute()
             .left(px(36.0))
             .top(px(72.0))
@@ -265,7 +298,9 @@ impl Render for DetachableHostScene {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> impl open_gpui::IntoElement {
-        div().children(self.attached.get().then(|| self.host.clone()))
+        div()
+            .size_full()
+            .children(self.attached.get().then(|| self.host.clone()))
     }
 }
 
@@ -275,7 +310,7 @@ impl Render for ReplaceableHostScene {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> impl open_gpui::IntoElement {
-        div().children(self.host.clone())
+        div().size_full().children(self.host.clone())
     }
 }
 
@@ -688,6 +723,8 @@ fn sixty_fifth_real_port_drag_cancels_without_side_effects_then_retries_after_re
         ))
         .expect("unique test renderer registration");
 
+    let previous_focus = cx.update(|cx| cx.focus_handle());
+    let host_focus = previous_focus.clone();
     let (host, cx) = cx.add_window_view(move |_, _| {
         OpenGpuiSceneHost::new(
             view,
@@ -695,6 +732,7 @@ fn sixty_fifth_real_port_drag_cancels_without_side_effects_then_retries_after_re
             visible_viewport(),
         )
         .expect("valid Open GPUI scene host")
+        .with_graph_focus_handle(host_focus)
         .with_navigation_config(
             OpenGpuiNavigationConfig::default()
                 .with_input_bindings(OpenGpuiInputBindings::default().with_connect_on_click(false)),
@@ -703,10 +741,8 @@ fn sixty_fifth_real_port_drag_cancels_without_side_effects_then_retries_after_re
     draw(cx);
     assert_eq!(leases.borrow().len(), OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY);
 
-    let previous_focus = cx.update(|window, cx| {
-        let focus = cx.focus_handle();
-        window.focus(&focus, cx);
-        focus
+    cx.update(|window, cx| {
+        window.focus(&previous_focus, cx);
     });
     let graph_before = runtime.snapshot().unwrap();
     let history_before = runtime.history_state().unwrap();
@@ -724,7 +760,7 @@ fn sixty_fifth_real_port_drag_cancels_without_side_effects_then_retries_after_re
             OpenGpuiPortDragCancelReason::ProtectedCapacityExceeded,
         )],
     );
-    assert!(cx.update(|window, _| window.captured_hitbox()).is_none());
+    assert!(cx.update(|window, _| window.captured_pointer()).is_none());
     cx.update(|window, cx| assert_eq!(window.focused(cx), Some(previous_focus.clone())));
     cx.read_entity(&host, |host, _| {
         assert!(host.active_port_drag().is_none());
@@ -750,7 +786,7 @@ fn sixty_fifth_real_port_drag_cancels_without_side_effects_then_retries_after_re
     });
 
     cx.simulate_mouse_down(port.center(), MouseButton::Left, Default::default());
-    assert!(cx.update(|window, _| window.captured_hitbox()).is_some());
+    assert!(cx.update(|window, _| window.captured_pointer()).is_some());
     cx.read_entity(&host, |host, _| assert!(host.active_port_drag().is_some()));
     cx.simulate_mouse_up(port.center(), MouseButton::Left, Default::default());
     cx.run_until_parked();
@@ -763,7 +799,7 @@ fn sixty_fifth_real_port_drag_cancels_without_side_effects_then_retries_after_re
             OpenGpuiPortDragPhase::Release,
         ],
     );
-    assert!(cx.update(|window, _| window.captured_hitbox()).is_none());
+    assert!(cx.update(|window, _| window.captured_pointer()).is_none());
     cx.update(|window, cx| assert_eq!(window.focused(cx), Some(previous_focus)));
     cx.read_entity(&host, |host, _| {
         assert!(host.active_port_drag().is_none());
@@ -892,6 +928,7 @@ fn repeated_lifecycle_cycles_return_native_resources_to_baseline(
         owner_retirements: owner_retirements.clone(),
         host_closures: host_closures.clone(),
         subscription_source: subscription_source.clone(),
+        open_overlay_on_mount: false,
     };
     let primary_mounts = Rc::new(Cell::new(0_u64));
     let replacement_mounts = Rc::new(Cell::new(0_u64));
@@ -949,7 +986,7 @@ fn repeated_lifecycle_cycles_return_native_resources_to_baseline(
             .into_result()
             .unwrap();
         draw(cx);
-        assert!(cx.update(|window, _| window.captured_hitbox()).is_none());
+        assert!(cx.update(|window, _| window.captured_pointer()).is_none());
         assert_eq!(owner_retirements.get(), 0);
         assert_eq!(task_cancellations.get(), cycle.saturating_mul(3) + 1);
         assert_eq!(
@@ -991,7 +1028,7 @@ fn repeated_lifecycle_cycles_return_native_resources_to_baseline(
             .unwrap();
         runtime.replace_document(replacement).unwrap();
         draw(cx);
-        assert!(cx.update(|window, _| window.captured_hitbox()).is_none());
+        assert!(cx.update(|window, _| window.captured_pointer()).is_none());
         assert_eq!(runtime.snapshot().unwrap().document_epoch(), 1);
         assert_eq!(owner_retirements.get(), 0);
         assert_eq!(task_cancellations.get(), cycle.saturating_mul(3) + 2);
@@ -1020,7 +1057,7 @@ fn repeated_lifecycle_cycles_return_native_resources_to_baseline(
         cx.update(|window, cx| {
             host.update(cx, |host, cx| host.close_in_window(window, cx))
                 .expect("host close");
-            assert!(window.captured_hitbox().is_none());
+            assert!(window.captured_pointer().is_none());
         });
         draw(cx);
 
@@ -1116,6 +1153,7 @@ fn dropping_last_host_entity_releases_live_native_resources_after_revocation_pan
         owner_retirements: Rc::new(Cell::new(0)),
         host_closures: Rc::new(Cell::new(0)),
         subscription_source: subscription_source.clone(),
+        open_overlay_on_mount: true,
     };
     let catalog = cycle_catalog();
     let runtime = GraphRuntime::builder(catalog.clone())
@@ -1223,7 +1261,6 @@ fn cycle_resource_factory(
         let leases = [
             OpenGpuiActivityKind::Focus,
             OpenGpuiActivityKind::Ime,
-            OpenGpuiActivityKind::Overlay,
             OpenGpuiActivityKind::Draft,
             OpenGpuiActivityKind::Task,
             OpenGpuiActivityKind::Subscription,
@@ -1267,16 +1304,24 @@ fn cycle_resource_factory(
         let subscription = cx.observe(&probes.subscription_source, move |_, _| {
             subscription_callbacks.set(subscription_callbacks.get().saturating_add(1));
         });
-        let entity = cx.new(|_| CycleResourceNode {
-            binding,
-            focus,
-            overlay,
-            pointer_starts: probes.pointer_starts.clone(),
-            owner_retirements: probes.owner_retirements.clone(),
-            host_closures: probes.host_closures.clone(),
-            _task: task,
-            _subscription: subscription,
-            _activity: leases,
+        let entity = cx.new(|cx| {
+            let mut node = CycleResourceNode {
+                binding,
+                focus,
+                overlay,
+                overlay_lease: None,
+                revocations: probes.revocations.clone(),
+                pointer_starts: probes.pointer_starts.clone(),
+                owner_retirements: probes.owner_retirements.clone(),
+                host_closures: probes.host_closures.clone(),
+                _task: task,
+                _subscription: subscription,
+                _activity: leases,
+            };
+            if probes.open_overlay_on_mount {
+                node.open_overlay(cx);
+            }
+            node
         });
         probes
             .weak_entities
@@ -1287,11 +1332,21 @@ fn cycle_resource_factory(
 }
 
 fn start_cycle_capture(cx: &mut open_gpui::VisualTestContext) {
+    assert!(cx.debug_bounds(CYCLE_OVERLAY_SELECTOR).is_none());
     let port = cx
         .debug_bounds(CYCLE_PORT_SELECTOR)
         .expect("cycle port bounds");
     cx.simulate_mouse_down(port.center(), MouseButton::Left, Default::default());
-    assert!(cx.update(|window, _| window.captured_hitbox()).is_some());
+    let captured = cx
+        .update(|window, _| window.captured_pointer())
+        .expect("cycle port owns native pointer capture");
+    assert_eq!(captured.button(), MouseButton::Left);
+    draw(cx);
+    assert!(cx.debug_bounds(CYCLE_OVERLAY_SELECTOR).is_some());
+    assert_eq!(
+        cx.update(|window, _| window.captured_pointer()),
+        Some(captured),
+    );
 }
 
 fn assert_released_entities(resources: &Rc<RefCell<Vec<AnyWeakEntity>>>, count: usize) {
@@ -1320,8 +1375,14 @@ fn published_geometry_counts(view: &WeakViewSession) -> (usize, usize, usize) {
 }
 
 fn draw(cx: &mut open_gpui::VisualTestContext) {
+    cx.update(|window, _| {
+        if !window.is_window_active() {
+            let _ = window.activate_window();
+        }
+    });
+    cx.run_until_parked();
     cx.update(|window, cx| {
-        window.draw(cx).clear();
+        window.draw(cx).clear(cx);
     });
     cx.run_until_parked();
 }

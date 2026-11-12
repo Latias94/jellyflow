@@ -4,6 +4,11 @@
 `ViewSession` to ordinary Open GPUI `Entity<V: Render>` node components without introducing a
 portable widget tree or a cross-framework node UI DSL.
 
+The workspace pins maintained Open-GPUI to Git revision
+`f75c10b2a9bf7b4dcb2c8c2aa446203997601369`. Custom native applications must select that
+same source for direct framework dependencies. The earlier registry `0.2.0` packages are not
+an API-compatible substitute.
+
 ## Adapter-owned pieces
 
 - `OpenGpuiNodeRegistry` stores sealed renderer-key registrations and mounts retained entities.
@@ -162,12 +167,12 @@ drain asynchronous completion, so a live component must continue calling `observ
 The binding remains the lifecycle boundary. Keep an `activity::OpenGpuiActivityLease` while the
 component owns focus, IME composition, a popup, an async task, or another retained resource. A
 component that captures the native pointer must use
-`binding.activity().capture_pointer(hitbox, window)` and keep the returned exact-capture lease until
-it finishes. Open GPUI assigns a replacement `HitboxId` during prepaint, so an active component must
-call `lease.rebind(replacement_hitbox, window)` before registering the replacement listeners. A
-`false` result means capture ownership was lost and the component must stop without reclaiming it.
-Normal completion must call `lease.release(window)`; terminal host cleanup remains the fallback and
-releases only the registered hitbox.
+`binding.activity().capture_pointer(&handle, button, window)` and keep the returned exact-capture
+lease until it finishes. Allocate a stable `PointerCaptureHandle` through the original Window and
+bind each replacement interactive element with `track_pointer_capture(&handle)`. The framework
+maps that owner to the accepted hitbox; the component must not rebind transient hitbox IDs.
+Normal completion must call `lease.release(window)`; terminal host cleanup remains the fallback
+and releases only the registered owner/button, preserving any successor capture.
 Wrap a popup rendered outside node bounds with `binding.overlay_boundary()`. After application state
 changes intrinsic content geometry, update the binding entity and call
 `binding.invalidate_layout(cx)` from that binding context. The request is mount-scoped and cannot
@@ -180,10 +185,11 @@ self.binding.update(cx, |binding, cx| binding.invalidate_layout(cx))??;
 ## Scale and size authority
 
 The default `SemanticLod` policy uses hysteresis: detail enters overview at zoom 0.85 and overview
-returns to detail at zoom 1.0. Detail stays at native logical-pixel metrics because Open GPUI 0.2
-cannot transform an arbitrary retained subtree coherently across layout, paint, hitboxes, focus,
-IME, and overlays. Overview owns canonical projected node and port geometry outside the detail
-band. A focused, composing, pointer-capturing, or overlay-owning node may also render a fixed-pixel
+returns to detail at zoom 1.0. This adapter keeps detail at native logical-pixel metrics.
+The maintained framework's subtree-transform support does not by itself change Jellyflow's
+graph-size, port-measurement or semantic-LOD policy. Overview owns canonical projected node and
+port geometry outside the detail band. A focused, composing, pointer-capturing, or overlay-owning
+node may also render a fixed-pixel
 `PinnedDetail` surface; that surface cannot publish graph geometry, arm node or connection gestures,
 or expose semantic graph ports. Graph-interaction and draft leases protect retention without
 pinning native detail.

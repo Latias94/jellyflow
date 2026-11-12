@@ -1701,7 +1701,7 @@ impl OpenGpuiNativeInteractionOwner {
             .root_focus
             .is_some_and(|focus| focus.contains_focused(window, cx));
         if focus_was_owned {
-            window.blur();
+            window.blur(cx);
             window.refresh();
         }
         true

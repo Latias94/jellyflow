@@ -23,11 +23,12 @@ use lyon::tessellation::geometry_builder::{
 use lyon::tessellation::{
     LineCap, LineJoin, StrokeOptions, StrokeTessellator, StrokeVertex, VertexId,
 };
+use open_gpui::AppContext as _;
 use open_gpui::prelude::FluentBuilder;
 use open_gpui::{
     AnyElement, Context, CursorStyle, EntityId, FocusHandle, Hsla, InteractiveElement, IntoElement,
-    MouseButton, ParentElement, Path, PathBuilder, Pixels, StatefulInteractiveElement, Styled,
-    Window, canvas, div, measured_element, point, px,
+    MouseButton, ParentElement, Path, PathBuilder, Pixels, ScrollWheelIntent,
+    StatefulInteractiveElement, Styled, Window, canvas, div, measured_element, point, px,
 };
 
 use crate::accessibility::{
@@ -960,7 +961,7 @@ impl OpenGpuiSceneHost {
                             MouseButton::Left,
                             listener.clone(),
                             None,
-                            event,
+                            event.window_event(),
                             window,
                             cx,
                         ) {
@@ -1140,7 +1141,8 @@ impl OpenGpuiSceneHost {
             .on_mouse_down(MouseButton::Left, move |event, window, cx| {
                 if node_enabled && !window.default_prevented() {
                     window.focus(&pointer_focus, cx);
-                    let selection_mode = selection_bindings.selection_mode(event.modifiers);
+                    let selection_mode =
+                        selection_bindings.selection_mode(event.window_event().modifiers, cx);
                     if let Some(host) = pointer_host.upgrade() {
                         host.update(cx, |host, cx| {
                             host.activate_node_action(node_for_pointer, selection_mode, window, cx);
@@ -1152,6 +1154,9 @@ impl OpenGpuiSceneHost {
             .on_scroll_wheel(|_, window, cx| {
                 if window.default_prevented() {
                     cx.stop_propagation();
+                    ScrollWheelIntent::handled().stop_propagation()
+                } else {
+                    ScrollWheelIntent::allow_default()
                 }
             })
             .on_pinch(|_, window, cx| {
@@ -1166,7 +1171,8 @@ impl OpenGpuiSceneHost {
             let measured = measured_element(
                 open_gpui_node_measurement_element_id(host_id, key),
                 child,
-                move |_, bounds, _, _, _| {
+                move |snapshot, _| {
+                    let bounds = snapshot.geometry().layout_bounds();
                     let _ = measurements.record_root(&instance, source, bounds);
                 },
             );
@@ -1678,6 +1684,7 @@ impl OpenGpuiSceneHost {
             div().id(open_gpui_scene_element_id(host_id, self.view.id())),
             "Node graph",
         )
+        .track_pointer_capture(&native_interactions.pointer_capture_handle(window))
         .relative()
         .size_full()
         .cursor(scene_cursor)
@@ -1687,7 +1694,7 @@ impl OpenGpuiSceneHost {
                 return;
             };
             host.update(cx, |host, cx| {
-                host.handle_scene_pointer_move(event, window, cx);
+                host.handle_scene_pointer_move(event.window_event(), window, cx);
             });
         })
         .on_hover(move |hovered, window, cx| {
@@ -1718,7 +1725,7 @@ impl OpenGpuiSceneHost {
                     MouseButton::Left,
                     selection_listener.clone(),
                     None,
-                    event,
+                    event.window_event(),
                     window,
                     cx,
                 ) {
@@ -1734,7 +1741,7 @@ impl OpenGpuiSceneHost {
                     MouseButton::Middle,
                     pan_listener.clone(),
                     None,
-                    event,
+                    event.window_event(),
                     window,
                     cx,
                 ) {
@@ -1750,7 +1757,7 @@ impl OpenGpuiSceneHost {
                     MouseButton::Right,
                     right_pan_listener.clone(),
                     None,
-                    event,
+                    event.window_event(),
                     window,
                     cx,
                 ) {
@@ -1765,7 +1772,7 @@ impl OpenGpuiSceneHost {
                 }
                 let handled = context_host.upgrade().is_some_and(|host| {
                     host.update(cx, |host, cx| {
-                        host.request_blank_canvas_context(event, window, cx)
+                        host.request_blank_canvas_context(event.window_event(), window, cx)
                     })
                 });
                 if !handled {
@@ -1777,15 +1784,18 @@ impl OpenGpuiSceneHost {
         })
         .on_scroll_wheel(move |event, window, cx| {
             if window.default_prevented() {
-                cx.stop_propagation();
-                return;
+                return ScrollWheelIntent::handled().stop_propagation();
             }
             let Some(host) = scroll_host.upgrade() else {
-                return;
+                return ScrollWheelIntent::allow_default();
             };
-            if host.update(cx, |host, cx| host.handle_scene_scroll(event, cx)) {
+            if host.update(cx, |host, cx| {
+                host.handle_scene_scroll(event.window_event(), cx)
+            }) {
                 window.refresh();
-                cx.stop_propagation();
+                ScrollWheelIntent::handled().stop_propagation()
+            } else {
+                ScrollWheelIntent::allow_default()
             }
         })
         .on_pinch(move |event, window, cx| {
@@ -1796,7 +1806,9 @@ impl OpenGpuiSceneHost {
             let Some(host) = pinch_host.upgrade() else {
                 return;
             };
-            if host.update(cx, |host, cx| host.handle_scene_pinch(event, cx)) {
+            if host.update(cx, |host, cx| {
+                host.handle_scene_pinch(event.window_event(), cx)
+            }) {
                 window.refresh();
                 cx.stop_propagation();
             }
@@ -1815,10 +1827,12 @@ impl OpenGpuiSceneHost {
             );
         }
         let host = cx.weak_entity();
+        let owning_window = window.window_handle();
         let scene = measured_element(
             open_gpui_scene_measurement_element_id(host_id, self.view.id()),
             scene,
-            move |_, bounds, _, window, cx| {
+            move |snapshot, cx| {
+                let bounds = snapshot.geometry().layout_bounds();
                 feedback.measurements().record_scene(bounds);
                 let measured_origin = bounds.origin;
                 let measured_size =
@@ -1828,78 +1842,82 @@ impl OpenGpuiSceneHost {
                 }
                 let host = host.clone();
                 let feedback = feedback.clone();
-                window.defer(cx, move |window, cx| {
-                    let Some(host) = host.upgrade() else {
-                        return;
-                    };
-                    let deferred = host.update(cx, |host, cx| {
-                        let transaction =
-                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                host.submit_prepaint_frame(
-                                    &feedback,
-                                    measured_origin,
-                                    measured_size,
-                                    transform,
-                                    cx,
-                                )
-                            }));
-                        match transaction {
-                            Ok(deferred) => deferred,
-                            Err(payload) => {
-                                let _ = host.take_frame_transaction(&feedback);
-                                let message =
-                                    "native frame host update panicked after prepaint".to_owned();
-                                let completed = feedback.abort_frame_preparation(message.clone());
-                                let resolutions = host.settle_command_batch(completed);
-                                host.record_feedback_failure(None, message);
-                                host.schedule_content_size_prefix(cx);
-                                OpenGpuiPrepaintFrameOutcome {
-                                    request_next_frame: true,
-                                    resolutions,
-                                    submission_panic: Some(payload),
-                                    terminal_cleanup_pending: false,
-                                    node_drag_route_handoff_candidate: None,
+                cx.defer(move |cx| {
+                    let _ = cx.update_window(owning_window, |_, window, cx| {
+                        let Some(host) = host.upgrade() else {
+                            return;
+                        };
+                        let deferred = host.update(cx, |host, cx| {
+                            let transaction =
+                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    host.submit_prepaint_frame(
+                                        &feedback,
+                                        measured_origin,
+                                        measured_size,
+                                        transform,
+                                        cx,
+                                    )
+                                }));
+                            match transaction {
+                                Ok(deferred) => deferred,
+                                Err(payload) => {
+                                    let _ = host.take_frame_transaction(&feedback);
+                                    let message =
+                                        "native frame host update panicked after prepaint"
+                                            .to_owned();
+                                    let completed =
+                                        feedback.abort_frame_preparation(message.clone());
+                                    let resolutions = host.settle_command_batch(completed);
+                                    host.record_feedback_failure(None, message);
+                                    host.schedule_content_size_prefix(cx);
+                                    OpenGpuiPrepaintFrameOutcome {
+                                        request_next_frame: true,
+                                        resolutions,
+                                        submission_panic: Some(payload),
+                                        terminal_cleanup_pending: false,
+                                        node_drag_route_handoff_candidate: None,
+                                    }
                                 }
                             }
-                        }
-                    });
-                    if deferred.terminal_cleanup_pending {
-                        host.update(cx, |host, cx| {
-                            host.capture_terminal_window_cleanup(window, cx);
                         });
-                    }
-                    resolve_command_tickets(deferred.resolutions);
-                    suppress_host_panic(deferred.submission_panic);
-                    if let Some(handoff) = deferred.node_drag_route_handoff_candidate {
-                        let handoff_host = host.clone();
-                        window.on_next_frame(move |_, cx| {
-                            handoff_host.update(cx, |host, cx| {
-                                if host
-                                    .interaction_owner
-                                    .finish_node_drag_route_handoff(handoff)
-                                {
-                                    cx.notify();
-                                }
+                        if deferred.terminal_cleanup_pending {
+                            host.update(cx, |host, cx| {
+                                host.capture_terminal_window_cleanup(window, cx);
                             });
-                        });
-                        let scheduled = host.update(cx, |host, _| {
-                            host.interaction_owner
-                                .schedule_node_drag_route_handoff_acknowledgement(handoff)
-                        });
-                        if scheduled {
+                        }
+                        resolve_command_tickets(deferred.resolutions);
+                        suppress_host_panic(deferred.submission_panic);
+                        if let Some(handoff) = deferred.node_drag_route_handoff_candidate {
+                            let handoff_host = host.clone();
+                            window.on_next_frame(move |_, cx| {
+                                handoff_host.update(cx, |host, cx| {
+                                    if host
+                                        .interaction_owner
+                                        .finish_node_drag_route_handoff(handoff)
+                                    {
+                                        cx.notify();
+                                    }
+                                });
+                            });
+                            let scheduled = host.update(cx, |host, _| {
+                                host.interaction_owner
+                                    .schedule_node_drag_route_handoff_acknowledgement(handoff)
+                            });
+                            if scheduled {
+                                window.refresh();
+                            }
+                        }
+                        if deferred.request_next_frame {
+                            let host_id = host.entity_id();
+                            window.on_next_frame(move |_, cx| cx.notify(host_id));
                             window.refresh();
                         }
-                    }
-                    if deferred.request_next_frame {
-                        let host_id = host.entity_id();
-                        window.on_next_frame(move |_, cx| cx.notify(host_id));
-                        window.refresh();
-                    }
-                    if deferred.terminal_cleanup_pending {
-                        host.update(cx, |host, _| {
-                            host.resume_pending_terminal_panics();
-                        });
-                    }
+                        if deferred.terminal_cleanup_pending {
+                            host.update(cx, |host, _| {
+                                host.resume_pending_terminal_panics();
+                            });
+                        }
+                    });
                 });
             },
         );

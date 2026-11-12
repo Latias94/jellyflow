@@ -21,7 +21,7 @@ jellyflow-core.workspace = true
 jellyflow-runtime.workspace = true
 lyon.workspace = true
 futures-util.workspace = true
-open_gpui = { package = "open-gpui", version = "=0.2.0", default-features = false }
+open_gpui.workspace = true
 thiserror.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -30,8 +30,8 @@ objc = "0.2.7"
 raw-window-handle = "0.6.2"
 
 [dev-dependencies]
-open_gpui = { package = "open-gpui", version = "=0.2.0", default-features = false, features = ["test-support"] }
-open_gpui_ui_components = { package = "open-gpui-ui-components", version = "=0.2.0" }
+open_gpui = { workspace = true, features = ["test-support"] }
+open_gpui_ui_components.workspace = true
 serde_json.workspace = true
 
 [lints.clippy]

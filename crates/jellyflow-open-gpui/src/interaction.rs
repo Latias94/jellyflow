@@ -9,10 +9,10 @@ use jellyflow_runtime::{
 };
 use open_gpui::{
     AnyElement, App, Bounds, DispatchPhase, Element, ElementId, FocusHandle, GlobalElementId,
-    Hitbox, HitboxBehavior, HitboxId, InspectorElementId, InteractiveElement, IntoElement,
-    KeyDownEvent, KeyUpEvent, LayoutId, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, ParentElement, PinchEvent, Pixels, Point, ScrollWheelEvent, Styled,
-    WeakFocusHandle, Window, div,
+    Hitbox, HitboxBehavior, InspectorElementId, InteractiveElement, IntoElement, KeyDownEvent,
+    KeyUpEvent, LayoutId, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    ParentElement, PinchEvent, Pixels, Point, PointerCancelEvent, PointerCaptureError,
+    PointerCaptureHandle, ScrollEvent, Styled, WeakFocusHandle, Window, div,
 };
 
 use crate::activity::{
@@ -358,15 +358,15 @@ impl OpenGpuiNativeInteractionAuthority {
 struct NativeReleaseSuppression {
     button: MouseButton,
     generation: u64,
-    hitbox: HitboxId,
+    handle: PointerCaptureHandle,
 }
 
 impl NativeReleaseSuppression {
-    fn new(button: MouseButton, generation: u64, hitbox: HitboxId) -> Self {
+    fn new(button: MouseButton, generation: u64, handle: PointerCaptureHandle) -> Self {
         Self {
             button,
             generation,
-            hitbox,
+            handle,
         }
     }
 }
@@ -376,7 +376,7 @@ type NativeCaptureBookkeeping =
 
 struct NativeInteractionState {
     capture: NativeCaptureBookkeeping,
-    root_hitbox: Option<HitboxId>,
+    capture_handle: Option<PointerCaptureHandle>,
     focus_handle: Option<FocusHandle>,
     port_focus: Option<PortFocusOwnership>,
     keyboard_ports: BTreeMap<PortInstanceKey, (OpenGpuiPortDragOwner, OpenGpuiPortListener)>,
@@ -404,10 +404,17 @@ impl PendingNativeCancellation {
         }
     }
 
-    fn hitbox(&self) -> HitboxId {
+    fn handle(&self) -> PointerCaptureHandle {
         match self {
-            Self::Port(pending) => pending.hitbox,
-            Self::Scene(pending) => pending.hitbox,
+            Self::Port(pending) => pending.handle,
+            Self::Scene(pending) => pending.handle,
+        }
+    }
+
+    fn button(&self) -> MouseButton {
+        match self {
+            Self::Port(_) => MouseButton::Left,
+            Self::Scene(pending) => pending.button,
         }
     }
 }
@@ -418,14 +425,14 @@ struct ActivePortDrag {
     mount: OpenGpuiMountCapability,
     listener: OpenGpuiPortListener,
     lease: OpenGpuiActivityLease,
-    hitbox: HitboxId,
+    handle: PointerCaptureHandle,
     position: Point<Pixels>,
     modifiers: Modifiers,
 }
 
 struct PendingPortCancellation {
     generation: u64,
-    hitbox: HitboxId,
+    handle: PointerCaptureHandle,
     event: OpenGpuiPortDragEvent,
     listener: OpenGpuiPortListener,
     focus_settlement: Option<PendingPortFocusSettlement>,
@@ -477,7 +484,7 @@ impl OpenGpuiNativeInteractionHandle {
         Self {
             state: Rc::new(RefCell::new(NativeInteractionState {
                 capture: CaptureBookkeeping::new(None),
-                root_hitbox: None,
+                capture_handle: None,
                 focus_handle: None,
                 port_focus: None,
                 keyboard_ports: BTreeMap::new(),
@@ -487,6 +494,14 @@ impl OpenGpuiNativeInteractionHandle {
                 terminal: false,
             })),
         }
+    }
+
+    pub(crate) fn pointer_capture_handle(&self, window: &mut Window) -> PointerCaptureHandle {
+        *self
+            .state
+            .borrow_mut()
+            .capture_handle
+            .get_or_insert_with(|| window.new_pointer_capture_handle())
     }
 
     pub(crate) fn set_focus_handle(&self, focus_handle: FocusHandle) -> bool {
@@ -617,39 +632,36 @@ impl OpenGpuiNativeInteractionHandle {
         true
     }
 
-    pub(crate) fn rebind_port(
+    pub(crate) fn validate_port_capture(
         &self,
         owner: &OpenGpuiPortDragOwner,
         mount: &OpenGpuiMountCapability,
-        hitbox: HitboxId,
         window: &mut Window,
         cx: &mut App,
     ) {
         if !mount.is_live() {
             return;
         }
-        let captured_hitbox = window.captured_hitbox();
         let lost = {
             let mut state = self.state.borrow_mut();
-            let previous_hitbox = match state.capture.active() {
+            let handle = match state.capture.active() {
                 Some(NativeCapture::Port(active))
                     if &active.owner == owner && active.mount.is_same_mount(mount) =>
                 {
-                    active.hitbox
+                    active.handle
                 }
                 _ => return,
             };
-            if captured_hitbox != Some(previous_hitbox) {
+            if !window.captured_pointer().is_some_and(|capture| {
+                capture.handle() == handle && capture.button() == MouseButton::Left
+            }) {
                 match state.capture.take_active() {
                     Some(NativeCapture::Port(active)) => Some(active),
                     _ => unreachable!("matched port capture"),
                 }
             } else {
                 let active_mount = match state.capture.active_mut() {
-                    Some(NativeCapture::Port(active)) => {
-                        active.hitbox = hitbox;
-                        active.mount.clone()
-                    }
+                    Some(NativeCapture::Port(active)) => active.mount.clone(),
                     _ => unreachable!("matched port capture"),
                 };
                 if let Some(focus) = state.port_focus.as_mut()
@@ -667,9 +679,7 @@ impl OpenGpuiNativeInteractionHandle {
                 OpenGpuiPortDragCancelReason::PointerCaptureLost,
             );
             self.schedule_pending_drain(window, cx);
-            return;
         }
-        window.capture_pointer(hitbox);
     }
 
     pub(crate) fn begin_port_drag(
@@ -678,7 +688,6 @@ impl OpenGpuiNativeInteractionHandle {
         mount: OpenGpuiMountCapability,
         listener: OpenGpuiPortListener,
         activity: OpenGpuiNodeActivityRegistry,
-        hitbox: HitboxId,
         event: &MouseDownEvent,
         window: &mut Window,
         cx: &mut App,
@@ -729,6 +738,27 @@ impl OpenGpuiNativeInteractionHandle {
             }
         };
 
+        let handle = self.pointer_capture_handle(window);
+        if let Err(error) = window.capture_pointer(&handle, event.button) {
+            drop(lease);
+            let reason = match error {
+                PointerCaptureError::PointerAlreadyCaptured { .. } => {
+                    OpenGpuiPortDragCancelReason::PointerCaptureLost
+                }
+                _ => OpenGpuiPortDragCancelReason::InteractionUnavailable,
+            };
+            dispatch_cancelled_start(
+                &owner,
+                &listener,
+                reason,
+                Some(NativeInteractionGeneration(generation)),
+                event.position,
+                event.modifiers,
+                window,
+                cx,
+            );
+            return true;
+        }
         let previous_focus = window.focused(cx).map(|focus| focus.downgrade());
         let interaction_focus = self.state.borrow().focus_handle.clone();
         let previous_focus_was_graph_domain = interaction_focus
@@ -737,7 +767,6 @@ impl OpenGpuiNativeInteractionHandle {
         if let Some(focus_handle) = &interaction_focus {
             window.focus(focus_handle, cx);
         }
-        window.capture_pointer(hitbox);
 
         let start = OpenGpuiPortDragEvent {
             owner: owner.clone(),
@@ -763,7 +792,7 @@ impl OpenGpuiNativeInteractionHandle {
                 mount,
                 listener: listener.clone(),
                 lease,
-                hitbox,
+                handle,
                 position: event.position,
                 modifiers: event.modifiers,
             }));
@@ -895,7 +924,7 @@ impl OpenGpuiNativeInteractionHandle {
 
     pub(crate) fn handle_scroll(
         &self,
-        _event: &ScrollWheelEvent,
+        _event: &ScrollEvent,
         window: &mut Window,
         cx: &mut App,
     ) -> bool {
@@ -1063,7 +1092,7 @@ impl OpenGpuiNativeInteractionHandle {
             };
             let PendingPortCancellation {
                 generation: _,
-                hitbox: _,
+                handle: _,
                 event,
                 listener,
                 focus_settlement,
@@ -1104,7 +1133,7 @@ impl OpenGpuiNativeInteractionHandle {
         window: &mut Window,
         cx: &mut App,
     ) {
-        let hitbox = active.hitbox;
+        let handle = active.handle;
         let event = OpenGpuiPortDragEvent {
             owner: active.owner,
             native_generation: Some(NativeInteractionGeneration(active.generation)),
@@ -1114,7 +1143,7 @@ impl OpenGpuiNativeInteractionHandle {
         };
         let listener = active.listener;
         drop(active.lease);
-        release_pointer_capture_if_owned(hitbox, window);
+        release_pointer_capture_if_owned(handle, window);
         listener(OpenGpuiPortEvent::Pointer(event), window, cx);
         window.refresh();
     }
@@ -1152,7 +1181,7 @@ impl OpenGpuiNativeInteractionHandle {
         suppress_release: bool,
     ) {
         let suppression = suppress_release.then(|| {
-            NativeReleaseSuppression::new(MouseButton::Left, active.generation, active.hitbox)
+            NativeReleaseSuppression::new(MouseButton::Left, active.generation, active.handle)
         });
         let event = OpenGpuiPortDragEvent {
             owner: active.owner,
@@ -1165,7 +1194,7 @@ impl OpenGpuiNativeInteractionHandle {
         self.state.borrow_mut().capture.enqueue(
             PendingNativeCancellation::Port(Box::new(PendingPortCancellation {
                 generation: active.generation,
-                hitbox: active.hitbox,
+                handle: active.handle,
                 event,
                 listener: active.listener,
                 focus_settlement,
@@ -1239,7 +1268,7 @@ struct ActiveSceneInteraction {
     button: MouseButton,
     listener: OpenGpuiSceneGestureListener,
     lease: Option<OpenGpuiActivityLease>,
-    hitbox: HitboxId,
+    handle: PointerCaptureHandle,
     previous_focus: Option<WeakFocusHandle>,
     position: Point<Pixels>,
     modifiers: Modifiers,
@@ -1247,7 +1276,8 @@ struct ActiveSceneInteraction {
 
 struct PendingSceneCancellation {
     generation: u64,
-    hitbox: HitboxId,
+    handle: PointerCaptureHandle,
+    button: MouseButton,
     event: OpenGpuiSceneGestureEvent,
     listener: OpenGpuiSceneGestureListener,
     previous_focus: Option<WeakFocusHandle>,
@@ -1302,58 +1332,19 @@ impl NativeCapture {
         }
     }
 
-    fn hitbox(&self) -> HitboxId {
+    fn handle(&self) -> PointerCaptureHandle {
         match self {
-            Self::Port(active) => active.hitbox,
-            Self::Scene(active) => active.hitbox,
+            Self::Port(active) => active.handle,
+            Self::Scene(active) => active.handle,
         }
     }
 
     fn release_suppression(&self) -> NativeReleaseSuppression {
-        NativeReleaseSuppression::new(self.button(), self.generation(), self.hitbox())
+        NativeReleaseSuppression::new(self.button(), self.generation(), self.handle())
     }
 }
 
 impl OpenGpuiNativeInteractionHandle {
-    pub(crate) fn set_root_hitbox(&self, hitbox: HitboxId, window: &mut Window, cx: &mut App) {
-        let captured_hitbox = window.captured_hitbox();
-        let (rebound, lost) = {
-            let mut state = self.state.borrow_mut();
-            if state.terminal {
-                return;
-            }
-            state.root_hitbox = Some(hitbox);
-            let previous_hitbox = match state.capture.active() {
-                Some(NativeCapture::Scene(active)) => active.hitbox,
-                _ => return,
-            };
-            if captured_hitbox == Some(previous_hitbox) {
-                match state.capture.active_mut() {
-                    Some(NativeCapture::Scene(active)) => active.hitbox = hitbox,
-                    _ => unreachable!("matched scene capture"),
-                }
-                (true, None)
-            } else {
-                let lost = match state.capture.take_active() {
-                    Some(NativeCapture::Scene(active)) => active,
-                    _ => unreachable!("matched scene capture"),
-                };
-                (false, Some(lost))
-            }
-        };
-        if let Some(active) = lost {
-            self.queue_scene_cancellation_without_suppression(
-                active,
-                OpenGpuiSceneGestureCancelReason::PointerCaptureLost,
-            );
-            self.schedule_pending_drain(window, cx);
-            return;
-        }
-        if rebound {
-            window.capture_pointer(hitbox);
-        }
-    }
-
     pub(crate) fn begin(
         &self,
         kind: OpenGpuiSceneGestureKind,
@@ -1405,19 +1396,18 @@ impl OpenGpuiNativeInteractionHandle {
         } else {
             None
         };
-        let Some(hitbox) = self.state.borrow().root_hitbox else {
+        let handle = self.pointer_capture_handle(window);
+        if let Err(error) = window.capture_pointer(&handle, button) {
             drop(lease);
-            self.dispatch_cancelled_start(
-                kind,
-                listener,
-                OpenGpuiSceneGestureCancelReason::InteractionUnavailable,
-                event,
-                window,
-                cx,
-            );
+            let reason = match error {
+                PointerCaptureError::PointerAlreadyCaptured { .. } => {
+                    OpenGpuiSceneGestureCancelReason::PointerCaptureLost
+                }
+                _ => OpenGpuiSceneGestureCancelReason::InteractionUnavailable,
+            };
+            self.dispatch_cancelled_start(kind, listener, reason, event, window, cx);
             return true;
-        };
-        window.capture_pointer(hitbox);
+        }
         let previous_focus = window.focused(cx).map(|focus| focus.downgrade());
         if let Some(focus_handle) = self.state.borrow().focus_handle.clone() {
             window.focus(&focus_handle, cx);
@@ -1437,7 +1427,7 @@ impl OpenGpuiNativeInteractionHandle {
                 button,
                 listener: listener.clone(),
                 lease,
-                hitbox,
+                handle,
                 previous_focus,
                 position: event.position,
                 modifiers: event.modifiers,
@@ -1454,6 +1444,28 @@ impl OpenGpuiNativeInteractionHandle {
         self.drain_pending(window, cx);
         self.state.borrow().capture.active().is_some()
             || self.release_suppression_for_window(window).is_some()
+    }
+
+    fn handle_pointer_cancel(&self, window: &mut Window, cx: &mut App) {
+        let active = {
+            let mut state = self.state.borrow_mut();
+            state.space_pan_held = false;
+            state.capture.set_suppression(None);
+            state.capture.take_active()
+        };
+        if let Some(active) = active {
+            match active {
+                NativeCapture::Port(active) => self.queue_port_cancellation_without_suppression(
+                    active,
+                    OpenGpuiPortDragCancelReason::PointerCaptureLost,
+                ),
+                NativeCapture::Scene(active) => self.queue_scene_cancellation_without_suppression(
+                    active,
+                    OpenGpuiSceneGestureCancelReason::PointerCaptureLost,
+                ),
+            }
+        }
+        self.drain_pending(window, cx);
     }
 
     pub(crate) fn cancel_scene_deferred(&self, reason: OpenGpuiSceneGestureCancelReason) -> bool {
@@ -1499,7 +1511,6 @@ impl OpenGpuiNativeInteractionAuthority {
                 return false;
             }
             state.terminal = true;
-            state.root_hitbox = None;
             state.focus_handle = None;
             state.keyboard_ports.clear();
             state.overlay_active = false;
@@ -1540,7 +1551,7 @@ impl OpenGpuiNativeInteractionAuthority {
                 cx,
             );
         } else if focus_is_owned_by_domains(&overlay_focus_domains, window, cx) {
-            window.blur();
+            window.blur(cx);
         }
         if !prepared && pending.is_empty() && !focus_owned {
             return false;
@@ -1578,21 +1589,19 @@ fn release_matching_pointer_capture(
     pending: &VecDeque<PendingNativeCancellation>,
     window: &mut Window,
 ) -> bool {
-    let owns_capture = window
-        .captured_hitbox()
-        .is_some_and(|captured| pending.iter().any(|pending| pending.hitbox() == captured));
-    if owns_capture {
-        window.release_pointer();
-    }
-    owns_capture
+    let Some(captured) = window.captured_pointer() else {
+        return false;
+    };
+    pending.iter().any(|pending| {
+        pending.handle() == captured.handle() && pending.button() == captured.button()
+    }) && release_pointer_capture_if_owned(captured.handle(), window)
 }
 
-pub(crate) fn release_pointer_capture_if_owned(hitbox: HitboxId, window: &mut Window) -> bool {
-    if window.captured_hitbox() != Some(hitbox) {
-        return false;
-    }
-    window.release_pointer();
-    true
+pub(crate) fn release_pointer_capture_if_owned(
+    handle: PointerCaptureHandle,
+    window: &mut Window,
+) -> bool {
+    window.release_pointer(&handle).unwrap_or(false)
 }
 
 impl OpenGpuiNativeInteractionHandle {
@@ -1626,7 +1635,7 @@ impl OpenGpuiNativeInteractionHandle {
         window: &mut Window,
         cx: &mut App,
     ) {
-        let hitbox = active.hitbox;
+        let handle = active.handle;
         let event = OpenGpuiSceneGestureEvent {
             kind: active.kind,
             phase,
@@ -1636,7 +1645,7 @@ impl OpenGpuiNativeInteractionHandle {
         let previous_focus = active.previous_focus;
         let interaction_focus = self.state.borrow().focus_handle.clone();
         drop(active.lease);
-        release_pointer_capture_if_owned(hitbox, window);
+        release_pointer_capture_if_owned(handle, window);
         settle_scene_focus(
             phase,
             previous_focus.as_ref(),
@@ -1677,14 +1686,15 @@ impl OpenGpuiNativeInteractionHandle {
             modifiers: active.modifiers,
         };
         let suppression = suppress_release.then(|| {
-            NativeReleaseSuppression::new(active.button, active.generation, active.hitbox)
+            NativeReleaseSuppression::new(active.button, active.generation, active.handle)
         });
         let previous_focus = active.previous_focus;
         drop(active.lease);
         self.state.borrow_mut().capture.enqueue(
             PendingNativeCancellation::Scene(PendingSceneCancellation {
                 generation: active.generation,
-                hitbox: active.hitbox,
+                handle: active.handle,
+                button: active.button,
                 event,
                 listener: active.listener,
                 previous_focus,
@@ -1694,14 +1704,14 @@ impl OpenGpuiNativeInteractionHandle {
     }
 
     fn cancel_replaced_capture_deferred(&self, window: &Window, cx: &mut App) -> bool {
-        let captured_hitbox = window.captured_hitbox();
+        let captured_pointer = window.captured_pointer();
         let active = {
             let mut state = self.state.borrow_mut();
-            if state
-                .capture
-                .active()
-                .is_none_or(|active| captured_hitbox == Some(active.hitbox()))
-            {
+            if state.capture.active().is_none_or(|active| {
+                captured_pointer.is_some_and(|capture| {
+                    capture.handle() == active.handle() && capture.button() == active.button()
+                })
+            }) {
                 return false;
             }
             state.capture.take_active()
@@ -1727,9 +1737,9 @@ impl OpenGpuiNativeInteractionHandle {
         let mut state = self.state.borrow_mut();
         let suppression = state.capture.suppression()?;
         let is_current_generation = state.capture.latest_generation() == suppression.generation;
-        let capture_is_unclaimed_or_owned = window
-            .captured_hitbox()
-            .is_none_or(|captured| captured == suppression.hitbox);
+        let capture_is_unclaimed_or_owned = window.captured_pointer().is_none_or(|captured| {
+            captured.handle() == suppression.handle && captured.button() == suppression.button
+        });
         if is_current_generation && capture_is_unclaimed_or_owned {
             return Some(suppression);
         }
@@ -1828,7 +1838,7 @@ fn invalidate_native_generation(state: &Weak<RefCell<NativeInteractionState>>, g
     match active {
         NativeCapture::Port(active) => {
             let suppression =
-                NativeReleaseSuppression::new(MouseButton::Left, active.generation, active.hitbox);
+                NativeReleaseSuppression::new(MouseButton::Left, active.generation, active.handle);
             let event = OpenGpuiPortDragEvent {
                 owner: active.owner,
                 native_generation: Some(NativeInteractionGeneration(active.generation)),
@@ -1840,7 +1850,7 @@ fn invalidate_native_generation(state: &Weak<RefCell<NativeInteractionState>>, g
             state.borrow_mut().capture.enqueue(
                 PendingNativeCancellation::Port(Box::new(PendingPortCancellation {
                     generation: active.generation,
-                    hitbox: active.hitbox,
+                    handle: active.handle,
                     event,
                     listener: active.listener,
                     focus_settlement: None,
@@ -1850,7 +1860,7 @@ fn invalidate_native_generation(state: &Weak<RefCell<NativeInteractionState>>, g
         }
         NativeCapture::Scene(active) => {
             let suppression =
-                NativeReleaseSuppression::new(active.button, active.generation, active.hitbox);
+                NativeReleaseSuppression::new(active.button, active.generation, active.handle);
             let event = OpenGpuiSceneGestureEvent {
                 kind: active.kind,
                 phase: OpenGpuiSceneGesturePhase::Cancel(
@@ -1864,7 +1874,8 @@ fn invalidate_native_generation(state: &Weak<RefCell<NativeInteractionState>>, g
             state.borrow_mut().capture.enqueue(
                 PendingNativeCancellation::Scene(PendingSceneCancellation {
                     generation: active.generation,
-                    hitbox: active.hitbox,
+                    handle: active.handle,
+                    button: active.button,
                     event,
                     listener: active.listener,
                     previous_focus,
@@ -1924,7 +1935,7 @@ struct OpenGpuiInteractionRoot {
 
 impl Element for OpenGpuiInteractionRoot {
     type RequestLayoutState = AnyElement;
-    type PrepaintState = Hitbox;
+    type PrepaintState = ();
 
     fn id(&self) -> Option<ElementId> {
         Some(self.id.clone())
@@ -1950,17 +1961,16 @@ impl Element for OpenGpuiInteractionRoot {
         &mut self,
         _id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
-        bounds: Bounds<Pixels>,
+        _bounds: Bounds<Pixels>,
         child: &mut Self::RequestLayoutState,
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
-        let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
         self.interactions.schedule_pending_drain(window, cx);
-        self.interactions.set_root_hitbox(hitbox.id, window, cx);
+        self.interactions
+            .cancel_replaced_capture_deferred(window, cx);
         window.set_focus_handle(&self.focus_handle, cx);
         child.prepaint(window, cx);
-        hitbox
     }
 
     fn paint(
@@ -1995,7 +2005,7 @@ impl Element for OpenGpuiInteractionRoot {
             }
         });
         let interactions = self.interactions.clone();
-        window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
+        window.on_mouse_event(move |event: &ScrollEvent, phase, window, cx| {
             if phase == DispatchPhase::Capture && interactions.handle_scroll(event, window, cx) {
                 cx.stop_propagation();
             }
@@ -2004,6 +2014,12 @@ impl Element for OpenGpuiInteractionRoot {
         window.on_mouse_event(move |_: &PinchEvent, phase, window, cx| {
             if phase == DispatchPhase::Capture && interactions.handle_pinch(window, cx) {
                 cx.stop_propagation();
+            }
+        });
+        let interactions = self.interactions.clone();
+        window.on_pointer_cancel(move |_: &PointerCancelEvent, phase, window, cx| {
+            if phase == DispatchPhase::Capture {
+                interactions.handle_pointer_cancel(window, cx);
             }
         });
         let interactions = self.interactions.clone();
@@ -2201,7 +2217,7 @@ impl Element for OpenGpuiOverlayInteractionElement {
             }
         });
         let scroll_hitbox = hitbox.clone();
-        window.on_mouse_event(move |_: &ScrollWheelEvent, phase, window, cx| {
+        window.on_mouse_event(move |_: &ScrollEvent, phase, window, cx| {
             if phase == DispatchPhase::Bubble && scroll_hitbox.should_handle_scroll(window) {
                 cx.stop_propagation();
             }
@@ -2277,7 +2293,7 @@ fn settle_native_focus(
             } else if let Some(interaction_focus) = interaction_focus {
                 window.focus(&interaction_focus, cx);
             } else {
-                window.blur();
+                window.blur(cx);
             }
         }
         OpenGpuiPortFocusExit::OwnerRetired => {
@@ -2286,7 +2302,7 @@ fn settle_native_focus(
                 .zip(interaction_focus.as_ref())
                 .is_some_and(|(current, interaction)| current == interaction);
             if current_is_interaction || current_is_owned_overlay {
-                window.blur();
+                window.blur(cx);
             }
         }
         OpenGpuiPortFocusExit::HostClosed => {
@@ -2295,7 +2311,7 @@ fn settle_native_focus(
                 .is_some_and(|interaction| interaction.contains_focused(window, cx))
                 || current_is_owned_overlay
             {
-                window.blur();
+                window.blur(cx);
             }
         }
     }
@@ -2325,7 +2341,7 @@ fn settle_scene_focus(
         phase,
         OpenGpuiSceneGesturePhase::Cancel(OpenGpuiSceneGestureCancelReason::HostClosed)
     ) {
-        window.blur();
+        window.blur(cx);
         return;
     }
     if let Some(previous_focus) = previous_focus.and_then(WeakFocusHandle::upgrade) {
@@ -2385,7 +2401,7 @@ mod capture_bookkeeping_tests {
     use std::cell::Cell;
     use std::fmt::Debug;
 
-    use open_gpui::{Context, Render};
+    use open_gpui::{Context, Entity, Render, TestAppContext, VisualTestContext, px};
 
     use super::*;
 
@@ -2394,12 +2410,119 @@ mod capture_bookkeeping_tests {
         generation: u64,
     }
 
-    struct FocusTestView;
+    #[derive(Default)]
+    struct FocusTestView {
+        focus_handles: Vec<FocusHandle>,
+        capture_handles: Vec<PointerCaptureHandle>,
+        scene: Option<SceneCaptureTestRoot>,
+    }
+
+    struct SceneCaptureTestRoot {
+        interactions: OpenGpuiNativeInteractionHandle,
+        capture_handle: PointerCaptureHandle,
+        focus: FocusHandle,
+        listener: OpenGpuiSceneGestureListener,
+    }
 
     impl Render for FocusTestView {
         fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            if let Some(scene) = &self.scene {
+                let pointer_interactions = scene.interactions.clone();
+                let listener = scene.listener.clone();
+                return interaction_root(
+                    "maintained-scene-capture",
+                    scene.interactions.clone(),
+                    OpenGpuiNativeInputHandle::default(),
+                    scene.focus.clone(),
+                    None,
+                    None,
+                    div()
+                        .size_full()
+                        .track_pointer_capture(&scene.capture_handle)
+                        .on_mouse_down(MouseButton::Left, move |event, window, cx| {
+                            if pointer_interactions.begin(
+                                OpenGpuiSceneGestureKind::Selection,
+                                MouseButton::Left,
+                                listener.clone(),
+                                None,
+                                event.window_event(),
+                                window,
+                                cx,
+                            ) {
+                                cx.stop_propagation();
+                            }
+                        }),
+                )
+                .into_any_element();
+            }
             open_gpui::div()
+                .relative()
+                .size_full()
+                .child(
+                    open_gpui::div().flex().flex_col().children(
+                        self.focus_handles
+                            .iter()
+                            .enumerate()
+                            .map(|(index, handle)| {
+                                open_gpui::div()
+                                    .id(index)
+                                    .track_focus(handle)
+                                    .w(px(100.0))
+                                    .h(px(24.0))
+                            }),
+                    ),
+                )
+                .child(
+                    open_gpui::div().id("capture-bindings").children(
+                        self.capture_handles
+                            .iter()
+                            .enumerate()
+                            .map(|(index, handle)| {
+                                open_gpui::div()
+                                    .id(index)
+                                    .absolute()
+                                    .left_0()
+                                    .top_0()
+                                    .w(px(100.0))
+                                    .h(px(100.0))
+                                    .track_pointer_capture(handle)
+                            }),
+                    ),
+                )
+                .into_any_element()
         }
+    }
+
+    fn focus_test_window(
+        cx: &mut TestAppContext,
+    ) -> (Entity<FocusTestView>, &mut VisualTestContext) {
+        let (view, cx) = cx.add_window_view(|_, _| FocusTestView::default());
+        let _ = cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+        (view, cx)
+    }
+
+    fn bind_focus_handles(
+        view: &Entity<FocusTestView>,
+        handles: &[FocusHandle],
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        view.update(cx, |view, cx| {
+            view.focus_handles = handles.to_vec();
+            cx.notify();
+        });
+        window.draw(cx).clear(cx);
+        for handle in handles {
+            assert!(window.is_focus_handle_rendered(handle));
+        }
+    }
+
+    fn focus_presented(handle: &FocusHandle, window: &mut Window, cx: &mut App) {
+        assert!(window.is_focus_handle_rendered(handle));
+        window.focus(handle, cx);
+        window.draw(cx).clear(cx);
+        assert_eq!(window.committed_focus(cx).as_ref(), Some(handle));
     }
 
     #[test]
@@ -2415,29 +2538,151 @@ mod capture_bookkeeping_tests {
         assert!(handle.hold_space_pan());
     }
 
-    fn draw_non_placeholder_hitbox(cx: &mut open_gpui::VisualTestContext) -> HitboxId {
-        let _ = cx.draw(
-            open_gpui::point(open_gpui::px(0.0), open_gpui::px(0.0)),
-            open_gpui::size(open_gpui::px(10.0), open_gpui::px(10.0)),
-            |_, _| {
-                OpenGpuiOverlayInteractionElement::new(
-                    OpenGpuiNativeInteractionHandle::new(),
-                    open_gpui::div().size_full(),
-                )
-            },
+    fn draw_capture_handles(
+        view: &Entity<FocusTestView>,
+        cx: &mut open_gpui::VisualTestContext,
+        interactions: &OpenGpuiNativeInteractionHandle,
+        button: MouseButton,
+    ) -> (PointerCaptureHandle, PointerCaptureHandle) {
+        let (owner, successor) = cx.update(|window, cx| {
+            let owner = interactions.pointer_capture_handle(window);
+            let successor = window.new_pointer_capture_handle();
+            view.update(cx, |view, cx| {
+                view.capture_handles = vec![owner, successor];
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+            (owner, successor)
+        });
+        cx.run_until_parked();
+        cx.simulate_event(MouseDownEvent {
+            button,
+            position: open_gpui::point(open_gpui::px(20.0), open_gpui::px(30.0)),
+            modifiers: Modifiers::default(),
+            click_count: 1,
+            first_mouse: false,
+        });
+        (owner, successor)
+    }
+
+    fn draw_scene_capture_root(
+        view: &Entity<FocusTestView>,
+        cx: &mut open_gpui::VisualTestContext,
+        interactions: &OpenGpuiNativeInteractionHandle,
+        listener: OpenGpuiSceneGestureListener,
+    ) -> PointerCaptureHandle {
+        let capture_handle = cx.update(|window, cx| {
+            let capture_handle = interactions.pointer_capture_handle(window);
+            let focus = view
+                .read(cx)
+                .scene
+                .as_ref()
+                .map(|scene| scene.focus.clone())
+                .unwrap_or_else(|| cx.focus_handle());
+            view.update(cx, |view, cx| {
+                view.scene = Some(SceneCaptureTestRoot {
+                    interactions: interactions.clone(),
+                    capture_handle,
+                    focus,
+                    listener,
+                });
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+            capture_handle
+        });
+        cx.run_until_parked();
+        capture_handle
+    }
+
+    #[open_gpui::test]
+    fn maintained_scene_capture_survives_redraw_and_only_matching_release_finishes(
+        cx: &mut open_gpui::TestAppContext,
+    ) {
+        let (view, cx) = focus_test_window(cx);
+        let interactions = OpenGpuiNativeInteractionHandle::new();
+        let phases = Rc::new(RefCell::new(Vec::new()));
+        let listener: OpenGpuiSceneGestureListener = {
+            let phases = phases.clone();
+            Rc::new(move |event, _, _| phases.borrow_mut().push(event.phase()))
+        };
+        let capture_handle = draw_scene_capture_root(&view, cx, &interactions, listener.clone());
+        cx.simulate_event(MouseDownEvent {
+            button: MouseButton::Left,
+            position: open_gpui::point(open_gpui::px(20.0), open_gpui::px(30.0)),
+            modifiers: Modifiers::default(),
+            click_count: 1,
+            first_mouse: false,
+        });
+        assert!(cx.update(|window, _| capture_handle.is_captured(window)));
+        assert_eq!(
+            draw_scene_capture_root(&view, cx, &interactions, listener),
+            capture_handle
         );
-        let (_, hitbox) = cx.draw(
-            open_gpui::point(open_gpui::px(0.0), open_gpui::px(0.0)),
-            open_gpui::size(open_gpui::px(10.0), open_gpui::px(10.0)),
-            |_, _| {
-                OpenGpuiOverlayInteractionElement::new(
-                    OpenGpuiNativeInteractionHandle::new(),
-                    open_gpui::div().size_full(),
-                )
-            },
+        assert!(cx.update(|window, _| capture_handle.is_captured(window)));
+
+        let outside = open_gpui::point(open_gpui::px(200.0), open_gpui::px(300.0));
+        cx.simulate_event(MouseUpEvent {
+            button: MouseButton::Right,
+            position: outside,
+            modifiers: Modifiers::default(),
+            click_count: 1,
+        });
+        assert!(cx.update(|window, _| capture_handle.is_captured(window)));
+        cx.simulate_event(MouseUpEvent {
+            button: MouseButton::Left,
+            position: outside,
+            modifiers: Modifiers::default(),
+            click_count: 1,
+        });
+        assert!(cx.update(|window, _| window.captured_pointer().is_none()));
+        assert_eq!(
+            phases.borrow().as_slice(),
+            [
+                OpenGpuiSceneGesturePhase::Start,
+                OpenGpuiSceneGesturePhase::Release
+            ]
         );
-        assert_ne!(hitbox.id, HitboxId::placeholder());
-        hitbox.id
+    }
+
+    #[open_gpui::test]
+    fn maintained_native_pointer_cancellation_finishes_once_without_release_suppression(
+        cx: &mut open_gpui::TestAppContext,
+    ) {
+        let (view, cx) = focus_test_window(cx);
+        let interactions = OpenGpuiNativeInteractionHandle::new();
+        let phases = Rc::new(RefCell::new(Vec::new()));
+        let listener: OpenGpuiSceneGestureListener = {
+            let phases = phases.clone();
+            Rc::new(move |event, _, _| phases.borrow_mut().push(event.phase()))
+        };
+        draw_scene_capture_root(&view, cx, &interactions, listener);
+        cx.simulate_event(MouseDownEvent {
+            button: MouseButton::Left,
+            position: open_gpui::point(open_gpui::px(20.0), open_gpui::px(30.0)),
+            modifiers: Modifiers::default(),
+            click_count: 1,
+            first_mouse: false,
+        });
+        assert!(interactions.hold_space_pan());
+        let cancellation = PointerCancelEvent {
+            reason: open_gpui::PointerCancelReason::PlatformCaptureLost,
+        };
+        cx.simulate_event(cancellation);
+        cx.simulate_event(cancellation);
+
+        assert!(!interactions.space_pan_held());
+        assert!(interactions.state.borrow().capture.suppression().is_none());
+        assert!(cx.update(|window, _| window.captured_pointer().is_none()));
+        assert_eq!(
+            phases.borrow().as_slice(),
+            [
+                OpenGpuiSceneGesturePhase::Start,
+                OpenGpuiSceneGesturePhase::Cancel(
+                    OpenGpuiSceneGestureCancelReason::PointerCaptureLost
+                ),
+            ]
+        );
     }
 
     fn start_and_escape_successor_listener(
@@ -2535,7 +2780,7 @@ mod capture_bookkeeping_tests {
     fn pending_cancellation_blocks_a_new_capture_until_the_terminal_callback_drains(
         cx: &mut open_gpui::TestAppContext,
     ) {
-        let (_, cx) = cx.add_window_view(|_, _| FocusTestView);
+        let (view, cx) = focus_test_window(cx);
         let handle = OpenGpuiNativeInteractionHandle::new();
         let terminal_callbacks = Rc::new(Cell::new(0_u32));
         let terminal_listener: OpenGpuiSceneGestureListener = {
@@ -2558,7 +2803,7 @@ mod capture_bookkeeping_tests {
             })
         };
         let position = open_gpui::point(open_gpui::px(20.0), open_gpui::px(30.0));
-        let hitbox = HitboxId::placeholder();
+        let (capture_handle, _) = draw_capture_handles(&view, cx, &handle, MouseButton::Left);
         let mouse_down = MouseDownEvent {
             button: MouseButton::Left,
             position,
@@ -2571,7 +2816,8 @@ mod capture_bookkeeping_tests {
         handle.state.borrow_mut().capture.enqueue(
             PendingNativeCancellation::Scene(PendingSceneCancellation {
                 generation: terminal_generation,
-                hitbox,
+                handle: capture_handle,
+                button: MouseButton::Left,
                 event: OpenGpuiSceneGestureEvent {
                     kind: OpenGpuiSceneGestureKind::Selection,
                     phase: OpenGpuiSceneGesturePhase::Cancel(
@@ -2586,13 +2832,14 @@ mod capture_bookkeeping_tests {
             Some(NativeReleaseSuppression::new(
                 MouseButton::Left,
                 terminal_generation,
-                hitbox,
+                capture_handle,
             )),
         );
 
         cx.update(|window, cx| {
-            handle.set_root_hitbox(hitbox, window, cx);
-            window.capture_pointer(hitbox);
+            window
+                .capture_pointer(&capture_handle, MouseButton::Left)
+                .unwrap();
             assert!(handle.begin(
                 OpenGpuiSceneGestureKind::Selection,
                 MouseButton::Left,
@@ -2608,11 +2855,11 @@ mod capture_bookkeeping_tests {
                 handle.state.borrow().capture.latest_generation(),
                 terminal_generation,
             );
-            assert_eq!(window.captured_hitbox(), Some(hitbox));
+            assert!(capture_handle.is_captured(window));
 
             assert!(handle.drain_pending(window, cx));
             assert_eq!(terminal_callbacks.get(), 1);
-            assert!(window.captured_hitbox().is_none());
+            assert!(window.captured_pointer().is_none());
 
             assert!(handle.begin(
                 OpenGpuiSceneGestureKind::Selection,
@@ -2629,7 +2876,7 @@ mod capture_bookkeeping_tests {
                 Some(NativeCapture::Scene(active)) if active.generation == live_generation
             ));
             assert_eq!(live_starts.get(), 1);
-            assert_eq!(window.captured_hitbox(), Some(hitbox));
+            assert!(capture_handle.is_captured(window));
             assert!(handle.handle_mouse_up(
                 &MouseUpEvent {
                     position,
@@ -2640,7 +2887,7 @@ mod capture_bookkeeping_tests {
                 window,
                 cx,
             ));
-            assert!(window.captured_hitbox().is_none());
+            assert!(window.captured_pointer().is_none());
         });
 
         assert_eq!(terminal_callbacks.get(), 1);
@@ -2652,9 +2899,9 @@ mod capture_bookkeeping_tests {
     fn owned_release_suppression_consumes_only_the_residual_button(
         cx: &mut open_gpui::TestAppContext,
     ) {
-        let (_, cx) = cx.add_window_view(|_, _| FocusTestView);
+        let (view, cx) = focus_test_window(cx);
         let handle = OpenGpuiNativeInteractionHandle::new();
-        let owner = HitboxId::placeholder();
+        let (owner, _) = draw_capture_handles(&view, cx, &handle, MouseButton::Left);
         let generation = handle.allocate_generation().expect("native generation");
         let suppression = NativeReleaseSuppression::new(MouseButton::Left, generation, owner);
         let position = open_gpui::point(open_gpui::px(20.0), open_gpui::px(30.0));
@@ -2675,7 +2922,7 @@ mod capture_bookkeeping_tests {
                 window,
                 cx,
             ));
-            assert!(window.captured_hitbox().is_none());
+            assert!(window.captured_pointer().is_none());
 
             handle
                 .state
@@ -2693,13 +2940,13 @@ mod capture_bookkeeping_tests {
                 window,
                 cx,
             ));
-            assert!(window.captured_hitbox().is_none());
+            assert!(window.captured_pointer().is_none());
         });
     }
 
     #[open_gpui::test]
     fn release_suppression_does_not_own_a_followup_escape(cx: &mut open_gpui::TestAppContext) {
-        let (_, cx) = cx.add_window_view(|_, _| FocusTestView);
+        let (view, cx) = focus_test_window(cx);
         let handle = OpenGpuiNativeInteractionHandle::new();
         let cancellations = Rc::new(Cell::new(0_u32));
         let listener: OpenGpuiSceneGestureListener = {
@@ -2713,7 +2960,7 @@ mod capture_bookkeeping_tests {
             })
         };
         let position = open_gpui::point(open_gpui::px(20.0), open_gpui::px(30.0));
-        let hitbox = HitboxId::placeholder();
+        let (capture_handle, _) = draw_capture_handles(&view, cx, &handle, MouseButton::Left);
         let generation = handle.allocate_generation().expect("native generation");
         handle
             .state
@@ -2725,7 +2972,7 @@ mod capture_bookkeeping_tests {
                 button: MouseButton::Left,
                 listener,
                 lease: None,
-                hitbox,
+                handle: capture_handle,
                 previous_focus: None,
                 position,
                 modifiers: Default::default(),
@@ -2737,7 +2984,9 @@ mod capture_bookkeeping_tests {
         };
 
         cx.update(|window, cx| {
-            window.capture_pointer(hitbox);
+            window
+                .capture_pointer(&capture_handle, MouseButton::Left)
+                .unwrap();
             assert!(handle.handle_key_down(&escape, window, cx));
             assert_eq!(cancellations.get(), 1);
             assert!(handle.state.borrow().capture.suppression().is_some());
@@ -2765,7 +3014,7 @@ mod capture_bookkeeping_tests {
     fn pending_suppression_does_not_swallow_a_replacement_owners_mouse_up(
         cx: &mut open_gpui::TestAppContext,
     ) {
-        let (_, cx) = cx.add_window_view(|_, _| FocusTestView);
+        let (view, cx) = focus_test_window(cx);
         let handle = OpenGpuiNativeInteractionHandle::new();
         let callbacks = Rc::new(Cell::new(0_u32));
         let listener: OpenGpuiSceneGestureListener = {
@@ -2773,12 +3022,13 @@ mod capture_bookkeeping_tests {
             Rc::new(move |_, _, _| callbacks.set(callbacks.get().saturating_add(1)))
         };
         let position = open_gpui::point(open_gpui::px(20.0), open_gpui::px(30.0));
-        let owner = HitboxId::placeholder();
+        let (owner, successor) = draw_capture_handles(&view, cx, &handle, MouseButton::Left);
         let generation = handle.allocate_generation().expect("native generation");
         handle.state.borrow_mut().capture.enqueue(
             PendingNativeCancellation::Scene(PendingSceneCancellation {
                 generation,
-                hitbox: owner,
+                handle: owner,
+                button: MouseButton::Left,
                 event: OpenGpuiSceneGestureEvent {
                     kind: OpenGpuiSceneGestureKind::Selection,
                     phase: OpenGpuiSceneGesturePhase::Cancel(
@@ -2796,31 +3046,12 @@ mod capture_bookkeeping_tests {
                 owner,
             )),
         );
-        let _ = cx.draw(
-            open_gpui::point(open_gpui::px(0.0), open_gpui::px(0.0)),
-            open_gpui::size(open_gpui::px(10.0), open_gpui::px(10.0)),
-            |_, _| {
-                OpenGpuiOverlayInteractionElement::new(
-                    OpenGpuiNativeInteractionHandle::new(),
-                    open_gpui::div().size_full(),
-                )
-            },
-        );
-        let (_, successor_hitbox) = cx.draw(
-            open_gpui::point(open_gpui::px(0.0), open_gpui::px(0.0)),
-            open_gpui::size(open_gpui::px(10.0), open_gpui::px(10.0)),
-            |_, _| {
-                OpenGpuiOverlayInteractionElement::new(
-                    OpenGpuiNativeInteractionHandle::new(),
-                    open_gpui::div().size_full(),
-                )
-            },
-        );
-        let successor = successor_hitbox.id;
         assert_ne!(owner, successor);
 
         cx.update(|window, cx| {
-            window.capture_pointer(successor);
+            window
+                .capture_pointer(&successor, MouseButton::Left)
+                .unwrap();
             assert!(!handle.handle_mouse_up(
                 &MouseUpEvent {
                     position,
@@ -2832,9 +3063,9 @@ mod capture_bookkeeping_tests {
                 cx,
             ));
             assert_eq!(callbacks.get(), 1);
-            assert_eq!(window.captured_hitbox(), Some(successor));
+            assert!(successor.is_captured(window));
             assert!(handle.state.borrow().capture.suppression().is_none());
-            window.release_pointer();
+            assert!(window.release_pointer(&successor).unwrap());
         });
     }
 
@@ -2842,10 +3073,9 @@ mod capture_bookkeeping_tests {
     fn non_escape_key_invalidates_a_replaced_release_suppression(
         cx: &mut open_gpui::TestAppContext,
     ) {
-        let (_, cx) = cx.add_window_view(|_, _| FocusTestView);
+        let (view, cx) = focus_test_window(cx);
         let handle = OpenGpuiNativeInteractionHandle::new();
-        let owner = HitboxId::placeholder();
-        let successor = draw_non_placeholder_hitbox(cx);
+        let (owner, successor) = draw_capture_handles(&view, cx, &handle, MouseButton::Left);
         let generation = handle.allocate_generation().expect("native generation");
         let position = open_gpui::point(open_gpui::px(20.0), open_gpui::px(30.0));
         handle
@@ -2859,7 +3089,9 @@ mod capture_bookkeeping_tests {
             )));
 
         cx.update(|window, cx| {
-            window.capture_pointer(successor);
+            window
+                .capture_pointer(&successor, MouseButton::Left)
+                .unwrap();
             assert!(!handle.handle_key_down(
                 &KeyDownEvent {
                     keystroke: open_gpui::Keystroke::parse("a").expect("valid keystroke"),
@@ -2871,7 +3103,7 @@ mod capture_bookkeeping_tests {
             ));
             assert!(handle.state.borrow().capture.suppression().is_none());
 
-            window.release_pointer();
+            assert!(window.release_pointer(&successor).unwrap());
             assert!(!handle.handle_mouse_up(
                 &MouseUpEvent {
                     position,
@@ -2889,11 +3121,10 @@ mod capture_bookkeeping_tests {
     fn older_terminal_stack_cannot_replace_a_successor_generations_suppression(
         cx: &mut open_gpui::TestAppContext,
     ) {
-        let (_, cx) = cx.add_window_view(|_, _| FocusTestView);
+        let (view, cx) = focus_test_window(cx);
         let handle = OpenGpuiNativeInteractionHandle::new();
-        let hitbox = HitboxId::placeholder();
+        let (capture_handle, _) = draw_capture_handles(&view, cx, &handle, MouseButton::Left);
         let position = open_gpui::point(open_gpui::px(20.0), open_gpui::px(30.0));
-        handle.state.borrow_mut().root_hitbox = Some(hitbox);
 
         let install_outer = |listener| {
             let generation = handle.allocate_generation().expect("outer generation");
@@ -2907,7 +3138,7 @@ mod capture_bookkeeping_tests {
                     button: MouseButton::Left,
                     listener,
                     lease: None,
-                    hitbox,
+                    handle: capture_handle,
                     previous_focus: None,
                     position,
                     modifiers: Default::default(),
@@ -2920,7 +3151,9 @@ mod capture_bookkeeping_tests {
             position,
         ));
         cx.update(|window, cx| {
-            window.capture_pointer(hitbox);
+            window
+                .capture_pointer(&capture_handle, MouseButton::Left)
+                .unwrap();
             assert!(handle.handle_mouse_up(
                 &MouseUpEvent {
                     position,
@@ -2955,7 +3188,9 @@ mod capture_bookkeeping_tests {
             position,
         ));
         cx.update(|window, cx| {
-            window.capture_pointer(hitbox);
+            window
+                .capture_pointer(&capture_handle, MouseButton::Left)
+                .unwrap();
             assert!(handle.handle_key_down(
                 &KeyDownEvent {
                     keystroke: open_gpui::Keystroke::parse("escape").expect("valid keystroke"),
@@ -2989,7 +3224,7 @@ mod capture_bookkeeping_tests {
     fn capture_loss_does_not_release_or_swallow_replacement_events(
         cx: &mut open_gpui::TestAppContext,
     ) {
-        let (_, cx) = cx.add_window_view(|_, _| FocusTestView);
+        let (view, cx) = focus_test_window(cx);
         let handle = OpenGpuiNativeInteractionHandle::new();
         let phases = Rc::new(RefCell::new(Vec::new()));
         let listener: OpenGpuiSceneGestureListener = {
@@ -2997,30 +3232,9 @@ mod capture_bookkeeping_tests {
             Rc::new(move |event, _, _| phases.borrow_mut().push(event.phase()))
         };
         let position = open_gpui::point(open_gpui::px(20.0), open_gpui::px(30.0));
-        let _ = cx.draw(
-            open_gpui::point(open_gpui::px(0.0), open_gpui::px(0.0)),
-            open_gpui::size(open_gpui::px(10.0), open_gpui::px(10.0)),
-            |_, _| {
-                OpenGpuiOverlayInteractionElement::new(
-                    OpenGpuiNativeInteractionHandle::new(),
-                    open_gpui::div().size_full(),
-                )
-            },
-        );
-        let (_, successor_hitbox) = cx.draw(
-            open_gpui::point(open_gpui::px(0.0), open_gpui::px(0.0)),
-            open_gpui::size(open_gpui::px(10.0), open_gpui::px(10.0)),
-            |_, _| {
-                OpenGpuiOverlayInteractionElement::new(
-                    OpenGpuiNativeInteractionHandle::new(),
-                    open_gpui::div().size_full(),
-                )
-            },
-        );
-        let successor = successor_hitbox.id;
-        let owner = HitboxId::placeholder();
+        let (owner, successor) = draw_capture_handles(&view, cx, &handle, MouseButton::Left);
         assert_ne!(owner, successor);
-        let install_capture = |hitbox| {
+        let install_capture = |capture_handle| {
             let generation = handle.allocate_generation().expect("native generation");
             handle
                 .state
@@ -3032,7 +3246,7 @@ mod capture_bookkeeping_tests {
                     button: MouseButton::Left,
                     listener: listener.clone(),
                     lease: None,
-                    hitbox,
+                    handle: capture_handle,
                     previous_focus: None,
                     position,
                     modifiers: Default::default(),
@@ -3041,7 +3255,9 @@ mod capture_bookkeeping_tests {
 
         install_capture(owner);
         cx.update(|window, cx| {
-            window.capture_pointer(successor);
+            window
+                .capture_pointer(&successor, MouseButton::Left)
+                .unwrap();
             assert!(!handle.handle_mouse_up(
                 &MouseUpEvent {
                     position,
@@ -3052,15 +3268,17 @@ mod capture_bookkeeping_tests {
                 window,
                 cx,
             ));
-            assert_eq!(window.captured_hitbox(), Some(successor));
+            assert!(successor.is_captured(window));
             assert!(handle.drain_pending(window, cx));
-            assert_eq!(window.captured_hitbox(), Some(successor));
-            window.release_pointer();
+            assert!(successor.is_captured(window));
+            assert!(window.release_pointer(&successor).unwrap());
         });
 
         install_capture(owner);
         cx.update(|window, cx| {
-            window.capture_pointer(successor);
+            window
+                .capture_pointer(&successor, MouseButton::Left)
+                .unwrap();
             assert!(!handle.handle_key_down(
                 &KeyDownEvent {
                     keystroke: open_gpui::Keystroke::parse("escape").expect("valid keystroke"),
@@ -3070,10 +3288,10 @@ mod capture_bookkeeping_tests {
                 window,
                 cx,
             ));
-            assert_eq!(window.captured_hitbox(), Some(successor));
+            assert!(successor.is_captured(window));
             assert!(handle.drain_pending(window, cx));
-            assert_eq!(window.captured_hitbox(), Some(successor));
-            window.release_pointer();
+            assert!(successor.is_captured(window));
+            assert!(window.release_pointer(&successor).unwrap());
         });
 
         assert_eq!(
@@ -3093,7 +3311,7 @@ mod capture_bookkeeping_tests {
     fn terminal_native_cancellation_dispatches_once_and_repeated_close_is_inert(
         cx: &mut open_gpui::TestAppContext,
     ) {
-        let (_, cx) = cx.add_window_view(|_, _| FocusTestView);
+        let (view, cx) = focus_test_window(cx);
         let authority = OpenGpuiNativeInteractionAuthority::new();
         let handle = authority.capability();
         let callbacks = Rc::new(Cell::new(0_u32));
@@ -3109,7 +3327,8 @@ mod capture_bookkeeping_tests {
         };
         let generation = handle.allocate_generation().expect("native generation");
         let position = open_gpui::point(open_gpui::px(20.0), open_gpui::px(30.0));
-        let hitbox = HitboxId::placeholder();
+        let (capture_handle, successor) =
+            draw_capture_handles(&view, cx, &handle, MouseButton::Middle);
         handle
             .state
             .borrow_mut()
@@ -3120,22 +3339,25 @@ mod capture_bookkeeping_tests {
                 button: MouseButton::Middle,
                 listener,
                 lease: None,
-                hitbox,
+                handle: capture_handle,
                 previous_focus: None,
                 position,
                 modifiers: Default::default(),
             }));
 
         cx.update(|window, cx| {
-            window.capture_pointer(hitbox);
+            window
+                .capture_pointer(&capture_handle, MouseButton::Middle)
+                .unwrap();
             assert!(authority.cancel_for_host_close(window, cx));
-            assert!(window.captured_hitbox().is_none());
+            assert!(window.captured_pointer().is_none());
 
-            window.capture_pointer(hitbox);
+            window
+                .capture_pointer(&successor, MouseButton::Middle)
+                .unwrap();
             assert!(!authority.cancel_for_host_close(window, cx));
-            assert_eq!(
-                window.captured_hitbox(),
-                Some(hitbox),
+            assert!(
+                successor.is_captured(window),
                 "repeated close must not release a later owner's pointer capture",
             );
         });
@@ -3143,19 +3365,22 @@ mod capture_bookkeeping_tests {
 
         assert_eq!(callbacks.get(), 1);
         assert!(handle.state.borrow().capture.active().is_none());
-        cx.update(|window, _| window.release_pointer());
+        cx.update(|window, _| window.release_pointer(&successor).unwrap());
     }
 
     #[open_gpui::test]
     fn terminal_restore_returns_to_the_previous_focus(cx: &mut open_gpui::TestAppContext) {
-        let (_, cx) = cx.add_window_view(|_, _| FocusTestView);
+        let (view, cx) = focus_test_window(cx);
         cx.update(|window, cx| {
             let previous = cx.focus_handle();
             let interaction = cx.focus_handle();
             let ownership = native_focus_ownership(&previous, &interaction);
-            window.focus(&interaction, cx);
+            bind_focus_handles(&view, &[previous.clone(), interaction.clone()], window, cx);
+            focus_presented(&interaction, window, cx);
+            assert_eq!(window.focused(cx), Some(interaction));
 
             settle_native_focus(ownership, &[], OpenGpuiPortFocusExit::Restore, window, cx);
+            window.draw(cx).clear(cx);
 
             assert_eq!(window.focused(cx), Some(previous));
         });
@@ -3163,16 +3388,24 @@ mod capture_bookkeeping_tests {
 
     #[open_gpui::test]
     fn terminal_restore_does_not_steal_a_new_live_focus(cx: &mut open_gpui::TestAppContext) {
-        let (_, cx) = cx.add_window_view(|_, _| FocusTestView);
+        let (view, cx) = focus_test_window(cx);
         cx.update(|window, cx| {
             let previous = cx.focus_handle();
             let interaction = cx.focus_handle();
             let unrelated = cx.focus_handle();
             let ownership = native_focus_ownership(&previous, &interaction);
-            window.focus(&interaction, cx);
-            window.focus(&unrelated, cx);
+            bind_focus_handles(
+                &view,
+                &[previous.clone(), interaction.clone(), unrelated.clone()],
+                window,
+                cx,
+            );
+            focus_presented(&interaction, window, cx);
+            focus_presented(&unrelated, window, cx);
+            assert_eq!(window.focused(cx), Some(unrelated.clone()));
 
             settle_native_focus(ownership, &[], OpenGpuiPortFocusExit::Restore, window, cx);
+            window.draw(cx).clear(cx);
 
             assert_eq!(window.focused(cx), Some(unrelated));
         });
@@ -3180,13 +3413,24 @@ mod capture_bookkeeping_tests {
 
     #[open_gpui::test]
     fn search_overlay_restore_returns_to_the_initiating_focus(cx: &mut open_gpui::TestAppContext) {
-        let (_, cx) = cx.add_window_view(|_, _| FocusTestView);
+        let (view, cx) = focus_test_window(cx);
         cx.update(|window, cx| {
             let previous = cx.focus_handle();
             let interaction = cx.focus_handle();
             let search_overlay = cx.focus_handle();
             let ownership = native_focus_ownership(&previous, &interaction);
-            window.focus(&search_overlay, cx);
+            bind_focus_handles(
+                &view,
+                &[
+                    previous.clone(),
+                    interaction.clone(),
+                    search_overlay.clone(),
+                ],
+                window,
+                cx,
+            );
+            focus_presented(&search_overlay, window, cx);
+            assert_eq!(window.focused(cx), Some(search_overlay.clone()));
 
             settle_native_focus(
                 ownership,
@@ -3195,6 +3439,7 @@ mod capture_bookkeeping_tests {
                 window,
                 cx,
             );
+            window.draw(cx).clear(cx);
 
             assert_eq!(window.focused(cx), Some(previous));
         });
@@ -3204,14 +3449,26 @@ mod capture_bookkeeping_tests {
     fn search_overlay_restore_does_not_steal_unregistered_focus(
         cx: &mut open_gpui::TestAppContext,
     ) {
-        let (_, cx) = cx.add_window_view(|_, _| FocusTestView);
+        let (view, cx) = focus_test_window(cx);
         cx.update(|window, cx| {
             let previous = cx.focus_handle();
             let interaction = cx.focus_handle();
             let search_overlay = cx.focus_handle();
             let unrelated = cx.focus_handle();
             let ownership = native_focus_ownership(&previous, &interaction);
-            window.focus(&unrelated, cx);
+            bind_focus_handles(
+                &view,
+                &[
+                    previous.clone(),
+                    interaction.clone(),
+                    search_overlay.clone(),
+                    unrelated.clone(),
+                ],
+                window,
+                cx,
+            );
+            focus_presented(&unrelated, window, cx);
+            assert_eq!(window.focused(cx), Some(unrelated.clone()));
 
             settle_native_focus(
                 ownership,
@@ -3220,6 +3477,7 @@ mod capture_bookkeeping_tests {
                 window,
                 cx,
             );
+            window.draw(cx).clear(cx);
 
             assert_eq!(window.focused(cx), Some(unrelated));
         });
@@ -3231,19 +3489,23 @@ mod capture_bookkeeping_tests {
     ) {
         let authority = OpenGpuiNativeInteractionAuthority::new();
         let handle = authority.capability();
-        let (_, cx) = cx.add_window_view(|_, _| FocusTestView);
+        let (view, cx) = focus_test_window(cx);
         cx.update(|window, cx| {
             let overlay = cx.focus_handle();
+            let unrelated = cx.focus_handle();
+            bind_focus_handles(&view, &[overlay.clone(), unrelated.clone()], window, cx);
             handle.mark_overlay_focus_domain(&overlay);
-            window.focus(&overlay, cx);
+            focus_presented(&overlay, window, cx);
+            assert_eq!(window.focused(cx), Some(overlay));
             assert!(handle.requires_window_cleanup());
 
             authority.prepare_host_close_deferred();
             assert!(authority.cancel_for_host_close(window, cx));
+            window.draw(cx).clear(cx);
             assert!(window.focused(cx).is_none());
 
-            let unrelated = cx.focus_handle();
-            window.focus(&unrelated, cx);
+            focus_presented(&unrelated, window, cx);
+            assert_eq!(window.focused(cx), Some(unrelated.clone()));
             assert!(!authority.cancel_for_host_close(window, cx));
             assert_eq!(window.focused(cx), Some(unrelated));
         });
@@ -3253,7 +3515,7 @@ mod capture_bookkeeping_tests {
     fn terminal_restore_falls_back_to_the_canvas_when_previous_focus_is_gone(
         cx: &mut open_gpui::TestAppContext,
     ) {
-        let (_, cx) = cx.add_window_view(|_, _| FocusTestView);
+        let (view, cx) = focus_test_window(cx);
         cx.update(|window, cx| {
             let interaction = cx.focus_handle();
             let previous = cx.focus_handle().downgrade();
@@ -3262,9 +3524,18 @@ mod capture_bookkeeping_tests {
                 previous_focus_was_graph_domain: false,
                 interaction_focus: Some(interaction.downgrade()),
             };
-            window.blur();
+            bind_focus_handles(&view, std::slice::from_ref(&interaction), window, cx);
+            assert!(
+                ownership
+                    .previous_focus
+                    .as_ref()
+                    .and_then(WeakFocusHandle::upgrade)
+                    .is_none()
+            );
+            window.blur(cx);
 
             settle_native_focus(ownership, &[], OpenGpuiPortFocusExit::Restore, window, cx);
+            window.draw(cx).clear(cx);
 
             assert_eq!(window.focused(cx), Some(interaction));
         });
@@ -3274,7 +3545,7 @@ mod capture_bookkeeping_tests {
     fn terminal_restore_falls_back_to_canvas_when_previous_graph_focus_is_detached(
         cx: &mut open_gpui::TestAppContext,
     ) {
-        let (_, cx) = cx.add_window_view(|_, _| FocusTestView);
+        let (view, cx) = focus_test_window(cx);
         cx.update(|window, cx| {
             let previous = cx.focus_handle();
             let interaction = cx.focus_handle();
@@ -3283,9 +3554,17 @@ mod capture_bookkeeping_tests {
                 previous_focus_was_graph_domain: true,
                 interaction_focus: Some(interaction.downgrade()),
             };
-            window.focus(&interaction, cx);
+            bind_focus_handles(&view, &[previous.clone(), interaction.clone()], window, cx);
+            focus_presented(&previous, window, cx);
+            assert_eq!(window.focused(cx), Some(previous.clone()));
+            bind_focus_handles(&view, std::slice::from_ref(&interaction), window, cx);
+            assert!(!window.is_focus_handle_rendered(&previous));
+            assert!(window.focused(cx).is_none());
+            focus_presented(&interaction, window, cx);
+            assert_eq!(window.focused(cx), Some(interaction.clone()));
 
             settle_native_focus(ownership, &[], OpenGpuiPortFocusExit::Restore, window, cx);
+            window.draw(cx).clear(cx);
 
             assert_eq!(window.focused(cx), Some(interaction));
         });
@@ -3295,12 +3574,19 @@ mod capture_bookkeeping_tests {
     fn retirement_and_host_close_only_blur_owned_interaction_focus(
         cx: &mut open_gpui::TestAppContext,
     ) {
-        let (_, cx) = cx.add_window_view(|_, _| FocusTestView);
+        let (view, cx) = focus_test_window(cx);
         cx.update(|window, cx| {
             let previous = cx.focus_handle();
             let interaction = cx.focus_handle();
             let unrelated = cx.focus_handle();
-            window.focus(&interaction, cx);
+            bind_focus_handles(
+                &view,
+                &[previous.clone(), interaction.clone(), unrelated.clone()],
+                window,
+                cx,
+            );
+            focus_presented(&interaction, window, cx);
+            assert_eq!(window.focused(cx), Some(interaction.clone()));
             settle_native_focus(
                 native_focus_ownership(&previous, &interaction),
                 &[],
@@ -3308,9 +3594,11 @@ mod capture_bookkeeping_tests {
                 window,
                 cx,
             );
+            window.draw(cx).clear(cx);
             assert!(window.focused(cx).is_none());
 
-            window.focus(&unrelated, cx);
+            focus_presented(&unrelated, window, cx);
+            assert_eq!(window.focused(cx), Some(unrelated.clone()));
             settle_native_focus(
                 native_focus_ownership(&previous, &interaction),
                 &[],
@@ -3318,6 +3606,7 @@ mod capture_bookkeeping_tests {
                 window,
                 cx,
             );
+            window.draw(cx).clear(cx);
             assert_eq!(window.focused(cx), Some(unrelated.clone()));
 
             settle_native_focus(
@@ -3327,9 +3616,10 @@ mod capture_bookkeeping_tests {
                 window,
                 cx,
             );
+            window.draw(cx).clear(cx);
             assert_eq!(window.focused(cx), Some(unrelated));
 
-            window.focus(&interaction, cx);
+            focus_presented(&interaction, window, cx);
             settle_native_focus(
                 native_focus_ownership(&previous, &interaction),
                 &[],
@@ -3337,6 +3627,7 @@ mod capture_bookkeeping_tests {
                 window,
                 cx,
             );
+            window.draw(cx).clear(cx);
             assert!(window.focused(cx).is_none());
         });
     }

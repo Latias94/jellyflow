@@ -8,7 +8,7 @@ use std::rc::{Rc, Weak};
 use std::task::{Context as TaskContext, Poll, Waker};
 
 use jellyflow_runtime::view::NodeInstanceKey;
-use open_gpui::{HitboxId, Window};
+use open_gpui::{MouseButton, PointerCaptureError, PointerCaptureHandle, Window};
 use thiserror::Error;
 
 use crate::panic_sink::OpenGpuiPanicAccumulator;
@@ -46,34 +46,37 @@ impl OpenGpuiActivityKind {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ActivityEntryKind {
     Activity(OpenGpuiActivityKind),
-    PointerCapture(HitboxId),
+    PointerCapture {
+        handle: PointerCaptureHandle,
+        button: MouseButton,
+    },
 }
 
 impl ActivityEntryKind {
     fn protects_retention(self) -> bool {
         match self {
             Self::Activity(kind) => kind.protects_retention(),
-            Self::PointerCapture(_) => true,
+            Self::PointerCapture { .. } => true,
         }
     }
 
     fn requires_window_cleanup(self) -> bool {
         match self {
             Self::Activity(kind) => kind.requires_window_cleanup(),
-            Self::PointerCapture(_) => true,
+            Self::PointerCapture { .. } => true,
         }
     }
 
     fn requires_pinned_detail(self) -> bool {
         match self {
             Self::Activity(kind) => kind.requires_pinned_detail(),
-            Self::PointerCapture(_) => true,
+            Self::PointerCapture { .. } => true,
         }
     }
 
-    fn pointer_capture(self) -> Option<HitboxId> {
+    fn pointer_capture(self) -> Option<(PointerCaptureHandle, MouseButton)> {
         match self {
-            Self::PointerCapture(hitbox) => Some(hitbox),
+            Self::PointerCapture { handle, button } => Some((handle, button)),
             Self::Activity(_) => None,
         }
     }
@@ -88,6 +91,14 @@ pub enum OpenGpuiActivityAcquireError {
     IdentityExhausted,
     #[error("the view already protects its maximum of {capacity} native node instances")]
     ProtectedCapacityExceeded { capacity: usize },
+}
+
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+pub enum OpenGpuiPointerCaptureAcquireError {
+    #[error(transparent)]
+    Activity(#[from] OpenGpuiActivityAcquireError),
+    #[error(transparent)]
+    PointerCapture(#[from] PointerCaptureError),
 }
 
 type RevocationCallback = Box<dyn FnOnce() + 'static>;
@@ -336,19 +347,21 @@ impl OpenGpuiNodeActivityHandle {
         self.registry.acquire_with_revocation(kind, revoke)
     }
 
-    /// Captures the window pointer for one exact hitbox and registers that ownership with the host.
+    /// Captures the window pointer for a bound handle and registers ownership with the host.
     ///
     /// The returned lease keeps the node resident and lets terminal host cleanup release only this
     /// capture. Call [`OpenGpuiPointerCaptureLease::release`] when the component finishes normally.
     pub fn capture_pointer(
         &self,
-        hitbox: HitboxId,
+        handle: &PointerCaptureHandle,
+        button: MouseButton,
         window: &mut Window,
-    ) -> Result<OpenGpuiPointerCaptureLease, OpenGpuiActivityAcquireError> {
-        let activity = self.registry.acquire_pointer_capture(hitbox)?;
-        window.capture_pointer(hitbox);
+    ) -> Result<OpenGpuiPointerCaptureLease, OpenGpuiPointerCaptureAcquireError> {
+        let activity = self.registry.acquire_pointer_capture(*handle, button)?;
+        window.capture_pointer(handle, button)?;
         Ok(OpenGpuiPointerCaptureLease {
-            hitbox,
+            handle: *handle,
+            button,
             activity: Some(activity),
         })
     }
@@ -433,9 +446,10 @@ impl OpenGpuiNodeActivityRegistry {
 
     fn acquire_pointer_capture(
         &self,
-        hitbox: HitboxId,
+        handle: PointerCaptureHandle,
+        button: MouseButton,
     ) -> Result<OpenGpuiActivityLease, OpenGpuiActivityAcquireError> {
-        self.acquire_inner(ActivityEntryKind::PointerCapture(hitbox), None)
+        self.acquire_inner(ActivityEntryKind::PointerCapture { handle, button }, None)
     }
 
     pub(crate) fn active_count(&self) -> usize {
@@ -468,19 +482,16 @@ impl OpenGpuiNodeActivityRegistry {
     }
 
     pub(crate) fn release_pointer_capture_if_owned(&self, window: &mut Window) -> bool {
-        let Some(captured) = window.captured_hitbox() else {
+        let Some(captured) = window.captured_pointer() else {
             return false;
         };
-        let owns_capture = self
-            .state
-            .borrow()
-            .entries
-            .values()
-            .any(|entry| entry.kind.pointer_capture() == Some(captured));
+        let owns_capture = self.state.borrow().entries.values().any(|entry| {
+            entry.kind.pointer_capture() == Some((captured.handle(), captured.button()))
+        });
         if owns_capture {
-            window.release_pointer();
+            return window.release_pointer(&captured.handle()).unwrap_or(false);
         }
-        owns_capture
+        false
     }
 
     pub(crate) fn is_active(&self, id: u64) -> bool {
@@ -601,55 +612,40 @@ pub struct OpenGpuiActivityLease {
 /// Exact pointer-capture ownership registered to one retained node mount.
 #[must_use = "pointer capture must remain registered until it is released or the host retires it"]
 pub struct OpenGpuiPointerCaptureLease {
-    hitbox: HitboxId,
+    handle: PointerCaptureHandle,
+    button: MouseButton,
     activity: Option<OpenGpuiActivityLease>,
 }
 
 impl OpenGpuiPointerCaptureLease {
     #[must_use]
-    pub fn hitbox(&self) -> HitboxId {
-        self.hitbox
+    pub fn handle(&self) -> PointerCaptureHandle {
+        self.handle
     }
 
-    /// Transfers this still-owned capture to a replacement hitbox after native redraw.
-    ///
-    /// Open GPUI assigns a fresh hitbox identity during prepaint. Retained controls should call
-    /// this method before registering listeners for the replacement hitbox. The transfer fails
-    /// without changing either owner when the lease was revoked, its ledger entry no longer
-    /// matches, or another control has replaced the window capture.
     #[must_use]
-    pub fn rebind(&mut self, hitbox: HitboxId, window: &mut Window) -> bool {
-        if window.captured_hitbox() != Some(self.hitbox) {
-            return false;
-        }
-        let Some(activity) = self.activity.as_ref() else {
-            return false;
-        };
-        let Some(state) = activity.state.as_ref() else {
-            return false;
-        };
-        let mut state = state.borrow_mut();
-        let Some(entry) = state.entries.get_mut(&activity.id) else {
-            return false;
-        };
-        if entry.kind.pointer_capture() != Some(self.hitbox) {
-            return false;
-        }
-
-        window.capture_pointer(hitbox);
-        entry.kind = ActivityEntryKind::PointerCapture(hitbox);
-        self.hitbox = hitbox;
-        true
+    pub fn button(&self) -> MouseButton {
+        self.button
     }
 
     /// Releases this pointer capture when it is still current, then unregisters host ownership.
     pub fn release(mut self, window: &mut Window) -> bool {
-        let released = if window.captured_hitbox() == Some(self.hitbox) {
-            window.release_pointer();
-            true
-        } else {
-            false
-        };
+        let owns_lease = self.activity.as_ref().is_some_and(|activity| {
+            activity.state.as_ref().is_some_and(|state| {
+                state
+                    .borrow()
+                    .entries
+                    .get(&activity.id)
+                    .is_some_and(|entry| {
+                        entry.kind.pointer_capture() == Some((self.handle, self.button))
+                    })
+            })
+        });
+        let owns_capture = window.captured_pointer().is_some_and(|captured| {
+            captured.handle() == self.handle && captured.button() == self.button
+        });
+        let released =
+            owns_lease && owns_capture && window.release_pointer(&self.handle).unwrap_or(false);
         drop(self.activity.take());
         released
     }
@@ -659,7 +655,8 @@ impl fmt::Debug for OpenGpuiPointerCaptureLease {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("OpenGpuiPointerCaptureLease")
-            .field("hitbox", &self.hitbox)
+            .field("handle", &self.handle)
+            .field("button", &self.button)
             .field("active", &self.activity.is_some())
             .finish()
     }
@@ -860,15 +857,38 @@ mod tests {
         assert_eq!(registry.protected_count(), 0);
     }
 
-    #[test]
-    fn pointer_capture_requires_pinned_detail_until_release() {
+    #[open_gpui::test]
+    fn pointer_capture_requires_pinned_detail_until_release(cx: &mut open_gpui::TestAppContext) {
+        let (_, cx) = cx.add_window_view(|_, _| open_gpui::Empty);
+        let handle = cx.update(|window, _| window.new_pointer_capture_handle());
         let registry = OpenGpuiNodeActivityRegistry::detached();
         let capture = registry
-            .acquire_pointer_capture(HitboxId::placeholder())
+            .acquire_pointer_capture(handle, MouseButton::Left)
             .unwrap();
 
         assert!(registry.requires_pinned_detail());
         drop(capture);
+        assert!(!registry.requires_pinned_detail());
+    }
+
+    #[open_gpui::test]
+    fn failed_native_pointer_capture_unregisters_the_activity(cx: &mut open_gpui::TestAppContext) {
+        let (_, cx) = cx.add_window_view(|_, _| open_gpui::Empty);
+        let registry = OpenGpuiNodeActivityRegistry::detached();
+        cx.update(|window, _| {
+            let handle = window.new_pointer_capture_handle();
+            let capture =
+                registry
+                    .renderer_handle()
+                    .capture_pointer(&handle, MouseButton::Left, window);
+            assert!(matches!(
+                capture,
+                Err(OpenGpuiPointerCaptureAcquireError::PointerCapture(_))
+            ));
+            assert!(window.captured_pointer().is_none());
+        });
+        assert_eq!(registry.active_count(), 0);
+        assert_eq!(registry.protected_count(), 0);
         assert!(!registry.requires_pinned_detail());
     }
 }

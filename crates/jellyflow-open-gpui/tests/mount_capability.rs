@@ -923,7 +923,7 @@ fn old_node_drag_handle_is_inert_after_same_instance_retry_and_replacement_drag_
     cx.simulate_mouse_up(stale_end, MouseButton::Left, Default::default());
     cx.run_until_parked();
 
-    assert!(cx.update(|window, _| window.captured_hitbox()).is_none());
+    assert!(cx.update(|window, _| window.captured_pointer()).is_none());
     assert_eq!(
         runtime
             .snapshot()
@@ -950,7 +950,7 @@ fn old_node_drag_handle_is_inert_after_same_instance_retry_and_replacement_drag_
     let live_start = live_bounds.center();
     let live_end = open_gpui::point(live_start.x + px(50.0), live_start.y + px(35.0));
     cx.simulate_mouse_down(live_start, MouseButton::Left, Default::default());
-    assert!(cx.update(|window, _| window.captured_hitbox()).is_some());
+    assert!(cx.update(|window, _| window.captured_pointer()).is_some());
     cx.simulate_mouse_move(live_end, Some(MouseButton::Left), Default::default());
     cx.simulate_mouse_up(live_end, MouseButton::Left, Default::default());
     cx.run_until_parked();
@@ -972,7 +972,7 @@ fn old_node_drag_handle_is_inert_after_same_instance_retry_and_replacement_drag_
         history_before.undo_len() + 1,
         "one replacement drag creates one graph history boundary",
     );
-    assert!(cx.update(|window, _| window.captured_hitbox()).is_none());
+    assert!(cx.update(|window, _| window.captured_pointer()).is_none());
     cx.read_entity(&host, |host, _| {
         assert_eq!(
             host.interaction_presentation().phase(),
@@ -1072,7 +1072,7 @@ fn revoked_port_prepaint_cannot_cancel_replacement_mount_drag(cx: &mut open_gpui
         live_phases.borrow().as_slice(),
         [OpenGpuiPortDragPhase::Start]
     );
-    assert!(cx.update(|window, _| window.captured_hitbox()).is_some());
+    assert!(cx.update(|window, _| window.captured_pointer()).is_some());
     cx.read_entity(&host, |host, _| {
         assert_eq!(
             host.interaction_presentation().phase(),
@@ -1352,8 +1352,14 @@ fn assert_live_replacement(
 }
 
 fn draw(cx: &mut open_gpui::VisualTestContext) {
+    cx.update(|window, _| {
+        if !window.is_window_active() {
+            let _ = window.activate_window();
+        }
+    });
+    cx.run_until_parked();
     cx.update(|window, cx| {
-        window.draw(cx).clear();
+        window.draw(cx).clear(cx);
     });
     cx.run_until_parked();
 }

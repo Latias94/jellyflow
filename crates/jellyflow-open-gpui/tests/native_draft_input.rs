@@ -430,7 +430,7 @@ fn focused_native_input_survives_culling_then_blurs_parks_and_hard_retires(
         assert_eq!(host.resource_snapshot().protected_leases(), 1);
     });
 
-    cx.update(|window, _| window.blur());
+    cx.update(|window, cx| window.blur(cx));
     draw(cx);
     assert_eq!(activity.active_count(), 0);
     assert_eq!(activity.protected_count(), 0);
@@ -632,7 +632,7 @@ fn binding_observation(
 }
 
 fn draw(cx: &mut open_gpui::VisualTestContext) {
-    cx.update(|window, cx| window.draw(cx).clear());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.run_until_parked();
 }
 

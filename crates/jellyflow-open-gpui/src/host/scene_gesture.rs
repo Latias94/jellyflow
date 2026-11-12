@@ -13,7 +13,7 @@ use jellyflow_runtime::{
     view::GeometrySnapshot, view::NodeInstanceKey, viewport::ViewportPointerSample,
 };
 use open_gpui::{
-    Context, MouseDownEvent, MouseMoveEvent, PinchEvent, Pixels, ScrollWheelEvent, Window, px,
+    Context, MouseDownEvent, MouseMoveEvent, PinchEvent, Pixels, ScrollEvent, Window, px,
 };
 
 use crate::interaction::{
@@ -443,7 +443,7 @@ impl OpenGpuiSceneHost {
                 Err(error) => self.apply_scene_interaction_result(Err(error), window, cx),
             };
         }
-        let Some(target) = self.scene_press_target(event) else {
+        let Some(target) = self.scene_press_target(event, cx) else {
             return false;
         };
         let result = self.interaction_owner.press(target, sample);
@@ -560,12 +560,13 @@ impl OpenGpuiSceneHost {
     fn scene_press_target(
         &mut self,
         event: &OpenGpuiSceneGestureEvent,
+        cx: &open_gpui::App,
     ) -> Option<CanvasPressTarget> {
         let selection_mode = self
             .navigation
             .input_bindings()
             .selection()
-            .selection_mode(event.modifiers());
+            .selection_mode(event.modifiers(), cx);
         match event.kind() {
             OpenGpuiSceneGestureKind::Node(instance) => self
                 .node_drag_start(instance, selection_mode)
@@ -622,7 +623,7 @@ impl OpenGpuiSceneHost {
 
     pub(super) fn handle_scene_scroll(
         &mut self,
-        event: &ScrollWheelEvent,
+        event: &ScrollEvent,
         cx: &mut Context<Self>,
     ) -> bool {
         let Ok(transform) = self.view.viewport_transform() else {

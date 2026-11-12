@@ -722,13 +722,28 @@ fn unseen_eviction_retires_every_overflow_mount_before_propagating_a_panic(
         panic.is_err(),
         "the first callback panic remains observable"
     );
+    assert_eq!(
+        &*revocations.borrow(),
+        &[NodeId::from_u128(1), NodeId::from_u128(2)],
+        "overflow eviction retires its full prefix before propagating the panic",
+    );
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(
+            host.resource_snapshot().parked_nodes(),
+            OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY,
+        );
+    });
+    cx.update(|window, cx| {
+        host.update(cx, |host, cx| host.close_in_window(window, cx))
+            .expect("close retained host after the application panic");
+    });
     let expected = (1..=node_count)
         .map(|node| NodeId::from_u128(u128::try_from(node).unwrap()))
         .collect::<Vec<_>>();
     assert_eq!(
         &*revocations.borrow(),
         &expected,
-        "the evicted prefix and every mount released by host unwind must retire in order",
+        "the evicted prefix and every mount released by explicit close must retire in order",
     );
 }
 
@@ -739,7 +754,7 @@ fn draw(cx: &mut open_gpui::VisualTestContext) {
 
 fn draw_once(cx: &mut open_gpui::VisualTestContext) {
     cx.update(|window, cx| {
-        window.draw(cx).clear();
+        window.draw(cx).clear(cx);
     });
 }
 

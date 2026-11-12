@@ -146,3 +146,30 @@ See `jellyflow-open-gpui` and `jellyflow-egui` for production adapter implementa
 package consumers under `tools/fixtures/external-consumer` prove the published dependency boundary;
 future adapters should use the same public runtime capabilities while keeping their framework
 lifecycle local.
+
+## Maintained Open-GPUI Source
+
+The retained adapter and separate native product workspace select Open-GPUI Git revision
+`f75c10b2a9bf7b4dcb2c8c2aa446203997601369`. Use that same source for direct application
+dependencies. Matching package version `0.2.0` does not make earlier registry types or APIs
+interchangeable. This pin supports source consumption; a new registry release also needs a
+compatible versioned framework release and package qualification.
+
+The maintained native contract uses stable pointer-capture handles bound in each accepted
+frame, explicit initiating buttons, targeted input events and wheel intent. Nodes publish root,
+port and content measurements through the original accepted-frame callbacks; the scene submits
+complete feedback after those callbacks. Refused speculative work must not replace the last
+accepted native measurements. Complete real-port coverage remains mandatory.
+
+Tests must mount actual retained focus and capture owners, activate the test window and deliver
+button events through framework ingress. Unmounted focus handles and placeholder hitboxes do not establish an
+interactive owner. An open popup blocks a new graph gesture; a test needing both opens it after
+the real capture begins. A render panic does not imply destruction of a still-retained root:
+assert the evicted prefix, then explicitly close the retained host to verify remaining cleanup.
+
+On November 12, 2026, the migrated adapter suite passed 519/519 tests, with no skips
+(`25b9407c-fcc2-4729-9b2b-8c8939119dd4`). The separate `canvas-jellyflow` workspace passed
+`cargo +1.95.0 check --locked --all-targets --all-features --keep-going` on Windows 11.
+These results qualify the changed adapter and product compilation, not foreign native
+execution, a new registry release or all graph-integrity findings. Broader repairs remain
+separate from the maintained-framework migration.

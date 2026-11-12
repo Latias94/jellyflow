@@ -219,7 +219,7 @@ fn overlay_control_and_blank_space_own_events_before_port_node_and_canvas(
 
     let assert_underlay_unchanged = |cx: &mut open_gpui::VisualTestContext| {
         assert!(
-            cx.update(|window, _| window.captured_hitbox()).is_none(),
+            cx.update(|window, _| window.captured_pointer()).is_none(),
             "an overlay-owned pointer phase must not leave native capture behind",
         );
         cx.read_entity(&host, |host, _| {
@@ -344,7 +344,7 @@ fn overlay_control_and_blank_space_own_events_before_port_node_and_canvas(
         .expect("history before live node drag");
 
     cx.simulate_mouse_down(node_drag_start, MouseButton::Left, Default::default());
-    assert!(cx.update(|window, _| window.captured_hitbox()).is_some());
+    assert!(cx.update(|window, _| window.captured_pointer()).is_some());
     cx.read_entity(&host, |host, _| {
         assert_eq!(
             host.interaction_presentation().phase(),
@@ -354,7 +354,7 @@ fn overlay_control_and_blank_space_own_events_before_port_node_and_canvas(
         assert_eq!(host.resource_snapshot().protected_instances(), 1);
     });
     cx.simulate_mouse_move(node_drag_end, Some(MouseButton::Left), Default::default());
-    assert!(cx.update(|window, _| window.captured_hitbox()).is_some());
+    assert!(cx.update(|window, _| window.captured_pointer()).is_some());
     cx.read_entity(&host, |host, _| {
         assert_eq!(
             host.interaction_presentation().phase(),
@@ -389,7 +389,7 @@ fn overlay_control_and_blank_space_own_events_before_port_node_and_canvas(
             .nodes(),
         [node_id()],
     );
-    assert!(cx.update(|window, _| window.captured_hitbox()).is_none());
+    assert!(cx.update(|window, _| window.captured_pointer()).is_none());
     cx.read_entity(&host, |host, _| {
         assert_eq!(
             host.interaction_presentation().phase(),
@@ -412,7 +412,7 @@ fn overlay_control_and_blank_space_own_events_before_port_node_and_canvas(
     let selection_before_port_drag = view.selection().expect("selection before live port drag");
 
     cx.simulate_mouse_down(port_drag_start, MouseButton::Left, Default::default());
-    assert!(cx.update(|window, _| window.captured_hitbox()).is_some());
+    assert!(cx.update(|window, _| window.captured_pointer()).is_some());
     let port_owner = cx.read_entity(&host, |host, _| {
         assert_eq!(
             host.interaction_presentation().phase(),
@@ -424,7 +424,7 @@ fn overlay_control_and_blank_space_own_events_before_port_node_and_canvas(
     assert_eq!(port_owner.instance().node(), node_id());
     assert_eq!(port_owner.port(), output_id());
     cx.simulate_mouse_move(port_drag_end, Some(MouseButton::Left), Default::default());
-    assert!(cx.update(|window, _| window.captured_hitbox()).is_some());
+    assert!(cx.update(|window, _| window.captured_pointer()).is_some());
     cx.read_entity(&host, |host, _| {
         assert_eq!(
             host.interaction_presentation().phase(),
@@ -445,7 +445,7 @@ fn overlay_control_and_blank_space_own_events_before_port_node_and_canvas(
         ],
         "one live port drag must emit one ordered pointer lifecycle",
     );
-    assert!(cx.update(|window, _| window.captured_hitbox()).is_none());
+    assert!(cx.update(|window, _| window.captured_pointer()).is_none());
     cx.read_entity(&host, |host, _| {
         assert_eq!(
             host.interaction_presentation().phase(),
@@ -550,7 +550,7 @@ fn active_port_capture_precedes_a_new_overlay_until_explicit_release(
     cx.read_entity(&host, |host, _| {
         assert_eq!(host.active_port_drag(), Some(owner.clone()))
     });
-    assert!(cx.update(|window, _| window.captured_hitbox()).is_some());
+    assert!(cx.update(|window, _| window.captured_pointer()).is_some());
 
     cx.simulate_mouse_move(
         control.center(),
@@ -567,7 +567,7 @@ fn active_port_capture_precedes_a_new_overlay_until_explicit_release(
             ObservedEvent::Port(OpenGpuiPortDragPhase::Release),
         ]
     );
-    assert!(cx.update(|window, _| window.captured_hitbox()).is_none());
+    assert!(cx.update(|window, _| window.captured_pointer()).is_none());
     cx.read_entity(&host, |host, _| assert!(host.active_port_drag().is_none()));
 
     events.borrow_mut().clear();
@@ -601,7 +601,7 @@ fn overlay_owns_escape_while_existing_pointer_capture_waits_for_physical_release
         events.borrow().as_slice(),
         [ObservedEvent::Port(OpenGpuiPortDragPhase::Start)]
     );
-    assert!(cx.update(|window, _| window.captured_hitbox()).is_some());
+    assert!(cx.update(|window, _| window.captured_pointer()).is_some());
     cx.read_entity(&host, |host, _| assert!(host.active_port_drag().is_some()));
 
     let overlay = cx.debug_bounds(OVERLAY_SELECTOR).expect("overlay bounds");
@@ -613,7 +613,7 @@ fn overlay_owns_escape_while_existing_pointer_capture_waits_for_physical_release
             ObservedEvent::Port(OpenGpuiPortDragPhase::Release),
         ]
     );
-    assert!(cx.update(|window, _| window.captured_hitbox()).is_none());
+    assert!(cx.update(|window, _| window.captured_pointer()).is_none());
     cx.read_entity(&host, |host, _| assert!(host.active_port_drag().is_none()));
 
     events.borrow_mut().clear();
@@ -707,8 +707,14 @@ fn close_overlay(
 }
 
 fn draw(cx: &mut open_gpui::VisualTestContext) {
+    cx.update(|window, _| {
+        if !window.is_window_active() {
+            let _ = window.activate_window();
+        }
+    });
+    cx.run_until_parked();
     cx.update(|window, cx| {
-        window.draw(cx).clear();
+        window.draw(cx).clear(cx);
     });
     cx.run_until_parked();
 }

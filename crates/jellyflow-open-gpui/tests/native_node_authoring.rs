@@ -92,11 +92,10 @@ impl Render for NativeAuthoringNode {
             .observe(&authoring, |port| authoring.port(*port).is_some(), cx);
 
         let node = cx.weak_entity();
-        let add_output = Button::new("native-authoring-add-output-button", "Add output").on_click(
-            move |_, _, cx| {
+        let add_output = Button::new("native-authoring-add-output-button", "Add output")
+            .on_activate(move |_, _, cx| {
                 let _ = node.update(cx, |node, cx| node.add_output(cx));
-            },
-        );
+            });
         let mut root = div()
             .relative()
             .size_full()
@@ -333,7 +332,7 @@ fn viewport() -> CanvasRect {
 
 fn draw(cx: &mut open_gpui::VisualTestContext) {
     cx.update(|window, cx| {
-        window.draw(cx).clear();
+        window.draw(cx).clear(cx);
     });
     cx.run_until_parked();
 }

@@ -284,16 +284,62 @@ mod tests {
     };
     use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec, NodePortSpec};
     use jellyflow_runtime::{graph::GraphRuntime, view::ViewSessionOptions};
-    use open_gpui::{Context, IntoElement, Render};
+    use open_gpui::{
+        Context, Entity, InteractiveElement, IntoElement, ParentElement, Render, Styled,
+        TestAppContext, VisualTestContext, px,
+    };
 
     use super::*;
 
-    struct FocusTestView;
+    #[derive(Default)]
+    struct FocusTestView {
+        handles: Vec<FocusHandle>,
+    }
 
     impl Render for FocusTestView {
         fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-            open_gpui::div()
+            open_gpui::div().size_full().flex().flex_col().children(
+                self.handles.iter().enumerate().map(|(index, handle)| {
+                    open_gpui::div()
+                        .id(index)
+                        .track_focus(handle)
+                        .w(px(100.0))
+                        .h(px(24.0))
+                }),
+            )
         }
+    }
+
+    fn focus_test_window(
+        cx: &mut TestAppContext,
+    ) -> (Entity<FocusTestView>, &mut VisualTestContext) {
+        let (view, cx) = cx.add_window_view(|_, _| FocusTestView::default());
+        let _ = cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+        (view, cx)
+    }
+
+    fn bind_focus_handles(
+        view: &Entity<FocusTestView>,
+        handles: &[FocusHandle],
+        window: &mut Window,
+        cx: &mut open_gpui::App,
+    ) {
+        view.update(cx, |view, cx| {
+            view.handles = handles.to_vec();
+            cx.notify();
+        });
+        window.draw(cx).clear(cx);
+        for handle in handles {
+            assert!(window.is_focus_handle_rendered(handle));
+        }
+    }
+
+    fn focus_presented(handle: &FocusHandle, window: &mut Window, cx: &mut open_gpui::App) {
+        assert!(window.is_focus_handle_rendered(handle));
+        window.focus(handle, cx);
+        window.draw(cx).clear(cx);
+        assert_eq!(window.committed_focus(cx).as_ref(), Some(handle));
     }
 
     fn node_target(
@@ -414,7 +460,7 @@ mod tests {
     fn exact_focused_handle_survives_lod_replacement_and_a_new_handle_receives_focus(
         cx: &mut open_gpui::TestAppContext,
     ) {
-        let (_, cx) = cx.add_window_view(|_, _| FocusTestView);
+        let (view, cx) = focus_test_window(cx);
         cx.update(|window, cx| {
             let node = focus_identities().nodes[0];
             let old_handle = cx.focus_handle();
@@ -425,7 +471,14 @@ mod tests {
                 previous: vec![entry(detail, &old_handle)],
                 ..OpenGpuiGraphFocusCoordinator::default()
             };
-            window.focus(&old_handle, cx);
+            bind_focus_handles(
+                &view,
+                &[old_handle.clone(), replacement_handle.clone()],
+                window,
+                cx,
+            );
+            focus_presented(&old_handle, window, cx);
+            assert_eq!(window.focused(cx), Some(old_handle.clone()));
 
             let surviving_handle = vec![entry(overview, &old_handle)];
             let surviving_index = CurrentFocusIndex::new(&surviving_handle);
@@ -454,7 +507,7 @@ mod tests {
     fn lod_replacement_uses_the_first_graph_order_target_for_the_logical_node(
         cx: &mut open_gpui::TestAppContext,
     ) {
-        let (_, cx) = cx.add_window_view(|_, _| FocusTestView);
+        let (_, cx) = focus_test_window(cx);
         cx.update(|_, cx| {
             let node = focus_identities().nodes[0];
             let old_handle = cx.focus_handle();
@@ -503,7 +556,7 @@ mod tests {
     fn reused_node_id_does_not_receive_focus_from_a_retired_lifetime(
         cx: &mut open_gpui::TestAppContext,
     ) {
-        let (_, cx) = cx.add_window_view(|_, _| FocusTestView);
+        let (view, cx) = focus_test_window(cx);
         cx.update(|window, cx| {
             let retired = focus_identities().nodes[0];
             let successor = focus_identities().nodes[0];
@@ -517,7 +570,14 @@ mod tests {
                 previous: vec![entry(old_target, &old_handle)],
                 ..OpenGpuiGraphFocusCoordinator::default()
             };
-            window.focus(&old_handle, cx);
+            bind_focus_handles(
+                &view,
+                &[old_handle.clone(), successor_handle.clone()],
+                window,
+                cx,
+            );
+            focus_presented(&old_handle, window, cx);
+            assert_eq!(window.focused(cx), Some(old_handle.clone()));
             let current = vec![entry(successor_target, &successor_handle)];
             let current_index = CurrentFocusIndex::new(&current);
 
@@ -532,7 +592,7 @@ mod tests {
     fn disappearing_port_and_edge_keep_previous_graph_order_fallback_semantics(
         cx: &mut open_gpui::TestAppContext,
     ) {
-        let (_, cx) = cx.add_window_view(|_, _| FocusTestView);
+        let (_, cx) = focus_test_window(cx);
         cx.update(|_, cx| {
             let identities = focus_identities();
             let node_a = identities.nodes[0];
@@ -593,19 +653,23 @@ mod tests {
     fn return_target_resolves_exactly_and_empty_current_focuses_root(
         cx: &mut open_gpui::TestAppContext,
     ) {
-        let (_, cx) = cx.add_window_view(|_, _| FocusTestView);
+        let (view, cx) = focus_test_window(cx);
         cx.update(|window, cx| {
             let target = OpenGpuiGraphFocusTarget::Edge(focus_identities().edge);
             let root = cx.focus_handle();
             let target_handle = cx.focus_handle();
             let mut coordinator = OpenGpuiGraphFocusCoordinator::default();
             coordinator.remember_return_target(target);
-            window.focus(&root, cx);
+            bind_focus_handles(&view, &[root.clone(), target_handle.clone()], window, cx);
+            focus_presented(&root, window, cx);
+            assert_eq!(window.focused(cx), Some(root.clone()));
 
             coordinator.reconcile(vec![entry(target, &target_handle)], &root, true, window, cx);
+            window.draw(cx).clear(cx);
             assert_eq!(window.focused(cx), Some(target_handle));
 
             coordinator.reconcile(Vec::new(), &root, false, window, cx);
+            window.draw(cx).clear(cx);
             assert_eq!(window.focused(cx), Some(root));
         });
     }
@@ -614,7 +678,7 @@ mod tests {
     fn retained_return_and_actions_do_not_upgrade_to_same_id_successors(
         cx: &mut open_gpui::TestAppContext,
     ) {
-        let (_, cx) = cx.add_window_view(|_, _| FocusTestView);
+        let (view, cx) = focus_test_window(cx);
         cx.update(|window, cx| {
             let retired = focus_identities();
             let successor = focus_identities();
@@ -644,11 +708,22 @@ mod tests {
                 let retired_handle = cx.focus_handle();
                 let successor_handle = cx.focus_handle();
                 let mut coordinator = OpenGpuiGraphFocusCoordinator::default();
+                bind_focus_handles(
+                    &view,
+                    &[
+                        root.clone(),
+                        retired_handle.clone(),
+                        successor_handle.clone(),
+                    ],
+                    window,
+                    cx,
+                );
                 if retired_target.is_retained_action() {
                     coordinator.actions.insert(retired_target, retired_handle);
                 }
                 coordinator.remember_return_target(retired_target);
-                window.focus(&root, cx);
+                focus_presented(&root, window, cx);
+                assert_eq!(window.focused(cx), Some(root.clone()));
 
                 coordinator.reconcile(
                     vec![entry(successor_target, &successor_handle)],
@@ -657,6 +732,7 @@ mod tests {
                     window,
                     cx,
                 );
+                window.draw(cx).clear(cx);
 
                 assert_eq!(window.focused(cx), Some(root));
                 assert!(!coordinator.actions.contains_key(&retired_target));
